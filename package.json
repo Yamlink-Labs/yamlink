@@ -2,7 +2,7 @@
   "name": "yamlink",
   "displayName": "Yamlink",
   "description": "Turn Markdown into a structured knowledge system. Canonical IDs, vault-wide linking, backlinks, and real-time diagnostics for YAML-based knowledge graphs.",
-  "version": "0.1.5",
+  "version": "0.1.6",
   "publisher": "yamlink",
   "author": {
     "name": "Javier Ramirez"
