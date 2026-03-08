@@ -10,9 +10,9 @@ Yamlink turns Markdown vaults into structured knowledge systems by giving each f
 
 ---
 
-## The Problem
+## My Problem
 
-Most Markdown linking systems rely on filenames. Over time, files are renamed, reorganized, and moved. Links drift and references break. A vault slowly becomes a loose collection of documents rather than a coherent system.
+Many Markdown linking systems rely on filenames. Over time, files are renamed, reorganized, and moved. Links drift and references break. A vault slowly becomes a loose collection of documents rather than a coherent system.
 
 Yamlink separates **identity** from **filenames**.
 
@@ -23,11 +23,14 @@ Each Markdown file declares a canonical `id:` in YAML frontmatter. That `id` bec
 
 ```yaml
 ---
-id: concept-recursion
-type: concept
-created: 2025-01-15
+id: johnny-rico
+type: character
+created: 2297-01-15
 ---
-A function that calls itself. The base case prevents infinite descent.
+Mobile Infantry soldier and leader of Roughnecks.
+
+[[johnny-rico]] trained alongside [[dizzie-flores]] in the Mobile Infantry.
+
 ```
 
 Use Yamlink to build:
@@ -72,51 +75,60 @@ Or search **"Yamlink"** in the VS Code Extensions panel.
 
 ## Getting Started
 
-**1. Open a folder in VS Code.**
-
-**2. Create your first node.**
+**1. Open a folder in VS Code and Create your first node.**
 
 Run `Yamlink: Create Node` from the Command Palette (`Ctrl+Shift+P`). Enter an ID and select a type — the file is created and opened immediately.
 
 ```yaml
 ---
-id: elara-voss
+id: johnny-rico
 type: character
-created: 2025-01-15
+created: 2297-01-15
 ---
 ```
 
-**3. Start linking.**
+**2. Create a second node**
+
+```yaml
+---
+id: dizzie-flores
+type: character
+created: 2297-01-15
+---
+```
+
+
+**4. Start linking and writing normally.**
 
 Type `[[` anywhere to trigger autocomplete.
 
 ```markdown
-The market district was [[elara-voss]]'s territory long before the guild took notice.
+[[johnny-rico]] and [[dizzie-flores]] trained together before deployment to Klendathu.
 ```
 
 **4. Build structure.**
 
-Declare typed relations in frontmatter to make connections explicit.
+Relationships can also be declared in frontmatter.
 
 ```yaml
 ---
-id: chapter-04
-type: chapter
-protagonist: [[elara-voss]]
-location: [[the-shattered-fen]]
-created: 2025-01-15
+id: mission-klendathu
+type: mission
+squad-leader: [[johnny-rico]]
+squadmate: [[dizzie-flores]]
+created: 2297-01-15
 ---
 ```
 
-Open `elara-voss.md` — the Backlinks panel shows `chapter-04` labeled `protagonist`.
+Open `johnny-rico.md` — the Backlinks panel shows `mission-klendathu` labeled `squad-leader`.
 
 ---
 
-## Rename Propagation
+## Automatic Rename
 
 When you change an `id:` and save, Yamlink scans your entire vault, shows you how many files are affected, and asks for confirmation before applying anything. Large changes can be previewed. Every change can be reverted.
 
-**References are never silently broken.**
+**References are never broken.**
 
 ---
 
@@ -125,16 +137,15 @@ When you change an `id:` and save, Yamlink scans your entire vault, shows you ho
 The Backlinks panel in the Explorer sidebar shows every inbound link to the active file, labeled by how it was declared.
 
 ```
-chapter-04        protagonist
-research-notes    body
-weekly-review     body
+dizzie-flores         character
+mession-klendathu     mission
 ```
 
 YAML field relations show their field name. Body wikilinks are labeled `body`. Click any entry to open that file.
 
 ---
 
-## Diagnostics
+## Diagnostics - Yamlink provides assistance 
 
 |Code|Severity|Meaning|
 |---|---|---|
@@ -144,8 +155,6 @@ YAML field relations show their field name. Body wikilinks are labeled `body`. C
 |`yamlink.brokenRelation`|Warning|YAML relation references a non-existent node|
 |`yamlink.unknownType`|Info|`type:` value not seen in any other node|
 
-All diagnostics are non-destructive. Every warning has a Quick Fix.
-
 ---
 
 ## ID Rules
@@ -154,8 +163,8 @@ IDs use letters, numbers, hyphens, and underscores only.
 
 ```
 dizzie-flores          ✓
-concept_recursion      ✓
-Dizzie Flores          ✗  spaces not allowed
+mission_klendathu      ✓
+Johhny Rico            ✗  spaces not allowed
 note#1                 ✗  special characters not allowed
 ```
 
