@@ -3,16 +3,24 @@ const fs     = require('fs');
 const { parseFrontmatter } = require('../core/index');
 
 // ─────────────────────────────────────────────────────────────────
-// hover.js — Hover preview (Stage 2B)
+// hover.js — Hover preview (Stage 2B + relation enrichment 0.2.0)
 //
 // Hover over [[id]] → tooltip shows:
 //   - YAML fields from frontmatter
+//   - Relation fields expand inline: the linked node's own fields
+//     are shown indented beneath the link, so hovering on a contact
+//     linked via account: [[acme]] reveals acme's type, industry,
+//     employees etc. without leaving the file.
 //   - First N lines of body content
 //
 // Independent of graph layer. Works on identity index alone.
 // ─────────────────────────────────────────────────────────────────
 
 const PREVIEW_LINES = 8; // Number of body lines to show in tooltip
+
+// Fields to skip when rendering an expanded linked node inline.
+// Keeps the hover tight — the full node is one Ctrl+Click away.
+const RELATION_SKIP_FIELDS = new Set(['id', 'created']);
 
 function registerHover(context, getIndex) {
     context.subscriptions.push(
@@ -47,7 +55,7 @@ function registerHover(context, getIndex) {
                     const content = readFile(filePath);
                     if (!content) return;
 
-                    const hover = buildHoverContent(id, content, filePath);
+                    const hover = buildHoverContent(id, content, filePath, idIndex);
                     return new vscode.Hover(hover);
                 }
             }
@@ -57,12 +65,17 @@ function registerHover(context, getIndex) {
 
 // ─────────────────────────────────────────────────────────────────
 // buildHoverContent
-// Assembles MarkdownString from frontmatter + body preview
+//
+// Assembles MarkdownString from frontmatter + body preview.
+//
+// Relation enrichment: when a frontmatter value is [[someId]],
+// resolve that node and render its fields indented beneath the
+// link line. Depth is fixed at 1 — no recursive expansion.
 // ─────────────────────────────────────────────────────────────────
-function buildHoverContent(id, content, filePath) {
+function buildHoverContent(id, content, filePath, idIndex) {
     const md = new vscode.MarkdownString();
-    md.isTrusted        = true;
-    md.supportHtml      = false;
+    md.isTrusted         = true;
+    md.supportHtml       = false;
     md.supportThemeIcons = true;
 
     // ── Header ──
@@ -72,10 +85,45 @@ function buildHoverContent(id, content, filePath) {
     const frontmatter = parseFrontmatter(content);
     if (frontmatter && Object.keys(frontmatter).length > 0) {
         md.appendMarkdown(`---\n`);
+
         for (const [key, value] of Object.entries(frontmatter)) {
             if (key === 'id') continue; // Already shown in header
+
+            // ── Relation enrichment ──────────────────────────────
+            // If the value is a single [[link]], resolve the linked
+            // node and expand its frontmatter fields inline.
+            const linkMatch = typeof value === 'string'
+                ? value.match(/^\[\[([^\]]+)\]\]$/)
+                : null;
+
+            if (linkMatch && idIndex) {
+                const linkedId   = linkMatch[1].trim();
+                const linkedPath = idIndex.get(linkedId);
+
+                if (linkedPath) {
+                    const linkedContent = readFile(linkedPath);
+                    const linkedFm      = linkedContent
+                        ? parseFrontmatter(linkedContent)
+                        : null;
+
+                    if (linkedFm && Object.keys(linkedFm).length > 0) {
+                        // Render the field line with the link
+                        md.appendMarkdown(`**${key}:** \`${linkedId}\`  \n`);
+
+                        // Expand linked node's fields indented beneath
+                        for (const [lk, lv] of Object.entries(linkedFm)) {
+                            if (RELATION_SKIP_FIELDS.has(lk)) continue;
+                            md.appendMarkdown(`&nbsp;&nbsp;&nbsp;&nbsp;↳ **${lk}:** ${lv}  \n`);
+                        }
+                        continue;
+                    }
+                }
+            }
+
+            // Plain (non-relation) field
             md.appendMarkdown(`**${key}:** ${value}  \n`);
         }
+
         md.appendMarkdown(`\n`);
     }
 
@@ -94,7 +142,6 @@ function buildHoverContent(id, content, filePath) {
 // Returns first N non-empty lines after the frontmatter block
 // ─────────────────────────────────────────────────────────────────
 function extractBodyPreview(content) {
-    // Find end of frontmatter — use regex to tolerate BOM / leading whitespace
     let bodyStart = 0;
     if (/^\s*---/.test(content)) {
         const firstDash    = content.indexOf('---');
@@ -104,7 +151,7 @@ function extractBodyPreview(content) {
         }
     }
 
-    const body = content.slice(bodyStart);
+    const body  = content.slice(bodyStart);
     const lines = body
         .split('\n')
         .map(l => l.trim())

@@ -1,7 +1,10 @@
 const vscode = require('vscode');
 const { isKnownType } = require('../registries/typeRegistry');
 const { hasSchema, getSchema, getDuplicateSchemas } = require('../registries/schemaRegistry');
-const { getDuplicateIds } = require('../core/index');
+const { getDuplicateIds, getFieldsCache } = require('../core/index');
+const { getBacklinks } = require('../core/graph');
+const { computeSuggestionsForNode, QUERY_SUGGESTION_THRESHOLD } = require('../engine/suggestions');
+
 
 const MIN_VAULT_SIZE_FOR_TYPE_ADVISORY = 10;
 
@@ -21,17 +24,41 @@ function registerDiagnostics(context, getIndex) {
         })
     );
 
+    // Re-validate whenever the user focuses a file.
+    // onDidOpenTextDocument is unreliable for tab-switches on already-open
+    // documents — it may not fire, or it may fire before the index is warm.
+    // onDidChangeActiveTextEditor fires on every switch, always after the
+    // previous editor's index state is settled, making it the right place
+    // to refresh querySuggestion diagnostics (which read live backlink data).
     context.subscriptions.push(
-        vscode.workspace.onDidOpenTextDocument((doc) => {
-            validateDocument(doc, getIndex);
+        vscode.window.onDidChangeActiveTextEditor((editor) => {
+            if (editor && editor.document.languageId === 'markdown') {
+                validateDocument(editor.document, getIndex);
+                // Second pass after 50ms: the graph index may not have fully
+                // settled on the first tick (especially if the file was just
+                // indexed). The 50ms delay costs nothing and ensures
+                // querySuggestion diagnostics see fresh backlink counts.
+                setTimeout(() => validateDocument(editor.document, getIndex), 50);
+            }
         })
     );
 
+    // onDidOpenTextDocument: useful for files opened cold (not yet in any
+    // tab). Debounce 300ms so it doesn't race with a concurrent index build.
+    context.subscriptions.push(
+        vscode.workspace.onDidOpenTextDocument((doc) => {
+            if (doc.languageId !== 'markdown') return;
+            setTimeout(() => validateDocument(doc, getIndex), 300);
+        })
+    );
+
+    // Initial pass — delay long enough for buildIndex + graph to be warm.
+    // 500ms was too short on slower machines; 1500ms covers most vaults.
     setTimeout(() => {
         vscode.workspace.textDocuments.forEach((doc) => {
             validateDocument(doc, getIndex);
         });
-    }, 500);
+    }, 1500);
 }
 
 function validateAll(getIndex) {
@@ -245,6 +272,66 @@ function validateDocument(document, getIndex) {
                     diagnostic.source = "yamlink";
                     diagnostic.code   = "yamlink.duplicateSchema";
                     diagnostics.push(diagnostic);
+                }
+            }
+        }
+    }
+
+    // ─────────────────────────────────────────────
+    // Diagnostic 6: Query suggestion available
+    //
+    // Computed via the shared suggestions engine so diagnostics and
+    // codeActions never disagree. Range covers the full frontmatter
+    // so the lightbulb is visible wherever the cursor rests in the header.
+    // ─────────────────────────────────────────────
+    if (hasFrontmatter && hasId) {
+        const idMatch = text.match(/^\s*id:\s*([a-zA-Z0-9_-]+)\s*$/m);
+        if (idMatch) {
+            const thisId      = idMatch[1].trim();
+            const suggestions = computeSuggestionsForNode(thisId, text);
+            const fullRange   = new vscode.Range(
+                new vscode.Position(0, 0),
+                new vscode.Position(document.lineCount - 1, document.lineAt(document.lineCount - 1).text.length)
+            );
+
+            if (suggestions.length > 0) {
+                const diagnostic = new vscode.Diagnostic(
+                    fullRange,
+                    suggestions.length === 1
+                        ? `Yamlink: ${suggestions[0].count} ${suggestions[0].sourceType}s linked via "${suggestions[0].field}" — click 💡 to insert a view`
+                        : `Yamlink: ${suggestions.length} view suggestions available — click 💡 to insert`,
+                    vscode.DiagnosticSeverity.Hint
+                );
+                diagnostic.source = 'yamlink';
+                diagnostic.code   = 'yamlink.querySuggestion';
+                diagnostics.push(diagnostic);
+            } else {
+                // Progressive hint: backlinks exist but threshold not yet met.
+                // Shows in status bar via updateStatusBar, not as a squiggle.
+                // We store the near-miss data on the collection so extension.js
+                // can read it for the status bar "X more needed" message.
+                const backlinks  = getBacklinks(thisId);
+                const fCache     = getFieldsCache();
+                const groups     = new Map();
+                for (const { field, sourceId } of backlinks) {
+                    if (field === 'body') continue;
+                    const sf = fCache.get(sourceId);
+                    if (!sf) continue;
+                    const st = (sf.type || '').trim().toLowerCase();
+                    if (!st) continue;
+                    groups.set(`${field}\x00${st}`, (groups.get(`${field}\x00${st}`) || 0) + 1);
+                }
+                const best = [...groups.entries()].sort((a, b) => b[1] - a[1])[0];
+                if (best && best[1] === QUERY_SUGGESTION_THRESHOLD - 1) {
+                    const [field, sourceType] = best[0].split('\x00');
+                    const hint = new vscode.Diagnostic(
+                        new vscode.Range(0, 0, 0, 0),
+                        `Yamlink: ${best[1]} ${sourceType}s linked via "${field}" — add 1 more to unlock a view suggestion`,
+                        vscode.DiagnosticSeverity.Information
+                    );
+                    hint.source = 'yamlink';
+                    hint.code   = 'yamlink.nearSuggestion';
+                    diagnostics.push(hint);
                 }
             }
         }

@@ -14,6 +14,21 @@ function clearGraph() {
     inboundEdges.clear();
 }
 
+// Called during incremental update to remove a node's outbound edges
+// and clean up every inbound entry that pointed back to it.
+// Must be called BEFORE re-registering new edges for the same sourceId.
+function removeEdgesForSource(sourceId) {
+    const oldEdges = outboundEdges.get(sourceId) ?? [];
+    for (const { targetId } of oldEdges) {
+        const inbound = inboundEdges.get(targetId);
+        if (!inbound) continue;
+        const filtered = inbound.filter(e => e.sourceId !== sourceId);
+        if (filtered.length === 0) inboundEdges.delete(targetId);
+        else inboundEdges.set(targetId, filtered);
+    }
+    outboundEdges.delete(sourceId);
+}
+
 // Called once per node during index build
 function registerEdges(sourceId, edges) {
     if (!edges || edges.length === 0) return;
@@ -55,6 +70,7 @@ function getGraphStats() {
 module.exports = {
     clearGraph,
     registerEdges,
+    removeEdgesForSource,
     getEdges,
     getBacklinks,
     getGraphStats,

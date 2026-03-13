@@ -1,18 +1,24 @@
 const fs   = require('fs');
 const path = require('path');
-const { clearGraph, registerEdges, getGraphStats } = require('./graph');
-const { clearRegistry, registerType, getRegistryStats, getTypes } = require('../registries/typeRegistry');
+const { clearGraph, registerEdges, getGraphStats, removeEdgesForSource } = require('./graph');
+const { clearRegistry, registerType, unregisterType, getRegistryStats, getTypes } = require('../registries/typeRegistry');
+const { clearSchemaRegistry, registerSchemaNode } = require('../registries/schemaRegistry');
 
-let idIndex   = new Map();
-let pathIndex = new Map();
-let duplicateIds = new Map(); // id → [firstPath, ...conflictingPaths]
+let idIndex      = new Map();
+let pathIndex    = new Map();
+let duplicateIds = new Map();
+let fieldsCache  = new Map(); // id → parsed frontmatter fields
+let mtimeCache   = new Map(); // filePath → mtime (ms) — skip unchanged files on incremental update
 
 function buildIndex(workspaceFolders) {
     idIndex.clear();
     pathIndex.clear();
     duplicateIds.clear();
+    fieldsCache.clear();
+    mtimeCache.clear();  // must clear so updateSingleFile re-reads all files after a full rebuild
     clearGraph();
     clearRegistry();
+    clearSchemaRegistry();
 
     if (!workspaceFolders) return;
 
@@ -67,6 +73,10 @@ function indexFile(fullPath) {
         return;
     }
 
+    // Normalize Windows line endings once at the entry point.
+    // Every downstream function receives clean \n-only content.
+    content = content.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+
     const id = extractId(content);
     if (!id) return;
 
@@ -84,21 +94,43 @@ function indexFile(fullPath) {
     idIndex.set(id, fullPath);
     pathIndex.set(fullPath, id);
 
-    const edges = [
+    const rawEdges = [
         ...extractEdgesFromFrontmatter(content),
         ...extractBodyLinks(content)
     ];
+
+    // Deduplicate: same field + targetId pair should only produce one edge
+    const seen  = new Set();
+    const edges = [];
+    for (const edge of rawEdges) {
+        const key = `${edge.field}:${edge.targetId}`;
+        if (!seen.has(key)) {
+            seen.add(key);
+            edges.push(edge);
+        }
+    }
+
     registerEdges(id, edges);
 
     const fields = parseFrontmatter(content);
-    if (fields && fields.type) {
-        registerType(fields.type, id);
+    if (fields) {
+        fieldsCache.set(id, fields);
+
+        if (fields.type) {
+            registerType(fields.type, id);
+
+            if (fields.type.trim().toLowerCase() === 'schema') {
+                const firstDash    = content.indexOf('---');
+                const closingIndex = content.indexOf('---', firstDash + 3);
+                if (closingIndex !== -1) {
+                    const frontmatterText = content.slice(firstDash + 3, closingIndex);
+                    registerSchemaNode(id, frontmatterText);
+                }
+            }
+        }
     }
 }
 
-// ─────────────────────────────────────────────────────────────────
-// extractId — tolerates leading whitespace/BOM, strict allowlist
-// ─────────────────────────────────────────────────────────────────
 function extractId(content) {
     if (!/^\s*---/.test(content)) return null;
 
@@ -115,20 +147,10 @@ function extractId(content) {
 function extractIdFromFrontmatter(filePath) {
     let content;
     try { content = fs.readFileSync(filePath, 'utf8'); } catch (e) { return null; }
+    content = content.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
     return extractId(content);
 }
 
-// ─────────────────────────────────────────────────────────────────
-// extractEdgesFromFrontmatter
-//
-// Supports all YAML list formats:
-//   A) indented list:    "  - [[id]]"
-//   B) non-indented:     "- [[id]]"
-//   C) inline single:    "field: [[id]]"
-//   D) inline multi:     "field: [[id1]], [[id2]]"
-//
-// \s* before - makes indentation fully optional.
-// ─────────────────────────────────────────────────────────────────
 function extractEdgesFromFrontmatter(content) {
     const edges = [];
     if (!/^\s*---/.test(content)) return edges;
@@ -143,8 +165,7 @@ function extractEdgesFromFrontmatter(content) {
     let currentField = null;
 
     for (const line of lines) {
-        // Field declaration line: "field-name: value"
-        const fieldMatch = line.match(/^([\w-]+):\s*(.*)$/);
+        const fieldMatch = line.match(/^\s*([\w-]+):\s*(.*)$/);
         if (fieldMatch) {
             currentField      = fieldMatch[1].trim();
             const inlineValue = fieldMatch[2].trim();
@@ -154,7 +175,6 @@ function extractEdgesFromFrontmatter(content) {
                 continue;
             }
 
-            // Inline links on same line as field (Format C + D)
             if (inlineValue) {
                 const linkRegex = /\[\[([^\]]+)\]\]/g;
                 let m;
@@ -165,14 +185,12 @@ function extractEdgesFromFrontmatter(content) {
             continue;
         }
 
-        // List item — \s* makes leading indentation optional (Format A + B)
         const listMatch = line.match(/^\s*-\s+\[\[([^\]]+)\]\]/);
         if (listMatch && currentField) {
             edges.push({ field: currentField, targetId: listMatch[1].trim() });
             continue;
         }
 
-        // Non-indented, non-list line resets field context
         if (line.trim() && !line.match(/^\s/)) {
             currentField = null;
         }
@@ -181,17 +199,9 @@ function extractEdgesFromFrontmatter(content) {
     return edges;
 }
 
-// ─────────────────────────────────────────────────────────────────
-// extractBodyLinks
-//
-// Scans everything AFTER the frontmatter block for [[id]] patterns.
-// All body links are registered with field = 'body' so they show
-// up in the backlinks panel labeled as "body" — matching the README.
-// ─────────────────────────────────────────────────────────────────
 function extractBodyLinks(content) {
     const edges = [];
 
-    // Find where body starts
     let bodyStart = 0;
     if (/^\s*---/.test(content)) {
         const firstDash    = content.indexOf('---');
@@ -211,9 +221,6 @@ function extractBodyLinks(content) {
     return edges;
 }
 
-// ─────────────────────────────────────────────────────────────────
-// parseFrontmatter — flat key→value for hover + type registry
-// ─────────────────────────────────────────────────────────────────
 function parseFrontmatter(content) {
     if (!/^\s*---/.test(content)) return null;
 
@@ -222,24 +229,154 @@ function parseFrontmatter(content) {
     if (closingIndex === -1) return null;
 
     const frontmatter = content.slice(firstDash + 3, closingIndex);
-    const result = {};
+    const result      = {};
+    let currentKey    = null;
+    let listItems     = [];
+
+    const flushList = () => {
+        if (currentKey && listItems.length > 0) {
+            result[currentKey] = listItems.join(', ');
+            listItems = [];
+        }
+    };
 
     for (const line of frontmatter.split('\n')) {
-        const match = line.match(/^\s*([\w-]+):\s*(.+?)\s*$/);
-        if (match) result[match[1]] = match[2];
+        // List item under current key
+        const listMatch = line.match(/^\s+-\s+(.+?)\s*$/);
+        if (listMatch && currentKey) {
+            listItems.push(listMatch[1]);
+            continue;
+        }
+
+        // New field
+        const fieldMatch = line.match(/^\s*([\w-]+):\s*(.+?)\s*$/);
+        if (fieldMatch) {
+            flushList();
+            currentKey         = fieldMatch[1];
+            result[currentKey] = fieldMatch[2];
+            listItems          = [];
+            continue;
+        }
+
+        // Field with no inline value (list follows on next lines)
+        const keyOnly = line.match(/^\s*([\w-]+):\s*$/);
+        if (keyOnly) {
+            flushList();
+            currentKey = keyOnly[1];
+            listItems  = [];
+            continue;
+        }
     }
+
+    flushList(); // flush any trailing list
     return result;
+}
+
+// ─────────────────────────────────────────────────────────────────
+// Tiny LRU cache for parseFrontmatter results.
+// Max 200 entries; oldest evicted on overflow via Map insertion order.
+// ─────────────────────────────────────────────────────────────────
+const PARSE_CACHE_MAX = 200;
+const parseCache      = new Map();
+
+function hashContent(str) {
+    let h = 5381;
+    for (let i = 0; i < str.length; i++) {
+        h = ((h << 5) + h) ^ str.charCodeAt(i);
+        h = h >>> 0;
+    }
+    return h;
+}
+
+function parseFrontmatterCached(content) {
+    const key    = hashContent(content);
+    const cached = parseCache.get(key);
+    if (cached !== undefined) return cached;
+    const result = parseFrontmatter(content);
+    if (parseCache.size >= PARSE_CACHE_MAX) {
+        parseCache.delete(parseCache.keys().next().value);
+    }
+    parseCache.set(key, result);
+    return result;
+}
+
+// ─────────────────────────────────────────────────────────────────
+// updateSingleFile — incremental index update
+//
+// Returns { changed: boolean, needsFull: boolean }
+//   changed   — false: nothing changed, callers can skip UI refresh
+//   needsFull — true: caller must run buildIndex() (ID change, schema)
+// ─────────────────────────────────────────────────────────────────
+function updateSingleFile(filePath) {
+    const NO_CHANGE   = { changed: false, needsFull: false };
+    const NEEDS_FULL  = { changed: true,  needsFull: true  };
+    const INCREMENTAL = { changed: true,  needsFull: false };
+
+    if (!filePath.endsWith('.md')) return NO_CHANGE;
+    if (filePath.includes(`${path.sep}_templates${path.sep}`)) return NO_CHANGE;
+
+    try {
+        const mtime = fs.statSync(filePath).mtimeMs;
+        if (mtimeCache.get(filePath) === mtime) return NO_CHANGE;
+        mtimeCache.set(filePath, mtime);
+    } catch (e) { return NEEDS_FULL; }
+
+    let newContent;
+    try {
+        newContent = fs.readFileSync(filePath, 'utf8');
+        newContent = newContent.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+    } catch (e) { return NEEDS_FULL; }
+
+    const oldId = pathIndex.get(filePath) ?? null;
+    const newId = extractId(newContent);
+
+    if (oldId !== newId) return NEEDS_FULL;
+    if (!newId)          return NO_CHANGE;
+
+    const oldFields = fieldsCache.get(newId) || {};
+    const oldType   = oldFields.type ? oldFields.type.trim().toLowerCase() : null;
+    const newFields = parseFrontmatterCached(newContent);
+    const newType   = newFields && newFields.type ? newFields.type.trim().toLowerCase() : null;
+
+    if (oldType === 'schema' || newType === 'schema') return NEEDS_FULL;
+
+    removeEdgesForSource(newId);
+
+    const rawEdges = [
+        ...extractEdgesFromFrontmatter(newContent),
+        ...extractBodyLinks(newContent)
+    ];
+    const seen  = new Set();
+    const edges = [];
+    for (const edge of rawEdges) {
+        const key = `${edge.field}:${edge.targetId}`;
+        if (!seen.has(key)) { seen.add(key); edges.push(edge); }
+    }
+    if (edges.length > 0) registerEdges(newId, edges);
+
+    if (newFields) fieldsCache.set(newId, newFields);
+    else           fieldsCache.delete(newId);
+
+    if (oldType !== newType) {
+        if (oldType) unregisterType(oldType, newId);
+        if (newType) registerType(newType, newId);
+    }
+
+    return INCREMENTAL;
 }
 
 function getIndex()        { return idIndex; }
 function getPathIndex()    { return pathIndex; }
 function getDuplicateIds() { return duplicateIds; }
+function getFieldsCache()  { return fieldsCache; }
 
 module.exports = {
     buildIndex,
+    updateSingleFile,
     getIndex,
     getPathIndex,
     getDuplicateIds,
+    getFieldsCache,
     extractIdFromFrontmatter,
     extractEdgesFromFrontmatter,
     parseFrontmatter

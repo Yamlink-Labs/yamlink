@@ -7,7 +7,7 @@ const PREVIEW_THRESHOLD = 5;
 
 let isPropagating = false;
 
-function registerRename(context, getIndex, getPathIndex, buildIndex, validateAll) {
+function registerRename(context, getIndex, getPathIndex, buildIndex, validateAll, onComplete) {
     context.subscriptions.push(
         vscode.workspace.onDidSaveTextDocument(async (document) => {
             if (document.languageId !== 'markdown') {
@@ -47,12 +47,12 @@ function registerRename(context, getIndex, getPathIndex, buildIndex, validateAll
             if (oldId === newId) return;
 
             console.log(`Yamlink — Identity mutation: "${oldId}" → "${newId}"`);
-            await handleIdentityMutation(oldId, newId, buildIndex, validateAll, getIndex);
+            await handleIdentityMutation(oldId, newId, buildIndex, validateAll, getIndex, onComplete);
         })
     );
 }
 
-async function handleIdentityMutation(oldId, newId, buildIndex, validateAll, getIndex) {
+async function handleIdentityMutation(oldId, newId, buildIndex, validateAll, getIndex, onComplete) {
     if (!vscode.workspace.workspaceFolders) return;
 
     const root = vscode.workspace.workspaceFolders[0].uri.fsPath;
@@ -90,6 +90,7 @@ async function handleIdentityMutation(oldId, newId, buildIndex, validateAll, get
             await applyWithGuard(edit);
             buildIndex(vscode.workspace.workspaceFolders);
             validateAll(getIndex);
+            if (typeof onComplete === 'function') onComplete();
             vscode.window.showInformationMessage(
                 `Yamlink: Updated ${affected.length} file(s).`
             );
@@ -97,6 +98,7 @@ async function handleIdentityMutation(oldId, newId, buildIndex, validateAll, get
             await revertId(newId, oldId);
             buildIndex(vscode.workspace.workspaceFolders);
             validateAll(getIndex);
+            if (typeof onComplete === 'function') onComplete();
         }
 
     } else {
@@ -112,10 +114,12 @@ async function handleIdentityMutation(oldId, newId, buildIndex, validateAll, get
             await applyWithGuard(edit, { isRefactoring: true });
             buildIndex(vscode.workspace.workspaceFolders);
             validateAll(getIndex);
+            if (typeof onComplete === 'function') onComplete();
         } else if (choice === 'Apply Directly') {
             await applyWithGuard(edit);
             buildIndex(vscode.workspace.workspaceFolders);
             validateAll(getIndex);
+            if (typeof onComplete === 'function') onComplete();
             vscode.window.showInformationMessage(
                 `Yamlink: Updated ${affected.length} file(s).`
             );
@@ -123,6 +127,7 @@ async function handleIdentityMutation(oldId, newId, buildIndex, validateAll, get
             await revertId(newId, oldId);
             buildIndex(vscode.workspace.workspaceFolders);
             validateAll(getIndex);
+            if (typeof onComplete === 'function') onComplete();
         }
     }
 }
@@ -131,11 +136,6 @@ async function applyWithGuard(edit, options = {}) {
     isPropagating = true;
     try {
         await vscode.workspace.applyEdit(edit, options);
-        // Flush edits to disk immediately. buildIndex reads from disk,
-        // not from VS Code's in-memory buffers. Without this, a second
-        // rename scans disk, finds the old content, and silently no-ops.
-        // isPropagating is still true here so the save handler won't
-        // re-trigger rename detection for these files.
         await vscode.workspace.saveAll(false);
     } finally {
         await new Promise(resolve => setTimeout(resolve, 300));
@@ -260,25 +260,9 @@ async function revertId(currentId, targetId) {
     }
 }
 
-// ─────────────────────────────────────────────────────────────────
-// extractIdFromDocument
-//
-// Reads id: from live document text — not from disk, not from index.
-//
-// Two fixes applied here:
-//   1. Frontmatter detection uses regex /^\s*---/ instead of
-//      startsWith('---') — tolerates BOM and leading whitespace.
-//   2. ID regex uses strict allowlist [a-zA-Z0-9_-] — identical
-//      to extractId() in index.js. Loose matching previously
-//      allowed garbage values like "type:" as valid IDs.
-//
-// Invariant: this regex must always match index.js exactly.
-// If one changes, both must change.
-// ─────────────────────────────────────────────────────────────────
 function extractIdFromDocument(document) {
     const text = document.getText();
 
-    // Fix 1: tolerate leading whitespace / BOM
     if (!/^\s*---/.test(text)) return null;
 
     const closingIndex = text.indexOf('---', 3);
@@ -286,7 +270,6 @@ function extractIdFromDocument(document) {
 
     const frontmatter = text.slice(3, closingIndex);
 
-    // Fix 2: strict allowlist — identical to index.js
     const match = frontmatter.match(/^\s*id:\s*([a-zA-Z0-9_-]+)\s*$/m);
     return match ? match[1].trim() : null;
 }

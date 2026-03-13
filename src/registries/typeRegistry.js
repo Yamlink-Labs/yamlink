@@ -27,6 +27,17 @@ function registerType(typeValue, sourceId) {
     typeMap.get(normalized).add(sourceId);
 }
 
+// Called during incremental update when a node's type: field changes.
+// Removes sourceId from its old type bucket; deletes the bucket if empty.
+function unregisterType(typeValue, sourceId) {
+    if (!typeValue || !sourceId) return;
+    const normalized = typeValue.trim().toLowerCase();
+    const entry = typeMap.get(normalized);
+    if (!entry) return;
+    entry.delete(sourceId);
+    if (entry.size === 0) typeMap.delete(normalized);
+}
+
 // Full registry — type → Set of sourceIds
 function getRegistry() {
     return typeMap;
@@ -66,6 +77,7 @@ function getRegistryStats() {
 module.exports = {
     clearRegistry,
     registerType,
+    unregisterType,
     getRegistry,
     getTypes,
     isKnownType,

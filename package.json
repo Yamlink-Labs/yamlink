@@ -2,7 +2,7 @@
   "name": "yamlink",
   "displayName": "Yamlink",
   "description": "Turn Markdown into a structured knowledge system. Canonical IDs, vault-wide linking, backlinks, and real-time diagnostics for YAML-based knowledge graphs.",
-  "version": "0.1.6",
+  "version": "0.2.0",
   "publisher": "yamlink",
   "author": {
     "name": "Javier Ramirez"
@@ -40,10 +40,11 @@
     "Other",
     "Data Science"
   ],
-  "icon": "icon.png",
+  "icon": "media/icon.png",
   "activationEvents": [
     "onLanguage:markdown",
-    "onView:yamlink.backlinks"
+    "onView:yamlink.backlinks",
+    "onStartupFinished"
   ],
   "main": "./extension.js",
   "contributes": {
@@ -53,14 +54,57 @@
         "title": "Yamlink: Create Node"
       },
       {
+        "command": "yamlink.newNodeFromTemplate",
+        "title": "Yamlink: New Node from Template"
+      },
+      {
+        "command": "yamlink.openHealthPanel",
+        "title": "Yamlink: Open Vault Health"
+      },
+      {
         "command": "yamlink.addFrontmatter",
         "title": "Yamlink: Add Frontmatter"
+      },
+      {
+        "command": "yamlink.linkOrphan",
+        "title": "Yamlink: Link this node to another\u2026"
+      },
+      {
+        "command": "yamlink.runViewFromLens",
+        "title": "Run View",
+        "category": "Yamlink"
+      },
+      {
+        "command": "yamlink.openView",
+        "title": "Open View",
+        "category": "Yamlink"
+      },
+      {
+        "command": "yamlink.openHub",
+        "title": "Yamlink: Open Entity Hub"
+      },
+      {
+        "command": "yamlink.runViews",
+        "title": "Yamlink: Run Views in Current File"
+      },
+      {
+        "command": "yamlink.insertViewBlock",
+        "title": "Yamlink: Insert View Block",
+        "category": "Yamlink"
       }
     ],
     "menus": {
       "commandPalette": [
         {
           "command": "yamlink.addFrontmatter",
+          "when": "false"
+        },
+        {
+          "command": "yamlink.linkOrphan",
+          "when": "false"
+        },
+        {
+          "command": "yamlink.insertViewBlock",
           "when": "false"
         }
       ]
