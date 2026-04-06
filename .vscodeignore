@@ -3,7 +3,6 @@
 .vscode/**
 .vscode-test/**
 .claude/**
-node_modules/**
 test/**
 media/legacy/**
 **/*.map

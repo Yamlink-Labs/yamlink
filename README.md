@@ -3,7 +3,7 @@
 Structured knowledge for Markdown, inside VS Code.
 
 [![VS Code Marketplace](https://img.shields.io/visual-studio-marketplace/v/yamlink.yamlink?label=Marketplace)](https://marketplace.visualstudio.com/items?itemName=yamlink.yamlink)
-![Version](https://img.shields.io/badge/version-0.3.0--Ace-blue)
+![Version](https://img.shields.io/badge/version-0.3.1--Ace-blue)
 ![License](https://img.shields.io/badge/license-MIT-green)
 ![VS Code](https://img.shields.io/badge/VS%20Code-%5E1.85.0-blueviolet)
 

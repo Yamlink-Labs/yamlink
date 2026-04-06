@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.3.1] - "Ace" - 2026-04-06
+
+Hotfix release for the initial Ace publish.
+
+### Fixed
+
+- VSIX packaging now includes runtime dependencies again
+- Yamlink commands, Note Report, Calendar, Vault Health, Run Views, and Graph can activate correctly in the Marketplace build
+
+---
+
 ## [Unreleased] - 0.4.0 "Carmen"
 
 The focus after Ace is not feature sprawl. Carmen is the scale, polish, and hardening release.
