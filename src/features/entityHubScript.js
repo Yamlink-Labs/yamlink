@@ -32,6 +32,18 @@
             return;
         }
 
+        var suggestion = e.target.closest('[data-insert-view]');
+        if (suggestion) {
+            vscode.postMessage({
+                command: 'insertView',
+                queryText: suggestion.dataset.insertView,
+                sourceType: suggestion.dataset.sourceType,
+                field: suggestion.dataset.fieldName,
+                id: suggestion.dataset.nodeId
+            });
+            return;
+        }
+
         // Section header → toggle collapse
         var sectionHeader = e.target.closest('.hub-section-header');
         if (sectionHeader) {

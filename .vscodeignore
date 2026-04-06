@@ -2,7 +2,15 @@
 .gitignore
 .vscode/**
 .vscode-test/**
+.claude/**
 node_modules/**
+test/**
+media/legacy/**
 **/*.map
 **/*.ts
 README-draft.md
+PROJECT_LOG.md
+ROADMAP.md
+CLAUDE.md
+.DS_Store
+Thumbs.db

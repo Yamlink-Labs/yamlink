@@ -4,6 +4,7 @@ const { hasSchema, getSchema, getDuplicateSchemas } = require('../registries/sch
 const { getDuplicateIds, getFieldsCache } = require('../core/index');
 const { getBacklinks } = require('../core/graph');
 const { computeSuggestionsForNode, QUERY_SUGGESTION_THRESHOLD } = require('../engine/suggestions');
+const { extractCanonicalIdFromFrontmatter } = require('../core/id');
 
 
 const MIN_VAULT_SIZE_FOR_TYPE_ADVISORY = 10;
@@ -105,9 +106,8 @@ function validateDocument(document, getIndex) {
     // Diagnostic 1b: Duplicate id
     // ─────────────────────────────────────────────
     if (hasFrontmatter && hasId) {
-        const idMatch = text.match(/^\s*id:\s*([a-zA-Z0-9_-]+)\s*$/m);
-        if (idMatch) {
-            const thisId     = idMatch[1].trim();
+        const thisId = extractCanonicalIdFromFrontmatter(text);
+        if (thisId) {
             const duplicates = getDuplicateIds();
             if (duplicates.has(thisId)) {
                 const idLineIndex = text
@@ -145,7 +145,7 @@ function validateDocument(document, getIndex) {
     let match;
 
     while ((match = linkRegex.exec(text)) !== null) {
-        const id              = match[1].trim();
+        const id              = match[1].trim().split('|')[0].trim();
         const isInFrontmatter = frontmatterEnd > 0 && match.index < frontmatterEnd;
 
         if (!idIndex.has(id)) {
@@ -243,13 +243,26 @@ function validateDocument(document, getIndex) {
     }
 
     // ─────────────────────────────────────────────
-    // Diagnostic 5: Duplicate schema
+    // Diagnostic 5: Duplicate schema / malformed schema
     // ─────────────────────────────────────────────
     if (hasFrontmatter && hasId) {
         const isSchemaNode = /^\s*type:\s*schema\s*$/im.test(text);
         if (isSchemaNode) {
             const targetMatch = text.match(/^\s*target:\s*(.+?)\s*$/m);
-            if (targetMatch) {
+            if (!targetMatch) {
+                const typeLine = text.split('\n').findIndex(l => /^\s*type:\s*schema\s*$/i.test(l));
+                const range = typeLine !== -1
+                    ? document.lineAt(typeLine).range
+                    : new vscode.Range(new vscode.Position(0, 0), new vscode.Position(0, 0));
+                const diagnostic = new vscode.Diagnostic(
+                    range,
+                    `Yamlink: Schema node is missing a "target:" field — add "target: <type>" to define which type this schema applies to.`,
+                    vscode.DiagnosticSeverity.Warning
+                );
+                diagnostic.source = 'yamlink';
+                diagnostic.code   = 'yamlink.malformedSchema';
+                diagnostics.push(diagnostic);
+            } else {
                 const targetType = targetMatch[1].trim().toLowerCase();
                 const dupSchemas = getDuplicateSchemas();
                 if (dupSchemas.has(targetType)) {
@@ -285,9 +298,8 @@ function validateDocument(document, getIndex) {
     // so the lightbulb is visible wherever the cursor rests in the header.
     // ─────────────────────────────────────────────
     if (hasFrontmatter && hasId) {
-        const idMatch = text.match(/^\s*id:\s*([a-zA-Z0-9_-]+)\s*$/m);
-        if (idMatch) {
-            const thisId      = idMatch[1].trim();
+        const thisId = extractCanonicalIdFromFrontmatter(text);
+        if (thisId) {
             const suggestions = computeSuggestionsForNode(thisId, text);
             const fullRange   = new vscode.Range(
                 new vscode.Position(0, 0),
@@ -326,7 +338,7 @@ function validateDocument(document, getIndex) {
                     const [field, sourceType] = best[0].split('\x00');
                     const hint = new vscode.Diagnostic(
                         new vscode.Range(0, 0, 0, 0),
-                        `Yamlink: ${best[1]} ${sourceType}s linked via "${field}" — add 1 more to unlock a view suggestion`,
+                        `Yamlink: ${best[1]} ${best[1] === 1 ? sourceType : sourceType + 's'} linked via "${field}" — add 1 more to unlock a view suggestion`,
                         vscode.DiagnosticSeverity.Information
                     );
                     hint.source = 'yamlink';

@@ -1,6 +1,10 @@
 const fs   = require('fs');
 const path = require('path');
+const yaml = require('js-yaml');
 const { clearGraph, registerEdges, getGraphStats, removeEdgesForSource } = require('./graph');
+const { getWorkspaceRoots } = require('./workspace');
+const { normaliseDateInput } = require('./date');
+const { extractCanonicalIdFromFrontmatter } = require('./id');
 const { clearRegistry, registerType, unregisterType, getRegistryStats, getTypes } = require('../registries/typeRegistry');
 const { clearSchemaRegistry, registerSchemaNode } = require('../registries/schemaRegistry');
 
@@ -22,8 +26,8 @@ function buildIndex(workspaceFolders) {
 
     if (!workspaceFolders) return;
 
-    const root = workspaceFolders[0].uri.fsPath;
-    scanDirectory(root);
+    const roots = getWorkspaceRoots(workspaceFolders);
+    for (const root of roots) scanDirectory(root);
 
     const graphStats    = getGraphStats();
     const registryStats = getRegistryStats();
@@ -132,16 +136,7 @@ function indexFile(fullPath) {
 }
 
 function extractId(content) {
-    if (!/^\s*---/.test(content)) return null;
-
-    const firstDash    = content.indexOf('---');
-    const closingIndex = content.indexOf('---', firstDash + 3);
-    if (closingIndex === -1) return null;
-
-    const frontmatter = content.slice(firstDash + 3, closingIndex);
-    const match = frontmatter.match(/^\s*id:\s*([a-zA-Z0-9_-]+)\s*$/m);
-
-    return match ? match[1].trim() : null;
+    return extractCanonicalIdFromFrontmatter(content);
 }
 
 function extractIdFromFrontmatter(filePath) {
@@ -179,7 +174,7 @@ function extractEdgesFromFrontmatter(content) {
                 const linkRegex = /\[\[([^\]]+)\]\]/g;
                 let m;
                 while ((m = linkRegex.exec(inlineValue)) !== null) {
-                    edges.push({ field: currentField, targetId: m[1].trim() });
+                    edges.push({ field: currentField, targetId: m[1].trim().split('|')[0].trim() });
                 }
             }
             continue;
@@ -187,7 +182,7 @@ function extractEdgesFromFrontmatter(content) {
 
         const listMatch = line.match(/^\s*-\s+\[\[([^\]]+)\]\]/);
         if (listMatch && currentField) {
-            edges.push({ field: currentField, targetId: listMatch[1].trim() });
+            edges.push({ field: currentField, targetId: listMatch[1].trim().split('|')[0].trim() });
             continue;
         }
 
@@ -214,62 +209,69 @@ function extractBodyLinks(content) {
     let match;
 
     while ((match = linkRegex.exec(body)) !== null) {
-        const targetId = match[1].trim();
+        const targetId = match[1].trim().split('|')[0].trim();
         if (targetId) edges.push({ field: 'body', targetId });
     }
 
     return edges;
 }
 
+// ─────────────────────────────────────────────────────────────────
+// parseFrontmatter
+//
+// Parses YAML frontmatter using js-yaml (already a project dependency).
+// Falls back gracefully on any parse error — returns null rather than
+// crashing, so a single malformed file never breaks the whole index.
+//
+// Normalisation:
+//   - BOM stripped before parsing
+//   - Array values joined to comma-separated string so the rest of
+//     the codebase receives plain strings (wikilinks stay intact)
+//   - null/undefined values become empty string
+//   - numbers and booleans converted to string
+// ─────────────────────────────────────────────────────────────────
 function parseFrontmatter(content) {
+    if (content.charCodeAt(0) === 0xFEFF) content = content.slice(1); // strip BOM
+
     if (!/^\s*---/.test(content)) return null;
 
     const firstDash    = content.indexOf('---');
     const closingIndex = content.indexOf('---', firstDash + 3);
     if (closingIndex === -1) return null;
 
-    const frontmatter = content.slice(firstDash + 3, closingIndex);
-    const result      = {};
-    let currentKey    = null;
-    let listItems     = [];
+    const fmText = content.slice(firstDash + 3, closingIndex);
 
-    const flushList = () => {
-        if (currentKey && listItems.length > 0) {
-            result[currentKey] = listItems.join(', ');
-            listItems = [];
-        }
-    };
-
-    for (const line of frontmatter.split('\n')) {
-        // List item under current key
-        const listMatch = line.match(/^\s+-\s+(.+?)\s*$/);
-        if (listMatch && currentKey) {
-            listItems.push(listMatch[1]);
-            continue;
-        }
-
-        // New field
-        const fieldMatch = line.match(/^\s*([\w-]+):\s*(.+?)\s*$/);
-        if (fieldMatch) {
-            flushList();
-            currentKey         = fieldMatch[1];
-            result[currentKey] = fieldMatch[2];
-            listItems          = [];
-            continue;
-        }
-
-        // Field with no inline value (list follows on next lines)
-        const keyOnly = line.match(/^\s*([\w-]+):\s*$/);
-        if (keyOnly) {
-            flushList();
-            currentKey = keyOnly[1];
-            listItems  = [];
-            continue;
-        }
+    let parsed;
+    try {
+        parsed = yaml.load(fmText);
+    } catch (e) {
+        console.warn('Yamlink — Malformed frontmatter (file skipped):', e.message);
+        return null;
     }
 
-    flushList(); // flush any trailing list
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return null;
+
+    const result = {};
+    for (const [key, val] of Object.entries(parsed)) {
+        if (val === null || val === undefined) {
+            result[key] = '';
+        } else if (val instanceof Date) {
+            result[key] = normaliseDateInput(val.toISOString().slice(0, 10)) || val.toISOString().slice(0, 10);
+        } else if (Array.isArray(val)) {
+            result[key] = val.map(v => stringifyFrontmatterValue(v)).join(', ');
+        } else {
+            result[key] = stringifyFrontmatterValue(val);
+        }
+    }
     return result;
+}
+
+function stringifyFrontmatterValue(value) {
+    if (value === null || value === undefined) return '';
+    if (value instanceof Date) {
+        return normaliseDateInput(value.toISOString().slice(0, 10)) || value.toISOString().slice(0, 10);
+    }
+    return String(value);
 }
 
 // ─────────────────────────────────────────────────────────────────
@@ -307,17 +309,18 @@ function parseFrontmatterCached(content) {
 //   changed   — false: nothing changed, callers can skip UI refresh
 //   needsFull — true: caller must run buildIndex() (ID change, schema)
 // ─────────────────────────────────────────────────────────────────
-function updateSingleFile(filePath) {
+function updateSingleFile(filePath, options = {}) {
     const NO_CHANGE   = { changed: false, needsFull: false };
     const NEEDS_FULL  = { changed: true,  needsFull: true  };
     const INCREMENTAL = { changed: true,  needsFull: false };
+    const force = !!options.force;
 
     if (!filePath.endsWith('.md')) return NO_CHANGE;
     if (filePath.includes(`${path.sep}_templates${path.sep}`)) return NO_CHANGE;
 
     try {
         const mtime = fs.statSync(filePath).mtimeMs;
-        if (mtimeCache.get(filePath) === mtime) return NO_CHANGE;
+        if (!force && mtimeCache.get(filePath) === mtime) return NO_CHANGE;
         mtimeCache.set(filePath, mtime);
     } catch (e) { return NEEDS_FULL; }
 
@@ -365,18 +368,49 @@ function updateSingleFile(filePath) {
     return INCREMENTAL;
 }
 
+// ─────────────────────────────────────────────────────────────────
+// removeFileFromIndex — incremental delete
+//
+// Called when a single .md file is deleted. Removes it from all
+// indexes without a full rebuild. Returns true if the file was
+// known to the index, false if it was never indexed (no-op).
+// ─────────────────────────────────────────────────────────────────
+function removeFileFromIndex(filePath) {
+    const id = pathIndex.get(filePath);
+    if (!id) return false;
+
+    idIndex.delete(id);
+    pathIndex.delete(filePath);
+    duplicateIds.delete(id);
+    mtimeCache.delete(filePath);
+    removeEdgesForSource(id);
+    const deletedFields = fieldsCache.get(id);
+    const deletedType   = deletedFields && deletedFields.type ? deletedFields.type.trim().toLowerCase() : null;
+    if (deletedType) unregisterType(deletedType, id);
+    fieldsCache.delete(id);
+
+    return true;
+}
+
 function getIndex()        { return idIndex; }
 function getPathIndex()    { return pathIndex; }
 function getDuplicateIds() { return duplicateIds; }
 function getFieldsCache()  { return fieldsCache; }
+function invalidateFileCache(filePath) {
+    if (!filePath) return;
+    mtimeCache.delete(filePath);
+}
 
 module.exports = {
     buildIndex,
     updateSingleFile,
+    invalidateFileCache,
+    removeFileFromIndex,
     getIndex,
     getPathIndex,
     getDuplicateIds,
     getFieldsCache,
+    getGraphStats,
     extractIdFromFrontmatter,
     extractEdgesFromFrontmatter,
     parseFrontmatter

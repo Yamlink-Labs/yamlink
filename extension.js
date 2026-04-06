@@ -1,19 +1,27 @@
 const vscode = require('vscode');
 const fs     = require('fs');
 const path   = require('path');
-const { buildIndex, updateSingleFile, getIndex, getPathIndex, getFieldsCache, parseFrontmatter } = require('./src/core/index');
-const { isOrphan, getBacklinks, getEdges } = require('./src/core/graph');
+const { buildIndex, updateSingleFile, removeFileFromIndex, getIndex, getPathIndex, getFieldsCache, getGraphStats, parseFrontmatter } = require('./src/core/index');
+const { isOrphan, getEdges } = require('./src/core/graph');
+const { getPrimaryWorkspaceRoot } = require('./src/core/workspace');
 const { registerDefinition } = require('./src/features/definition');
 const { registerCompletion } = require('./src/features/completion');
-const { registerHover } = require('./src/features/hover');
+const { registerViewLightbulb } = require('./src/features/viewLightbulb');
+const { registerHover, registerQueryPreviewHover } = require('./src/features/hover');
 const { registerDiagnostics, validateAll, validateDocument, getBrokenCount, clearAll } = require('./src/diagnostics/diagnostics');
 const { registerCodeActions } = require('./src/actions/codeActions');
 const { registerRename } = require('./src/core/rename');
-const { registerBacklinks } = require('./src/features/backlinks');
 const { registerDecorations } = require('./src/features/decorations');
+const { parseFrontmatterDocument } = require('./src/core/frontmatter');
+const { buildNoteExportModel, exportNotePdf } = require('./src/export/pdf');
 const { openHealthPanel, updatePanel } = require('./src/features/healthPanel');
-const { openViewPanel, refreshViewPanel } = require('./src/features/viewPanel');
-const { syncEntityHub, refreshEntityHub } = require('./src/features/entityHub');
+const { openViewPanel, refreshViewPanel, closeViewPanel, getOpenViewDocumentPath, setViewPanelStateListener } = require('./src/features/viewPanel');
+const { registerViewCodeLens } = require('./src/features/viewCodeLens');
+const { openCalendarPanel, refreshCalendarPanel, registerCalendarView, focusCalendarView } = require('./src/features/calendarPanel');
+const { openGraphPanel, refreshGraphPanel, parseGraphBlocks } = require('./src/features/graphPanel');
+const { syncEntityHub, refreshEntityHub, registerEntityHubView, focusEntityHub } = require('./src/features/entityHub');
+const { registerActiveViewRuntime } = require('./src/runtime/activeViewRuntime');
+const { createRefreshRouter } = require('./src/runtime/refreshRouter');
 
 // ─────────────────────────────────────────────────────────────────
 // First-run setup
@@ -32,7 +40,8 @@ async function runFirstTimeSetup(context) {
 
     if (!vscode.workspace.workspaceFolders) return;
 
-    const workspaceRoot = vscode.workspace.workspaceFolders[0].uri.fsPath;
+    const workspaceRoot = getPrimaryWorkspaceRoot(vscode.workspace.workspaceFolders);
+    if (!workspaceRoot) return;
     const sampleSrcDir  = path.join(context.extensionPath, 'sample');
 
     if (!fs.existsSync(sampleSrcDir)) {
@@ -87,8 +96,7 @@ async function activate(context) {
 // Status bar — three items, each with one permanent purpose.
 //
 //  vaultBar   (left, 100) — always: node count + broken count → Health Panel
-//  nodeBar    (left, 99)  — when on a node: type + backlinks   → Entity Hub
-//  runViewsBar(left, 98)  — when file has !view blocks         → Run views
+//  actionBar  (left, 98)  — contextual action like Run views / Calendar / Run graph
 //
 // Commands NEVER change. Only text and visibility change.
 // ─────────────────────────────────────────────────────────────────
@@ -99,20 +107,9 @@ async function activate(context) {
     vaultBar.command = 'yamlink.openHealthPanel';
     context.subscriptions.push(vaultBar);
 
-    // Node info — visible only when active file is an indexed node
-    const nodeBar = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 99);
-    nodeBar.name    = 'Yamlink Node';
-    nodeBar.command = 'yamlink.openHub';
-    nodeBar.tooltip = 'Yamlink — Click to open Entity Hub';
-    context.subscriptions.push(nodeBar);
-
-    // Run views — visible only when active file has !view blocks
-    const runViewsBar = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 98);
-    runViewsBar.name    = 'Yamlink Run Views';
-    runViewsBar.command = 'yamlink.runViews';
-    runViewsBar.text    = '$(play) Run views';
-    runViewsBar.tooltip = 'Yamlink — Run !view blocks in this file';
-    context.subscriptions.push(runViewsBar);
+    const actionBar = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 98);
+    actionBar.name = 'Yamlink Action';
+    context.subscriptions.push(actionBar);
 
     // Suggestion bar — shown on the RIGHT when the active node has view suggestions.
     // Yamlink-owned UI: never cursor-dependent, always visible, bypasses lightbulb.
@@ -139,38 +136,40 @@ async function activate(context) {
         }
         vaultBar.show();
 
-        // ── nodeBar — only when active file is an indexed node ───────────────
         const isMarkdown = editor && editor.document.languageId === 'markdown';
         const filePath   = isMarkdown ? editor.document.uri.fsPath : null;
         const id         = filePath ? getPathIndex().get(filePath) : null;
+        const orphan     = id ? isOrphan(id) : false;
 
-        if (id) {
-            const fields   = getFieldsCache().get(id) || {};
-            const type     = fields.type ? fields.type.trim() : null;
-            const orphan   = isOrphan(id);
-            const blCount  = getBacklinks(id).length;
+        const hasViews  = isMarkdown && editor.document.getText().includes('!view ');
+        const hasGraphs = isMarkdown && editor.document.getText().includes('yamlink-graph');
+        const hasTasks = isMarkdown && /^\s*[-*]\s+\[( |x|X)\]\s+/m.test(editor.document.getText());
 
-            let nodeText = type ? '$(symbol-class) ' + type : '$(symbol-file) node';
-            if (blCount > 0) nodeText += '  $(references) ' + blCount;
-            if (orphan)      nodeText += '  $(warning) orphan';
-
-            nodeBar.text            = nodeText;
-            nodeBar.backgroundColor = orphan
-                ? new vscode.ThemeColor('statusBarItem.warningBackground')
-                : undefined;
-            nodeBar.tooltip = blCount > 0
-                ? '"' + id + '" · ' + blCount + ' inbound link' + (blCount !== 1 ? 's' : '') + ' · Click to open Hub'
-                : orphan
-                    ? '"' + id + '" is an orphan node (no connections) · Click to open Hub'
-                    : '"' + id + '" · No inbound links yet';
-            nodeBar.show();
+        if (hasViews) {
+            actionBar.command = 'yamlink.runViews';
+            actionBar.text = '$(play) Run views';
+            actionBar.tooltip = 'Yamlink — Run !view blocks in this file';
+            actionBar.show();
+        } else if (hasTasks) {
+            actionBar.command = 'yamlink.openCalendar';
+            actionBar.text = '$(calendar) Calendar';
+            actionBar.tooltip = 'Yamlink — Open the task calendar';
+            actionBar.show();
+        } else if (id) {
+            actionBar.command = 'yamlink.openHub';
+            actionBar.text = orphan ? '$(warning) Note report' : '$(preview) Note report';
+            actionBar.tooltip = orphan
+                ? 'Yamlink — Open the note report for this orphan node'
+                : 'Yamlink — Open the note report for this node';
+            actionBar.show();
+        } else if (hasGraphs) {
+            actionBar.command = 'yamlink.runGraph';
+            actionBar.text = '$(type-hierarchy) Run graph';
+            actionBar.tooltip = 'Yamlink — Render yamlink-graph blocks in this file';
+            actionBar.show();
         } else {
-            nodeBar.hide();
+            actionBar.hide();
         }
-
-        // ── runViewsBar — only when file has !view blocks ────────────────────
-        const hasViews = isMarkdown && editor.document.getText().includes('!view ');
-        runViewsBar[hasViews ? 'show' : 'hide']();
 
     }
 
@@ -181,15 +180,36 @@ async function activate(context) {
     // registerDiagnostics MUST come before validateAll.
     registerDefinition(context, getIndex);
     registerCompletion(context, getIndex);
+    registerViewLightbulb(context);
     registerHover(context, getIndex);
+    registerQueryPreviewHover(context, getIndex);
     registerDiagnostics(context, getIndex);
     registerCodeActions(context, getIndex, buildIndex);
     registerRename(context, getIndex, getPathIndex, buildIndex, validateAll);
-    const backlinksProvider   = registerBacklinks(context);
+    registerEntityHubView(context);
+    registerCalendarView(context);
     const decorationsProvider = registerDecorations(context, getIndex);
+    const codeLensProvider = registerViewCodeLens(context, getOpenViewDocumentPath);
+    setViewPanelStateListener(() => codeLensProvider.refresh());
 
     validateAll(getIndex);
     updateStatusBar();
+
+    // ── Refresh router — single source of truth for coordinated refreshes ───
+    const router = createRefreshRouter({
+        clearDiagnostics:  clearAll,
+        validateAll:       () => validateAll(getIndex),
+        refreshBacklinks:  () => {},
+        refreshRelated:    () => {},
+        refreshDecorations:() => decorationsProvider.refresh(),
+        refreshStatusBar:  updateStatusBar,
+        refreshHealthPanel:updatePanel,
+        refreshViews:      refreshViewPanel,
+        refreshGraph:      refreshGraphPanel,
+        refreshEntityHub:  refreshEntityHub,
+        refreshCalendar:   refreshCalendarPanel,
+        refreshSuggestions:refreshSuggestionBar
+    });
 
     // Diagnostics fire an initial validation pass after 1500ms (graph warm-up).
     // Run updateStatusBar slightly after so the suggestion bar reflects that
@@ -229,17 +249,15 @@ async function activate(context) {
                 try {
                     buildIndex(vscode.workspace.workspaceFolders);
                     needsFullRebuild = false;
+                    const s = getGraphStats();
+                    vscode.window.setStatusBarMessage(
+                        `Yamlink indexed: ${getIndex().size} nodes · ${s.totalEdges} edges`,
+                        5000
+                    );
                 } catch (e) {
                     console.error('Yamlink — Background rebuild failed:', e.message);
                 }
-                clearAll();
-                validateAll(getIndex);
-                backlinksProvider.refresh();
-                decorationsProvider.refresh();
-                updateStatusBar();
-                updatePanel();
-                refreshViewPanel();
-                refreshEntityHub();
+                router.refreshForPassiveIndexSweep();
             });
         }, IDLE_DELAY_MS);
     }
@@ -248,28 +266,48 @@ async function activate(context) {
     function rebuildAll() {
         if (!vscode.workspace.workspaceFolders) return;
         buildIndex(vscode.workspace.workspaceFolders);
-        clearAll();
-        validateAll(getIndex);
-        backlinksProvider.refresh();
-        decorationsProvider.refresh();
-        updateStatusBar();
-        updatePanel();
-        refreshViewPanel();
-        refreshEntityHub();
+        router.refreshForPassiveIndexSweep();
+    }
+
+    function refreshAfterViewEdit() {
+        router.refresh({ full: true });
     }
 
     context.subscriptions.push(vscode.workspace.onDidRenameFiles(() => rebuildAll()));
 
-    // Delete/create of multiple files (e.g. git checkout, npm install) —
-    // set dirty flag and let the background timer handle it instead of
-    // hammering buildIndex() on every file in the batch.
+    // Delete — single file: incremental removal. Batch: defer to background timer.
     context.subscriptions.push(vscode.workspace.onDidDeleteFiles(e => {
-        if (e.files.length > 1) { needsFullRebuild = true; scheduleBackgroundRebuild(); }
-        else rebuildAll();
+        if (e.files.length > 1) {
+            needsFullRebuild = true;
+            scheduleBackgroundRebuild();
+            return;
+        }
+        const filePath = e.files[0].fsPath;
+        if (!filePath.endsWith('.md')) return;
+        const wasKnown = removeFileFromIndex(filePath);
+        if (wasKnown) {
+            router.refreshForPassiveIndexSweep();
+        }
     }));
+
+    // Create — single file: attempt incremental index. Batch: defer to background timer.
+    // updateSingleFile handles new files correctly as long as they have valid frontmatter.
+    // If the file has no id: yet (freshly created, still empty) it's a no-op — the save
+    // handler will pick it up once the user adds frontmatter and saves.
     context.subscriptions.push(vscode.workspace.onDidCreateFiles(e => {
-        if (e.files.length > 1) { needsFullRebuild = true; scheduleBackgroundRebuild(); }
-        else rebuildAll();
+        if (e.files.length > 1) {
+            needsFullRebuild = true;
+            scheduleBackgroundRebuild();
+            return;
+        }
+        const filePath = e.files[0].fsPath;
+        if (!filePath.endsWith('.md')) return;
+        const result = updateSingleFile(filePath);
+        if (result.needsFull) {
+            rebuildAll();
+        } else if (result.changed) {
+            router.refreshForIndexMutation(result);
+        }
     }));
 
     // Smart save handler
@@ -289,18 +327,13 @@ async function activate(context) {
                 }
             }
 
-            // Always re-validate diagnostics — querySuggestion hints depend on
-            // backlink counts that change when a neighbour is saved, not just
-            // when this file changes.
-            clearAll();
-            validateAll(getIndex);
-
+            // Re-validate diagnostics only when the index actually changed.
+            // Skipping on unchanged saves avoids redundant work on every keystroke+save.
+            // Exception: non-markdown files (e.g. settings) still clear stale markers.
             // Re-validate open documents that the saved file points TO via backlinks.
             // When contact3.md gains "account: [[acme]]", acme.md is the node whose
             // backlink count just crossed the suggestion threshold — not contact3.md.
             // We walk the outbound edges of the saved file and re-validate each target.
-            // validateAll() above already covered open docs; this ensures targets that
-            // are open but may have been missed get a second pass with fresh graph data.
             if (filePath.endsWith('.md')) {
                 const savedId = getPathIndex().get(filePath);
                 if (savedId) {
@@ -317,16 +350,9 @@ async function activate(context) {
                 }
             }
 
-            backlinksProvider.refresh();
-            decorationsProvider.refresh();
-            updateStatusBar();
-            refreshSuggestionBar();
-
-            // Gate heavier panel refreshes on actual content changes.
+            router.refreshForIndexMutation(result, { forceHeavy: !filePath.endsWith('.md') });
             if (result.changed || result.needsFull) {
-                updatePanel();
-                refreshViewPanel();
-                refreshEntityHub();
+                if (doc === vscode.window.activeTextEditor?.document && activeViewRuntime) activeViewRuntime.schedule('save');
             }
         })
     );
@@ -381,9 +407,18 @@ async function activate(context) {
         updateStatusBar();
         if (editor && editor.document.languageId === 'markdown') {
             validateDocument(editor.document, getIndex);
+            syncEntityHub(context);
+            refreshCalendarPanel();
+        } else {
+            syncEntityHub(context);
         }
         refreshSuggestionBar();
     }));
+
+    const activeViewRuntime = registerActiveViewRuntime(context, {
+        updateStatusBar,
+        refreshSuggestionBar
+    });
 
     // ── Commands ─────────────────────────────────────────────────────────────
     context.subscriptions.push(
@@ -394,13 +429,25 @@ async function activate(context) {
 
     context.subscriptions.push(
         vscode.commands.registerCommand('yamlink.openView', (query, label) => {
-            openViewPanel(context, '# ' + label + '\n\n' + query + '\n');
+            openViewPanel(context, '# ' + label + '\n\n' + query + '\n', refreshAfterViewEdit, null);
         })
     );
 
     context.subscriptions.push(
-        vscode.commands.registerCommand('yamlink.openHub', () => {
-            syncEntityHub(context);
+        vscode.commands.registerCommand('yamlink.openHub', async () => {
+            await vscode.commands.executeCommand('workbench.view.extension.yamlinkSidebar');
+            try { await vscode.commands.executeCommand('yamlink.noteReport.focus'); } catch (_) {}
+            syncEntityHub(context, { immediate: true });
+            focusEntityHub();
+        })
+    );
+
+    context.subscriptions.push(
+        vscode.commands.registerCommand('yamlink.openCalendar', async () => {
+            await vscode.commands.executeCommand('workbench.view.extension.yamlinkSidebar');
+            try { await vscode.commands.executeCommand('yamlink.calendar.focus'); } catch (_) {}
+            openCalendarPanel();
+            focusCalendarView();
         })
     );
 
@@ -408,8 +455,83 @@ async function activate(context) {
         vscode.commands.registerCommand('yamlink.runViews', () => {
             const editor = vscode.window.activeTextEditor;
             if (editor && editor.document.languageId === 'markdown') {
-                openViewPanel(context, editor.document.getText());
+                openViewPanel(context, editor.document.getText(), refreshAfterViewEdit, editor.document.uri.fsPath);
+                if (typeof activeViewRuntime !== 'undefined' && activeViewRuntime) activeViewRuntime.reset();
+                codeLensProvider.refresh();
             }
+        })
+    );
+
+    context.subscriptions.push(
+        vscode.commands.registerCommand('yamlink.closeViewPanel', () => {
+            closeViewPanel();
+            codeLensProvider.refresh();
+        })
+    );
+
+    context.subscriptions.push(
+        vscode.commands.registerCommand('yamlink.runGraph', () => {
+            const editor = vscode.window.activeTextEditor;
+            if (editor && editor.document.languageId === 'markdown') {
+                openGraphPanel(context, editor.document.getText());
+            }
+        })
+    );
+
+    context.subscriptions.push(
+        vscode.commands.registerCommand('yamlink.runVaultGraph', () => {
+            // Synthesise a !view * block — shows every indexed node
+            const editor = vscode.window.activeTextEditor;
+            const docText = editor ? editor.document.getText() : '';
+            openGraphPanel(context, '```yamlink-graph\n!view *\n```\n', docText);
+        })
+    );
+
+    context.subscriptions.push(
+        vscode.commands.registerCommand('yamlink.exportActiveNotePdf', async () => {
+            const editor = vscode.window.activeTextEditor;
+            if (!editor || editor.document.languageId !== 'markdown') {
+                vscode.window.showErrorMessage('Yamlink: Open a Markdown note before exporting to PDF.');
+                return;
+            }
+
+            const docText = editor.document.getText();
+            let parsed;
+            try {
+                parsed = parseFrontmatterDocument(docText);
+            } catch (e) {
+                vscode.window.showErrorMessage('Yamlink: Could not parse frontmatter — make sure the --- block is closed.');
+                return;
+            }
+            const noteId = String(parsed.data?.id || '').trim();
+            const baseName = noteId || path.basename(editor.document.uri.fsPath, '.md') || 'yamlink-note';
+            const uri = await vscode.window.showSaveDialog({
+                defaultUri: vscode.Uri.file(path.join(path.dirname(editor.document.uri.fsPath), `${baseName}.pdf`)),
+                filters: { PDF: ['pdf'] },
+                saveLabel: 'Export Note PDF'
+            });
+            if (!uri) return;
+
+            const model = buildNoteExportModel(docText, noteId || null);
+            exportNotePdf(uri.fsPath, model);
+            vscode.window.showInformationMessage(`Yamlink: Exported "${baseName}" to PDF`);
+        })
+    );
+
+    context.subscriptions.push(
+        vscode.commands.registerCommand('yamlink.copyId', async () => {
+            const editor = vscode.window.activeTextEditor;
+            if (!editor || editor.document.languageId !== 'markdown') {
+                vscode.window.showInformationMessage('Yamlink: Open a Markdown note to copy its ID.');
+                return;
+            }
+            const nodeId = getPathIndex().get(editor.document.uri.fsPath);
+            if (!nodeId) {
+                vscode.window.showInformationMessage('Yamlink: This file has no id: field yet.');
+                return;
+            }
+            await vscode.env.clipboard.writeText(`[[${nodeId}]]`);
+            vscode.window.setStatusBarMessage(`Yamlink: Copied [[${nodeId}]]`, 3000);
         })
     );
 

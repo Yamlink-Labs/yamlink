@@ -145,7 +145,13 @@ function normalizeFields(rawFields, sourceId) {
             required: fieldDef.required === true
         };
 
-        // relation target is optional — absence means "any node"
+        if (Array.isArray(fieldDef.options)) {
+            entry.options = fieldDef.options
+                .map(v => String(v).trim())
+                .filter(Boolean);
+        }
+
+        // relation target is optional - absence means "any node"
         if (fieldType === 'relation' && typeof fieldDef.target === 'string') {
             entry.target = fieldDef.target.trim().toLowerCase();
         }

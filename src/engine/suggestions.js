@@ -31,7 +31,7 @@ const QUERY_SUGGESTION_THRESHOLD = 2;
 // that is semantically equivalent to the proposed one, regardless
 // of whether the user wrote it on one line or multiple lines.
 //
-//   Single-line:  !view mission where commander = [[johnny-rico]]
+//   Single-line:  !view incoming mission via commander
 //   Multi-line:   !view mission
 //                 where commander = [[johnny-rico]]
 //
@@ -41,8 +41,13 @@ function queryAlreadyExists(text, sourceType, field, nodeId) {
     // Collapse all whitespace runs to a single space for normalised matching.
     // This catches any combination of spaces, tabs, and newlines between tokens.
     const flat = text.replace(/[ \t]*\r?\n[ \t]*/g, ' ').replace(/  +/g, ' ');
-    const needle = `!view ${sourceType} where ${field} = [[${nodeId}]]`;
-    return flat.includes(needle);
+    // Check current via-style incoming queries (canonical format)
+    if (flat.includes(`!view incoming ${sourceType} via ${field}`)) return true;
+    // Check the short-lived forward via format for backward compatibility
+    if (flat.includes(`!view ${sourceType} via ${field}`)) return true;
+    // Check legacy where-style queries so existing notes don't get duplicate suggestions
+    if (nodeId && flat.includes(`!view ${sourceType} where ${field} = [[${nodeId}]]`)) return true;
+    return false;
 }
 
 // ─────────────────────────────────────────────────────────────────
@@ -79,7 +84,7 @@ function computeSuggestionsForNode(nodeId, docText) {
     for (const [key, count] of groups.entries()) {
         if (count < QUERY_SUGGESTION_THRESHOLD) continue;
         const [field, sourceType] = key.split('\x00');
-        const queryText = `!view ${sourceType} where ${field} = [[${nodeId}]]`;
+        const queryText = `!view incoming ${sourceType}\nvia ${field}`;
         if (docText !== null && queryAlreadyExists(docText, sourceType, field, nodeId)) continue;
         results.push({ field, sourceType, count, queryText });
     }

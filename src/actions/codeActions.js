@@ -6,7 +6,10 @@ const { getTypes } = require('../registries/typeRegistry');
 const { getSchema } = require('../registries/schemaRegistry');
 const { isOrphan, getBacklinks } = require('../core/graph');
 const { computeSuggestionsForNode, QUERY_SUGGESTION_THRESHOLD } = require('../engine/suggestions');
-const { getFieldsCache, getPathIndex } = require('../core/index');
+const { parseSingleViewBlock } = require('../engine/query');
+const { getFieldsCache, getPathIndex, updateSingleFile } = require('../core/index');
+const { canonicalizeId } = require('../core/id');
+const { getPrimaryWorkspaceRoot, getWorkspaceRootForFile } = require('../core/workspace');
 
 // ─────────────────────────────────────────────────────────────────
 // Templates
@@ -99,6 +102,180 @@ function buildLinkEdit(document, targetId) {
     return edit;
 }
 
+
+function getViewBlockAtRange(document, range) {
+    const lines = document.getText().split('\n');
+    let start = range.start.line;
+    while (start >= 0) {
+        const t = lines[start].trim();
+        if (t.startsWith('!view ')) break;
+        if (!t || (!/^(select|where|sort|limit|via)\b/i.test(t) && start !== range.start.line)) return null;
+        start--;
+    }
+    if (start < 0 || !lines[start].trim().startsWith('!view ')) return null;
+    const block = [lines[start]];
+    let end = start + 1;
+    while (end < lines.length) {
+        const t = lines[end].trim();
+        if (!t) break;
+        if (t.startsWith('!view ')) break;
+        if (/^(select|where|sort|limit|via)\b/i.test(t)) {
+            block.push(lines[end]);
+            end++;
+        } else break;
+    }
+    return { start, end, block, query: parseSingleViewBlock(block) };
+}
+
+function defaultSelectClauseForType(type) {
+    const schema = getSchema ? getSchema(type) : null;
+    if (!schema || !schema.fields) return '';
+    const schemaFields = Object.keys(schema.fields)
+        .filter(f => f !== 'id' && f !== 'created' && f !== 'type')
+        .slice(0, 5);
+    return schemaFields.length > 0 ? `\nselect ${schemaFields.join(', ')}` : '';
+}
+
+function buildTypeViewQuery(type, selectMode = 'smart') {
+    const head = type === '*' ? '!view *' : `!view ${type}`;
+    if (type === '*' || selectMode === 'none') return head;
+    if (selectMode === 'all') return `${head}\nselect *`;
+    return `${head}${defaultSelectClauseForType(type)}`;
+}
+
+function buildIncomingViewQuery(sourceType, viaField) {
+    let query = `!view incoming ${sourceType}`;
+    if (viaField && viaField !== '*') query += `\nvia ${viaField}`;
+    return query;
+}
+
+async function runGuidedViewBuilder(activeDocument, noteId, knownTypes) {
+    const rootItems = [
+        {
+            label: 'Table of a type',
+            description: 'Build a node table',
+            value: 'table'
+        },
+        {
+            label: 'Tasks and calendar',
+            description: 'Pick a task preset',
+            value: 'tasks'
+        }
+    ];
+
+    if (noteId) {
+        rootItems.splice(1, 0, {
+            label: 'Backlinks to this note',
+            description: `Build an incoming query for ${noteId}`,
+            value: 'incoming'
+        });
+    }
+
+    const root = await vscode.window.showQuickPick(rootItems, {
+        title: 'Yamlink — Query Builder',
+        placeHolder: 'Choose the kind of view you want to build'
+    });
+    if (!root) return null;
+
+    if (root.value === 'tasks') {
+        const taskPick = await vscode.window.showQuickPick([
+            { label: 'All tasks', query: '!view tasks', description: 'Every task row across the vault' },
+            { label: 'Calendar', query: '!view calendar', description: 'Every dated task and created-note event' },
+            { label: 'Today', query: '!view today', description: 'Only today activity' },
+            { label: 'Upcoming', query: '!view upcoming', description: 'Next two weeks of activity' }
+        ], {
+            title: 'Yamlink — Query Builder',
+            placeHolder: 'Choose a task or calendar preset'
+        });
+        return taskPick ? taskPick.query : null;
+    }
+
+    if (root.value === 'incoming') {
+        const typePick = await vscode.window.showQuickPick([
+            { label: 'Any source type', value: '*' },
+            ...knownTypes.map(type => ({ label: capitalize(type), description: type, value: type }))
+        ], {
+            title: 'Yamlink — Query Builder',
+            placeHolder: 'Choose which kinds of nodes can link here'
+        });
+        if (!typePick) return null;
+
+        const backlinkFields = Array.from(new Set(
+            getBacklinks(noteId)
+                .map(edge => String(edge.field || '').trim().toLowerCase())
+                .filter(field => field && field !== 'body')
+        )).sort();
+        const fieldPick = await vscode.window.showQuickPick([
+            { label: 'Any relation field', value: '*' },
+            ...backlinkFields.map(field => ({ label: field, value: field }))
+        ], {
+            title: 'Yamlink — Query Builder',
+            placeHolder: 'Optionally narrow to a specific relation field'
+        });
+        if (!fieldPick) return null;
+
+        return buildIncomingViewQuery(typePick.value, fieldPick.value);
+    }
+
+    const typePick = await vscode.window.showQuickPick([
+        { label: 'All nodes', value: '*', description: 'Browse the whole vault' },
+        ...knownTypes.map(type => ({ label: `${capitalize(type)} table`, description: type, value: type }))
+    ], {
+        title: 'Yamlink — Query Builder',
+        placeHolder: 'Choose which type to show'
+    });
+    if (!typePick) return null;
+
+    const selectPick = await vscode.window.showQuickPick([
+        { label: 'Smart default columns', value: 'smart', description: 'Use schema-backed starter columns when available' },
+        { label: 'All available columns', value: 'all', description: 'Insert a wildcard select clause' },
+        { label: 'No select clause', value: 'none', description: 'Keep the query minimal and let the table infer columns' }
+    ], {
+        title: 'Yamlink — Query Builder',
+        placeHolder: 'Choose how much structure to prefill'
+    });
+    if (!selectPick) return null;
+
+    return buildTypeViewQuery(typePick.value, selectPick.value);
+}
+
+async function buildStarterViewQuery(activeDocument) {
+    const noteId = activeDocument ? (getPathIndex().get(activeDocument.uri.fsPath) ?? null) : null;
+    const knownTypes = Array.from(getTypes()).sort();
+    const items = [
+        { label: 'Guided builder', query: '__guided__', detail: 'Step through a query builder with presets' },
+        { label: 'All nodes', query: '!view *', detail: 'Browse the whole vault' },
+        { label: 'Tasks', query: '!view tasks', detail: 'All task rows across the vault' },
+        { label: 'Calendar', query: '!view calendar', detail: 'All dated tasks, sorted by date' },
+        { label: 'Today', query: '!view today', detail: 'Tasks due today' },
+        { label: 'Upcoming', query: '!view upcoming', detail: 'Tasks due in the next two weeks' }
+    ];
+    if (noteId) {
+        items.push({
+            label: 'Backlinks to this note',
+            query: '!view incoming *',
+            detail: `See what links to ${noteId}`
+        });
+    }
+    for (const type of knownTypes) {
+        items.push({
+            label: `${type} table`,
+            query: `!view ${type}${defaultSelectClauseForType(type)}`,
+            detail: `Start with ${type} nodes`
+        });
+    }
+
+    const picked = await vscode.window.showQuickPick(items, {
+        title: 'Yamlink — Insert view block',
+        placeHolder: 'Pick a starter query',
+        matchOnDescription: true,
+        matchOnDetail: true
+    });
+    if (!picked) return null;
+    if (picked.query === '__guided__') return runGuidedViewBuilder(activeDocument, noteId, knownTypes);
+    return picked.query;
+}
+
 // ─────────────────────────────────────────────────────────────────
 // registerCodeActions
 // ─────────────────────────────────────────────────────────────────
@@ -111,6 +288,16 @@ function registerCodeActions(context, getIndex, buildIndex) {
                     const actions = [];
                     const seenIds = new Set();
 
+                    const viewBlock = getViewBlockAtRange(document, range);
+                    if (viewBlock && viewBlock.query) {
+                        const runAction = new vscode.CodeAction(
+                            'Yamlink: Run view block',
+                            vscode.CodeActionKind.QuickFix
+                        );
+                        runAction.command = { command: 'yamlink.runViews', title: 'Run Views' };
+                        actions.push(runAction);
+                    }
+
                     // ── Diagnostic-based actions ──────────────────────
                     for (const diagnostic of codeActionContext.diagnostics) {
                         if (diagnostic.source !== 'yamlink') continue;
@@ -118,7 +305,7 @@ function registerCodeActions(context, getIndex, buildIndex) {
                         const code = diagnostic.code?.value ?? diagnostic.code;
 
                         if (code === 'yamlink.missingId') {
-                            const fileName = path.basename(document.uri.fsPath, '.md');
+                            const fileName = toKebabId(path.basename(document.uri.fsPath, '.md'));
                             const action   = new vscode.CodeAction(
                                 `Yamlink: Add id field to this file`,
                                 vscode.CodeActionKind.QuickFix
@@ -199,7 +386,7 @@ function registerCodeActions(context, getIndex, buildIndex) {
                             action.command = {
                                 command:   'yamlink.createNote',
                                 title:     'Create Node',
-                                arguments: [id, resolvedType]
+                                arguments: [id, resolvedType, document.uri.fsPath]
                             };
                             action.diagnostics = [diagnostic];
                             action.isPreferred = true;
@@ -252,6 +439,20 @@ function registerCodeActions(context, getIndex, buildIndex) {
         vscode.commands.registerCommand(
             'yamlink.insertViewBlock',
             async (document, queryText, sourceType, field, nodeId) => {
+                if (!document) {
+                    const editor = vscode.window.activeTextEditor;
+                    if (!editor || editor.document.languageId !== 'markdown') {
+                        vscode.window.showInformationMessage('Yamlink: Open a Markdown note to insert a view block.');
+                        return;
+                    }
+                    document = editor.document;
+                }
+
+                if (!queryText) {
+                    queryText = await buildStarterViewQuery(document);
+                    if (!queryText) return;
+                }
+
                 const text     = document.getText();
                 const lastLine = document.lineCount - 1;
                 const lastChar = document.lineAt(lastLine).text.length;
@@ -265,18 +466,12 @@ function registerCodeActions(context, getIndex, buildIndex) {
                 // Build the full insertion:
                 // A markdown heading derived from the type + separator, then the query.
                 // select is pre-filled from schema if available, otherwise omitted.
-                const schema = getSchema ? getSchema(sourceType) : null;
-                let selectClause = '';
-                if (schema && schema.fields) {
-                    const schemaFields = Object.keys(schema.fields)
-                        .filter(f => f !== 'id' && f !== 'created' && f !== 'type')
-                        .slice(0, 5); // cap at 5 columns for readability
-                    if (schemaFields.length > 0) {
-                        selectClause = `\nselect ${schemaFields.join(', ')}`;
-                    }
-                }
+                const selectClause = sourceType ? defaultSelectClauseForType(sourceType) : '';
 
-                const insertion = `${prefix}## ${capitalize(sourceType)}s\n\n${queryText}${selectClause}\n`;
+                const headingLabel = sourceType
+                    ? `${capitalize(sourceType)}s`
+                    : queryText.replace(/^!view\s+/i, '').split('\n')[0].trim() || 'View';
+                const insertion = `${prefix}## ${headingLabel}\n\n${queryText}${selectClause}\n`;
 
                 const edit = new vscode.WorkspaceEdit();
                 edit.insert(document.uri, new vscode.Position(lastLine, lastChar), insertion);
@@ -284,14 +479,19 @@ function registerCodeActions(context, getIndex, buildIndex) {
                 await vscode.workspace.applyEdit(edit);
                 await document.save();
 
-                // Auto-run views so the user sees the table immediately.
-                await vscode.commands.executeCommand('yamlink.runViews');
-
                 vscode.window.showInformationMessage(
-                    `Yamlink: Inserted !view ${sourceType} block`
+                    sourceType
+                        ? `Yamlink: Inserted !view ${sourceType} block`
+                        : 'Yamlink: Inserted view block'
                 );
             }
         )
+    );
+
+    context.subscriptions.push(
+        vscode.commands.registerCommand('yamlink.queryBuilder', async () => {
+            await vscode.commands.executeCommand('yamlink.insertViewBlock');
+        })
     );
 
     // ── yamlink.linkOrphan ───────────────────────────────────────────
@@ -301,23 +501,15 @@ function registerCodeActions(context, getIndex, buildIndex) {
             async (document, sourceId) => {
                 const idIndex = getIndex();
 
+                const fCache = getFieldsCache();
                 const items = [...idIndex.entries()]
                     .filter(([id]) => id !== sourceId)
                     .sort(([a], [b]) => a.localeCompare(b))
-                    .map(([id, filePath]) => {
-                        let type = '';
-                        try {
-                            const raw = fs.readFileSync(filePath, 'utf8');
-                            const fm  = raw.match(/^---[\s\S]*?---/);
-                            if (fm) {
-                                const m = fm[0].match(/^\s*type:\s*(.+)$/m);
-                                if (m) type = m[1].trim();
-                            }
-                        } catch (e) {}
-
+                    .map(([id]) => {
+                        const fields = fCache.get(id);
                         return {
                             label:       id,
-                            description: type || '',
+                            description: (fields && fields.type) ? fields.type : '',
                         };
                     });
 
@@ -356,7 +548,7 @@ function registerCodeActions(context, getIndex, buildIndex) {
 
     // ── yamlink.createNote ───────────────────────────────────────────
     context.subscriptions.push(
-        vscode.commands.registerCommand('yamlink.createNote', async (id, preselectedType) => {
+        vscode.commands.registerCommand('yamlink.createNote', async (id, preselectedType, sourceFilePath) => {
             let chosenType = preselectedType || null;
 
             if (!id || typeof id !== 'string' || id.trim() === '') {
@@ -366,14 +558,14 @@ function registerCodeActions(context, getIndex, buildIndex) {
                     placeHolder: 'my-node-id',
                     validateInput: (v) => {
                         if (!v || !v.trim()) return 'ID cannot be empty';
-                        if (!/^[a-zA-Z0-9_-]+$/.test(v.trim())) {
-                            return 'Use only letters, numbers, hyphens, underscores';
+                        if (!canonicalizeId(v)) {
+                            return 'Enter text that can be turned into an ID';
                         }
                         return null;
                     }
                 });
                 if (!id) return;
-                id = id.trim();
+                id = canonicalizeId(id);
 
                 const knownTypes = [...getTypes()];
                 const typeItems  = [
@@ -421,7 +613,13 @@ function registerCodeActions(context, getIndex, buildIndex) {
                 return;
             }
 
-            const root     = vscode.workspace.workspaceFolders[0].uri.fsPath;
+            const root = sourceFilePath
+                ? getWorkspaceRootForFile(vscode.workspace.workspaceFolders, sourceFilePath)
+                : getPrimaryWorkspaceRoot(vscode.workspace.workspaceFolders);
+            if (!root) {
+                vscode.window.showErrorMessage("Yamlink: No workspace folder open.");
+                return;
+            }
             const filePath = path.join(root, `${id}.md`);
 
             if (fs.existsSync(filePath)) {
@@ -449,7 +647,7 @@ function registerCodeActions(context, getIndex, buildIndex) {
             }
 
             fs.writeFileSync(filePath, content, 'utf8');
-            buildIndex(vscode.workspace.workspaceFolders);
+            updateSingleFile(filePath);
             validateAll(getIndex);
 
             const doc = await vscode.workspace.openTextDocument(filePath);
@@ -469,7 +667,11 @@ function registerCodeActions(context, getIndex, buildIndex) {
                 return;
             }
 
-            const root      = vscode.workspace.workspaceFolders[0].uri.fsPath;
+            const root = getPrimaryWorkspaceRoot(vscode.workspace.workspaceFolders);
+            if (!root) {
+                vscode.window.showErrorMessage("Yamlink: No workspace folder open.");
+                return;
+            }
             const templates = loadTemplates(root);
 
             if (templates.length === 0) {
@@ -523,15 +725,15 @@ created:
                 placeHolder: `my-${picked.label}-id`,
                 validateInput: (v) => {
                     if (!v || !v.trim()) return 'ID cannot be empty';
-                    if (!/^[a-zA-Z0-9_-]+$/.test(v.trim())) {
-                        return 'Use only letters, numbers, hyphens, underscores';
+                    if (!canonicalizeId(v)) {
+                        return 'Enter text that can be turned into an ID';
                     }
                     return null;
                 }
             });
             if (!id) return;
 
-            const cleanId  = id.trim();
+            const cleanId  = canonicalizeId(id);
             const today    = new Date().toISOString().split('T')[0];
             const filePath = path.join(root, `${cleanId}.md`);
 
@@ -542,7 +744,7 @@ created:
 
             const finalContent = applyTemplate(picked.template.content, cleanId, today);
             fs.writeFileSync(filePath, finalContent, 'utf8');
-            buildIndex(vscode.workspace.workspaceFolders);
+            updateSingleFile(filePath);
             validateAll(getIndex);
 
             const doc = await vscode.workspace.openTextDocument(filePath);
@@ -576,7 +778,7 @@ created:
 
                 await vscode.workspace.applyEdit(edit);
                 await document.save();
-                buildIndex(vscode.workspace.workspaceFolders);
+                updateSingleFile(document.uri.fsPath);
                 validateAll(getIndex);
 
                 vscode.window.showInformationMessage(
@@ -590,6 +792,10 @@ created:
 // ─────────────────────────────────────────────────────────────────
 // Utilities
 // ─────────────────────────────────────────────────────────────────
+
+function toKebabId(str) {
+    return canonicalizeId(str);
+}
 
 function capitalize(str) {
     return str.charAt(0).toUpperCase() + str.slice(1);
@@ -606,4 +812,4 @@ function backlinks_count(document, queryText) {
     return '?';
 }
 
-module.exports = { registerCodeActions };
+module.exports = { registerCodeActions, buildTypeViewQuery, buildIncomingViewQuery };

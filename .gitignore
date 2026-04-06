@@ -1,3 +1,14 @@
 node_modules/
 *.vsix
 .vscode-test/
+.claude/
+CLAUDE.md
+node_modules/.package-lock.json
+PROJECT_LOG.md
+ROADMAP.md
+README-draft.md
+*.log
+*.tmp
+*.bak
+.DS_Store
+Thumbs.db

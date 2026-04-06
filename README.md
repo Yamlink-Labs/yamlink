@@ -1,100 +1,109 @@
 # Yamlink
 
-**Structured knowledge for Markdown, inside VS Code.**
+Structured knowledge for Markdown, inside VS Code.
 
-[![VS Code Marketplace](https://img.shields.io/visual-studio-marketplace/v/yamlink.yamlink?label=Marketplace)](https://marketplace.visualstudio.com/items?itemName=yamlink.yamlink) ![Version](https://img.shields.io/badge/version-0.2.0--Dizzie-blue) ![License](https://img.shields.io/badge/license-MIT-green) ![VS Code](https://img.shields.io/badge/VS%20Code-%5E1.85.0-blueviolet)
+[![VS Code Marketplace](https://img.shields.io/visual-studio-marketplace/v/yamlink.yamlink?label=Marketplace)](https://marketplace.visualstudio.com/items?itemName=yamlink.yamlink)
+![Version](https://img.shields.io/badge/version-0.3.0--Ace-blue)
+![License](https://img.shields.io/badge/license-MIT-green)
+![VS Code](https://img.shields.io/badge/VS%20Code-%5E1.85.0-blueviolet)
 
-Yamlink turns a folder of Markdown files into a structured knowledge system — a personal knowledge database stored as plain text, versioned with Git, and readable in any editor.
+Yamlink turns a folder of Markdown files into a local-first knowledge system:
 
-**Newest changes!**
+- notes get stable `id:` identities
+- `[[wikilinks]]` become graph relationships
+- YAML frontmatter becomes structured data
+- `!view` blocks become live, editable tables
+- side panels turn the vault into an operational workspace
 
-**Live editable tables from `!view` blocks**
-
-![Yamlink Demo](media/yamlink-view.gif)
-Write `!view` queries → run them from the status bar → edit YAML values directly in the table (changes save instantly).
-
-
-**Smart Suggestions**
-
-![Yamlink Demo](media/yamlink-smart-suggestions.gif)
-When Yamlink detects repeated backlink patterns (e.g. several missions linked via the same commander), it shows a suggestion in the status bar. Click → insert the ready-to-run query.
-
-
-**Entity Hub**
-
-![Yamlink Demo](media/yamlink-entity-hub.gif)
-Working on all noted with links → Entity Hub opens beside it, grouping inbound links by field (commander, unit, etc.), with search and collapse/expand.
+Yamlink is built for people who want their notes to stay plain-text, Git-friendly, queryable, and local.
 
 ---
 
-## The Mental Model
+## New in Ace
 
-```
-Markdown files  →  add id: fields  →  Nodes
-Nodes           →  add [[links]]   →  Relations
-Relations       →  form a          →  Graph
-Graph           →  queried by      →  !view blocks
-!view blocks    →  render as       →  Live tables
-```
+### Live tables
 
-That's the whole system. Files become nodes when they get an ID. Nodes become connected when they reference each other with `[[wikilinks]]`. The connections form a graph. `!view` blocks query that graph. Results render as interactive, editable tables — live in your documents, updating on every save.
+Editable query tables are now strong enough for real operational work. You can update typed cells, paste from spreadsheets, revert rows, and export views without leaving the editor.
 
-**You stop at any level.** Use only nodes and links and you get rename-safe references and a backlinks panel. Add views and you get a live database. Add schemas and you get validation. The system rewards investment but never requires it.
+![Live tables](./media/readme/live-table.gif)
 
----
+### Note Report and Calendar
 
-## The Core Idea
+The Yamlink sidebar now gives the vault a real operational shell. Note Report helps you understand where a note sits in the system, and Calendar lets you review dated activity across the vault.
 
-Each Markdown file declares a canonical `id:` in YAML frontmatter. That ID is permanent — links stay valid even if files are renamed or moved across folders.
+![Note Report and Calendar](./media/readme/calendar-note-report.gif)
 
-```yaml
----
-id: johnny-rico
-type: character
-unit: [[roughnecks]]
-rank: Private
-created: 2297-01-15
----
+### Graph
 
-Johnny Rico, Mobile Infantry. Volunteered after Federation graduation.
-Served under [[lt-rasczak]] before assuming command of the Roughnecks.
-```
+The graph is no longer just a cloud of dots. It now has filtering, a map key, stronger spacing, node inspection, and a layout that makes relationships readable.
 
-Type `[[` anywhere and autocomplete suggests every node in your vault, filtered by type when context makes it clear. Hover over any link to preview the node. `Ctrl+Click` to navigate. Change an `id:` and Yamlink finds every reference and offers to update them all.
+![Graph](./media/readme/graph.gif)
 
 ---
 
-## Install
+## Why It Matters
 
-Search **"Yamlink"** in the VS Code Extensions panel, or:
+In my daily workflow, I don't want to work separately with:
 
-```
-https://marketplace.visualstudio.com/items?itemName=yamlink.yamlink
-```
+- freeform writing
+- structured databases
+- graph relationships
+- local ownership
 
-On first activation, open `welcome.md` in your workspace for a guided tour.
+So Yamlink tries to collapse those into one workflow inside the editor people already use.
+
+With Yamlink, you can:
+
+- write normal Markdown notes
+- give notes stable identities with `id:`
+- connect them with `[[wikilinks]]`
+- query the vault with `!view`
+- edit data inline in live tables
+- inspect a note through Note Report
+- track dated activity across the vault
+- export notes and views to PDF
+
+---
+
+## What Changed In Ace
+
+`0.3.0 - Ace`
+
+Ace adds or stabilizes:
+
+- a real Yamlink sidebar with:
+  - Note Report
+  - Calendar
+  - Vault Health
+- much stronger query tables:
+  - typed cells
+  - bulk paste
+  - row revert
+  - PDF / CSV / JSON export
+- smarter frontmatter and relation autocomplete
+- stable task block IDs
+- vault-wide calendar activity
+- a much stronger graph surface
+- broader reliability and test coverage
 
 ---
 
 ## Quick Start
 
-**1. Give a file an identity.**
-
-Add frontmatter with an `id:` to any Markdown file, or run `Yamlink: Create Node` from the Command Palette.
+### 1. Give a note an identity
 
 ```yaml
 ---
-id: dizzy-flores
+id: johnny-rico
 type: character
+name: Johnny Rico
 unit: [[roughnecks]]
-rank: Private
+rank: lieutenant
 created: 2297-01-15
 ---
 ```
 
-**2. Link nodes together.**
-
-Type `[[` and pick from the autocomplete list. In frontmatter, links are typed relations — named edges in your knowledge graph.
+### 2. Link notes together
 
 ```yaml
 ---
@@ -102,177 +111,465 @@ id: mission-klendathu
 type: mission
 date: 2297-08-01
 commander: [[johnny-rico]]
-squad:
-  - [[dizzy-flores]]
-  - [[ace-levy]]
-  - [[sugar-watkins]]
+unit: [[roughnecks]]
 outcome: catastrophic-failure
 ---
-
-The Battle of Klendathu. The Federation's first major offensive.
-Poorly planned, badly executed. Roughnecks extracted under fire.
 ```
 
-**3. Open the backlinks panel.**
+### 3. Query the vault
 
-Open `johnny-rico.md`. The **Yamlink Backlinks** panel shows every file that links to Rico — `mission-klendathu` via `commander`, `dizzy-flores` via a body mention, and more as your vault grows.
-
-**4. Query your data.**
-
-Add a `!view` block to any file, then click **▶ Run views** in the status bar:
-
-```
-!view mission where commander = [[johnny-rico]]
-select date, outcome
+```md
+!view mission | Rico missions
+where commander = [[johnny-rico]]
+select date, unit, outcome
 sort date desc
 ```
 
-A panel opens beside your editor with a live, sortable table. Double-click any cell to edit it. Changes write back to the source file instantly.
+Run the view and Yamlink opens a live table beside your editor.
 
-**5. Let Yamlink suggest structure.**
+### 4. Open the side surfaces
 
-Once three or more missions all link to Rico via `commander`, Yamlink shows a Code Action on his file: **"Add view — 3 missions linked via commander."** Click it. The query is written for you and appended to the document.
+Use the Yamlink sidebar to inspect:
+
+- Note Report
+- Calendar
+- Vault Health
 
 ---
 
-## Features
+## Feature Highlights
 
-### View Panel & Query Language
+### Core graph and identity
 
-Write `!view` blocks inside any Markdown file. Multiple blocks become tabs.
+- Canonical `id:` model for Markdown notes
+- Wikilinks in body text and frontmatter relations
+- Backlinks and outgoing relation tracking
+- Broken link diagnostics
+- Duplicate ID diagnostics
+- Rename propagation across the vault
+- Multi-root workspace support
 
+### Query system
+
+- `!view` blocks inside Markdown
+- Multiple query blocks in one note
+- Type filters, `where`, `contains`, `sort`, `limit`
+- Query labels with `| Name`
+- Incoming relation queries
+- Shortcut queries:
+  - `!view today`
+  - `!view upcoming`
+  - `!view calendar`
+- Guided query-builder foundation
+- Smart query suggestions based on graph patterns
+
+### Live tables
+
+- Inline editable query tables
+- Typed cells:
+  - text
+  - relation
+  - boolean
+  - dropdown
+  - number
+  - date
+- Bulk spreadsheet-style paste
+- Row-level revert
+- Tab / Shift+Tab navigation
+- Column controls and persistence
+- Search, sort, and filter chips
+- Export:
+  - CSV
+  - JSON
+  - PDF
+
+### Sidebar surfaces
+
+- Note Report
+- Vault-wide Calendar
+- Vault Health
+- Graph / relationship map
+
+### Frontmatter intelligence
+
+- Smart relation completions in frontmatter
+- Observed-field fallback when schemas are absent
+- Archetype-based field suggestions
+- Relation target inference from field names and schema
+- Fallback to all indexed notes when inference is weak
+
+### Tasks and date activity
+
+- Stable task block IDs
+- Task extraction from Markdown task lines
+- Calendar month / week / day views
+- Created-note activity in calendar
+- Timeline context inside Note Report
+
+### Export and sharing
+
+- Export active note to PDF
+- Export live table views to PDF
+- Embed `!view` results into note PDF output
+
+For the fuller capability reference, see [FEATURES.md](./FEATURES.md).
+
+---
+
+## Example Workflows
+
+### Knowledge system
+
+- create stable note identities with `id:`
+- link concepts, people, projects, or ideas with `[[wikilinks]]`
+- inspect structure through Note Report, Graph, and backlinks
+
+### CRM / operations
+
+- model accounts, contacts, opportunities, or projects with frontmatter
+- query them into live tables
+- track follow-ups in Calendar
+- export structured views to PDF for reporting
+
+### Research / worldbuilding / longform writing
+
+- keep dossiers, source notes, timelines, and chapter support notes in Markdown
+- use Note Report as a contextual inspector while drafting
+- use tables and queries to surface scenes, entities, unresolved links, or supporting material
+
+---
+
+## The Mental Model
+
+```text
+Markdown files  -> add id: fields  -> Nodes
+Nodes           -> add [[links]]   -> Relations
+Relations       -> form a          -> Graph
+Graph           -> queried by      -> !view blocks
+!view blocks    -> render as       -> Live tables
 ```
-!view character | Roughnecks
-select rank, unit, species
-where unit = [[roughnecks]]
-sort rank
 
-!view mission | Missions
-select date, commander, outcome
+That is the whole system.
+
+You can stop at any layer:
+
+- use only IDs and links and you get rename-safe notes plus backlinks
+- add `!view` and you get live databases
+- add dates and tasks and you get planning surfaces
+- add note reports and vault health and you get operational context
+
+---
+
+## Query Language
+
+### Basic query
+
+```md
+!view mission
+```
+
+### Filtered query
+
+```md
+!view mission | Missions led by Rico
+where commander = [[johnny-rico]]
+select date, outcome, unit
 sort date desc
 limit 10
 ```
 
-**Query clauses:**
+### Incoming relation query
+
+```md
+!view incoming mission
+via commander
+select date, outcome
+```
+
+### Supported clauses
 
 | Clause | Example | Purpose |
-|--------|---------|---------|
-| `select` | `select name, rank, unit` | Choose and order columns |
-| `where =` | `where unit = [[roughnecks]]` | Filter by exact field value |
-| `where contains` | `where notes contains arachnid` | Substring filter |
-| `sort` | `sort date desc` | Sort ascending or descending |
-| `limit` | `limit 5` | First N rows after sort |
+|---|---|---|
+| `select` | `select name, rank, unit` | choose and order columns |
+| `where =` | `where unit = [[roughnecks]]` | exact field match |
+| `where contains` | `where notes contains plasma` | substring filter |
+| `sort` | `sort date desc` | ordering |
+| `limit` | `limit 5` | trim result set |
+| `via` | `via commander` | relation field filter for incoming views |
+| `| label` | `!view mission | Latest` | custom tab name |
 
-**Panel interactions:** click an ID to open the file, double-click a cell to edit it inline, search to filter rows, click column headers to sort. All edits write back to frontmatter in the source file.
+### Shortcut queries
+
+```md
+!view today
+!view upcoming
+!view calendar
+```
+
+These are currently task/date-oriented query shortcuts, while the sidebar Calendar is the richer vault-wide planning surface.
 
 ---
 
-### Entity Hub
+## Current Surfaces
 
-Open a node with backlinks and press the status bar item to open its Hub. Every node that links to this one is shown, grouped by the relation field it came through — sortable tables, global search, collapsible sections.
+### Note Report
 
-Rico's hub, for example, shows one section for `commander` (missions he led), one for `squad-leader` (operations he commanded), and one for `body` (files that mention him in prose). Body mentions start collapsed — they are weaker connections than structured relations.
+The Note Report is Yamlink's structured inspector for the active note.
 
----
+It currently shows:
+
+- summary fields
+- incoming links
+- outgoing links
+- task sections
+- timeline context
+- suggested views
+
+### Calendar
+
+The Calendar is vault-wide, not note-specific.
+
+It currently supports:
+
+- month view
+- week view
+- day view
+- task activity
+- created-note activity
 
 ### Vault Health
 
-The health panel gives you a live overview of your entire vault: node count, edge count, broken links, orphan nodes, types, and a 0–100 health score. Click any stat to navigate to the relevant list or open a filtered view.
+Vault Health gives a structured snapshot of:
+
+- node count
+- edge count
+- broken links
+- orphan nodes
+- type distribution
+- overall vault quality
+
+### Graph
+
+The graph is now a real product surface, not just a prototype canvas.
+
+It includes:
+
+- search
+- type and relation filtering
+- a map key
+- a selected-node inspector
+- stronger first-open layout and spacing
 
 ---
 
-### Diagnostics
+## Feature Status
 
-Yamlink validates your vault as you type.
+### Strong today
 
-| Diagnostic | Severity | Meaning |
-|------------|----------|---------|
-| `yamlink.missingId` | Hint | File has no `id:` — not indexed |
-| `yamlink.duplicateId` | Warning | Two files share the same `id:` |
-| `yamlink.brokenLink` | Warning | Body `[[link]]` points to nothing |
-| `yamlink.brokenRelation` | Warning | Frontmatter `[[link]]` points to nothing |
-| `yamlink.unknownType` | Info | `type:` not seen in any other node |
-| `yamlink.missingRequiredField` | Warning | Schema-required field absent |
+- identity and link graph
+- diagnostics and rename propagation
+- query parsing and execution
+- live editable tables
+- frontmatter intelligence
+- Note Report foundation
+- vault-wide Calendar foundation
+- Vault Health
+- graph surface
+- PDF export
 
-Use `Ctrl+.` on any diagnostic for a Quick Fix. Broken links offer to create the missing node, inferring the correct type from context.
+### Still being polished
+
+- Note Report smoothness during navigation
+- Calendar density and responsiveness
+- very large-vault performance
+- task workflows beyond the current foundation
+- simple query UX and builder depth
+- broader date/time support
 
 ---
 
-### Rename Propagation
+## Templates, IDs, and Dates
 
-Change an `id:` and save. Yamlink scans the vault, counts affected files, and asks for confirmation. Apply directly or preview the diff first. Every change can be reverted. References are never silently broken.
+### Templates
 
----
+Yamlink already supports `_templates/`-based note creation, which is one of the most important foundations for custom vault design.
 
-### Schemas (Optional)
+Templates currently allow users to:
 
-Schemas are nodes with `type: schema` that define the expected structure for a type. They add field validation, smarter completions, and better type inference in Quick Fixes — but they are never required. Start without them. Add them when consistency matters.
+- create notes from Markdown templates
+- shape custom frontmatter structures
+- set up repeatable note types for CRM, research, worldbuilding, and ops
 
-```yaml
----
-id: schema-character
-type: schema
-target: character
-fields:
-  unit:
-    type: relation
-    target: unit
-    required: false
-  rank:
-    type: string
-    required: false
----
+Templates are already useful today, and they are an important part of Carmen's roadmap.
+
+### ID Policy
+
+Yamlink IDs are canonical machine IDs, not display labels.
+
+Recommended:
+
+```text
+johnny-rico
+mission-klendathu
+crm-contact-alfa
+note-report-test
 ```
 
+Rules:
+
+- lowercase kebab-case is strongly recommended
+- letters, numbers, `_`, and `-` are safe
+- use `name` or `title` for human-facing labels
+- accented input can be normalized into safe canonical IDs
+
+Examples:
+
+- `Jaime Ramirez` -> `jaime-ramirez`
+- `Jaime Ramírez` -> `jaime-ramirez`
+
+### Dates
+
+Today, Yamlink stores and renders dates canonically as:
+
+```text
+YYYY-MM-DD
+```
+
+That keeps:
+
+- sorting predictable
+- queries reliable
+- round-tripping safe
+- tables stable
+
+Yamlink has already begun broader date parsing work, but canonical ISO-style storage remains the rule for now.
+
+This matters especially for:
+
+- CRM workflows
+- operational follow-ups
+- long-lived planning systems
+
 ---
 
-## ID Rules
+## PDF Export
 
-```
-johnny-rico          ✓
-mission_klendathu    ✓
-Johnny Rico          ✗  spaces not allowed
-note#1               ✗  special characters not allowed
-```
+Yamlink can export:
 
-Letters, numbers, hyphens, underscores only. The same rule applies to frontmatter field names.
+- live view tables to PDF
+- the active note to PDF
+
+Note export currently includes:
+
+- summary/frontmatter data
+- note body content
+- embedded `!view` results
+
+That makes Yamlink useful not just for in-editor work, but also for reporting and sharing.
+
+---
+
+## Longform Writing Direction
+
+Yamlink is not just a graph/database tool.
+
+It can also become a strong Markdown-native companion for:
+
+- books
+- reports
+- research dossiers
+- proposals
+- worldbuilding
+- CRM-style narrative work
+
+The direction here is:
+
+- support structure first
+- support references and linked context
+- support writer dashboards and drafting workflows
+- avoid adding rich-text chrome unless it clearly beats VS Code defaults
+
+---
+
+## Install
+
+Install from the VS Code Marketplace:
+
+[Yamlink on the Marketplace](https://marketplace.visualstudio.com/items?itemName=yamlink.yamlink)
+
+Or search for `Yamlink` inside VS Code.
+
+On first activation, Yamlink can copy a sample vault into your workspace so you can explore the model immediately.
+
+---
+
+## Sample Vault Files
+
+The `sample/` folder exists so demos and manual testing stay repeatable.
+
+Useful examples:
+
+- `dashboard.md`
+- `query-shortcuts.md`
+- `table-types.md`
+- `note-report.md`
+- `tasks-calendar.md`
+
+---
+
+## Roadmap Snapshot
+
+### `0.3.0 - Ace`
+
+Ace is the shaping release:
+
+- dependable indexing
+- stronger tables
+- sidebar surfaces
+- graph brought up to product quality
+- better export and document structure
+
+### `0.4.0 - Carmen`
+
+Carmen should be about:
+
+- scale
+- polish
+- hardening
+- quality-of-life improvements
+- only a few small, high-leverage features
+
+Likely Carmen priorities:
+
+- smoother Note Report behavior
+- tighter Calendar responsiveness and planning UX
+- stronger large-vault performance
+- better query-builder and simple query UX
+- task workflow refinement
+- broader date/time support
+- stronger template workflows for custom vault creation
+
 
 ---
 
 ## Philosophy
 
-**Your vault is a folder.** Plain Markdown files with standard YAML frontmatter. Open them in any editor, sync them anywhere, commit them to Git. Disable Yamlink and nothing changes.
+Yamlink is trying to prove that structured work does not have to begin in a locked platform.
 
-**Identity is separate from filename.** File paths are cosmetic. The `id:` field is permanent. Reorganize your folder structure freely without breaking a single link.
+It can begin in:
 
-**Structure emerges, it is not designed.** Types come from whatever `type:` values you use. Schemas are optional precision tools, not a prerequisite. The graph builds from the connections you naturally make.
+- Markdown
+- YAML
+- Git
+- VS Code
 
-**Features live in our own layer.** The core engine — graph, index, query runner, schema system — has zero VS Code dependency. It is portable to a CLI, a desktop app, or a web service without rewriting any logic.
+And from there, grow only when the user is ready.
 
----
 
-## Sample Vault
-
-A sample vault is included with the extension under `sample/`. It contains a small Starship Troopers knowledge graph — characters, units, missions, and relations — with working `!view` queries so you can see the system in action immediately.
-
-To open it: copy the `sample/` folder contents into any workspace folder, open VS Code, and click **▶ Run views** on `dashboard.md`.
+*Would you like to know **more?***
 
 ---
 
-## Roadmap
+## License
 
-**0.2.0 — Dizzie** _(current)_
-View panel · Query language · Entity Hub · Vault Health · Schemas · Query suggestions · Inline editing · Rename propagation
-
-**0.3.0 — Stabilization**
-Incremental indexing · Performance at scale · Hover tooltips in views · Schema-driven column order
-
-**0.4.0 — Navigation**
-Graph visualization · Task aggregation · Calendar view
-
-**0.5.0 — Platform**
-Aggregations · Multi-condition where · CLI access
-
----
-
-**Local-first. Git-native. No lock-in.**
+MIT

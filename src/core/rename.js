@@ -2,6 +2,8 @@ const vscode = require('vscode');
 const fs = require('fs');
 const path = require('path');
 const { validateAll } = require('../diagnostics/diagnostics');
+const { getWorkspaceRoots } = require('./workspace');
+const { extractCanonicalIdFromFrontmatter } = require('./id');
 
 const PREVIEW_THRESHOLD = 5;
 
@@ -10,10 +12,7 @@ let isPropagating = false;
 function registerRename(context, getIndex, getPathIndex, buildIndex, validateAll, onComplete) {
     context.subscriptions.push(
         vscode.workspace.onDidSaveTextDocument(async (document) => {
-            if (document.languageId !== 'markdown') {
-                buildIndex(vscode.workspace.workspaceFolders);
-                return;
-            }
+            if (document.languageId !== 'markdown') return;
 
             if (isPropagating) {
                 console.log("Yamlink — Save skipped during propagation");
@@ -26,10 +25,12 @@ function registerRename(context, getIndex, getPathIndex, buildIndex, validateAll
             const oldId = pathIndex.get(filePath) ?? null;
             const newId = extractIdFromDocument(document);
 
+            // Fast path: no id change — extension.js handles incremental refresh.
+            // Avoids a full buildIndex on every markdown save (common case).
+            if (oldId === newId) return;
+
             buildIndex(vscode.workspace.workspaceFolders);
             validateAll(getIndex);
-
-            if (!oldId && !newId) return;
 
             if (!oldId && newId) {
                 console.log(`Yamlink — New node declared: "${newId}"`);
@@ -44,8 +45,6 @@ function registerRename(context, getIndex, getPathIndex, buildIndex, validateAll
                 return;
             }
 
-            if (oldId === newId) return;
-
             console.log(`Yamlink — Identity mutation: "${oldId}" → "${newId}"`);
             await handleIdentityMutation(oldId, newId, buildIndex, validateAll, getIndex, onComplete);
         })
@@ -55,7 +54,6 @@ function registerRename(context, getIndex, getPathIndex, buildIndex, validateAll
 async function handleIdentityMutation(oldId, newId, buildIndex, validateAll, getIndex, onComplete) {
     if (!vscode.workspace.workspaceFolders) return;
 
-    const root = vscode.workspace.workspaceFolders[0].uri.fsPath;
     let affected = [];
 
     await vscode.window.withProgress(
@@ -65,7 +63,7 @@ async function handleIdentityMutation(oldId, newId, buildIndex, validateAll, get
             cancellable: false
         },
         async () => {
-            affected = await findAffectedFilesAsync(root, oldId);
+            affected = await findAffectedFilesAsync(vscode.workspace.workspaceFolders, oldId);
         }
     );
 
@@ -143,10 +141,12 @@ async function applyWithGuard(edit, options = {}) {
     }
 }
 
-async function findAffectedFilesAsync(dir, oldId) {
+async function findAffectedFilesAsync(workspaceFolders, oldId) {
     const affected = [];
-    const pattern  = `[[${oldId}]]`;
-    await scanAsync(dir, pattern, affected);
+    const pattern  = buildRenameRegex(oldId);
+    for (const dir of getWorkspaceRoots(workspaceFolders)) {
+        await scanAsync(dir, pattern, affected);
+    }
     return affected;
 }
 
@@ -170,7 +170,7 @@ async function scanAsync(dir, pattern, results) {
         } else if (file.endsWith('.md')) {
             let content;
             try { content = fs.readFileSync(fullPath, 'utf8'); } catch (e) { continue; }
-            if (content.includes(pattern)) {
+            if (pattern.test(content)) {
                 results.push({ filePath: fullPath, content });
             }
         }
@@ -181,8 +181,6 @@ async function scanAsync(dir, pattern, results) {
 
 function buildWorkspaceEdit(affected, oldId, newId) {
     const edit          = new vscode.WorkspaceEdit();
-    const searchPattern = `[[${oldId}]]`;
-    const replacement   = `[[${newId}]]`;
 
     for (const { filePath, content } of affected) {
         const uri   = vscode.Uri.file(filePath);
@@ -190,23 +188,17 @@ function buildWorkspaceEdit(affected, oldId, newId) {
 
         for (let lineIndex = 0; lineIndex < lines.length; lineIndex++) {
             const line = lines[lineIndex];
-            if (!line.includes(searchPattern)) continue;
-
-            let searchFrom = 0;
-            while (true) {
-                const charIndex = line.indexOf(searchPattern, searchFrom);
-                if (charIndex === -1) break;
-
+            const matches = findRenameMatchesInText(line, oldId);
+            if (matches.length === 0) continue;
+            for (const match of matches) {
                 edit.replace(
                     uri,
                     new vscode.Range(
-                        new vscode.Position(lineIndex, charIndex),
-                        new vscode.Position(lineIndex, charIndex + searchPattern.length)
+                        new vscode.Position(lineIndex, match.start),
+                        new vscode.Position(lineIndex, match.end)
                     ),
-                    replacement
+                    newId
                 );
-
-                searchFrom = charIndex + searchPattern.length;
             }
         }
     }
@@ -261,17 +253,27 @@ async function revertId(currentId, targetId) {
 }
 
 function extractIdFromDocument(document) {
-    const text = document.getText();
-
-    if (!/^\s*---/.test(text)) return null;
-
-    const closingIndex = text.indexOf('---', 3);
-    if (closingIndex === -1) return null;
-
-    const frontmatter = text.slice(3, closingIndex);
-
-    const match = frontmatter.match(/^\s*id:\s*([a-zA-Z0-9_-]+)\s*$/m);
-    return match ? match[1].trim() : null;
+    return extractCanonicalIdFromFrontmatter(document.getText());
 }
 
-module.exports = { registerRename };
+function buildRenameRegex(oldId) {
+    const escaped = escapeRegex(oldId);
+    return new RegExp(`!?\\[\\[${escaped}(?=\\||\\]\\])`, 'g');
+}
+
+function findRenameMatchesInText(text, oldId) {
+    const regex = buildRenameRegex(oldId);
+    const matches = [];
+    let match;
+    while ((match = regex.exec(text)) !== null) {
+        const start = match.index + (match[0].startsWith('!') ? 3 : 2);
+        matches.push({ start, end: start + oldId.length });
+    }
+    return matches;
+}
+
+function escapeRegex(value) {
+    return String(value).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+module.exports = { registerRename, findRenameMatchesInText, buildRenameRegex, extractIdFromDocument };

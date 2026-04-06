@@ -2,7 +2,7 @@
   "name": "yamlink",
   "displayName": "Yamlink",
   "description": "Turn Markdown into a structured knowledge system. Canonical IDs, vault-wide linking, backlinks, and real-time diagnostics for YAML-based knowledge graphs.",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "publisher": "yamlink",
   "author": {
     "name": "Javier Ramirez"
@@ -43,11 +43,19 @@
   "icon": "media/icon.png",
   "activationEvents": [
     "onLanguage:markdown",
-    "onView:yamlink.backlinks",
     "onStartupFinished"
   ],
   "main": "./extension.js",
   "contributes": {
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "yamlinkSidebar",
+          "title": "Yamlink",
+          "icon": "media/icon.png"
+        }
+      ]
+    },
     "commands": [
       {
         "command": "yamlink.createNote",
@@ -67,12 +75,7 @@
       },
       {
         "command": "yamlink.linkOrphan",
-        "title": "Yamlink: Link this node to another\u2026"
-      },
-      {
-        "command": "yamlink.runViewFromLens",
-        "title": "Run View",
-        "category": "Yamlink"
+        "title": "Yamlink: Link this node to another…"
       },
       {
         "command": "yamlink.openView",
@@ -81,7 +84,19 @@
       },
       {
         "command": "yamlink.openHub",
-        "title": "Yamlink: Open Entity Hub"
+        "title": "Yamlink: Open Note Report",
+        "icon": {
+          "light": "media/note-report-light.svg",
+          "dark": "media/note-report-dark.svg"
+        }
+      },
+      {
+        "command": "yamlink.openCalendar",
+        "title": "Yamlink: Open Calendar",
+        "icon": {
+          "light": "media/calendar-light.svg",
+          "dark": "media/calendar-dark.svg"
+        }
       },
       {
         "command": "yamlink.runViews",
@@ -89,8 +104,36 @@
       },
       {
         "command": "yamlink.insertViewBlock",
-        "title": "Yamlink: Insert View Block",
+        "title": "Insert View Block",
         "category": "Yamlink"
+      },
+      {
+        "command": "yamlink.queryBuilder",
+        "title": "Yamlink: Query Builder"
+      },
+      {
+        "command": "yamlink.runGraph",
+        "title": "Yamlink: Run Graph"
+      },
+      {
+        "command": "yamlink.runVaultGraph",
+        "title": "Yamlink: Vault Graph",
+        "icon": {
+          "light": "media/graph-light.svg",
+          "dark": "media/graph-dark.svg"
+        }
+      },
+      {
+        "command": "yamlink.exportActiveNotePdf",
+        "title": "Yamlink: Export Active Note to PDF"
+      },
+      {
+        "command": "yamlink.copyId",
+        "title": "Yamlink: Copy Node ID"
+      },
+      {
+        "command": "yamlink.closeViewPanel",
+        "title": "Yamlink: Close View Panel"
       }
     ],
     "menus": {
@@ -104,21 +147,64 @@
           "when": "false"
         },
         {
-          "command": "yamlink.insertViewBlock",
+          "command": "yamlink.closeViewPanel",
           "when": "false"
+        }
+      ],
+      "editor/context": [
+        {
+          "command": "yamlink.copyId",
+          "when": "editorLangId == markdown",
+          "group": "yamlink@1"
+        }
+      ],
+      "editor/title": [
+        {
+          "command": "yamlink.openHub",
+          "when": "editorLangId == markdown",
+          "group": "navigation@1"
+        },
+        {
+          "command": "yamlink.openCalendar",
+          "when": "editorLangId == markdown",
+          "group": "navigation@2"
+        },
+        {
+          "command": "yamlink.runVaultGraph",
+          "when": "editorLangId == markdown",
+          "group": "navigation@3"
         }
       ]
     },
     "views": {
-      "explorer": [
+      "yamlinkSidebar": [
         {
-          "id": "yamlink.backlinks",
-          "name": "Yamlink Backlinks"
+          "id": "yamlink.noteReport",
+          "name": "Note Report",
+          "type": "webview"
+        },
+        {
+          "id": "yamlink.calendar",
+          "name": "Calendar",
+          "type": "webview"
         }
       ]
     }
   },
   "dependencies": {
-    "js-yaml": "^4.1.0"
+    "js-yaml": "4.1.0",
+    "pdfkit": "^0.18.0"
+  },
+  "scripts": {
+    "test": "node --test test/query.test.js test/date.test.js test/calendar.test.js test/rename.test.js test/completion.test.js test/viewPanel.test.js test/viewCodeLens.test.js test/pdfExport.test.js test/suggestions.test.js test/refreshRouter.test.js test/queryBuilder.test.js test/id.test.js test/graphPanel.test.js",
+    "test:index": "node --test test/index.test.js",
+    "test:date": "node --test test/date.test.js",
+    "test:calendar": "node --test test/calendar.test.js",
+    "test:rename": "node --test test/rename.test.js",
+    "test:runtime": "node --test test/activeViewRuntime.test.js",
+    "test:pdf": "node --test test/pdfExport.test.js",
+    "test:all": "node --test test/query.test.js test/date.test.js test/calendar.test.js test/rename.test.js test/completion.test.js test/viewPanel.test.js test/viewCodeLens.test.js test/pdfExport.test.js test/suggestions.test.js test/refreshRouter.test.js test/queryBuilder.test.js test/id.test.js test/graphPanel.test.js test/index.test.js test/activeViewRuntime.test.js",
+    "test:watch": "node --test --watch test/query.test.js test/date.test.js test/calendar.test.js test/rename.test.js test/completion.test.js test/viewPanel.test.js test/viewCodeLens.test.js test/pdfExport.test.js test/suggestions.test.js test/refreshRouter.test.js test/queryBuilder.test.js test/id.test.js test/graphPanel.test.js",
+    "test:ace": "node test/ace.local.js"
   }
 }
