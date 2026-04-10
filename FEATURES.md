@@ -6,6 +6,7 @@ Use it as the detailed companion to [README.md](./README.md):
 
 - `README.md` explains the product
 - `FEATURES.md` explains the working surface area
+- `GETTING_STARTED.md` explains how to set up and use Yamlink in real vaults
 
 ---
 
@@ -31,6 +32,33 @@ Yamlink turns Markdown files into a structured graph:
 - frontmatter relation links
 - alias links like `[[id|Label]]`
 - embeds like `![[id]]`
+- body/frontmatter link targets are canonicalized before graph indexing, so casing, spacing, aliases, and heading/block suffixes do not silently break graph edges
+
+### Adaptive intelligence
+
+- Yamlink is now moving toward one shared adaptive-intelligence model instead of isolated per-surface heuristics
+- intelligence currently draws from:
+  - frontmatter structure
+  - body/frontmatter wikilinks
+  - schema relation definitions
+  - observed field values across the vault
+  - graph usage patterns
+- field-role inference now treats small core semantics as foundational:
+  - relation-like
+  - date-like
+  - status-like
+  - person-like
+  - container-like
+  - topic-like
+- the rest of the system is being pushed toward user-adaptive behavior instead of one hardcoded ontology
+- the current Ace+ direction is:
+  - shared field-role intelligence core
+  - note-role inference
+  - smarter suggestions
+  - smarter autocomplete
+  - clearer explainability when intelligence is weak
+  - more transparent reasoning inside completions so likely matches and inferred field roles are not opaque
+  - query relation autocomplete now uses the same target-preference model as frontmatter relation autocomplete
 
 ### Graph awareness
 
@@ -111,6 +139,10 @@ select date, outcome
 - `!view today`
 - `!view upcoming`
 - `!view calendar`
+- `!view open-tasks`
+- `!view done-tasks`
+- `!view overdue`
+- `!view undated-tasks`
 
 These are currently map to task/date-oriented query flows.
 
@@ -125,8 +157,18 @@ It currently helps build:
 - type tables
 - incoming/backlink views
 - task/calendar presets
+- recipe-driven views from Note Report context
+- refinement of existing `!view` blocks
 
 This is not the final visual query builder. It is the first stage for a more developed engine.
+
+### Current query-builder behavior
+
+- quick presets before deeper custom flows
+- contextual query recipes inside Note Report
+- `Open Yamlink Query Builder` lightbulb action on `!view` blocks
+- `Refine this view` action for existing queries
+- insert/refine flows now run the updated view automatically so users see the result immediately
 
 ---
 
@@ -140,7 +182,12 @@ Query results now open as live tables.
 - sort by column
 - search within a result
 - filter chips
+- visible-row count vs total rows
+- active state summary for search / filter / sort
+- reset view action
 - column order persistence
+- drag-and-drop column reordering
+- resizable columns
 - column hide/show controls
 - CSV export
 - JSON export
@@ -163,12 +210,16 @@ Query results now open as live tables.
 - row-level revert
 - undo support
 - Tab / Shift+Tab navigation across editable cells
+- refine the source query directly from the table toolbar
+- resize and reorder columns directly from the table header
 
 ### Table output behavior
 
 - edits write back to source frontmatter
 - date rendering stays canonical as `YYYY-MM-DD`
 - relation cells open linked nodes
+- sparse state is clearer when search/filter hides all rows
+- relation/task tables in Note Report omit columns that are empty across all rows
 
 ---
 
@@ -193,6 +244,17 @@ It is the structured inspector for the active note.
 - can be focused explicitly from the editor title or command palette
 - supports search within the report
 - supports opening related nodes directly
+- suggested views now explain more clearly when Yamlink has not yet inferred enough structure to propose a view confidently
+
+### Suggested view intelligence
+
+- repeated backlink patterns still matter
+- schema-backed relation fields can trigger view suggestions before backlinks exist
+- mixed-type backlinks on the same field can trigger broader incoming suggestions
+- current-note relation fields can now suggest adjacent views across types when the vault schema says they share the same linked context
+- examples:
+  - a contact linked to an account can surface meetings for that same account
+  - a product linked to a concept can surface other product/concept views that share the same structured relation
 
 ---
 
@@ -211,13 +273,17 @@ It is vault-wide, not note-specific.
 ### Current data sources
 
 - dated Markdown tasks
-- notes with `created:` dates
+- notes with `date:` or `created:` dates
 
 ### Current calendar capabilities
 
 - range switching
 - selected-range activity summary
 - click-through to related notes
+- keyboard shortcuts:
+  - `M` / `W` / `D` for month, week, and day mode
+  - `[` and `]` to move backward and forward through the current range
+  - `T` to jump to today
 
 ### Important limitation
 
@@ -236,6 +302,15 @@ Yamlink has began working on tasks as well. It is very much a work in progress, 
 - task visibility in Calendar
 - task visibility in Note Report
 - task-oriented shortcut queries
+- natural-language date extraction in task text such as:
+  - `tomorrow`
+  - `Friday`
+  - `next Monday`
+  - `end of month`
+  - `in 3 days`
+  - `in 2 weeks`
+  - `this weekend`
+  - `next weekend`
 
 ### Not fully mature yet
 
@@ -260,6 +335,14 @@ The graph is now a real surface, not just a raw canvas.
 - neighborhood focus
 - selected-node inspector
 - stronger spacing and layout
+- keyboard shortcuts:
+  - `/` to focus graph search
+  - `F` to fit the visible graph
+  - `R` to reset graph state
+  - `L` to toggle edge labels
+  - `N` to focus the active note
+  - `O` to open the selected node's note
+  - `Esc` to clear the current graph state
 
 ### Current graph role
 
@@ -329,6 +412,12 @@ Yamlink’s autocomplete is not limited to raw ID completion.
 - frontmatter field suggestions from schema
 - observed-field fallback for schema-less note types
 - archetype-based field suggestions
+- adaptive field-role inference is now starting to power completion from shared signals:
+  - schema evidence
+  - observed wikilink values
+  - graph usage
+  - soft field-name priors
+  - observed value shapes like date-like and status-like patterns
 - relation target inference from:
   - schema targets
   - field names
@@ -350,19 +439,48 @@ Yamlink’s autocomplete is not limited to raw ID completion.
 
 ## Smart Suggestions
 
-Yamlink can detect repeated graph patterns and suggest useful views.
-
-Example pattern:
-
-- several `mission` notes all link to the current note through `commander`
-
-Yamlink can then suggest a ready-to-insert view for that relation pattern.
+Yamlink can detect structured graph patterns and suggest useful views.
 
 Smart suggestions are currently surfaced through:
 
 - diagnostics
 - code actions
 - Note Report suggested views
+- frontmatter hover cards
+- status bar hinting
+
+### Current suggestion intelligence
+
+Suggestions can now come from multiple signals:
+
+- repeated incoming backlink patterns
+- schema-aware relation fields targeting the current note type
+- mixed-type backlinks that converge on the same relation field
+- peer-relation logic from the current note's own structured fields
+- explanation when nothing qualifies yet
+
+Examples:
+
+- several `mission` notes link here through `commander`
+- a `contact` schema and a `meeting` schema both define `account` as a relation to the current `partner` note type
+- multiple note types link here through the same field, making a wildcard incoming view useful
+
+The goal is to make suggestions useful across:
+
+- CRM vaults
+- fiction / worldbuilding vaults
+- programmer / project-tracking vaults
+- research-oriented note systems
+
+### Direction
+
+Ace+ is now moving toward a shared adaptive-intelligence core.
+
+The goal is not to hardcode users into one ontology. The goal is:
+
+- small foundational semantics
+- vault-adaptive field-role inference
+- smarter completion, suggestions, and report logic built on the same reasoning layer
 
 ---
 
@@ -421,6 +539,8 @@ Yamlink ships with repeatable sample files for demos and manual testing:
 - [note-report.md](./sample/note-report.md)
 - [tasks-calendar.md](./sample/tasks-calendar.md)
 
+For a more practical walkthrough, including recommended CRM and programmer setups, see [GETTING_STARTED.md](./GETTING_STARTED.md).
+
 ---
 
 ## Testing
@@ -467,3 +587,32 @@ Yamlink is becoming very powerful, but it should remain disciplined.
 - the richer hybrid editor experience
 
 That boundary matters for roadmap discipline.
+
+---
+
+## Design Direction
+
+Yamlink now has a recognizable visual direction inside the extension, but the palette is still being formalized.
+
+### Current state
+
+- Yamlink surfaces now share a clearer product identity than they did in Ace
+- graph, health, report, and table work are converging toward a common visual language
+- theme safety matters:
+  - surfaces should read clearly in dark themes
+  - surfaces should also hold up in light themes
+
+### Working direction
+
+- Yamlink should eventually have a real companion theme family
+- that theme work should be design-system-first, not just color experimentation
+- Tokyo Night is a useful benchmark here because it shows:
+  - restraint
+  - contrast discipline
+  - strong dark/light adaptation
+
+### Important rule
+
+Yamlink UI improvements should stay theme-agnostic whenever possible.
+
+The goal is not to make the extension look good only under one preferred dark theme. The goal is to make it feel intentional across both dark and light VS Code setups.

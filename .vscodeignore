@@ -3,6 +3,7 @@
 .vscode/**
 .vscode-test/**
 .claude/**
+internal/**
 test/**
 media/legacy/**
 **/*.map
@@ -10,6 +11,9 @@ media/legacy/**
 README-draft.md
 PROJECT_LOG.md
 ROADMAP.md
+INTELLIGENCE_CORE_CONTRACTS.md
 CLAUDE.md
 .DS_Store
 Thumbs.db
+*.vsix
+package-lock.json

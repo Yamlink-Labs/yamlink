@@ -34,6 +34,9 @@
 
         var suggestion = e.target.closest('[data-insert-view]');
         if (suggestion) {
+            if (suggestion.hasAttribute('disabled') || suggestion.getAttribute('aria-disabled') === 'true') {
+                return;
+            }
             vscode.postMessage({
                 command: 'insertView',
                 queryText: suggestion.dataset.insertView,

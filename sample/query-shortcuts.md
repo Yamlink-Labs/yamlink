@@ -16,6 +16,22 @@ Use one shortcut per note when testing so you can see exactly one tab open.
 
 !view tasks
 
+## Open Tasks
+
+!view open-tasks
+
+## Done Tasks
+
+!view done-tasks
+
+## Overdue
+
+!view overdue
+
+## Undated Tasks
+
+!view undated-tasks
+
 ## Calendar
 
 !view calendar

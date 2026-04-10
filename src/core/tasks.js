@@ -18,7 +18,7 @@ function stripFrontmatter(content) {
   return content.slice(second + 3);
 }
 
-function parseTasksFromContent(content, fileId, filePath) {
+function parseTasksFromContent(content, fileId, filePath, referenceDate = null) {
   const body = stripFrontmatter(content.replace(/\r\n/g, '\n').replace(/\r/g, '\n'));
   const lines = body.split('\n');
   const tasks = [];
@@ -34,7 +34,7 @@ function parseTasksFromContent(content, fileId, filePath) {
     const done = match[1].toLowerCase() === 'x';
     const text = match[2].trim();
     const linkMatches = [...text.matchAll(/\[\[([^\]]+)\]\]/g)].map(m => m[1].trim());
-    const date = extractDateFromText(text);
+    const date = extractDateFromText(text, referenceDate);
     const blockId = `${fileId}#t${taskNumber}-${hashString(text).slice(0, 6)}`;
 
     tasks.push({

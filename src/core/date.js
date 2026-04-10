@@ -15,6 +15,16 @@ const MONTHS = new Map([
     ['dec', 12], ['december', 12]
 ]);
 
+const WEEKDAYS = new Map([
+    ['sun', 0], ['sunday', 0],
+    ['mon', 1], ['monday', 1],
+    ['tue', 2], ['tues', 2], ['tuesday', 2],
+    ['wed', 3], ['wednesday', 3],
+    ['thu', 4], ['thur', 4], ['thurs', 4], ['thursday', 4],
+    ['fri', 5], ['friday', 5],
+    ['sat', 6], ['saturday', 6]
+]);
+
 function pad2(value) {
     return String(value).padStart(2, '0');
 }
@@ -32,6 +42,48 @@ function toIsoDate(year, month, day) {
         dt.getUTCDate() !== d
     ) return null;
     return `${y}-${pad2(m)}-${pad2(d)}`;
+}
+
+function getReferenceDate(referenceDate) {
+    if (referenceDate instanceof Date && !Number.isNaN(referenceDate.getTime())) return referenceDate;
+    const iso = String(referenceDate ?? '').trim();
+    const match = iso.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+    if (match) {
+        return new Date(Number(match[1]), Number(match[2]) - 1, Number(match[3]));
+    }
+    return new Date();
+}
+
+function toIsoFromLocalDate(date) {
+    return toIsoDate(date.getFullYear(), date.getMonth() + 1, date.getDate());
+}
+
+function addLocalDays(date, days) {
+    const next = new Date(date.getFullYear(), date.getMonth(), date.getDate());
+    next.setDate(next.getDate() + Number(days || 0));
+    return next;
+}
+
+function addLocalMonths(date, months) {
+    const year = date.getFullYear();
+    const monthIndex = date.getMonth() + Number(months || 0);
+    const day = date.getDate();
+    const targetYear = year + Math.floor(monthIndex / 12);
+    const targetMonth = ((monthIndex % 12) + 12) % 12;
+    const lastDay = new Date(targetYear, targetMonth + 1, 0).getDate();
+    return new Date(targetYear, targetMonth, Math.min(day, lastDay));
+}
+
+function endOfMonth(date) {
+    return new Date(date.getFullYear(), date.getMonth() + 1, 0);
+}
+
+function nextWeekendDate(referenceDate, weeksAhead = 0) {
+    const base = getReferenceDate(referenceDate);
+    const currentWeekday = base.getDay();
+    const saturdayOffset = (6 - currentWeekday + 7) % 7;
+    const effectiveOffset = saturdayOffset + (Number(weeksAhead || 0) * 7);
+    return addLocalDays(base, effectiveOffset);
 }
 
 function normaliseYearFirst(match) {
@@ -75,7 +127,59 @@ function normaliseDateInput(value) {
     return null;
 }
 
-function extractDateFromText(text) {
+function resolveWeekdayFromReference(token, qualifier, referenceDate) {
+    const weekday = WEEKDAYS.get(String(token ?? '').toLowerCase());
+    if (weekday === undefined) return null;
+    const base = getReferenceDate(referenceDate);
+    const currentWeekday = base.getDay();
+    let offset = (weekday - currentWeekday + 7) % 7;
+
+    if (qualifier === 'next') {
+        offset = offset === 0 ? 7 : offset + 7;
+    } else if (qualifier === 'coming') {
+        offset = offset === 0 ? 7 : offset;
+    } else if (qualifier === 'this') {
+        offset = offset === 0 ? 0 : offset;
+    } else {
+        offset = offset === 0 ? 0 : offset;
+    }
+
+    return toIsoFromLocalDate(addLocalDays(base, offset));
+}
+
+function extractRelativeDateFromText(text, referenceDate) {
+    const raw = String(text ?? '');
+    const lowered = raw.toLowerCase();
+    const base = getReferenceDate(referenceDate);
+    const quantityMatch = lowered.match(/\bin\s+(\d+)\s+(day|days|week|weeks|month|months)\b/);
+
+    if (/\b(today|tonight)\b/.test(lowered)) return toIsoFromLocalDate(base);
+    if (/\btomorrow\b/.test(lowered)) return toIsoFromLocalDate(addLocalDays(base, 1));
+    if (/\byesterday\b/.test(lowered)) return toIsoFromLocalDate(addLocalDays(base, -1));
+    if (/\bend of (the )?month\b|\beom\b/.test(lowered)) return toIsoFromLocalDate(endOfMonth(base));
+    if (/\bnext week\b/.test(lowered)) return toIsoFromLocalDate(addLocalDays(base, 7));
+    if (/\bnext month\b/.test(lowered)) return toIsoFromLocalDate(addLocalMonths(base, 1));
+    if (/\bthis weekend\b/.test(lowered)) return toIsoFromLocalDate(nextWeekendDate(base, 0));
+    if (/\bnext weekend\b/.test(lowered)) return toIsoFromLocalDate(nextWeekendDate(base, 1));
+
+    if (quantityMatch) {
+        const amount = Number(quantityMatch[1]);
+        const unit = quantityMatch[2];
+        if (unit.startsWith('day')) return toIsoFromLocalDate(addLocalDays(base, amount));
+        if (unit.startsWith('week')) return toIsoFromLocalDate(addLocalDays(base, amount * 7));
+        if (unit.startsWith('month')) return toIsoFromLocalDate(addLocalMonths(base, amount));
+    }
+
+    let match = lowered.match(/\b(this|next|coming)\s+(monday|tuesday|wednesday|thursday|friday|saturday|sunday|mon|tue|tues|wed|thu|thur|thurs|fri|sat|sun)\b/);
+    if (match) return resolveWeekdayFromReference(match[2], match[1], base);
+
+    match = lowered.match(/\b(monday|tuesday|wednesday|thursday|friday|saturday|sunday|mon|tue|tues|wed|thu|thur|thurs|fri|sat|sun)\b/);
+    if (match) return resolveWeekdayFromReference(match[1], '', base);
+
+    return '';
+}
+
+function extractDateFromText(text, referenceDate) {
     const raw = String(text ?? '');
     const patterns = [
         /\b(\d{4}[-/.]\d{1,2}[-/.]\d{1,2})\b/,
@@ -90,7 +194,7 @@ function extractDateFromText(text) {
         const iso = normaliseDateInput(match[1]);
         if (iso) return iso;
     }
-    return '';
+    return extractRelativeDateFromText(raw, referenceDate);
 }
 
 function isDateLike(value) {

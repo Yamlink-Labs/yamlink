@@ -96,6 +96,23 @@ function openViewPanel(context, documentText, onComplete, sourceDocumentPath = n
 
             if (msg.command === 'export') {
                 await exportQueryResult(msg.format, msg.queryIndex, msg.visibleColumns || null);
+                return;
+            }
+
+            if (msg.command === 'refineQuery') {
+                if (!_sourceDocumentPath) {
+                    vscode.window.showInformationMessage('Yamlink: This view was not opened from a note, so there is no source block to refine.');
+                    return;
+                }
+                const doc = await vscode.workspace.openTextDocument(_sourceDocumentPath);
+                await vscode.window.showTextDocument(doc, { viewColumn: vscode.ViewColumn.One, preview: false });
+                await vscode.commands.executeCommand('yamlink.refineViewBlockAtIndex', doc, msg.queryIndex);
+                const updatedQueries = parseAllViewQueries(doc.getText());
+                if (updatedQueries) {
+                    lastQuery = updatedQueries;
+                    renderPanel(updatedQueries);
+                }
+                return;
             }
         }, null, context.subscriptions);
 
@@ -183,6 +200,7 @@ function renderPanel(queries) {
     panel.title = queryList.length > 1
         ? `View · ${queryList.length} blocks`
         : (first.label || (first.type === '*' ? 'View · all nodes' : 'View · ' + first.type));
+    const stateScriptUri = panel.webview.asWebviewUri(vscode.Uri.joinPath(_extUri, 'src', 'features', 'viewPanelStateRuntime.js'));
     const scriptUri = panel.webview.asWebviewUri(vscode.Uri.joinPath(_extUri, 'src', 'features', 'viewPanelScript.js'));
     const nonce = require('crypto').randomBytes(16).toString('hex');
     const csp = panel.webview.cspSource;
@@ -190,10 +208,10 @@ function renderPanel(queries) {
         panel.webview.html = buildEmptyHtml(queryList);
         return;
     }
-    panel.webview.html = buildHtml(queryList, scriptUri, nonce, csp, _panelState);
+    panel.webview.html = buildHtml(queryList, stateScriptUri, scriptUri, nonce, csp, _panelState);
 }
 
-function buildHtml(queryList, scriptUri, nonce, csp, panelState) {
+function buildHtml(queryList, stateScriptUri, scriptUri, nonce, csp, panelState) {
     const allIds = [...getIndex().keys()];
     const idOpts = allIds.map(id => `<option value="${esc(id)}">`).join('');
     const activeTab = panelState?.activeTab ?? 0;
@@ -222,10 +240,18 @@ body{background:var(--vscode-editor-background,#141414);color:var(--vscode-edito
 .col-move[disabled]{opacity:.35;cursor:default}
 .fsearch{margin-left:auto;min-width:180px;background:#111318;border:1px solid #30363d;border-radius:8px;padding:6px 10px;color:#ddd;outline:none;font:inherit}
 .fcount{font-size:12px;color:#8b949e}
+.table-summary{display:none;padding:8px 16px 0;color:#8b949e;font-size:12px}
 .table-wrap{flex:1;overflow:auto;padding:0 16px 16px}
 .toolbar-menu{display:none;position:absolute;background:#111318;border:1px solid #30363d;border-radius:8px;padding:10px;z-index:10;max-height:240px;overflow:auto}
-.table-wrap table{width:100%;border-collapse:collapse;margin-top:12px}
-.table-wrap thead th{position:sticky;top:0;background:var(--vscode-editor-background,#141414);font-size:11px;color:#8b949e;text-transform:uppercase;letter-spacing:.08em;padding:10px;text-align:left;border-bottom:1px solid #2a2a2a;white-space:nowrap;cursor:pointer}
+.table-wrap table{width:max-content;min-width:100%;border-collapse:collapse;margin-top:12px}
+.table-wrap thead th{position:sticky;top:0;background:var(--vscode-editor-background,#141414);font-size:11px;color:#8b949e;text-transform:uppercase;letter-spacing:.08em;padding:10px;text-align:left;border-bottom:1px solid #2a2a2a;white-space:nowrap;cursor:pointer;position:sticky}
+.table-wrap thead th[data-col]{cursor:grab;user-select:none}
+.table-wrap thead th[data-col].dragging{opacity:.45}
+.table-wrap thead th[data-col].drag-over{box-shadow:inset 2px 0 0 #4fc4a0}
+.table-wrap thead th[data-col].drag-over-after{box-shadow:inset -2px 0 0 #4fc4a0}
+.th-label{display:block;overflow:hidden;text-overflow:ellipsis;padding-right:10px}
+.col-resizer{position:absolute;top:0;right:-3px;width:8px;height:100%;cursor:col-resize;z-index:2}
+.col-resizer:hover,.col-resizer.active{background:rgba(79,196,160,.28)}
 .table-wrap tbody td{padding:10px;border-bottom:1px solid #23262b;font-size:12px;vertical-align:middle}
 .table-wrap tbody tr:hover{background:rgba(255,255,255,.03)}
 .cell-id{color:#6eb3f0;cursor:pointer;font-weight:600}
@@ -241,7 +267,10 @@ body{background:var(--vscode-editor-background,#141414);color:var(--vscode-edito
 .live-status.error{color:#e5a96a}
 .live-status.success{color:#7ae3c2}
 .hidden-col{display:none}
-.empty-state{text-align:center;color:#666;padding:32px 0;line-height:1.7}
+.empty-state{padding:36px 20px;text-align:center}
+.empty-state-title{font-size:13px;font-weight:600;color:#c8c8c8;margin-bottom:8px}
+.empty-state-copy{font-size:12px;color:#8b949e;line-height:1.7;max-width:520px;margin:0 auto}
+.empty-state-copy code{background:#1e2126;border:1px solid #30363d;border-radius:6px;padding:1px 5px;color:#d8dee9}
 .warning{padding:8px 16px;color:#e5a96a;font-size:12px}
 .cell-actions-header{width:28px;padding:0;border-bottom:1px solid #2a2a2a}
 .cell-actions{width:28px;padding:2px 4px;text-align:center;vertical-align:middle}
@@ -252,7 +281,8 @@ tr:hover .revert-row-btn{opacity:1}
 <datalist id="yids">${idOpts}</datalist>
 <div class="tabbar">${tabBtns}</div>
 ${panels}
-<div class="live-bar"><span>Double-click editable cells · click booleans twice to toggle · click relation pills to open</span></div>
+<div class="live-bar"><span>Double-click editable cells | click booleans twice to toggle | click relation pills to open</span></div>
+<script nonce="${nonce}" src="${stateScriptUri}"></script>
 <script nonce="${nonce}" src="${scriptUri}"></script>
 </body></html>`;
 }
@@ -319,6 +349,7 @@ function buildPanel(query, idx, activeTab, tabState, contextNodeId) {
     const meta = analyseColumns(rows, columns, query);
     const savedSearch = tabState.search || '';
     const savedSort = tabState.sort || null;
+    const savedFilter = tabState.filter || 'all';
     const hiddenCols = new Set(tabState.hiddenCols || []);
 
     if (savedSort) {
@@ -332,15 +363,25 @@ function buildPanel(query, idx, activeTab, tabState, contextNodeId) {
     const warningBanner = warnings.length
         ? `<div class="warning">${warnings.map(w => '&bull; ' + esc(w)).join('<br>')}</div>`
         : '';
-    const chips = `<button class="chip active" data-filter="all">All</button>` + types.map(t => `<button class="chip" data-filter="type:${esc(t)}">${esc(t)}</button>`).join('');
+    const chips = `<button class="chip${savedFilter === 'all' ? ' active' : ''}" data-filter="all">All</button>` + types.map(t => `<button class="chip${savedFilter === `type:${t}` ? ' active' : ''}" data-filter="type:${esc(t)}">${esc(t)}</button>`).join('');
     const colMenu = columns.map((col, index) => `<label style="display:flex;gap:8px;align-items:center;padding:3px 0"><input type="checkbox" data-col-toggle="${esc(col)}" ${hiddenCols.has(col) ? '' : 'checked'}> <span>${esc(col)}</span><button class="col-move" data-col-move="left" data-col="${esc(col)}" ${index === 0 ? 'disabled' : ''}>&larr;</button><button class="col-move" data-col-move="right" data-col="${esc(col)}" ${index === columns.length - 1 ? 'disabled' : ''}>&rarr;</button></label>`).join('');
+    const columnWidths = tabState.columnWidths || {};
+    const colGroup = `<colgroup>${columns.map(col => {
+        const width = Number(columnWidths[col]);
+        const style = Number.isFinite(width) && width >= 120 ? ` style="width:${width}px"` : '';
+        return `<col data-col="${esc(col)}"${style}>`;
+    }).join('')}<col class="col-actions" style="width:28px"></colgroup>`;
     const headerCells = columns.map(col => {
         const cellMeta = meta[col] || { kind: 'text' };
-        return `<th data-col="${esc(col)}" data-kind="${esc(cellMeta.kind)}" class="${hiddenCols.has(col) ? 'hidden-col' : ''}">${esc(col)}</th>`;
+        const sortedClass = savedSort && savedSort.col === col ? 'sorted' : '';
+        const ascAttr = savedSort && savedSort.col === col ? ` data-asc="${savedSort.asc ? 'true' : 'false'}"` : '';
+        const width = Number(columnWidths[col]);
+        const style = Number.isFinite(width) && width >= 120 ? ` style="width:${width}px"` : '';
+        return `<th draggable="true" data-col="${esc(col)}" data-kind="${esc(cellMeta.kind)}"${ascAttr}${style} class="${[hiddenCols.has(col) ? 'hidden-col' : '', sortedClass].filter(Boolean).join(' ')}" title="Drag to reorder"><span class="th-label">${esc(col)}</span><span class="col-resizer" data-col-resizer="${esc(col)}" title="Resize column"></span></th>`;
     }).join('') + `<th class="cell-actions-header"></th>`;
 
     const bodyRows = rows.length
-        ? rows.map(row => {
+        ? rows.map((row, rowIndex) => {
             const cells = columns.map(col => {
                 const cellMeta = meta[col] || { kind: 'text', options: [] };
                 const raw = col === 'id' ? row.id : String(row.fields[col] ?? '');
@@ -371,15 +412,19 @@ function buildPanel(query, idx, activeTab, tabState, contextNodeId) {
                 return `<td class="cell-editable${hiddenClass}" data-edit-mode="${editMode}" data-filepath="${esc(row.filePath)}" data-field="${esc(col)}" data-value="${esc(display)}">${esc(display)}</td>`;
             }).join('');
 
-            const hidden = savedSearch && !(row.id.toLowerCase().includes(savedSearch.toLowerCase()) || Object.values(row.fields).join(' ').toLowerCase().includes(savedSearch.toLowerCase()));
+            const matchesSearch = !savedSearch || row.id.toLowerCase().includes(savedSearch.toLowerCase()) || Object.values(row.fields).join(' ').toLowerCase().includes(savedSearch.toLowerCase());
+            const matchesFilter = savedFilter === 'all' || row.nodeType === savedFilter.slice(5);
+            const hidden = !(matchesSearch && matchesFilter);
             const revertCell = `<td class="cell-actions"><button class="revert-row-btn" data-filepath="${esc(row.filePath)}" title="Revert row changes">↩</button></td>`;
-            return `<tr data-type="${esc(row.nodeType)}" ${hidden ? 'style="display:none"' : ''}>${cells}${revertCell}</tr>`;
+            return `<tr data-type="${esc(row.nodeType)}" data-row-index="${rowIndex}" ${hidden ? 'style="display:none"' : ''}>${cells}${revertCell}</tr>`;
         }).join('')
-        : `<tr><td colspan="${columns.length + 1}" class="empty-state">No rows found.<br><span style="font-size:11px;color:#777">${esc(buildEmptyStateHint(query, warnings))}</span></td></tr>`;
+        : `<tr><td colspan="${columns.length + 1}" class="empty-state">${buildTableEmptyState(query, warnings)}</td></tr>`;
 
     return `<div class="tab-panel${isActive ? ' active' : ''}" data-tab="${idx}" style="display:${isActive ? 'flex' : 'none'}">${warningBanner}
-<div class="filterbar"><span>${chips}</span><button class="btn columns-btn">Columns</button><button class="btn export-btn" data-format="csv">Export CSV</button><button class="btn export-btn" data-format="json">Export JSON</button><button class="btn export-btn" data-format="pdf">Export PDF</button><input class="fsearch" type="text" placeholder="Search..." value="${esc(savedSearch)}"><span class="fcount"><strong>${rows.length}</strong> rows</span><div class="toolbar-menu">${colMenu}</div></div>
-<div class="table-wrap"><table><thead><tr>${headerCells}</tr></thead><tbody>${bodyRows}</tbody></table></div></div>`;
+<div class="filterbar"><span>${chips}</span><button class="btn refine-btn" data-query-index="${idx}">Refine view</button><button class="btn reset-btn">Reset view</button><button class="btn columns-btn">Columns</button><button class="btn export-btn" data-format="csv">Export CSV</button><button class="btn export-btn" data-format="json">Export JSON</button><button class="btn export-btn" data-format="pdf">Export PDF</button><input class="fsearch" type="text" placeholder="Search..." value="${esc(savedSearch)}"><span class="fcount" data-total-rows="${rows.length}"><strong>${rows.length}</strong> rows</span><div class="toolbar-menu">${colMenu}</div></div>
+<div class="table-summary"></div>
+<div class="no-visible-state" style="display:none;padding:16px;color:#8b949e;border-bottom:1px solid #23262b">No visible rows match the current search or filter. <button class="btn reset-btn" style="margin-left:8px">Reset view</button></div>
+<div class="table-wrap"><table>${colGroup}<thead><tr>${headerCells}</tr></thead><tbody>${bodyRows}</tbody></table></div></div>`;
 }
 
 function buildEmptyStateHint(query, warnings) {
@@ -389,6 +434,31 @@ function buildEmptyStateHint(query, warnings) {
         return 'Check that the target note is saved and the id matches exactly.';
     }
     return `Try a broader query first, for example: ${buildQueryString({ ...query, type: '*', wheres: [], where: null })}`;
+}
+
+function buildTableEmptyState(query, warnings) {
+    const title = buildTableEmptyStateTitle(query, warnings);
+    const hint = buildEmptyStateHint(query, warnings);
+    return `<div class="empty-state-title">${esc(title)}</div><div class="empty-state-copy">${escapeHintForHtml(hint)}</div>`;
+}
+
+function buildTableEmptyStateTitle(query, warnings) {
+    if (warnings.length > 0) return 'This view needs a broader match.';
+    const wheres = query.wheres && query.wheres.length > 0 ? query.wheres : (query.where ? [query.where] : []);
+    if (wheres.some(cond => cond.field === 'id')) {
+        return 'The target note was not found in this view.';
+    }
+    if (query.direction === 'incoming') {
+        return 'No notes link here yet.';
+    }
+    if (query.type === 'tasks') {
+        return 'No tasks matched this view.';
+    }
+    return 'No rows matched this view.';
+}
+
+function escapeHintForHtml(text) {
+    return esc(String(text)).replace(/`([^`]+)`/g, '<code>$1</code>');
 }
 
 function esc(str) {

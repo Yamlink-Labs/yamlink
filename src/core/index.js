@@ -4,7 +4,7 @@ const yaml = require('js-yaml');
 const { clearGraph, registerEdges, getGraphStats, removeEdgesForSource } = require('./graph');
 const { getWorkspaceRoots } = require('./workspace');
 const { normaliseDateInput } = require('./date');
-const { extractCanonicalIdFromFrontmatter } = require('./id');
+const { extractCanonicalIdFromFrontmatter, canonicalizeId } = require('./id');
 const { clearRegistry, registerType, unregisterType, getRegistryStats, getTypes } = require('../registries/typeRegistry');
 const { clearSchemaRegistry, registerSchemaNode } = require('../registries/schemaRegistry');
 
@@ -174,7 +174,8 @@ function extractEdgesFromFrontmatter(content) {
                 const linkRegex = /\[\[([^\]]+)\]\]/g;
                 let m;
                 while ((m = linkRegex.exec(inlineValue)) !== null) {
-                    edges.push({ field: currentField, targetId: m[1].trim().split('|')[0].trim() });
+                    const targetId = canonicalizeLinkedTarget(m[1]);
+                    if (targetId) edges.push({ field: currentField, targetId });
                 }
             }
             continue;
@@ -182,7 +183,8 @@ function extractEdgesFromFrontmatter(content) {
 
         const listMatch = line.match(/^\s*-\s+\[\[([^\]]+)\]\]/);
         if (listMatch && currentField) {
-            edges.push({ field: currentField, targetId: listMatch[1].trim().split('|')[0].trim() });
+            const targetId = canonicalizeLinkedTarget(listMatch[1]);
+            if (targetId) edges.push({ field: currentField, targetId });
             continue;
         }
 
@@ -209,11 +211,17 @@ function extractBodyLinks(content) {
     let match;
 
     while ((match = linkRegex.exec(body)) !== null) {
-        const targetId = match[1].trim().split('|')[0].trim();
+        const targetId = canonicalizeLinkedTarget(match[1]);
         if (targetId) edges.push({ field: 'body', targetId });
     }
 
     return edges;
+}
+
+function canonicalizeLinkedTarget(raw) {
+    const target = String(raw || '').trim().split('|')[0].trim().split('#')[0].trim().split('^')[0].trim();
+    if (!target) return '';
+    return canonicalizeId(target);
 }
 
 // ─────────────────────────────────────────────────────────────────
@@ -413,5 +421,6 @@ module.exports = {
     getGraphStats,
     extractIdFromFrontmatter,
     extractEdgesFromFrontmatter,
+    extractBodyLinks,
     parseFrontmatter
 };

@@ -17,6 +17,70 @@ Yamlink turns a folder of Markdown files into a local-first knowledge system:
 
 Yamlink is built for people who want their notes to stay plain-text, Git-friendly, queryable, and local.
 
+If you want the practical onboarding path, use [GETTING_STARTED.md](./GETTING_STARTED.md).
+
+---
+
+## New in Ace+
+
+Ace+ is the trust-and-intelligence follow-up to Ace.
+
+It strengthens the parts of Yamlink that were already central to the product promise:
+
+- smarter suggested views
+- stronger wikilink truth in the graph
+- safer relation autocomplete
+- better query-side relation completion
+- broader quality-of-life and hardening work across tables, graph, report, calendar, and health
+
+### Adaptive intelligence
+
+Yamlink is now moving toward an adaptive intelligence model instead of isolated heuristics.
+
+That means it increasingly learns from:
+
+- frontmatter structure
+- body and frontmatter wikilinks
+- schema relation definitions
+- observed field usage across the vault
+- graph patterns
+
+The goal is simple:
+
+- keep a small set of foundational semantics
+- let the user's vault teach the rest of the system
+
+### Smarter suggestions and completions
+
+Smart suggestions are no longer just repeated-backlink prompts.
+
+Ace+ now pushes them toward:
+
+- schema-backed suggestions even before repeated backlinks exist
+- mixed-type relation awareness
+- current-note relation context
+- note-role-aware explanation when no suggestion qualifies yet
+
+Autocomplete also got much stronger:
+
+- frontmatter relation completion no longer blindfolds the user
+- likely targets still rise first, but the rest of the vault stays visible
+- query `where ... = [[` completion now follows the same target-preference model
+- completion detail text explains more of Yamlink's reasoning directly
+
+### Graph and truth
+
+Body/frontmatter wikilinks are now canonicalized more aggressively before indexing.
+
+That means links with:
+
+- aliases
+- heading anchors
+- block refs
+- casing or spacing differences
+
+are much less likely to silently miss their real node in the graph.
+
 ---
 
 ## New in Ace
@@ -62,6 +126,23 @@ With Yamlink, you can:
 - inspect a note through Note Report
 - track dated activity across the vault
 - export notes and views to PDF
+
+---
+
+## What Changed In Ace+
+
+`0.3.5 - Ace+`
+
+Ace+ strengthens Ace (0.3.0) in the areas where the product promise most needed follow-through (that's on me, my bad):
+
+- adaptive intelligence is now a real product track, not just a loose set of heuristics. This area was not properly revised/polished
+- smart suggestions are broader, more explainable, and less brittle. THere's now more consistency for your daily workflow
+- autocomplete is more transparent and less restrictive. I felt it was just too narrow, especially when your vault/personal schema wasn't fully established.
+- body/frontmatter wikilink truth is much stronger
+- query/table/graph/sidebar surfaces all received real quality-of-life and hardening work
+
+Ace remains the shaping release.
+Ace+ is the release line where that foundation gets smarter, safer, and more trustworthy.
 
 ---
 
@@ -198,6 +279,18 @@ Use the Yamlink sidebar to inspect:
 - Relation target inference from field names and schema
 - Fallback to all indexed notes when inference is weak
 
+### Ace+ intelligence direction
+
+- Shared field-role intelligence core
+- First note-role inference layer
+- Smarter suggestion generation from:
+  - schema-backed relations
+  - mixed-type relation patterns
+  - current-note relation context
+- Clearer explainability when suggestions are absent
+- Query-side relation completion aligned with frontmatter relation completion
+- More transparent completion detail text so users can understand inferred targets and field-role reasoning
+
 ### Tasks and date activity
 
 - Stable task block IDs
@@ -213,6 +306,7 @@ Use the Yamlink sidebar to inspect:
 - Embed `!view` results into note PDF output
 
 For the fuller capability reference, see [FEATURES.md](./FEATURES.md).
+For setup guidance and recommended vault structures, see [GETTING_STARTED.md](./GETTING_STARTED.md).
 
 ---
 
@@ -528,6 +622,15 @@ Ace is the shaping release:
 - sidebar surfaces
 - graph brought up to product quality
 - better export and document structure
+
+### `0.3.x - Ace+`
+
+Ace+ is the refinement and trust release:
+
+- intelligence overhaul
+- stronger link truth
+- safer autocomplete
+- broader QOL and hardening
 
 ### `0.4.0 - Carmen`
 

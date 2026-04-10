@@ -5,9 +5,11 @@ function createRefreshRouter(services) {
         const dirty = new Set(event.dirty || []);
         const full = event.full === true || dirty.has('all');
 
-        if (full || dirty.has('diagnostics')) {
+        if (full || dirty.has('fullDiagnostics')) {
             services.clearDiagnostics();
             services.validateAll();
+        } else if (dirty.has('diagnostics') && services.validateTargeted) {
+            services.validateTargeted();
         }
 
         if (full || dirty.has('backlinks')) services.refreshBacklinks();
@@ -24,16 +26,19 @@ function createRefreshRouter(services) {
 
     function refreshForIndexMutation(result = {}, options = {}) {
         const indexChanged = !!(result.changed || result.needsFull || options.forceHeavy);
+        const diagnosticsDirty = !!(result.needsFull || options.forceHeavy);
         const dirty = indexChanged
-            ? ['diagnostics', 'backlinks', 'related', 'decorations', 'status', 'suggestions']
+            ? ['backlinks', 'related', 'decorations', 'status', 'suggestions']
             : ['status', 'suggestions'];
 
+        if (diagnosticsDirty) dirty.unshift('fullDiagnostics');
+        else if (indexChanged) dirty.unshift('diagnostics');
         if (indexChanged) dirty.push('health', 'views', 'graph', 'entityHub', 'calendar');
         refresh({ dirty, full: !!options.full });
     }
 
     function refreshForPassiveIndexSweep() {
-        refresh({ dirty: ['diagnostics', 'backlinks', 'decorations', 'status', 'health', 'views', 'graph', 'entityHub', 'calendar', 'suggestions'] });
+        refresh({ dirty: ['fullDiagnostics', 'backlinks', 'decorations', 'status', 'health', 'views', 'graph', 'entityHub', 'calendar', 'suggestions'] });
     }
 
     return {

@@ -2,14 +2,14 @@
 
 const vscode = require('vscode');
 const crypto = require('crypto');
-const fs = require('fs');
-const { getBacklinks } = require('../core/graph');
 const { getIndex, getPathIndex, getFieldsCache } = require('../core/index');
-const { buildTaskRows } = require('../core/tasks');
-const { normaliseDateInput } = require('../core/date');
-const { computeSuggestionsForNode } = require('../engine/suggestions');
-
-const SKIP_FIELDS = new Set(['id', 'created']);
+const {
+    buildContextualQueryRecipes,
+    buildEntityHubModel,
+    getVisibleRelationColumns,
+    getVisibleTaskColumns,
+    extractRelations
+} = require('./entityHubModel');
 
 let sidebarView = null;
 let _extUri = null;
@@ -126,174 +126,34 @@ function renderHub(nodeId) {
     try {
         const idIndex = getIndex();
         const fieldsCache = getFieldsCache();
-        const nodeFields = fieldsCache.get(nodeId) || {};
-        const incomingGroups = buildIncomingGroups(nodeId, idIndex, fieldsCache);
-        const outgoingGroups = buildOutgoingGroups(nodeFields, idIndex, fieldsCache);
-        const summaryRows = buildSummaryRows(nodeFields);
-        const taskSections = buildTaskSections(nodeId, idIndex);
-        const timelineRows = buildTimelineRows(nodeId, nodeFields, taskSections);
-        const suggestions = buildSuggestionRows(nodeId, idIndex);
+        const model = buildEntityHubModel(nodeId, idIndex, fieldsCache);
+        const {
+            nodeFields,
+            incomingGroups,
+            outgoingGroups,
+            summaryRows,
+            taskSections,
+            timelineRows,
+            suggestions,
+            suggestionExplanation,
+            recipes,
+            vaultPositionRows
+        } = model;
 
         if ('title' in host) host.title = `${nodeId} · report`;
 
-        if (incomingGroups.length === 0 && outgoingGroups.length === 0 && summaryRows.length === 0 && taskSections.length === 0 && timelineRows.length === 0 && suggestions.length === 0) {
+        if (model.isEmpty) {
             host.webview.html = buildEmptyHtml(nodeId);
             return;
         }
 
-        host.webview.html = buildHtml(nodeId, incomingGroups, outgoingGroups, summaryRows, taskSections, timelineRows, suggestions, nodeFields, idIndex);
+        host.webview.html = buildHtml(nodeId, incomingGroups, outgoingGroups, summaryRows, taskSections, timelineRows, suggestions, suggestionExplanation, recipes, vaultPositionRows, nodeFields, idIndex);
     } catch (error) {
         renderError(`Could not render report for ${nodeId}`, error);
     }
 }
 
-function buildIncomingGroups(nodeId, idIndex, fieldsCache) {
-    const groups = new Map();
-    for (const { field, sourceId } of getBacklinks(nodeId)) {
-        const filePath = idIndex.get(sourceId);
-        const fields = fieldsCache.get(sourceId);
-        if (!filePath || !fields) continue;
-        if (!groups.has(field)) groups.set(field, []);
-        groups.get(field).push({ sourceId, fields, filePath });
-    }
-
-    return [...groups.entries()]
-        .sort((a, b) => {
-            if (a[0] === 'body') return 1;
-            if (b[0] === 'body') return -1;
-            return a[0].localeCompare(b[0]);
-        })
-        .map(([field, rows]) => ({ field, rows, direction: 'incoming' }));
-}
-
-function extractRelations(raw) {
-    return [...String(raw ?? '').matchAll(/\[\[([^\]]+)\]\]/g)]
-        .map(match => match[1].trim().split('|')[0].trim())
-        .filter(Boolean);
-}
-
-function buildOutgoingGroups(nodeFields, idIndex, fieldsCache) {
-    const groups = [];
-    for (const [field, rawValue] of Object.entries(nodeFields)) {
-        if (SKIP_FIELDS.has(field)) continue;
-        const targets = extractRelations(rawValue);
-        if (targets.length === 0) continue;
-        const rows = targets.map(targetId => ({
-            sourceId: targetId,
-            fields: fieldsCache.get(targetId) || { type: '', label: targetId },
-            filePath: idIndex.get(targetId) || null
-        }));
-        groups.push({ field, rows, direction: 'outgoing' });
-    }
-    return groups.sort((a, b) => a.field.localeCompare(b.field));
-}
-
-function buildSummaryRows(nodeFields) {
-    return Object.entries(nodeFields)
-        .filter(([key, value]) => !SKIP_FIELDS.has(key) && value && extractRelations(value).length === 0)
-        .map(([key, value]) => ({ key, value: String(value) }))
-        .sort((a, b) => a.key.localeCompare(b.key));
-}
-
-function summariseTypeCounts(rows) {
-    const counts = new Map();
-    for (const row of rows) {
-        const type = String(row.fields?.type || 'unknown').trim().toLowerCase() || 'unknown';
-        counts.set(type, (counts.get(type) || 0) + 1);
-    }
-    return [...counts.entries()]
-        .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
-        .map(([type, count]) => `${type} (${count})`)
-        .join(', ');
-}
-
-function summariseFieldCounts(groups) {
-    return groups
-        .map(group => ({ field: group.field, count: group.rows.length }))
-        .sort((a, b) => b.count - a.count || a.field.localeCompare(b.field))
-        .map(item => `${item.field} (${item.count})`)
-        .join(', ');
-}
-
-function buildVaultPositionRows(nodeFields, incomingGroups, outgoingGroups) {
-    const incomingRows = incomingGroups.flatMap(group => group.rows);
-    const outgoingRows = outgoingGroups.flatMap(group => group.rows);
-    const bodyMentions = incomingGroups
-        .filter(group => group.field === 'body')
-        .reduce((sum, group) => sum + group.rows.length, 0);
-    const rows = [
-        { key: 'node type', value: String(nodeFields.type || 'node') },
-        { key: 'inbound links', value: String(incomingRows.length) },
-        { key: 'outbound links', value: String(outgoingRows.length) }
-    ];
-
-    if (bodyMentions > 0) rows.push({ key: 'body mentions', value: String(bodyMentions) });
-
-    const inboundFields = summariseFieldCounts(incomingGroups);
-    const outboundFields = summariseFieldCounts(outgoingGroups);
-    const inboundTypes = summariseTypeCounts(incomingRows);
-    const outboundTypes = summariseTypeCounts(outgoingRows);
-
-    if (inboundFields) rows.push({ key: 'linked here via', value: inboundFields });
-    if (outboundFields) rows.push({ key: 'links out via', value: outboundFields });
-    if (inboundTypes) rows.push({ key: 'linked from types', value: inboundTypes });
-    if (outboundTypes) rows.push({ key: 'links to types', value: outboundTypes });
-
-    return rows;
-}
-
-function buildTaskSections(nodeId, idIndex) {
-    const taskRows = buildTaskRows(idIndex);
-    const inNote = [];
-    const linkedHere = [];
-
-    for (const row of taskRows) {
-        const payload = {
-            id: row.id,
-            text: row.text,
-            done: row.done ? 'true' : 'false',
-            date: row.date || '',
-            file: row.fileId,
-            line: String(row.line || '')
-        };
-        if (row.fileId === nodeId) inNote.push(payload);
-        else if (Array.isArray(row.links) && row.links.includes(nodeId)) linkedHere.push(payload);
-    }
-
-    const sections = [];
-    if (inNote.length > 0) sections.push({ label: 'tasks in note', rows: inNote });
-    if (linkedHere.length > 0) sections.push({ label: 'tasks linking here', rows: linkedHere });
-    return sections;
-}
-
-function buildTimelineRows(nodeId, nodeFields, taskSections) {
-    const rows = [];
-    const nodeDate = normaliseDateInput(nodeFields.date || '');
-    if (nodeDate) {
-        rows.push({
-            date: nodeDate,
-            label: nodeId,
-            source: nodeId,
-            kind: 'node'
-        });
-    }
-
-    for (const section of taskSections) {
-        for (const row of section.rows) {
-            if (!row.date) continue;
-            rows.push({
-                date: row.date,
-                label: row.text,
-                source: row.file,
-                kind: section.label
-            });
-        }
-    }
-
-    return rows.sort((a, b) => a.date.localeCompare(b.date) || a.label.localeCompare(b.label));
-}
-
-function buildHtml(nodeId, incomingGroups, outgoingGroups, summaryRows, taskSections, timelineRows, suggestions, nodeFields, idIndex) {
+function buildHtml(nodeId, incomingGroups, outgoingGroups, summaryRows, taskSections, timelineRows, suggestions, suggestionExplanation, recipes, vaultPositionRows, nodeFields, idIndex) {
     const host = getHost();
     const webview = host.webview;
     const scriptUri = webview.asWebviewUri(vscode.Uri.joinPath(_extUri, 'src', 'features', 'entityHubScript.js'));
@@ -305,9 +165,10 @@ function buildHtml(nodeId, incomingGroups, outgoingGroups, summaryRows, taskSect
         + outgoingGroups.reduce((n, g) => n + g.rows.length, 0)
         + taskSections.reduce((n, g) => n + g.rows.length, 0)
         + timelineRows.length
-        + suggestions.length;
+        + suggestions.length
+        + recipes.length;
     const typeLabel = nodeFields.type ? String(nodeFields.type) : 'node';
-    const createdLabel = normaliseDateInput(nodeFields.created || '') || '';
+    const createdLabel = String(nodeFields.created || '').trim();
     const statChips = [
         { label: 'type', value: typeLabel },
         { label: 'summary', value: String(summaryRows.length) },
@@ -316,85 +177,101 @@ function buildHtml(nodeId, incomingGroups, outgoingGroups, summaryRows, taskSect
     ];
     if (createdLabel) statChips.push({ label: 'created', value: createdLabel });
 
-    const summarySection = summaryRows.length
-        ? buildSummarySection(summaryRows)
-        : '';
-    const suggestionSection = suggestions.length
-        ? buildSuggestionSection(nodeId, suggestions)
-        : '';
-    const vaultPositionRows = buildVaultPositionRows(nodeFields, incomingGroups, outgoingGroups);
+    const summarySection = buildSummarySection(summaryRows);
+    const suggestionSection = buildSuggestionSection(nodeId, suggestions, suggestionExplanation);
+    const recipeSection = buildRecipeSection(nodeId, recipes);
     const vaultPositionSection = buildKeyValueSection('vault position', 'vault-position', vaultPositionRows);
-    const outgoingSections = outgoingGroups.map(group => buildRelationSection(group.field, group.rows, group.direction)).join('\n');
-    const incomingSections = incomingGroups.map(group => buildRelationSection(group.field, group.rows, group.direction)).join('\n');
-    const taskHtml = taskSections.map(section => buildTaskSection(section.label, section.rows)).join('\n');
-    const timelineHtml = timelineRows.length > 0 ? buildTimelineSection(timelineRows) : '';
+    const outgoingSections = outgoingGroups.length
+        ? outgoingGroups.map(group => buildRelationSection(group.field, group.rows, group.direction)).join('\n')
+        : buildEmptySection('outgoing links', 'No outbound links yet.', 'Add frontmatter relations or body wikilinks like <code>[[other-note]]</code> to show what this note points to.');
+    const incomingSections = incomingGroups.length
+        ? incomingGroups.map(group => buildRelationSection(group.field, group.rows, group.direction)).join('\n')
+        : buildEmptySection('incoming links', 'Nothing links here yet.', 'Links from other notes will appear here automatically once this note is referenced.');
+    const taskHtml = taskSections.length
+        ? taskSections.map(section => buildTaskSection(section.label, section.rows)).join('\n')
+        : buildEmptySection('tasks', 'No task activity tied to this note.', 'Add Markdown tasks in this note or mention this node from another task to track work here.');
+    const timelineHtml = buildTimelineSection(timelineRows);
 
     return `<!DOCTYPE html>
 <html lang="en"><head>
 <meta charset="UTF-8">
 <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'nonce-${nonce}' ${csp};">
 <style>
+:root{--hub-pad:14px;--hub-gap:10px;--hub-accent:#4fc4a0;--hub-link:#6eb3f0;--hub-chip-bg:rgba(255,255,255,.045);--hub-chip-border:rgba(255,255,255,.09)}
 *{box-sizing:border-box;margin:0;padding:0}
-body{background:var(--vscode-editor-background,#141414);color:var(--vscode-editor-foreground,#c8c8c8);font-family:'Segoe UI',system-ui,sans-serif;font-size:13px;height:100vh;display:flex;flex-direction:column;overflow:hidden}
-.hub-header{display:flex;flex-direction:column;gap:10px;padding:12px 16px;background:linear-gradient(180deg,rgba(110,179,240,.09),rgba(79,196,160,.03));border-bottom:1px solid var(--vscode-panel-border,#2a2a2a);flex-shrink:0}
+html,body{height:100%}
+body{background:var(--vscode-editor-background,#141414);color:var(--vscode-editor-foreground,#c8c8c8);font-family:'Segoe UI',system-ui,sans-serif;font-size:13px;min-height:100vh;display:flex;flex-direction:column;overflow:auto}
+.hub-header{display:flex;flex-direction:column;gap:9px;padding:12px var(--hub-pad);background:linear-gradient(180deg,rgba(110,179,240,.09),rgba(79,196,160,.03));border-bottom:1px solid var(--vscode-panel-border,#2a2a2a);flex-shrink:0}
 .hub-titleline{display:flex;align-items:flex-start;justify-content:space-between;gap:12px}
 .hub-nodewrap{display:flex;flex-direction:column;gap:4px;min-width:0}
 .hub-label{font-size:10px;color:#8b949e;letter-spacing:.08em;text-transform:uppercase}
-.hub-node{font-size:15px;font-weight:700;color:var(--vscode-textLink-foreground,#6eb3f0);cursor:pointer;letter-spacing:.01em;line-height:1.2;word-break:break-word}
+.hub-node{font-size:15px;font-weight:700;color:var(--hub-link);cursor:pointer;letter-spacing:.01em;line-height:1.2;word-break:break-word}
 .hub-node:hover{text-decoration:underline}
 .hub-meta{font-size:11px;color:var(--vscode-descriptionForeground,#95a1ac);line-height:1.35}
 .hub-chips{display:flex;flex-wrap:wrap;gap:6px}
-.hub-chip{display:inline-flex;align-items:center;gap:6px;padding:4px 8px;border-radius:999px;background:rgba(255,255,255,.05);border:1px solid rgba(255,255,255,.08);font-size:11px;color:var(--vscode-editor-foreground,#d0d7de)}
+.hub-chip{display:inline-flex;align-items:center;gap:6px;padding:4px 8px;border-radius:999px;background:var(--hub-chip-bg);border:1px solid var(--hub-chip-border);font-size:11px;color:var(--vscode-editor-foreground,#d0d7de)}
 .hub-chip-label{color:#8b949e;text-transform:uppercase;letter-spacing:.07em;font-size:10px}
-.hub-searchbar{display:flex;align-items:center;gap:8px;padding:8px 16px;background:var(--vscode-sideBar-background,#1a1a1a);border-bottom:1px solid var(--vscode-panel-border,#2a2a2a);flex-shrink:0}
+.hub-searchbar{display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:center;gap:8px;padding:8px var(--hub-pad);background:var(--vscode-sideBar-background,#1a1a1a);border-bottom:1px solid var(--vscode-panel-border,#2a2a2a);flex-shrink:0}
 .hub-search{flex:1;background:var(--vscode-editor-background,#141414);border:1px solid var(--vscode-panel-border,#2a2a2a);border-radius:8px;padding:7px 10px;font:inherit;font-size:12px;color:var(--vscode-editor-foreground,#c8c8c8);outline:none}
-.hub-search:focus{border-color:var(--vscode-textLink-foreground,#6eb3f0)}
+.hub-search:focus{border-color:var(--hub-link);box-shadow:0 0 0 1px rgba(110,179,240,.2)}
 .hub-search::placeholder{color:#555}
 .hub-searchcount{font-size:10px;color:#6f7781;white-space:nowrap;letter-spacing:.06em;text-transform:uppercase}
-.hub-searchcount strong{color:#4fc4a0}
-.hub-body{flex:1;overflow-y:auto;padding-bottom:8px}
+.hub-searchcount strong{color:var(--hub-accent)}
+.hub-body{flex:1;overflow-y:auto;padding:0 0 8px}
 .hub-body::-webkit-scrollbar{width:4px}
 .hub-body::-webkit-scrollbar-thumb{background:var(--vscode-panel-border,#2a2a2a);border-radius:2px}
 .hub-section{border-bottom:1px solid var(--vscode-panel-border,#2a2a2a)}
-.hub-section-header{display:flex;align-items:center;gap:9px;padding:8px 16px;cursor:pointer;user-select:none;background:var(--vscode-sideBar-background,#1a1a1a)}
+.hub-section-header{display:flex;align-items:center;gap:8px;padding:8px var(--hub-pad);cursor:pointer;user-select:none;background:var(--vscode-sideBar-background,#1a1a1a)}
 .hub-section-header:hover{background:rgba(255,255,255,.02)}
 .hub-chevron{font-size:8px;color:#555;transition:transform .12s;display:inline-block;width:10px;flex-shrink:0}
 .hub-section.open .hub-chevron{transform:rotate(90deg)}
-.hub-field{font-size:11px;font-weight:600;color:var(--vscode-textLink-foreground,#6eb3f0);letter-spacing:.06em;text-transform:uppercase}
+.hub-field{font-size:11px;font-weight:600;color:var(--hub-link);letter-spacing:.06em;text-transform:uppercase}
 .hub-count{font-size:9px;color:#6f7781;background:rgba(255,255,255,.06);border-radius:10px;padding:1px 7px;letter-spacing:.08em}
-.hub-section-body{display:none;padding:2px 16px 10px}
+.hub-section-body{display:none;padding:4px var(--hub-pad) 10px}
 .hub-section.open .hub-section-body{display:block}
-.summary-grid{display:grid;grid-template-columns:minmax(100px,180px) 1fr;gap:8px 14px;margin-top:8px}
+.summary-grid{display:grid;grid-template-columns:minmax(88px,140px) minmax(0,1fr);gap:8px 12px;margin-top:8px}
 .summary-key{font-size:10px;color:#8b949e;text-transform:uppercase;letter-spacing:.08em;font-weight:600}
 .summary-value{font-size:12px;color:#d0d7de;word-break:break-word}
-.suggestion-list{display:flex;flex-direction:column;gap:8px;margin-top:8px}
-.suggestion-row{display:flex;justify-content:space-between;gap:10px;align-items:center;padding:10px;border:1px solid var(--vscode-panel-border,#2a2a2a);border-radius:10px;background:rgba(255,255,255,.02)}
+.section-empty{display:flex;flex-direction:column;gap:6px;padding:10px 12px;margin-top:8px;border:1px dashed color-mix(in srgb, var(--vscode-panel-border,#2a2a2a) 86%, transparent);border-radius:12px;background:linear-gradient(180deg,rgba(255,255,255,.018),rgba(255,255,255,.012))}
+.section-empty-title{font-size:12px;font-weight:600;color:var(--vscode-editor-foreground,#d0d7de)}
+.section-empty-copy{font-size:11px;line-height:1.5;color:var(--vscode-descriptionForeground,#95a1ac)}
+.section-empty-list{margin:6px 0 0 16px;padding:0;display:flex;flex-direction:column;gap:4px}
+.section-empty-list li{font-size:11px;line-height:1.4;color:var(--vscode-descriptionForeground,#95a1ac)}
+.section-empty-copy code{background:rgba(255,255,255,.06);border-radius:5px;padding:1px 5px;font-size:10px;color:var(--vscode-editor-foreground,#d0d7de)}
+.suggestion-list{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:8px;margin-top:8px}
+.suggestion-row{display:grid;grid-template-columns:minmax(0,1fr);gap:10px;align-items:start;padding:10px;border:1px solid var(--vscode-panel-border,#2a2a2a);border-radius:12px;background:linear-gradient(180deg,rgba(255,255,255,.02),rgba(255,255,255,.012))}
 .suggestion-copy{display:flex;flex-direction:column;gap:4px;min-width:0}
 .suggestion-title{font-size:12px;font-weight:600;color:var(--vscode-editor-foreground,#c8c8c8)}
 .suggestion-query{font-size:11px;color:#8b949e;word-break:break-word}
-.suggestion-btn{border:none;border-radius:999px;padding:6px 10px;background:var(--vscode-button-background,#0e639c);color:var(--vscode-button-foreground,#fff);font:inherit;font-size:11px;font-weight:600;cursor:pointer;flex-shrink:0}
-.suggestion-btn:hover{background:var(--vscode-button-hoverBackground,#1177bb)}
+.suggestion-btn{border:1px solid rgba(110,179,240,.26);border-radius:999px;padding:6px 10px;background:rgba(110,179,240,.1);color:var(--hub-link);font:inherit;font-size:11px;font-weight:600;cursor:pointer;justify-self:start}
+.suggestion-btn:hover{background:rgba(110,179,240,.18);border-color:rgba(110,179,240,.4)}
+.suggestion-btn[disabled]{cursor:default;background:rgba(255,255,255,.06);color:#8b949e}
+.suggestion-btn[disabled]:hover{background:rgba(255,255,255,.06)}
+.suggestion-note{font-size:10px;color:#6f7781;letter-spacing:.05em;text-transform:uppercase}
 table{width:100%;border-collapse:collapse;margin-top:8px}
 thead th.col-id{width:1%}
 thead th{font-size:10px;text-transform:uppercase;letter-spacing:.1em;color:#6f7781;padding:7px 10px;text-align:left;border-bottom:1px solid var(--vscode-panel-border,#2a2a2a);white-space:nowrap;user-select:none;position:sticky;top:0;background:var(--vscode-editor-background,#141414);z-index:1;cursor:pointer;font-weight:600}
 thead th:hover{color:#888}
-thead th.sorted{color:#4fc4a0}
+thead th.sorted{color:var(--hub-accent)}
 .sarr{opacity:.4;margin-left:3px;font-size:9px}
 thead th.sorted .sarr{opacity:1}
 tbody tr{border-bottom:1px solid var(--vscode-panel-border,#2a2a2a)}
 tbody tr:hover{background:rgba(255,255,255,.03)}
 tbody td{padding:8px 10px;font-size:12px;vertical-align:middle}
-.cell-id{font-size:12px;color:var(--vscode-textLink-foreground,#6eb3f0);white-space:nowrap;cursor:pointer;font-weight:600}
+.cell-id{font-size:12px;color:var(--hub-link);white-space:nowrap;cursor:pointer;font-weight:600}
 .cell-id:hover{text-decoration:underline}
 .cell-empty{color:#555;font-style:italic}
-.cell-rel{font-size:11px;color:#4fc4a0;background:rgba(79,196,160,.08);border:1px solid rgba(79,196,160,.2);border-radius:999px;padding:2px 7px;display:inline-block;white-space:nowrap;cursor:pointer;margin:1px 2px 1px 0}
-.cell-rel:hover{background:rgba(79,196,160,.16)}
-.live-bar{display:flex;align-items:center;justify-content:space-between;gap:8px;padding:6px 16px;border-top:1px solid var(--vscode-panel-border,#2a2a2a);background:var(--vscode-sideBar-background,#1a1a1a);font-size:10px;color:#6f7781;flex-shrink:0;letter-spacing:.06em;text-transform:uppercase}
+.cell-rel{font-size:11px;color:var(--hub-accent);background:rgba(79,196,160,.08);border:1px solid rgba(79,196,160,.18);border-radius:999px;padding:2px 7px;display:inline-block;white-space:nowrap;cursor:pointer;margin:1px 2px 1px 0}
+.cell-rel:hover{background:rgba(79,196,160,.14);border-color:rgba(79,196,160,.3)}
+.live-bar{display:flex;align-items:center;justify-content:space-between;gap:8px;padding:6px var(--hub-pad);border-top:1px solid var(--vscode-panel-border,#2a2a2a);background:var(--vscode-sideBar-background,#1a1a1a);font-size:10px;color:#6f7781;flex-shrink:0;letter-spacing:.06em;text-transform:uppercase}
 .live-left{display:flex;align-items:center;gap:6px}
 .live-note{color:#8b949e}
-.ldot{width:6px;height:6px;border-radius:50%;background:#4fc4a0;animation:pulse 2s infinite}
+.ldot{width:6px;height:6px;border-radius:50%;background:var(--hub-accent);animation:pulse 2s infinite}
 @keyframes pulse{0%,100%{opacity:1}50%{opacity:.25}}
-@media (max-width:640px){.hub-header,.hub-searchbar,.hub-section-header,.hub-section-body,.live-bar{padding-left:12px;padding-right:12px}.hub-titleline{flex-direction:column;align-items:flex-start}.hub-chips{gap:5px}.hub-searchcount{display:none}td,th{padding-left:8px;padding-right:8px}.suggestion-row{flex-direction:column;align-items:flex-start}.suggestion-btn{width:100%}}
+@media (max-width:900px){.suggestion-list{grid-template-columns:1fr 1fr}.summary-grid{grid-template-columns:1fr}.hub-titleline{flex-direction:column;align-items:flex-start}}
+@media (max-width:720px){:root{--hub-pad:12px}.hub-searchbar{grid-template-columns:1fr}.summary-key{font-size:9px}.summary-value{font-size:11px}.hub-meta{font-size:10px}.hub-chip{padding:3px 7px}.suggestion-list{grid-template-columns:1fr}.suggestion-btn{width:100%}.live-note{display:none}}
+@media (max-width:640px){.hub-chips{gap:5px}.hub-searchcount{display:none}td,th{padding-left:8px;padding-right:8px}}
+@media (max-width:460px){:root{--hub-pad:10px}.hub-node{font-size:14px}.hub-label{font-size:9px}.hub-chip{font-size:10px}.suggestion-title{font-size:11px}.suggestion-query{font-size:10px}.hub-field{font-size:10px}.hub-count{font-size:8px}}
 </style></head><body>
 <datalist id="yids">${idOpts}</datalist>
 <div class="hub-header">
@@ -414,6 +291,7 @@ tbody td{padding:8px 10px;font-size:12px;vertical-align:middle}
 <div class="hub-body">
 ${summarySection}
 ${vaultPositionSection}
+${recipeSection}
 ${suggestionSection}
 ${timelineHtml}
 ${taskHtml}
@@ -446,7 +324,9 @@ function buildKeyValueSection(title, fieldName, rows) {
 }
 
 function buildSummarySection(summaryRows) {
-    const body = summaryRows.map(row => `<div class="summary-key">${esc(row.key)}</div><div class="summary-value">${esc(row.value)}</div>`).join('');
+    const body = summaryRows.length
+        ? summaryRows.map(row => `<div class="summary-key">${esc(row.key)}</div><div class="summary-value">${esc(row.value)}</div>`).join('')
+        : buildSectionEmptyState('No scalar frontmatter yet.', 'Add fields like <code>status:</code>, <code>owner:</code>, or <code>date:</code> to make this note easier to scan.');
     return [
         '<div class="hub-section open" data-field="summary">',
         '    <div class="hub-section-header">',
@@ -461,24 +341,36 @@ function buildSummarySection(summaryRows) {
     ].join('\n');
 }
 
-function buildSuggestionRows(nodeId, idIndex) {
-    const filePath = idIndex.get(nodeId);
-    let docText = null;
-    const editor = vscode.window.activeTextEditor;
-    if (editor && editor.document.languageId === 'markdown' && editor.document.uri.fsPath === filePath) {
-        docText = editor.document.getText();
-    } else if (filePath && fs.existsSync(filePath)) {
-        docText = fs.readFileSync(filePath, 'utf8');
+function buildSuggestionSection(nodeId, rows, explanation) {
+    if (!rows.length) {
+        const reasonList = Array.isArray(explanation?.reasons) && explanation.reasons.length
+            ? `<ul class="section-empty-list">${explanation.reasons.map(reason => `<li>${esc(reason)}</li>`).join('')}</ul>`
+            : '';
+        return [
+            '<div class="hub-section" data-field="suggestions">',
+            '    <div class="hub-section-header">',
+            '        <span class="hub-chevron">&#9658;</span>',
+            '        <span class="hub-field">suggested views</span>',
+            '        <span class="hub-count">0</span>',
+            '    </div>',
+            '    <div class="hub-section-body">',
+            buildSectionEmptyState(
+                esc(explanation?.title || 'No suggested views yet.'),
+                `${esc(explanation?.description || 'Yamlink is still learning the structure around this note.')}${reasonList}`
+            ),
+            '    </div>',
+            '</div>'
+        ].join('\n');
     }
-    return computeSuggestionsForNode(nodeId, docText);
-}
 
-function buildSuggestionSection(nodeId, rows) {
     const bodyRows = rows.map(function (row) {
+        const buttonAttrs = row.inserted ? ' disabled aria-disabled="true"' : '';
+        const buttonLabel = row.inserted ? 'Already in note' : 'Insert';
+        const note = row.inserted ? '<div class="suggestion-note">already in note</div>' : '';
         return [
             '<div class="suggestion-row">',
-            `  <div class="suggestion-copy"><div class="suggestion-title">${esc(row.count)} ${esc(row.count === 1 ? row.sourceType : row.sourceType + 's')} via ${esc(row.field)}</div><div class="suggestion-query">${esc(row.queryText)}</div></div>`,
-            `  <button class="suggestion-btn" data-insert-view="${esc(row.queryText)}" data-source-type="${esc(row.sourceType)}" data-field-name="${esc(row.field)}" data-node-id="${esc(nodeId)}">Insert</button>`,
+            `  <div class="suggestion-copy"><div class="suggestion-title">${esc(row.count)} ${esc(row.count === 1 ? row.sourceType : row.sourceType + 's')} via ${esc(row.field)}</div><div class="suggestion-query">${esc(row.queryText)}</div>${note}</div>`,
+            `  <button class="suggestion-btn" data-insert-view="${esc(row.queryText)}" data-source-type="${esc(row.sourceType)}" data-field-name="${esc(row.field)}" data-node-id="${esc(nodeId)}"${buttonAttrs}>${buttonLabel}</button>`,
             '</div>'
         ].join('');
     }).join('');
@@ -497,14 +389,50 @@ function buildSuggestionSection(nodeId, rows) {
     ].join('\n');
 }
 
-function buildRelationSection(field, rows, direction) {
-    const fieldSet = new Set();
-    for (const { fields } of rows) {
-        for (const key of Object.keys(fields)) {
-            if (!SKIP_FIELDS.has(key)) fieldSet.add(key);
-        }
+function buildRecipeSection(nodeId, rows) {
+    if (!rows.length) {
+        return [
+            '<div class="hub-section" data-field="recipes">',
+            '    <div class="hub-section-header">',
+            '        <span class="hub-chevron">&#9658;</span>',
+            '        <span class="hub-field">query recipes</span>',
+            '        <span class="hub-count">0</span>',
+            '    </div>',
+            '    <div class="hub-section-body">',
+            buildSectionEmptyState('No recipes available yet.', 'Recipes show the fastest useful views Yamlink can build from this note once it has a clearer type or link context.'),
+            '    </div>',
+            '</div>'
+        ].join('\n');
     }
-    const columns = ['id', ...Array.from(fieldSet).sort()];
+
+    const bodyRows = rows.map(function (row) {
+        const buttonAttrs = row.inserted ? ' disabled aria-disabled="true"' : '';
+        const buttonLabel = row.inserted ? 'Already in note' : 'Insert';
+        const note = row.inserted ? '<div class="suggestion-note">already in note</div>' : '';
+        return [
+            '<div class="suggestion-row">',
+            `  <div class="suggestion-copy"><div class="suggestion-title">${esc(row.title)}</div><div class="suggestion-query">${esc(row.description)}</div>${note}</div>`,
+            `  <button class="suggestion-btn" data-insert-view="${esc(row.queryText)}" data-node-id="${esc(nodeId)}"${buttonAttrs}>${buttonLabel}</button>`,
+            '</div>'
+        ].join('');
+    }).join('');
+
+    return [
+        '<div class="hub-section open" data-field="recipes">',
+        '    <div class="hub-section-header">',
+        '        <span class="hub-chevron">&#9658;</span>',
+        '        <span class="hub-field">query recipes</span>',
+        `        <span class="hub-count">${rows.length}</span>`,
+        '    </div>',
+        '    <div class="hub-section-body">',
+        `        <div class="suggestion-list">${bodyRows}</div>`,
+        '    </div>',
+        '</div>'
+    ].join('\n');
+}
+
+function buildRelationSection(field, rows, direction) {
+    const columns = getVisibleRelationColumns(rows);
     const headerCells = columns.map(function (col) {
         const cls = col === 'id' ? ' class="col-id"' : '';
         return `<th${cls} data-col="${esc(col)}">${esc(col)} <span class="sarr">↕</span></th>`;
@@ -543,20 +471,21 @@ function buildRelationSection(field, rows, direction) {
 }
 
 function buildTaskSection(label, rows) {
-    const headerCells = ['id', 'date', 'done', 'file', 'text']
+    const columns = getVisibleTaskColumns(rows);
+    const headerCells = columns
         .map(col => `<th data-col="${esc(col)}">${esc(col)} <span class="sarr">↕</span></th>`)
         .join('');
 
     const bodyRows = rows.map(function (row) {
-        return [
-            '<tr>',
-            `  <td class="cell-id" data-id="${esc(row.file)}">${esc(row.id)}</td>`,
-            `  <td>${row.date ? esc(row.date) : '<span class="cell-empty">-</span>'}</td>`,
-            `  <td>${row.done === 'true' ? '<span class="cell-rel">done</span>' : '<span class="cell-empty">open</span>'}</td>`,
-            `  <td class="cell-id" data-id="${esc(row.file)}">${esc(row.file)}</td>`,
-            `  <td>${esc(row.text)}</td>`,
-            '</tr>'
-        ].join('');
+        const cells = columns.map(function (col) {
+            if (col === 'id') return `<td class="cell-id" data-id="${esc(row.file)}">${esc(row.id)}</td>`;
+            if (col === 'date') return `<td>${row.date ? esc(row.date) : '<span class="cell-empty">-</span>'}</td>`;
+            if (col === 'done') return `<td>${row.done === 'true' ? '<span class="cell-rel">done</span>' : '<span class="cell-empty">open</span>'}</td>`;
+            if (col === 'file') return `<td class="cell-id" data-id="${esc(row.file)}">${esc(row.file)}</td>`;
+            if (col === 'text') return `<td>${esc(row.text)}</td>`;
+            return '<td class="cell-empty">-</td>';
+        }).join('');
+        return `<tr>${cells}</tr>`;
     }).join('');
 
     return [
@@ -577,6 +506,21 @@ function buildTaskSection(label, rows) {
 }
 
 function buildTimelineSection(rows) {
+    if (!rows.length) {
+        return [
+            '<div class="hub-section" data-field="timeline">',
+            '    <div class="hub-section-header">',
+            '        <span class="hub-chevron">&#9658;</span>',
+            '        <span class="hub-field">timeline</span>',
+            '        <span class="hub-count">0</span>',
+            '    </div>',
+            '    <div class="hub-section-body">',
+            buildSectionEmptyState('No dated activity yet.', 'Timeline entries appear when this note has a <code>date:</code> field or related tasks include a supported date.'),
+            '    </div>',
+            '</div>'
+        ].join('\n');
+    }
+
     const bodyRows = rows.map(function (row) {
         return [
             '<tr>',
@@ -603,6 +547,25 @@ function buildTimelineSection(rows) {
         '    </div>',
         '</div>'
     ].join('\n');
+}
+
+function buildEmptySection(title, emptyTitle, emptyCopy) {
+    return [
+        `<div class="hub-section" data-field="${esc(title)}">`,
+        '    <div class="hub-section-header">',
+        '        <span class="hub-chevron">&#9658;</span>',
+        `        <span class="hub-field">${esc(title)}</span>`,
+        '        <span class="hub-count">0</span>',
+        '    </div>',
+        '    <div class="hub-section-body">',
+        buildSectionEmptyState(emptyTitle, emptyCopy),
+        '    </div>',
+        '</div>'
+    ].join('\n');
+}
+
+function buildSectionEmptyState(title, copy) {
+    return `<div class="section-empty"><div class="section-empty-title">${title}</div><div class="section-empty-copy">${copy}</div></div>`;
 }
 
 function renderEmpty(label) {
@@ -676,4 +639,12 @@ function esc(str) {
         .replace(/>/g, '&gt;');
 }
 
-module.exports = { syncEntityHub, refreshEntityHub, registerEntityHubView, focusEntityHub };
+module.exports = {
+    syncEntityHub,
+    refreshEntityHub,
+    registerEntityHubView,
+    focusEntityHub,
+    buildContextualQueryRecipes,
+    getVisibleRelationColumns,
+    getVisibleTaskColumns
+};

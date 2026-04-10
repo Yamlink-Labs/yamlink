@@ -9,6 +9,7 @@ function createServices() {
     const counts = {
         clearDiagnostics: 0,
         validateAll: 0,
+        validateTargeted: 0,
         refreshBacklinks: 0,
         refreshRelated: 0,
         refreshDecorations: 0,
@@ -42,6 +43,7 @@ describe('refresh router', () => {
 
         assert.equal(counts.clearDiagnostics, 1);
         assert.equal(counts.validateAll, 1);
+        assert.equal(counts.validateTargeted, 0);
         assert.equal(counts.refreshSuggestions, 1);
         assert.equal(counts.refreshCalendar, 1);
     });
@@ -53,10 +55,13 @@ describe('refresh router', () => {
         router.refreshForIndexMutation({ changed: false, needsFull: false });
         assert.equal(counts.refreshSuggestions, 1);
         assert.equal(counts.refreshViews, 0);
+        assert.equal(counts.validateTargeted, 0);
 
         router.refreshForIndexMutation({ changed: true, needsFull: false });
         assert.equal(counts.refreshSuggestions, 2);
         assert.equal(counts.refreshViews, 1);
         assert.equal(counts.refreshCalendar, 1);
+        assert.equal(counts.validateTargeted, 1);
+        assert.equal(counts.validateAll, 0);
     });
 });

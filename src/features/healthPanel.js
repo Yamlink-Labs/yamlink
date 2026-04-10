@@ -131,7 +131,13 @@ function buildHtml(stats) {
     const healthColor = healthScore >= 80 ? '#4ec9b0' : healthScore >= 50 ? '#e5a96a' : '#f47474';
     const healthLabel = healthScore >= 80 ? 'Healthy' : healthScore >= 50 ? 'Fair' : 'Needs attention';
     const updatedAt = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-    const riskLabel = stats.broken > 0 ? 'Broken links need attention' : stats.orphans.length > 0 ? 'A few nodes need stronger connections' : 'Structure looks cohesive';
+    const riskLabel = stats.broken > 0
+        ? 'Broken links need attention'
+        : stats.orphans.length > 0
+            ? 'A few nodes need stronger connections'
+            : stats.nodes <= 3
+                ? 'Early vault, clean start'
+                : 'Structure looks cohesive';
 
     const typeSections = stats.types.length > 0
         ? stats.types.map(({ type, count, nodes }) => {
@@ -164,13 +170,13 @@ function buildHtml(stats) {
                 </div>
             </div>`;
         }).join('')
-        : `<div class="empty-section">No typed nodes in vault yet.</div>`;
+        : `<div class="empty-section"><div class="empty-title">No typed nodes yet.</div><div class="empty-copy">Add a <code>type:</code> field to your nodes to turn Vault Health into a clearer system map.</div></div>`;
 
     const orphanSection = stats.orphans.length > 0
         ? stats.orphans.map(id =>
             `<span class="node-pill orphan-pill" data-id="${id}">${id}</span>`
           ).join('')
-        : `<span class="empty-section">Every node is connected. Great vault hygiene.</span>`;
+        : `<div class="empty-section"><div class="empty-title">No orphan nodes.</div><div class="empty-copy">Every indexed node has at least one connection. This part of the vault is structurally healthy.</div></div>`;
 
     return `<!DOCTYPE html>
 <html lang="en">
@@ -193,6 +199,7 @@ function buildHtml(stats) {
         --mid:      var(--vscode-descriptionForeground, #95a1ac);
         --accent:   #4fc4a0;
         --accent2:  #6eb3f0;
+        --accent3:  #e5a96a;
         --warn:     #e5a96a;
         --danger:   #f47474;
         --link:     var(--vscode-textLink-foreground, #6eb3f0);
@@ -200,7 +207,10 @@ function buildHtml(stats) {
     }
 
     body {
-        background: var(--bg);
+        background:
+            radial-gradient(circle at top left, color-mix(in srgb, var(--link) 7%, transparent), transparent 28%),
+            radial-gradient(circle at bottom right, color-mix(in srgb, var(--accent) 6%, transparent), transparent 30%),
+            var(--bg);
         color: var(--text);
         font-family: var(--sans);
         font-size: 13px;
@@ -212,24 +222,24 @@ function buildHtml(stats) {
     .header {
         display: grid;
         grid-template-columns: minmax(0, 1.5fr) minmax(220px, .9fr);
-        gap: 18px;
-        padding: 28px 32px 24px;
+        gap: 16px;
+        padding: 20px 22px 16px;
         border-bottom: 1px solid var(--border);
         background:
-            radial-gradient(circle at top left, rgba(110,179,240,.14), transparent 34%),
-            radial-gradient(circle at top right, rgba(79,196,160,.1), transparent 28%),
-            var(--surface);
+            radial-gradient(circle at top left, rgba(110,179,240,.12), transparent 34%),
+            radial-gradient(circle at top right, rgba(79,196,160,.08), transparent 28%),
+            linear-gradient(180deg, color-mix(in srgb, var(--surface) 98%, transparent), color-mix(in srgb, var(--surface2) 48%, var(--surface)));
     }
 
     .header-main {
         display: flex;
         flex-direction: column;
-        gap: 14px;
+        gap: 12px;
     }
 
     .eyebrow {
         font-size: 11px;
-        color: var(--accent2);
+        color: var(--accent3);
         letter-spacing: .12em;
         text-transform: uppercase;
         font-weight: 700;
@@ -238,13 +248,13 @@ function buildHtml(stats) {
     .hero-row {
         display: flex;
         align-items: end;
-        gap: 14px;
+        gap: 12px;
         flex-wrap: wrap;
     }
 
     .header-title {
-        font-size: 29px;
-        line-height: 1.05;
+        font-size: 23px;
+        line-height: 1.08;
         font-weight: 750;
         letter-spacing: -0.03em;
     }
@@ -268,15 +278,16 @@ function buildHtml(stats) {
     .header-side {
         display: grid;
         grid-template-columns: repeat(2, minmax(0, 1fr));
-        gap: 10px;
+        gap: 7px;
         align-content: start;
     }
 
     .hero-card {
         border: 1px solid var(--border);
-        border-radius: 16px;
-        background: rgba(0,0,0,.12);
-        padding: 14px 15px;
+        border-radius: 14px;
+        background: color-mix(in srgb, var(--surface2) 86%, transparent);
+        padding: 11px 12px;
+        box-shadow: 0 6px 18px rgba(0,0,0,.08);
     }
 
     .hero-card-label {
@@ -289,7 +300,7 @@ function buildHtml(stats) {
     }
 
     .hero-card-value {
-        font-size: 26px;
+        font-size: 24px;
         line-height: 1;
         font-weight: 760;
         letter-spacing: -.03em;
@@ -305,14 +316,14 @@ function buildHtml(stats) {
     .stats-strip {
         display: grid;
         grid-template-columns: repeat(6, minmax(0, 1fr));
-        gap: 10px;
-        padding: 16px 32px 0;
+        gap: 7px;
+        padding: 12px 22px 0;
     }
 
     .stat-cell {
-        padding: 16px;
+        padding: 11px 12px;
         border: 1px solid var(--border);
-        border-radius: 16px;
+        border-radius: 14px;
         background: var(--surface2);
         position: relative;
     }
@@ -358,12 +369,12 @@ function buildHtml(stats) {
     }
 
     .stat-num {
-        font-size: 28px;
+        font-size: 24px;
         font-weight: 760;
         color: var(--text);
         letter-spacing: -0.03em;
         line-height: 1;
-        margin-bottom: 7px;
+        margin-bottom: 6px;
     }
 
     .stat-num.danger { color: var(--danger); }
@@ -398,18 +409,18 @@ function buildHtml(stats) {
 
     /* ── Main content ── */
     .content {
-        padding: 20px 32px 40px;
-        max-width: 1120px;
+        padding: 16px 22px 28px;
+        max-width: 1240px;
     }
 
-    .section { margin-top: 24px; }
+    .section { margin-top: 20px; }
 
     .section-header {
         display: flex;
         align-items: center;
         justify-content: space-between;
-        margin-bottom: 14px;
-        padding-bottom: 12px;
+        margin-bottom: 12px;
+        padding-bottom: 10px;
         border-bottom: 1px solid var(--border);
     }
 
@@ -430,11 +441,12 @@ function buildHtml(stats) {
     /* ── Type blocks ── */
     .type-block {
         border: 1px solid var(--border);
-        border-radius: 16px;
-        margin-bottom: 10px;
+        border-radius: 14px;
+        margin-bottom: 7px;
         overflow: hidden;
         transition: border-color 0.12s, transform .12s;
         background: var(--surface2);
+        box-shadow: 0 6px 18px rgba(0,0,0,.06);
     }
 
     .type-block:hover {
@@ -446,7 +458,7 @@ function buildHtml(stats) {
         display: flex;
         align-items: center;
         justify-content: space-between;
-        padding: 14px 16px;
+        padding: 10px 12px;
         cursor: pointer;
         background: transparent;
         user-select: none;
@@ -458,7 +470,7 @@ function buildHtml(stats) {
     .type-header-left {
         display: flex;
         align-items: center;
-        gap: 12px;
+        gap: 10px;
     }
 
     .type-chevron {
@@ -471,7 +483,7 @@ function buildHtml(stats) {
     .type-block.open .type-chevron { transform: rotate(90deg); }
 
     .type-label {
-        font-size: 15px;
+        font-size: 14px;
         color: var(--link);
         font-weight: 700;
     }
@@ -488,7 +500,7 @@ function buildHtml(stats) {
     .type-header-right {
         display: flex;
         align-items: center;
-        gap: 12px;
+        gap: 10px;
     }
 
     .type-count {
@@ -501,20 +513,20 @@ function buildHtml(stats) {
         font-size: 12px;
         color: var(--accent2);
         background: rgba(110,179,240,0.08);
-        border: 1px solid rgba(110,179,240,0.24);
+        border: 1px solid rgba(110,179,240,0.22);
         border-radius: 999px;
-        padding: 6px 11px;
+        padding: 5px 10px;
         cursor: pointer;
         transition: background 0.12s;
         white-space: nowrap;
         font-weight: 600;
     }
 
-    .view-btn:hover { background: rgba(110,179,240,0.18); }
+    .view-btn:hover { background: rgba(110,179,240,0.18); border-color: rgba(110,179,240,0.34); }
 
     .type-body {
         display: none;
-        padding: 0 16px 16px;
+        padding: 0 12px 12px;
         border-top: 1px solid var(--border);
         background: transparent;
     }
@@ -525,16 +537,16 @@ function buildHtml(stats) {
     .node-pills {
         display: flex;
         flex-wrap: wrap;
-        gap: 8px;
+        gap: 5px;
     }
 
     .node-pill {
-        font-size: 12px;
+        font-size: 11px;
         color: var(--text);
         background: var(--surface3);
         border: 1px solid var(--border);
         border-radius: 999px;
-        padding: 7px 12px;
+        padding: 5px 9px;
         cursor: pointer;
         transition: all 0.1s;
         line-height: 1;
@@ -543,7 +555,7 @@ function buildHtml(stats) {
     .node-pill:hover {
         border-color: var(--link);
         color: var(--link);
-        background: rgba(110,179,240,0.06);
+        background: rgba(110,179,240,0.08);
     }
 
     .orphan-pill {
@@ -558,42 +570,107 @@ function buildHtml(stats) {
     }
 
     .empty-section {
-        font-size: 12px;
+        display: flex;
+        flex-direction: column;
+        gap: 6px;
+        padding: 12px 0;
         color: var(--dim);
-        padding: 10px 0;
+    }
+    .empty-title {
+        font-size: 12px;
+        font-weight: 700;
+        color: var(--text);
+    }
+    .empty-copy {
+        font-size: 12px;
+        color: var(--mid);
+        line-height: 1.55;
+    }
+    .empty-copy code {
+        background: color-mix(in srgb, var(--surface2) 86%, transparent);
+        border: 1px solid var(--border2);
+        border-radius: 6px;
+        padding: 1px 5px;
+        font-size: 11px;
+        color: var(--text);
     }
 
-    @media (max-width: 980px) {
+    @media (max-width: 1080px) {
         .header {
             grid-template-columns: 1fr;
         }
         .stats-strip {
             grid-template-columns: repeat(3, minmax(0, 1fr));
         }
+        .header-side {
+            grid-template-columns: repeat(2, minmax(0, 1fr));
+        }
     }
 
-    @media (max-width: 640px) {
+    @media (max-width: 760px) {
         .header,
         .content,
         .stats-strip {
-            padding-left: 16px;
-            padding-right: 16px;
+            padding-left: 14px;
+            padding-right: 14px;
         }
         .stats-strip {
             grid-template-columns: repeat(2, minmax(0, 1fr));
-            padding-top: 14px;
+            padding-top: 12px;
         }
-        .hero-row,
         .type-header {
             align-items: start;
         }
+        .hero-row {
+            flex-direction: column;
+            align-items: flex-start;
+        }
         .type-header {
             flex-direction: column;
-            gap: 10px;
+            gap: 8px;
         }
         .type-header-right {
             width: 100%;
             justify-content: space-between;
+        }
+        .section-header {
+            flex-direction: column;
+            align-items: flex-start;
+            gap: 6px;
+        }
+    }
+
+    @media (max-width: 520px) {
+        .header,
+        .content,
+        .stats-strip {
+            padding-left: 12px;
+            padding-right: 12px;
+        }
+        .stats-strip {
+            grid-template-columns: 1fr;
+        }
+        .header-side {
+            grid-template-columns: 1fr;
+        }
+        .header-title {
+            font-size: 20px;
+        }
+        .header-sub {
+            font-size: 12px;
+        }
+        .hero-card-value,
+        .stat-num {
+            font-size: 20px;
+        }
+        .type-header-right {
+            flex-direction: column;
+            align-items: flex-start;
+            gap: 7px;
+        }
+        .view-btn {
+            width: 100%;
+            text-align: center;
         }
     }
 </style>

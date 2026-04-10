@@ -10,7 +10,7 @@ const { normaliseDateInput, getTodayIsoLocal, addDaysIso } = require('../core/da
 
 const BODY_CACHE_MAX = 200;
 const bodyCache = new Map();
-const TASK_PRESETS = new Set(['today', 'upcoming', 'calendar', 'agenda']);
+const TASK_PRESETS = new Set(['today', 'upcoming', 'calendar', 'agenda', 'open', 'done', 'undated', 'overdue']);
 
 function clearBodyCache() {
     bodyCache.clear();
@@ -105,6 +105,10 @@ function resolveSimpleViewAlias(token) {
     const lower = String(token || '').toLowerCase();
     if (lower === 'task') return { type: 'tasks', preset: null, shorthand: 'task' };
     if (lower === 'tasks') return { type: 'tasks', preset: null, shorthand: 'tasks' };
+    if (lower === 'open-tasks') return { type: 'tasks', preset: 'open', shorthand: 'open-tasks' };
+    if (lower === 'done-tasks') return { type: 'tasks', preset: 'done', shorthand: 'done-tasks' };
+    if (lower === 'undated-tasks') return { type: 'tasks', preset: 'undated', shorthand: 'undated-tasks' };
+    if (lower === 'overdue') return { type: 'tasks', preset: 'overdue', shorthand: 'overdue' };
     if (TASK_PRESETS.has(lower)) return { type: 'tasks', preset: lower === 'agenda' ? 'upcoming' : lower, shorthand: lower };
     return null;
 }
@@ -112,6 +116,10 @@ function resolveSimpleViewAlias(token) {
 function applyTaskPreset(row, preset, todayIso) {
     const date = String(row.date || row.fields?.date || '').trim();
     if (!preset) return true;
+    if (preset === 'open') return !row.done;
+    if (preset === 'done') return !!row.done;
+    if (preset === 'undated') return !date;
+    if (preset === 'overdue') return !row.done && !!date && date < todayIso;
     if (preset === 'calendar') return !!date;
     if (!date) return false;
     if (preset === 'today') return date === todayIso;
@@ -478,6 +486,7 @@ function buildQueryString(query) {
     }
     let s = '!view ' + prefix + head;
     if (!query.shorthand && query.type === 'tasks' && query.preset) s += ' ' + query.preset;
+    if (query.label) s += ' | ' + query.label;
     if (query.via) s += ' via ' + query.via;
     if (query.select) s += '\nselect ' + query.select.join(', ');
     const wheres = query.wheres && query.wheres.length > 0 ? query.wheres : (query.where ? [query.where] : []);

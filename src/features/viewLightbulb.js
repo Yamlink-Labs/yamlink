@@ -19,13 +19,19 @@ function registerViewLightbulb(context) {
             const insert = new vscode.CodeAction('Insert Yamlink starter view', vscode.CodeActionKind.RefactorRewrite);
             insert.command = { command: 'yamlink.insertViewBlock', title: 'Insert Yamlink starter view' };
 
-            return [run, insert];
+            const builder = new vscode.CodeAction('Open Yamlink Query Builder', vscode.CodeActionKind.RefactorRewrite);
+            builder.command = { command: 'yamlink.queryBuilder', title: 'Open Yamlink Query Builder' };
+
+            const refine = new vscode.CodeAction('Refine this Yamlink view', vscode.CodeActionKind.RefactorRewrite);
+            refine.command = { command: 'yamlink.refineViewBlock', title: 'Refine this Yamlink view', arguments: [document, range] };
+
+            return [run, insert, builder, refine];
         }
     };
 
     context.subscriptions.push(
         vscode.languages.registerCodeActionsProvider('markdown', provider, {
-            providedCodeActionKinds: [vscode.CodeActionKind.QuickFix]
+            providedCodeActionKinds: [vscode.CodeActionKind.QuickFix, vscode.CodeActionKind.RefactorRewrite]
         })
     );
 }

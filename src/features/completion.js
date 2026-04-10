@@ -1,10 +1,8 @@
 const vscode = require('vscode');
 const { getTypes, getRegistry } = require('../registries/typeRegistry');
-const { getSchema } = require('../registries/schemaRegistry');
-const { getEdges } = require('../core/graph');
 const { getFieldsCache } = require('../core/index');
+const { inferFieldRole, inferTargetTypeFromFieldName } = require('../intelligence/fieldRoles');
 
-const INFERENCE_CONFIDENCE = 0.6;
 const CLAUSE_KEYWORDS = ['select', 'where', 'sort', 'limit', 'via'];
 const SIMPLE_VIEW_TYPES = ['*', 'task', 'tasks', 'calendar', 'today', 'upcoming', 'agenda'];
 const FRONTMATTER_ARCHETYPES = {
@@ -44,72 +42,49 @@ function getDocumentType(document) {
     return match ? match[1].trim().toLowerCase() : null;
 }
 
-function inferTargetType(fieldName, idIndex) {
-    const registry = getRegistry();
-    const idToType = new Map();
-    for (const [type, ids] of registry.entries()) for (const id of ids) idToType.set(id, type);
-
-    const typeCounts = new Map();
-    let total = 0;
-    for (const sourceId of idIndex.keys()) {
-        const edges = getEdges(sourceId);
-        for (const edge of edges) {
-            if (edge.field.toLowerCase() !== fieldName.toLowerCase()) continue;
-            const targetType = idToType.get(edge.targetId);
-            if (!targetType) continue;
-            typeCounts.set(targetType, (typeCounts.get(targetType) ?? 0) + 1);
-            total++;
-        }
-    }
-    if (total === 0) return null;
-    let topType = null;
-    let topCount = 0;
-    for (const [type, count] of typeCounts.entries()) {
-        if (count > topCount) { topType = type; topCount = count; }
-    }
-    return (topCount / total) >= INFERENCE_CONFIDENCE ? topType : null;
-}
-
-function inferTargetTypeFromFieldName(fieldName) {
-    const types = Array.from(getTypes()).map(type => String(type).trim().toLowerCase()).filter(Boolean);
-    if (!types.length) return null;
-
-    const normalized = String(fieldName || '').trim().toLowerCase();
-    const variants = new Set([normalized]);
-    if (normalized.endsWith('_id')) variants.add(normalized.slice(0, -3));
-    if (normalized.endsWith('-id')) variants.add(normalized.slice(0, -3));
-    if (normalized.endsWith('ies')) variants.add(normalized.slice(0, -3) + 'y');
-    if (normalized.endsWith('s')) variants.add(normalized.slice(0, -1));
-
-    for (const variant of variants) {
-        if (types.includes(variant)) return variant;
-    }
-    return null;
-}
-
 function fieldLooksRelational(fieldName, document, idIndex) {
     const docType = getDocumentType(document);
-    const schema = docType ? getSchema(docType) : null;
-    const fieldDef = schema?.fields?.[fieldName];
-    if (fieldDef?.type === 'relation') {
-        return { relational: true, targetType: fieldDef.target ? fieldDef.target.toLowerCase() : null };
+    const role = inferFieldRole(fieldName, { documentType: docType, idIndex });
+    return {
+        relational: role.relational,
+        targetType: role.targetType,
+        semanticRole: role.semanticRole,
+        reasons: role.reasons
+    };
+}
+
+function summariseInferenceReasons(reasons = [], max = 2) {
+    return reasons
+        .filter(Boolean)
+        .slice(0, max)
+        .join('; ');
+}
+
+function buildFieldInferenceDetail(entryDetail, relationState) {
+    const reasonText = summariseInferenceReasons(relationState.reasons);
+    if (relationState.relational) {
+        const base = relationState.targetType
+            ? `${entryDetail} → ${relationState.targetType}`
+            : `${entryDetail} → relation`;
+        return reasonText ? `${base} · ${reasonText}` : base;
     }
-
-    const guessedTarget = inferTargetTypeFromFieldName(fieldName);
-    if (guessedTarget) return { relational: true, targetType: guessedTarget };
-
-    const inferredTarget = inferTargetType(fieldName, idIndex);
-    if (inferredTarget) return { relational: true, targetType: inferredTarget };
-
-    const fieldsCache = getFieldsCache();
-    for (const value of fieldsCache.values()) {
-        const raw = String(value[fieldName] ?? '').trim();
-        if (/\[\[[^\]]+\]\]/.test(raw)) {
-            return { relational: true, targetType: null };
-        }
+    if (relationState.semanticRole) {
+        const base = `${entryDetail} · inferred ${relationState.semanticRole}`;
+        return reasonText ? `${base} · ${reasonText}` : base;
     }
+    return reasonText ? `${entryDetail} · ${reasonText}` : entryDetail;
+}
 
-    return { relational: false, targetType: null };
+function buildRelationCandidateDetail(id, idIndex, frontmatterRelation, preferred) {
+    const reasonText = frontmatterRelation.reasonText || '';
+    if (frontmatterRelation.targetType) {
+        const base = preferred
+            ? `${frontmatterRelation.targetType} relation (preferred match)`
+            : `${idIndex.get(id) || 'Yamlink node'} (outside suggested ${frontmatterRelation.targetType} target)`;
+        return reasonText ? `${base} · ${reasonText}` : base;
+    }
+    const base = idIndex.get(id) || 'Yamlink node';
+    return reasonText ? `${base} · ${reasonText}` : base;
 }
 
 function resolveFrontmatterRelationCandidates(document, position, idIndex) {
@@ -127,11 +102,11 @@ function resolveFrontmatterRelationCandidates(document, position, idIndex) {
     const relationState = fieldLooksRelational(fieldName, document, idIndex);
     if (!hasWiki && !relationState.relational) return null;
 
-    let candidateIds = Array.from(idIndex.keys());
+    const candidateIds = Array.from(idIndex.keys());
+    let preferredIds = [];
     if (relationState.targetType) {
         const typeNodes = getRegistry().get(relationState.targetType) ?? new Set();
-        const filtered = candidateIds.filter(id => typeNodes.has(id));
-        if (filtered.length > 0) candidateIds = filtered;
+        preferredIds = candidateIds.filter(id => typeNodes.has(id));
     }
 
     return {
@@ -140,7 +115,34 @@ function resolveFrontmatterRelationCandidates(document, position, idIndex) {
         hasWiki,
         hasClosing: hasWiki && textAfterCursor.startsWith(']]'),
         candidateIds,
-        targetType: relationState.targetType
+        preferredIds,
+        targetType: relationState.targetType,
+        reasonText: summariseInferenceReasons(relationState.reasons)
+    };
+}
+
+function resolveQueryRelationCandidates(fieldName, queryType, partial, idIndex) {
+    const normalizedType = String(queryType || '').trim().toLowerCase();
+    const relationState = inferFieldRole(fieldName, {
+        documentType: normalizedType && normalizedType !== '*' ? normalizedType : '',
+        idIndex
+    });
+    if (!relationState.relational) return null;
+
+    const candidateIds = Array.from(idIndex.keys());
+    let preferredIds = [];
+    if (relationState.targetType) {
+        const typeNodes = getRegistry().get(relationState.targetType) ?? new Set();
+        preferredIds = candidateIds.filter(id => typeNodes.has(id));
+    }
+
+    return {
+        fieldName,
+        partial,
+        candidateIds,
+        preferredIds,
+        targetType: relationState.targetType,
+        reasonText: summariseInferenceReasons(relationState.reasons)
     };
 }
 
@@ -301,9 +303,17 @@ function scoreCandidateMatch(value, partial) {
     return matched === query.length ? 300 - candidate.length : -1;
 }
 
-function rankCandidateIds(candidateIds, partial) {
+function rankCandidateIds(candidateIds, partial, preferredIds = []) {
+    const preferred = new Set(preferredIds);
     return candidateIds
-        .map(id => ({ id, score: scoreCandidateMatch(id, partial) }))
+        .map(id => {
+            const matchScore = scoreCandidateMatch(id, partial);
+            return {
+                id,
+                score: matchScore >= 0 ? matchScore + (preferred.has(id) ? 1000 : 0) : matchScore,
+                preferred: preferred.has(id)
+            };
+        })
         .filter(entry => entry.score >= 0)
         .sort((a, b) => b.score - a.score || a.id.localeCompare(b.id))
         .map(entry => entry.id);
@@ -333,15 +343,18 @@ function registerCompletion(context, getIndex) {
                             new vscode.Position(position.line, Math.max(0, valueStart)),
                             new vscode.Position(position.line, position.character + (frontmatterRelation.hasClosing ? 2 : 0))
                         );
-                        return rankCandidateIds(frontmatterRelation.candidateIds, frontmatterRelation.partial)
+                        return rankCandidateIds(
+                            frontmatterRelation.candidateIds,
+                            frontmatterRelation.partial,
+                            frontmatterRelation.preferredIds
+                        )
                             .map(id => {
                                 const item = new vscode.CompletionItem(id, vscode.CompletionItemKind.Reference);
                                 item.insertText = `[[${id}]]`;
                                 item.range = replaceRange;
                                 item.filterText = frontmatterRelation.hasWiki ? `[[${id}` : id;
-                                item.detail = frontmatterRelation.targetType
-                                    ? `${frontmatterRelation.targetType} relation`
-                                    : (idIndex.get(id) || 'Yamlink node');
+                                const preferred = frontmatterRelation.preferredIds.includes(id);
+                                item.detail = buildRelationCandidateDetail(id, idIndex, frontmatterRelation, preferred);
                                 return item;
                             });
                     }
@@ -399,7 +412,9 @@ function registerCompletion(context, getIndex) {
                         return schemaFields.filter(([key]) => key.toLowerCase().startsWith(partialKey)).map(([key, def]) => {
                             const label = def.required ? `${key}*` : key;
                             const item = new vscode.CompletionItem(label, vscode.CompletionItemKind.Field);
-                            item.detail = `${def.type}${def.required ? ' (required)' : ''}`;
+                            item.detail = def.type === 'relation'
+                                ? `${def.type}${def.target ? ` → ${def.target}` : ''}${def.required ? ' (required)' : ''}`
+                                : `${def.type}${def.required ? ' (required)' : ''}`;
                             item.insertText = def.type === 'relation' ? new vscode.SnippetString(`${key}: [[\${1}]]`) : `${key}: `;
                             return item;
                         });
@@ -441,9 +456,7 @@ function registerCompletion(context, getIndex) {
                     return rankedFields.map(entry => {
                         const relationState = fieldLooksRelational(entry.key, document, getIndex());
                         const item = new vscode.CompletionItem(entry.key, vscode.CompletionItemKind.Field);
-                        item.detail = relationState.relational
-                            ? `${entry.detail}${relationState.targetType ? ` → ${relationState.targetType}` : ' → relation'}`
-                            : entry.detail;
+                        item.detail = buildFieldInferenceDetail(entry.detail, relationState);
                         item.insertText = relationState.relational
                             ? new vscode.SnippetString(`${entry.key}: [[\${1}]]`)
                             : `${entry.key}: `;
@@ -508,13 +521,19 @@ function registerCompletion(context, getIndex) {
                     if (relationMatch) {
                         const fieldName = relationMatch[1].toLowerCase();
                         const partial = relationMatch[2].toLowerCase();
-                        if (!inferRelationField(fieldName, queryType)) return undefined;
-                        return Array.from(getIndex().keys())
-                            .filter(id => id.toLowerCase().startsWith(partial))
+                        const relationCandidates = resolveQueryRelationCandidates(fieldName, queryType, partial, getIndex());
+                        if (!relationCandidates) return undefined;
+                        return rankCandidateIds(
+                            relationCandidates.candidateIds,
+                            partial,
+                            relationCandidates.preferredIds
+                        )
                             .map(id => {
                                 const item = new vscode.CompletionItem(id, vscode.CompletionItemKind.Reference);
                                 item.insertText = `${id}]]`;
                                 item.range = makeReplaceRange(document, position, partial.length);
+                                const preferred = relationCandidates.preferredIds.includes(id);
+                                item.detail = buildRelationCandidateDetail(id, getIndex(), relationCandidates, preferred);
                                 return item;
                             });
                     }
@@ -551,5 +570,7 @@ module.exports = {
     inferTargetTypeFromFieldName,
     collectObservedFrontmatterFields,
     collectArchetypeFieldSuggestions,
-    rankCandidateIds
+    rankCandidateIds,
+    buildFieldInferenceDetail,
+    resolveQueryRelationCandidates
 };

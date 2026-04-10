@@ -107,6 +107,18 @@ require.cache['__stub_tasks__'] = {
     exports: {
         buildTaskRows: () => ([
             {
+                id: 'carl-jenkins#t0-overdue',
+                fileId: 'carl-jenkins',
+                filePath: '/vault/carl-jenkins.md',
+                line: 3,
+                text: 'Follow up on overdue intel',
+                done: false,
+                date: addDaysIso(todayIso, -2),
+                links: [],
+                fields: { text: 'Follow up on overdue intel', done: 'false', date: addDaysIso(todayIso, -2), file: 'carl-jenkins', line: '3' },
+                nodeType: 'tasks'
+            },
+            {
                 id: 'mission-klendathu#t1-alpha',
                 fileId: 'mission-klendathu',
                 filePath: '/vault/mission-klendathu.md',
@@ -140,6 +152,18 @@ require.cache['__stub_tasks__'] = {
                 date: addDaysIso(todayIso, 20),
                 links: [],
                 fields: { text: 'Archive old notes', done: 'true', date: addDaysIso(todayIso, 20), file: 'roughnecks', line: '4' },
+                nodeType: 'tasks'
+            },
+            {
+                id: 'johnny-rico#t4-delta',
+                fileId: 'johnny-rico',
+                filePath: '/vault/johnny-rico.md',
+                line: 7,
+                text: 'Add a date later',
+                done: false,
+                date: '',
+                links: [],
+                fields: { text: 'Add a date later', done: 'false', date: '', file: 'johnny-rico', line: '7' },
                 nodeType: 'tasks'
             }
         ])
@@ -429,8 +453,8 @@ describe('runQuery — forward — type filter', () => {
     test('calendar shorthand returns dated tasks', () => {
         const r = runQuery(parseSingleViewLine('!view calendar'));
         assert.equal(r.success, true);
-        assert.equal(r.rows.length, 3);
-        assert.equal(r.rows[0].fields.date, todayIso);
+        assert.equal(r.rows.length, 4);
+        assert.ok(r.rows.every(row => row.fields.date));
     });
 
     test('today shorthand returns only today tasks', () => {
@@ -443,6 +467,30 @@ describe('runQuery — forward — type filter', () => {
         const r = runQuery(parseSingleViewLine('!view upcoming'));
         assert.equal(r.success, true);
         assert.deepEqual(ids(r), ['mission-klendathu#t1-alpha', 'mission-klendathu-ii#t2-beta']);
+    });
+
+    test('open-tasks shorthand returns only incomplete tasks', () => {
+        const r = runQuery(parseSingleViewLine('!view open-tasks'));
+        assert.equal(r.success, true);
+        assert.deepEqual(ids(r), ['carl-jenkins#t0-overdue', 'johnny-rico#t4-delta', 'mission-klendathu#t1-alpha', 'mission-klendathu-ii#t2-beta']);
+    });
+
+    test('done-tasks shorthand returns only completed tasks', () => {
+        const r = runQuery(parseSingleViewLine('!view done-tasks'));
+        assert.equal(r.success, true);
+        assert.deepEqual(ids(r), ['roughnecks#t3-gamma']);
+    });
+
+    test('undated-tasks shorthand returns only tasks without dates', () => {
+        const r = runQuery(parseSingleViewLine('!view undated-tasks'));
+        assert.equal(r.success, true);
+        assert.deepEqual(ids(r), ['johnny-rico#t4-delta']);
+    });
+
+    test('overdue shorthand returns incomplete tasks dated before today', () => {
+        const r = runQuery(parseSingleViewLine('!view overdue'));
+        assert.equal(r.success, true);
+        assert.deepEqual(ids(r), ['carl-jenkins#t0-overdue']);
     });
 
 });
@@ -701,6 +749,12 @@ describe('buildQueryString', () => {
         assert.equal(s, '!view incoming mission via intelligence');
     });
 
+    test('label roundtrip', () => {
+        const q = parseSingleViewLine('!view mission | Active Missions');
+        const s = buildQueryString(q);
+        assert.equal(s, '!view mission | Active Missions');
+    });
+
     test('multi-where each on own line', () => {
         const q = parseSingleViewBlock([
             '!view mission',
@@ -715,6 +769,13 @@ describe('buildQueryString', () => {
     test('task preset shorthand roundtrip', () => {
         const q = parseSingleViewLine('!view calendar');
         assert.equal(buildQueryString(q), '!view calendar');
+    });
+
+    test('new task shorthand presets roundtrip', () => {
+        assert.equal(buildQueryString(parseSingleViewLine('!view open-tasks')), '!view open-tasks');
+        assert.equal(buildQueryString(parseSingleViewLine('!view done-tasks')), '!view done-tasks');
+        assert.equal(buildQueryString(parseSingleViewLine('!view undated-tasks')), '!view undated-tasks');
+        assert.equal(buildQueryString(parseSingleViewLine('!view overdue')), '!view overdue');
     });
 
 });

@@ -1,5 +1,74 @@
 # Changelog
 
+## [Unreleased] - 0.3.5 "Ace+"
+
+The Ace+ release line addresses major "trust issues" we failed to recognize before releasing Ace. From the "intelligence" standpoint, we had several issues either unpolished or unadressed.
+
+
+### Added
+
+- Adaptive intelligence foundation:
+  - shared field-role inference core
+  - first note-role inference layer
+  - clearer explanation paths when suggestions are absent
+- Broader suggestion intelligence:
+  - schema-backed relation suggestions before repeated backlinks exist
+  - mixed-type relation awareness
+  - peer-relation suggestions from the current note's own structured fields
+  - relation-context suggestions across note types sharing the same linked context
+- Stronger task/query shortcuts:
+  - `!view open-tasks`
+  - `!view done-tasks`
+  - `!view overdue`
+  - `!view undated-tasks`
+- `GETTING_STARTED.md` onboarding guide with:
+  - CRM setup ideas
+  - programmer/project setup ideas
+  - commands, keybindings, and query examples
+- Graph keyboard shortcuts:
+  - `/`
+  - `Esc`
+  - `F`
+  - `R`
+  - `L`
+  - `N`
+  - `O`
+- Calendar keyboard shortcuts:
+  - `M`
+  - `W`
+  - `D`
+  - `[`
+  - `]`
+  - `T`
+
+### Changed
+
+- Query refinement now returns users directly to the live result instead of only changing the source block
+- Query/table workflows are much tighter from inside the table surface itself
+- Graph layout, spacing, hierarchy, inspector model, and controls were substantially refined
+- Calendar, Note Report, Graph, and Vault Health received responsiveness and consistency passes
+- Status-bar styling was tightened so it feels more Yamlink and less like a generic alert slab
+- Smart suggestions, completions, and report surfaces now move toward one adaptive-intelligence model instead of isolated heuristics
+- Query-side relation autocomplete now follows the same target-preference model as frontmatter relation autocomplete
+
+### Fixed
+
+- Body and frontmatter wikilinks now canonicalize targets more reliably before graph indexing
+- Smart suggestions no longer depend only on narrow repeated-backlink patterns to feel alive
+- Relation autocomplete no longer hides the rest of the vault when inference finds a likely target type
+- Query `where ... = [[` relation completion is no longer significantly weaker than frontmatter relation completion
+- Calendar now recognizes note-level `date:` fields instead of only `created:`
+- Table reset now restores hidden columns and resized column widths properly
+- Table undo/revert now scopes correctly to the right rendered table context
+- Resizing columns no longer risks accidental header sorting
+
+### Reliability
+
+- Full local suite remains the release gate
+- Current full baseline after Ace+ work: `181/181`
+
+---
+
 ## [0.3.1] - "Ace" - 2026-04-06
 
 Hotfix release for the initial Ace publish.

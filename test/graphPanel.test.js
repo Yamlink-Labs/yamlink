@@ -88,6 +88,13 @@ describe('graph panel helpers', () => {
         assert.ok(model.topNodes.some((node) => node.id === 'mission-klendathu'));
         assert.ok(model.elements.some((el) => el.data && el.data.label === 'commander' && typeof el.data.color === 'string'));
         assert.ok(model.elements.some((el) => el.data && el.data.isContext === true && typeof el.data.shape === 'string'));
+        assert.equal(model.summary.primaryFocusId, 'mission-klendathu');
+        assert.equal(model.summary.largestClusterSize, 3);
+        assert.ok(model.nodeDetails['mission-klendathu']);
+        assert.equal(model.nodeDetails['mission-klendathu'].outgoing.length, 2);
+        assert.equal(model.nodeDetails['roughnecks'].incoming.length, 2);
+        assert.ok(model.nodeDetails['johnny-rico'].connectedTypes.some((entry) => entry.type === 'mission'));
+        assert.ok(model.nodeDetails['mission-klendathu'].relationSummary.some((entry) => entry.field === 'commander'));
     });
 });
 

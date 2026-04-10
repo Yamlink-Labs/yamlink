@@ -2,10 +2,14 @@ node_modules/
 *.vsix
 .vscode-test/
 .claude/
+.codex/
+internal/
+.github/copilot-instructions.md
 CLAUDE.md
 node_modules/.package-lock.json
 PROJECT_LOG.md
 ROADMAP.md
+INTELLIGENCE_CORE_CONTRACTS.md
 README-draft.md
 *.log
 *.tmp

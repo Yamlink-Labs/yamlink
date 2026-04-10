@@ -4,7 +4,7 @@ const vscode = require('vscode');
 const crypto = require('crypto');
 const { getIndex, getFieldsCache } = require('../core/index');
 const { buildTaskRows } = require('../core/tasks');
-const { getTodayIsoLocal } = require('../core/date');
+const { getTodayIsoLocal, normaliseDateInput } = require('../core/date');
 
 let sidebarView = null;
 
@@ -62,17 +62,19 @@ function buildCalendarModel(taskRows, fieldsCache, todayIso) {
     });
     const createdItems = [];
     for (const [fileId, fields] of fieldsCache.entries()) {
-        const created = String(fields.created || '').trim();
-        if (!created) continue;
+        const primaryDate = normaliseDateInput(fields.date || '') || '';
+        const createdDate = normaliseDateInput(fields.created || '') || '';
+        const noteDate = primaryDate || createdDate;
+        if (!noteDate) continue;
         createdItems.push({
-            id: `${fileId}#created`,
-            date: created,
+            id: `${fileId}#${primaryDate ? 'date' : 'created'}`,
+            date: noteDate,
             fileId,
             fileType: String(fields.type || ''),
             done: false,
-            text: `Created ${String(fields.name || fields.title || fileId)}`,
+            text: `${primaryDate ? 'Dated' : 'Created'} ${String(fields.name || fields.title || fileId)}`,
             sourceLabel: String(fields.name || fields.title || fileId),
-            itemKind: 'created'
+            itemKind: primaryDate ? 'date' : 'created'
         });
     }
     const rows = [...taskItems, ...createdItems];
@@ -149,7 +151,7 @@ function buildCalendarEmptyHtml() {
         'code{background:#1e2126;padding:1px 5px;border-radius:4px;font-size:10px}',
         '</style></head><body>',
         '<div class="msg">No dated tasks or notes found.</div>',
-        '<div class="hint">Add <code>- [ ] task text · 2025-01-15</code> to a note,<br>or set a <code>created:</code> date in frontmatter.</div>',
+        '<div class="hint">Add <code>- [ ] task text · 2025-01-15</code> to a note,<br>or set a <code>date:</code> or <code>created:</code> value in frontmatter.</div>',
         '</body></html>'
     ].join('\n');
 }
@@ -172,22 +174,31 @@ function buildHtml(model, nonce, csp) {
   --input-border: var(--vscode-input-border,#30363d);
   --input-bg: var(--vscode-input-background,#111318);
   --input-fg: var(--vscode-input-foreground,#dce2e8);
-  --accent: var(--vscode-textLink-foreground,#6eb3f0);
+  --accent: #6eb3f0;
   --accent-2: #4fc4a0;
+  --accent-3: #e5a96a;
+  --accent-soft: rgba(110,179,240,.1);
+  --accent-2-soft: rgba(79,196,160,.12);
+  --accent-3-soft: rgba(229,169,106,.12);
 }
 *{box-sizing:border-box;margin:0;padding:0}
 html,body{height:100%}
 body{background:var(--bg);color:var(--fg);font-family:'Segoe UI',system-ui,sans-serif;font-size:13px;min-height:100vh;overflow:auto}
 .shell{display:flex;flex-direction:column;min-height:100vh}
 .hero{padding:12px 12px 10px;border-bottom:1px solid var(--border);background:linear-gradient(180deg,rgba(110,179,240,.12),rgba(79,196,160,.05))}
-.eyebrow{font-size:10px;letter-spacing:.12em;text-transform:uppercase;color:#8aa9bf;margin-bottom:6px}
+.eyebrow{font-size:10px;letter-spacing:.12em;text-transform:uppercase;color:#d4a164;margin-bottom:6px}
 .title{font-size:18px;font-weight:700;line-height:1.1}
 .sub{margin-top:4px;color:var(--muted);line-height:1.4}
-.toolbar{display:grid;grid-template-columns:auto minmax(0,1fr) minmax(0,1fr);gap:8px;align-items:center;padding:8px 12px;border-bottom:1px solid var(--border);background:var(--surface)}
-.seg{display:inline-flex;border:1px solid var(--input-border);border-radius:999px;overflow:hidden}
-.seg button{background:transparent;border:none;color:var(--muted);padding:6px 10px;font:inherit;cursor:pointer}
-.seg button.active{background:rgba(79,196,160,.14);color:#7ae3c2}
+.toolbar-wrap{display:flex;flex-direction:column;border-bottom:1px solid var(--border);background:var(--surface)}
+.toolbar{display:grid;grid-template-columns:auto minmax(0,1fr) minmax(0,1fr);gap:8px;align-items:center;padding:8px 12px;background:var(--surface)}
+.shortcut-hint{padding:0 12px 8px;font-size:10px;letter-spacing:.04em;color:var(--muted)}
+.shortcut-hint kbd{font:inherit;font-weight:700;color:var(--fg)}
+.seg{display:inline-flex;border:1px solid var(--input-border);border-radius:999px;overflow:hidden;background:color-mix(in srgb, var(--surface) 78%, var(--surface-alt))}
+.seg button{background:transparent;border:none;color:var(--muted);padding:6px 10px;font:inherit;cursor:pointer;transition:background-color .14s ease,color .14s ease}
+.seg button:hover{background:rgba(255,255,255,.035);color:var(--fg)}
+.seg button.active{background:var(--accent-2-soft);color:var(--accent-2)}
 .month-select,.date-input{width:100%;min-width:0;background:var(--input-bg);border:1px solid var(--input-border);border-radius:10px;color:var(--input-fg);padding:6px 10px;font:inherit}
+.month-select:focus,.date-input:focus{outline:none;border-color:var(--accent);box-shadow:0 0 0 1px rgba(110,179,240,.18)}
 .summary{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:8px;padding:8px 12px;border-bottom:1px solid var(--border)}
 .card{padding:10px;border:1px solid var(--border);border-radius:12px;background:var(--surface);min-width:0}
 .card-label{font-size:10px;text-transform:uppercase;letter-spacing:.08em;color:#8b949e}
@@ -195,21 +206,23 @@ body{background:var(--bg);color:var(--fg);font-family:'Segoe UI',system-ui,sans-
 .body{padding:8px 12px 14px;display:flex;flex-direction:column;gap:10px}
 .month-grid{display:grid;grid-template-columns:repeat(7,minmax(0,1fr));gap:5px}
 .range-stack{display:flex;flex-direction:column;gap:8px}
-.range-strip{display:grid;grid-template-columns:repeat(auto-fit,minmax(72px,1fr));gap:6px}
-.range-day{padding:8px;border:1px solid var(--border);border-radius:12px;background:var(--surface);display:flex;flex-direction:column;gap:4px;cursor:pointer}
-.range-day.selected{border-color:var(--accent-2);box-shadow:0 0 0 1px rgba(79,196,160,.35) inset}
+.range-strip{display:grid;grid-template-columns:repeat(auto-fit,minmax(84px,1fr));gap:6px}
+.range-day{padding:8px;border:1px solid var(--border);border-radius:12px;background:var(--surface);display:flex;flex-direction:column;gap:4px;cursor:pointer;transition:border-color .14s ease,background-color .14s ease}
+.range-day:hover{border-color:rgba(229,169,106,.24);background:color-mix(in srgb, var(--surface) 88%, var(--accent-3-soft))}
+.range-day.selected{border-color:var(--accent-2);box-shadow:0 0 0 1px rgba(79,196,160,.35) inset;background:color-mix(in srgb, var(--surface) 90%, var(--accent-2-soft))}
 .range-label{font-size:10px;text-transform:uppercase;letter-spacing:.08em;color:#8b949e}
 .range-date{font-size:13px;font-weight:700;color:var(--fg)}
 .range-meta{font-size:11px;color:var(--muted)}
 .dow{font-size:10px;text-transform:uppercase;letter-spacing:.08em;color:#7f8892;padding:0 2px 2px}
-.day{min-height:clamp(50px, 8vw, 68px);border:1px solid var(--border);border-radius:12px;background:var(--surface);padding:6px;display:flex;flex-direction:column;gap:4px;cursor:pointer;color:var(--fg);font:inherit}
+.day{min-height:clamp(52px, 8vw, 72px);border:1px solid var(--border);border-radius:12px;background:var(--surface);padding:6px;display:flex;flex-direction:column;gap:4px;cursor:pointer;color:var(--fg);font:inherit;transition:border-color .14s ease,background-color .14s ease}
+.day:hover{border-color:rgba(229,169,106,.24);background:color-mix(in srgb, var(--surface) 88%, var(--accent-3-soft))}
 .day.muted{opacity:.35}
-.day.selected{border-color:var(--accent-2);box-shadow:0 0 0 1px rgba(79,196,160,.35) inset}
+.day.selected{border-color:var(--accent-2);box-shadow:0 0 0 1px rgba(79,196,160,.35) inset;background:color-mix(in srgb, var(--surface) 90%, var(--accent-2-soft))}
 .day-head{display:flex;justify-content:space-between;align-items:center}
 .day-num{font-size:12px;font-weight:600;color:var(--fg)}
 .day-count{font-size:10px;color:#8b949e}
 .dots{display:flex;flex-wrap:wrap;gap:4px}
-.dot{width:7px;height:7px;border-radius:999px;background:var(--accent)}
+.dot{width:7px;height:7px;border-radius:999px;background:var(--accent-3)}
 .dot.done{background:#7f8a94}
 .agenda{display:flex;flex-direction:column;gap:8px}
 .agenda-title{font-size:12px;text-transform:uppercase;letter-spacing:.08em;color:#8b949e}
@@ -221,13 +234,14 @@ body{background:var(--bg);color:var(--fg);font-family:'Segoe UI',system-ui,sans-
 .task-title{line-height:1.45}
 .task.done .task-title{text-decoration:line-through}
 .task-meta{display:flex;flex-wrap:wrap;gap:8px;font-size:11px;color:#8b949e}
-.link{color:var(--accent);cursor:pointer}
+.link{color:var(--accent-3);cursor:pointer}
 .link:hover{text-decoration:underline}
-.pill{display:inline-flex;align-items:center;padding:3px 8px;border-radius:999px;border:1px solid rgba(79,196,160,.35);background:rgba(79,196,160,.08);color:#7ae3c2}
+.pill{display:inline-flex;align-items:center;padding:3px 8px;border-radius:999px;border:1px solid rgba(79,196,160,.25);background:rgba(79,196,160,.08);color:var(--accent-2)}
 .empty{padding:14px;text-align:center;color:#8b949e;border:1px dashed var(--input-border);border-radius:12px}
-@media (max-width:900px){.summary{grid-template-columns:repeat(2,minmax(0,1fr));}}
-@media (max-width:700px){.toolbar{grid-template-columns:1fr 1fr;}.seg{grid-column:1 / -1;justify-self:start}.task{grid-template-columns:1fr;}.task-dot{display:none}}
-@media (max-width:480px){.hero{padding:10px}.toolbar,.summary,.body{padding-left:10px;padding-right:10px}.month-grid{gap:4px}.day{padding:5px;min-height:48px}.day-count{display:none}.sub{font-size:12px}.summary{grid-template-columns:1fr 1fr}}
+@media (max-width:980px){.summary{grid-template-columns:repeat(2,minmax(0,1fr));}.toolbar{grid-template-columns:1fr 1fr;}.seg{grid-column:1 / -1;justify-self:start}}
+@media (max-width:760px){.task{grid-template-columns:1fr;}.task-dot{display:none}.range-strip{grid-template-columns:repeat(auto-fit,minmax(92px,1fr));}.month-grid{gap:4px}.day{min-height:48px}}
+@media (max-width:560px){.hero{padding:10px}.toolbar,.summary,.body{padding-left:10px;padding-right:10px}.toolbar{grid-template-columns:1fr}.month-select,.date-input{width:100%}.range-strip{grid-template-columns:1fr 1fr}.day{padding:5px}.day-count{display:none}.sub{font-size:12px}.summary{grid-template-columns:1fr 1fr}}
+@media (max-width:420px){.summary{grid-template-columns:1fr}.range-strip{grid-template-columns:1fr}.card-value{font-size:16px}.title{font-size:16px}}
 </style></head><body>
 <div class="shell">
   <div class="hero">
@@ -235,14 +249,17 @@ body{background:var(--bg);color:var(--fg);font-family:'Segoe UI',system-ui,sans-
     <div class="title">Calendar</div>
     <div class="sub">Switch between month, week, and day views. Every task is backed by a stable Yamlink block id.</div>
   </div>
-  <div class="toolbar">
-    <div class="seg" id="mode-seg">
-      <button data-mode="month" class="active">Month</button>
-      <button data-mode="week">Week</button>
-      <button data-mode="day">Day</button>
+  <div class="toolbar-wrap">
+    <div class="toolbar">
+      <div class="seg" id="mode-seg">
+        <button data-mode="month" class="active">Month</button>
+        <button data-mode="week">Week</button>
+        <button data-mode="day">Day</button>
+      </div>
+      <select id="month-select" class="month-select">${monthOptions}</select>
+      <input id="date-input" class="date-input" type="date" value="${esc(model.selectedDate)}">
     </div>
-    <select id="month-select" class="month-select">${monthOptions}</select>
-    <input id="date-input" class="date-input" type="date" value="${esc(model.selectedDate)}">
+    <div class="shortcut-hint">Shortcuts: <kbd>M</kbd>/<kbd>W</kbd>/<kbd>D</kbd> mode · <kbd>[</kbd> / <kbd>]</kbd> move · <kbd>T</kbd> today</div>
   </div>
   <div class="summary" id="summary"></div>
   <div class="body">
@@ -421,6 +438,46 @@ function applySelection() {
   document.querySelectorAll('[data-mode]').forEach(btn => btn.classList.toggle('active', btn.dataset.mode === mode));
 }
 
+function setMode(nextMode) {
+  mode = nextMode;
+  applySelection();
+}
+
+function syncMonthSelection() {
+  selectedMonth = selectedDate.slice(0,7);
+  monthSelect.value = selectedMonth;
+  dateInput.value = selectedDate;
+}
+
+function shiftDate(days) {
+  selectedDate = addDays(selectedDate, days);
+  syncMonthSelection();
+  applySelection();
+}
+
+function shiftMonth(delta) {
+  const [year, month] = selectedMonth.split('-').map(Number);
+  const next = new Date(year, month - 1 + delta, 1);
+  selectedMonth = next.toISOString().slice(0,7);
+  monthSelect.value = selectedMonth;
+  const monthRows = model.months[selectedMonth] || [];
+  selectedDate = monthRows[0] ? monthRows[0].date : (selectedMonth + '-01');
+  dateInput.value = selectedDate;
+  applySelection();
+}
+
+function moveRange(delta) {
+  if (mode === 'month') {
+    shiftMonth(delta);
+    return;
+  }
+  if (mode === 'week') {
+    shiftDate(delta * 7);
+    return;
+  }
+  shiftDate(delta);
+}
+
 document.addEventListener('click', (event) => {
   const open = event.target.closest('[data-open-node]');
   if (open) {
@@ -436,8 +493,7 @@ document.addEventListener('click', (event) => {
   }
   const modeBtn = event.target.closest('[data-mode]');
   if (modeBtn) {
-    mode = modeBtn.dataset.mode;
-    applySelection();
+    setMode(modeBtn.dataset.mode);
   }
 });
 
@@ -454,6 +510,46 @@ dateInput.addEventListener('change', () => {
   selectedMonth = selectedDate.slice(0,7);
   monthSelect.value = selectedMonth;
   applySelection();
+});
+
+document.addEventListener('keydown', (event) => {
+  const target = event.target;
+  const tagName = target && target.tagName ? target.tagName.toLowerCase() : '';
+  const editable = target && (target.isContentEditable || tagName === 'input' || tagName === 'textarea' || tagName === 'select');
+  if (editable) return;
+
+  const key = String(event.key || '').toLowerCase();
+  if (key === 'm') {
+    event.preventDefault();
+    setMode('month');
+    return;
+  }
+  if (key === 'w') {
+    event.preventDefault();
+    setMode('week');
+    return;
+  }
+  if (key === 'd') {
+    event.preventDefault();
+    setMode('day');
+    return;
+  }
+  if (key === 't') {
+    event.preventDefault();
+    selectedDate = model.todayIso;
+    syncMonthSelection();
+    applySelection();
+    return;
+  }
+  if (event.key === '[') {
+    event.preventDefault();
+    moveRange(-1);
+    return;
+  }
+  if (event.key === ']') {
+    event.preventDefault();
+    moveRange(1);
+  }
 });
 
 function escapeHtml(value) {

@@ -2,7 +2,7 @@
   "name": "yamlink",
   "displayName": "Yamlink",
   "description": "Turn Markdown into a structured knowledge system. Canonical IDs, vault-wide linking, backlinks, and real-time diagnostics for YAML-based knowledge graphs.",
-  "version": "0.3.1",
+  "version": "0.3.5",
   "publisher": "yamlink",
   "author": {
     "name": "Javier Ramirez"
@@ -112,6 +112,10 @@
         "title": "Yamlink: Query Builder"
       },
       {
+        "command": "yamlink.refineViewBlock",
+        "title": "Yamlink: Refine View Block"
+      },
+      {
         "command": "yamlink.runGraph",
         "title": "Yamlink: Run Graph"
       },
@@ -148,6 +152,10 @@
         },
         {
           "command": "yamlink.closeViewPanel",
+          "when": "false"
+        },
+        {
+          "command": "yamlink.refineViewBlock",
           "when": "false"
         }
       ],
@@ -196,15 +204,15 @@
     "pdfkit": "^0.18.0"
   },
   "scripts": {
-    "test": "node --test test/query.test.js test/date.test.js test/calendar.test.js test/rename.test.js test/completion.test.js test/viewPanel.test.js test/viewCodeLens.test.js test/pdfExport.test.js test/suggestions.test.js test/refreshRouter.test.js test/queryBuilder.test.js test/id.test.js test/graphPanel.test.js",
+    "test": "node --test test/query.test.js test/date.test.js test/calendar.test.js test/rename.test.js test/completion.test.js test/fieldRoles.test.js test/viewPanel.test.js test/viewCodeLens.test.js test/viewLightbulb.test.js test/pdfExport.test.js test/suggestions.test.js test/refreshRouter.test.js test/queryBuilder.test.js test/entityHubRecipes.test.js test/id.test.js test/graphPanel.test.js",
     "test:index": "node --test test/index.test.js",
     "test:date": "node --test test/date.test.js",
     "test:calendar": "node --test test/calendar.test.js",
     "test:rename": "node --test test/rename.test.js",
     "test:runtime": "node --test test/activeViewRuntime.test.js",
     "test:pdf": "node --test test/pdfExport.test.js",
-    "test:all": "node --test test/query.test.js test/date.test.js test/calendar.test.js test/rename.test.js test/completion.test.js test/viewPanel.test.js test/viewCodeLens.test.js test/pdfExport.test.js test/suggestions.test.js test/refreshRouter.test.js test/queryBuilder.test.js test/id.test.js test/graphPanel.test.js test/index.test.js test/activeViewRuntime.test.js",
-    "test:watch": "node --test --watch test/query.test.js test/date.test.js test/calendar.test.js test/rename.test.js test/completion.test.js test/viewPanel.test.js test/viewCodeLens.test.js test/pdfExport.test.js test/suggestions.test.js test/refreshRouter.test.js test/queryBuilder.test.js test/id.test.js test/graphPanel.test.js",
+    "test:all": "node --test test/query.test.js test/date.test.js test/calendar.test.js test/rename.test.js test/completion.test.js test/fieldRoles.test.js test/viewPanel.test.js test/viewCodeLens.test.js test/viewLightbulb.test.js test/pdfExport.test.js test/suggestions.test.js test/refreshRouter.test.js test/queryBuilder.test.js test/entityHubRecipes.test.js test/id.test.js test/graphPanel.test.js test/index.test.js test/activeViewRuntime.test.js",
+    "test:watch": "node --test --watch test/query.test.js test/date.test.js test/calendar.test.js test/rename.test.js test/completion.test.js test/fieldRoles.test.js test/viewPanel.test.js test/viewCodeLens.test.js test/viewLightbulb.test.js test/pdfExport.test.js test/suggestions.test.js test/refreshRouter.test.js test/queryBuilder.test.js test/entityHubRecipes.test.js test/id.test.js test/graphPanel.test.js",
     "test:ace": "node test/ace.local.js"
   }
 }

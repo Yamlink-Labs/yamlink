@@ -7,117 +7,69 @@
     let pendingBulk = new Map();
     let historyStack = [];
     let statusTimer = null;
+    let draggingHeader = null;
+    let dragAfter = false;
+    let resizingState = null;
+    let suppressSortClickUntil = 0;
+    const DEFAULT_STATUS_MESSAGE = 'Double-click to edit, click booleans twice to toggle, paste from spreadsheets into selected cells, Ctrl/Cmd+Z to undo.';
 
     (function ensureStatusSurface() {
         const bar = document.querySelector('.live-bar');
         if (!bar) return;
         if (!document.getElementById('table-status')) {
-            bar.innerHTML = '<span id="table-status" class="live-status">Double-click to edit, click booleans twice to toggle, paste from spreadsheets into selected cells, Ctrl/Cmd+Z to undo.</span><span>Click relation pills to open</span>';
+            bar.innerHTML = `<span id="table-status" class="live-status">${DEFAULT_STATUS_MESSAGE}</span><span>Click relation pills to open</span>`;
         }
     }());
 
-    function getState() {
-        const tabs = [];
-        document.querySelectorAll('.tab-panel').forEach(function (panel) {
-            const search = panel.querySelector('.fsearch');
-            const hiddenCols = Array.from(panel.querySelectorAll('[data-col-toggle]'))
-                .filter(input => !input.checked)
-                .map(input => input.dataset.colToggle);
-            const columnOrder = Array.from(panel.querySelectorAll('thead th')).map(th => th.dataset.col);
-            const sorted = panel.querySelector('thead th.sorted');
-            tabs.push({
-                search: search ? search.value : '',
-                hiddenCols,
-                columnOrder,
-                sort: sorted ? { col: sorted.dataset.col, asc: sorted.dataset.asc === 'true' } : null
-            });
-        });
-        const activeBtn = document.querySelector('.tab-btn.active');
-        return { activeTab: activeBtn ? Number(activeBtn.dataset.tab) : 0, tabs };
+    function getStatusDefaultMessage() {
+        return DEFAULT_STATUS_MESSAGE;
     }
 
-    function saveState() {
-        vscode.postMessage({ command: 'saveState', state: getState() });
-    }
-
-    function setStatus(message, tone) {
-        const target = document.getElementById('table-status');
-        if (!target) return;
-        target.textContent = message;
-        target.className = `live-status${tone ? ` ${tone}` : ''}`;
+    function clearStatusTimer() {
         clearTimeout(statusTimer);
-        if (tone) {
-            statusTimer = setTimeout(function () {
-                target.textContent = 'Double-click to edit, click booleans twice to toggle, paste from spreadsheets into selected cells, Ctrl/Cmd+Z to undo.';
-                target.className = 'live-status';
-            }, 2600);
-        }
     }
 
-    function switchTab(idx) {
-        document.querySelectorAll('.tab-btn').forEach((button, i) => button.classList.toggle('active', i === idx));
-        document.querySelectorAll('.tab-panel').forEach((panel, i) => panel.style.display = i === idx ? 'flex' : 'none');
-        clearSelection();
-        saveState();
+    function setStatusTimer(nextTimer) {
+        statusTimer = nextTimer;
     }
+
+    const viewRuntime = window.YamlinkViewPanelStateRuntime.createViewPanelStateRuntime({
+        vscode,
+        getStatusDefaultMessage,
+        getSelectedCell: function () { return selectedCell; },
+        setSelectedCell: function (cell) { selectedCell = cell; },
+        clearStatusTimer,
+        setStatusTimer,
+        normaliseDateInput
+    });
+
+    const {
+        applyColumnWidth,
+        applyPanelView,
+        clearSelection,
+        getColumnIndex,
+        getColumnWidth,
+        getDataHeaders,
+        getEditableVisibleCells,
+        getSortValue,
+        getVisibleColumnIndex,
+        getVisibleHeaders,
+        moveColumn,
+        navigateCell,
+        reorderColumns,
+        resetPanelState,
+        saveState,
+        selectCell,
+        setStatus,
+        switchTab,
+        syncColumnToggleOrder,
+        updateTableSummary,
+        updateVisibleCount
+    } = viewRuntime;
 
     document.querySelectorAll('.tab-btn').forEach((btn, i) => {
         btn.addEventListener('click', function () { switchTab(i); });
     });
-
-    function clearSelection() {
-        if (selectedCell) selectedCell.classList.remove('cell-selected');
-        selectedCell = null;
-    }
-
-    function selectCell(cell) {
-        if (!cell || cell.classList.contains('hidden-col')) return;
-        clearSelection();
-        selectedCell = cell;
-        selectedCell.classList.add('cell-selected');
-    }
-
-    function getVisibleHeaders(panel) {
-        return Array.from(panel.querySelectorAll('thead th')).filter(th => !th.classList.contains('hidden-col'));
-    }
-
-    function getSortValue(kind, text) {
-        const raw = String(text ?? '').trim();
-        if (kind === 'number') return raw === '' ? Number.POSITIVE_INFINITY : Number(raw);
-        if (kind === 'date') return normaliseDateInput(raw) || raw;
-        if (kind === 'boolean') return raw.toLowerCase() === 'true' ? '1' : '0';
-        return raw.toLowerCase();
-    }
-
-    function getVisibleColumnIndex(cell) {
-        const row = cell.parentElement;
-        return Array.from(row.children).filter(td => !td.classList.contains('hidden-col')).indexOf(cell);
-    }
-
-    function navigateCell(cell, direction) {
-        var panel = cell.closest('.tab-panel');
-        if (!panel) return null;
-        var allEditable = [];
-        panel.querySelectorAll('tbody tr').forEach(function (row) {
-            if (row.style.display === 'none') return;
-            Array.from(row.children).forEach(function (td) {
-                if (!td.classList.contains('hidden-col') && td.classList.contains('cell-editable')) {
-                    allEditable.push(td);
-                }
-            });
-        });
-        var idx = allEditable.indexOf(cell);
-        if (idx === -1) return null;
-        var nextIdx = idx + direction;
-        if (nextIdx < 0 || nextIdx >= allEditable.length) return null;
-        return allEditable[nextIdx];
-    }
-
-    function getEditableVisibleCells(panel, row) {
-        return Array.from(row.children).filter(function (cell) {
-            return !cell.classList.contains('hidden-col') && cell.classList.contains('cell-editable');
-        });
-    }
 
     function escapeHtml(text) {
         return String(text)
@@ -233,47 +185,22 @@
         return { ok: true, value: next };
     }
 
-    function getColumnIndex(panel, col) {
-        return Array.from(panel.querySelectorAll('thead th')).findIndex(th => th.dataset.col === col);
-    }
-
-    function moveColumn(panel, col, delta) {
-        const headers = Array.from(panel.querySelectorAll('thead th'));
-        const fromIndex = headers.findIndex(th => th.dataset.col === col);
-        const toIndex = fromIndex + delta;
-        if (fromIndex === -1 || toIndex < 0 || toIndex >= headers.length) return;
-
-        const headerRow = panel.querySelector('thead tr');
-        const movingHeader = headers[fromIndex];
-        const anchorHeader = headers[toIndex];
-        headerRow.insertBefore(movingHeader, delta < 0 ? anchorHeader : anchorHeader.nextSibling);
-
-        panel.querySelectorAll('tbody tr').forEach(function (row) {
-            const cells = Array.from(row.children);
-            const movingCell = cells[fromIndex];
-            const anchorCell = cells[toIndex];
-            row.insertBefore(movingCell, delta < 0 ? anchorCell : anchorCell.nextSibling);
-        });
-
-        const toggles = Array.from(panel.querySelectorAll('[data-col-toggle]'));
-        const movingToggle = toggles.find(input => input.dataset.colToggle === col)?.closest('label');
-        const anchorToggle = toggles[toIndex]?.closest('label');
-        if (movingToggle && anchorToggle) {
-            anchorToggle.parentElement.insertBefore(movingToggle, delta < 0 ? anchorToggle : anchorToggle.nextSibling);
-        }
-
-        panel.querySelectorAll('.col-move').forEach(function (button) {
-            const buttonCol = button.dataset.col;
-            const index = getColumnIndex(panel, buttonCol);
-            if (button.dataset.colMove === 'left') button.disabled = index <= 0;
-            if (button.dataset.colMove === 'right') button.disabled = index >= headers.length - 1;
-        });
-    }
-
     function queueHistory(edits) {
         if (!Array.isArray(edits) || edits.length === 0) return;
         historyStack.push({ edits });
         if (historyStack.length > 50) historyStack.shift();
+    }
+
+    function findCellForEdit(edit) {
+        var selector = `.cell-editable[data-filepath="${CSS.escape(edit.filePath)}"][data-field="${CSS.escape(edit.field)}"]`;
+        if (edit.panelTab !== undefined && edit.panelTab !== null) {
+            var scopedPanel = document.querySelector(`.tab-panel[data-tab="${CSS.escape(String(edit.panelTab))}"]`);
+            if (scopedPanel) {
+                var scopedCell = scopedPanel.querySelector(selector);
+                if (scopedCell) return scopedCell;
+            }
+        }
+        return document.querySelector(selector);
     }
 
     function sendBulkEdits(edits, source) {
@@ -291,11 +218,12 @@
 
         const reverseEdits = [];
         op.edits.forEach(function (edit) {
-            const cell = document.querySelector(`.cell-editable[data-filepath="${CSS.escape(edit.filePath)}"][data-field="${CSS.escape(edit.field)}"]`);
+            const cell = findCellForEdit(edit);
             if (!cell) return;
             const requestId = String(++requestCounter);
             const previous = String(cell.dataset.value || '').trim();
             const next = edit.previous;
+            const panelTab = cell.closest('.tab-panel')?.dataset.tab || edit.panelTab || null;
             cell.dataset.pendingRequestId = requestId;
             cell.dataset.value = next;
             cell.innerHTML = renderCellValue(cell.dataset.editMode || 'text', next);
@@ -306,6 +234,7 @@
                 previousHtml: renderCellValue(cell.dataset.editMode || 'text', previous),
                 field: edit.field,
                 filePath: edit.filePath,
+                panelTab,
                 historyPrevious: previous,
                 historyNext: next
             });
@@ -426,7 +355,8 @@
             previous: current,
             next,
             field: cell.dataset.field,
-            filePath: cell.dataset.filepath
+            filePath: cell.dataset.filepath,
+            panelTab: cell.closest('.tab-panel')?.dataset.tab || null
         });
         vscode.postMessage({
             command: 'editCell',
@@ -499,8 +429,10 @@
         sendBulkEdits(edits, 'user');
     }
 
-    function revertRow(filePath) {
+    function revertRow(row) {
+        var filePath = row?.querySelector('.revert-row-btn')?.dataset.filepath || row?.dataset.filepath || '';
         if (editingCell || pendingSingle.size > 0 || pendingBulk.size > 0) return;
+        if (!filePath || !row) return;
 
         // Collect the earliest "previous" value per field from history entries touching this filePath
         var fieldOriginal = new Map();
@@ -525,12 +457,13 @@
 
         var edits = [];
         fieldOriginal.forEach(function (originalValue, field) {
-            var cell = document.querySelector('.cell-editable[data-filepath="' + CSS.escape(filePath) + '"][data-field="' + CSS.escape(field) + '"]');
+            var cell = row.querySelector('.cell-editable[data-field="' + CSS.escape(field) + '"]');
             if (!cell) return;
             var current = String(cell.dataset.value || '').trim();
             var revertTo = String(originalValue || '').trim();
             if (current === revertTo) return;
             var requestId = String(++requestCounter);
+            var panelTab = row.closest('.tab-panel')?.dataset.tab || null;
             cell.dataset.pendingRequestId = requestId;
             cell.dataset.value = revertTo;
             cell.innerHTML = renderCellValue(cell.dataset.editMode || 'text', revertTo);
@@ -540,7 +473,8 @@
                 next: revertTo,
                 previousHtml: renderCellValue(cell.dataset.editMode || 'text', current),
                 field: field,
-                filePath: filePath
+                filePath: filePath,
+                panelTab
             });
             edits.push({
                 requestId: requestId,
@@ -569,7 +503,7 @@
     document.addEventListener('click', function (event) {
         const revertBtn = event.target.closest('.revert-row-btn');
         if (revertBtn) {
-            revertRow(revertBtn.dataset.filepath);
+            revertRow(revertBtn.closest('tr'));
             return;
         }
 
@@ -589,10 +523,16 @@
         if (exportBtn) {
             const panel = exportBtn.closest('.tab-panel');
             const queryIndex = Number(panel.dataset.tab);
-            const visibleColumns = Array.from(panel.querySelectorAll('thead th'))
+            const visibleColumns = Array.from(panel.querySelectorAll('thead th[data-col]'))
                 .filter(th => !th.classList.contains('hidden-col'))
                 .map(th => th.dataset.col);
             vscode.postMessage({ command: 'export', format: exportBtn.dataset.format, queryIndex, visibleColumns });
+            return;
+        }
+
+        const resetBtn = event.target.closest('.reset-btn');
+        if (resetBtn) {
+            resetPanelState(resetBtn.closest('.tab-panel'));
             return;
         }
 
@@ -630,6 +570,7 @@
     });
 
     document.addEventListener('dblclick', function (event) {
+        if (event.target.closest('.col-resizer')) return;
         const cell = event.target.closest('.cell-editable');
         if (!cell) return;
         if ((cell.dataset.editMode || 'text') === 'boolean') return;
@@ -702,6 +643,7 @@
             queueHistory([{
                 filePath: pending.filePath,
                 field: pending.field,
+                panelTab: pending.panelTab,
                 previous: pending.previous,
                 next: pending.next
             }]);
@@ -723,6 +665,7 @@
                     successfulEdits.push({
                         filePath: pending.filePath,
                         field: pending.field,
+                        panelTab: pending.panelTab,
                         previous: pending.previous,
                         next: pending.next
                     });
@@ -753,19 +696,19 @@
     document.querySelectorAll('.fsearch').forEach(function (search) {
         search.addEventListener('input', function () {
             const panel = search.closest('.tab-panel');
-            const term = search.value.toLowerCase();
-            panel.querySelectorAll('tbody tr').forEach(function (row) {
-                row.style.display = !term || row.textContent.toLowerCase().includes(term) ? '' : 'none';
-            });
+            applyPanelView(panel);
             saveState();
         });
     });
 
-    document.querySelectorAll('thead th').forEach(function (th) {
-        th.addEventListener('click', function () {
+    document.querySelectorAll('thead th[data-col]').forEach(function (th) {
+        th.addEventListener('click', function (event) {
+            if (resizingState) return;
+            if (Date.now() < suppressSortClickUntil) return;
+            if (event.target.closest('.col-resizer')) return;
             const panel = th.closest('.tab-panel');
             const tbody = panel.querySelector('tbody');
-            const all = Array.from(panel.querySelectorAll('thead th'));
+            const all = Array.from(panel.querySelectorAll('thead th[data-col]'));
             const index = all.indexOf(th);
             const kind = th.dataset.kind || 'text';
             const currentlySorted = th.classList.contains('sorted');
@@ -786,8 +729,102 @@
                     return asc ? String(av).localeCompare(String(bv)) : String(bv).localeCompare(String(av));
                 })
                 .forEach(tr => tbody.appendChild(tr));
+            updateTableSummary(panel);
             saveState();
         });
+    });
+
+    document.addEventListener('mousedown', function (event) {
+        var handle = event.target.closest('.col-resizer');
+        if (!handle) return;
+        event.preventDefault();
+        event.stopPropagation();
+        var th = handle.closest('th[data-col]');
+        var panel = th && th.closest('.tab-panel');
+        if (!th || !panel) return;
+        resizingState = {
+            panel: panel,
+            col: th.dataset.col,
+            startX: event.clientX,
+            startWidth: getColumnWidth(panel, th.dataset.col) || th.getBoundingClientRect().width
+        };
+        handle.classList.add('active');
+        document.body.style.cursor = 'col-resize';
+    });
+
+    document.addEventListener('mousemove', function (event) {
+        if (!resizingState) return;
+        event.preventDefault();
+        var nextWidth = resizingState.startWidth + (event.clientX - resizingState.startX);
+        applyColumnWidth(resizingState.panel, resizingState.col, nextWidth);
+    });
+
+    document.addEventListener('mouseup', function () {
+        if (!resizingState) return;
+        var panel = resizingState.panel;
+        var col = resizingState.col;
+        var handle = panel.querySelector('.col-resizer[data-col-resizer="' + CSS.escape(col) + '"]');
+        if (handle) handle.classList.remove('active');
+        document.body.style.cursor = '';
+        suppressSortClickUntil = Date.now() + 250;
+        saveState();
+        setStatus('Resized column "' + col + '".', 'success');
+        resizingState = null;
+    });
+
+    document.addEventListener('dragstart', function (event) {
+        if (event.target.closest('.col-resizer')) return;
+        var th = event.target.closest('th[data-col]');
+        if (!th) return;
+        draggingHeader = th;
+        dragAfter = false;
+        th.classList.add('dragging');
+        if (event.dataTransfer) {
+            event.dataTransfer.effectAllowed = 'move';
+            event.dataTransfer.setData('text/plain', th.dataset.col || '');
+        }
+    });
+
+    document.addEventListener('dragover', function (event) {
+        if (resizingState) return;
+        var target = event.target.closest('th[data-col]');
+        if (!draggingHeader || !target || target === draggingHeader) return;
+        event.preventDefault();
+        dragAfter = event.clientX > target.getBoundingClientRect().left + (target.offsetWidth / 2);
+        document.querySelectorAll('th[data-col].drag-over, th[data-col].drag-over-after').forEach(function (th) {
+            th.classList.remove('drag-over', 'drag-over-after');
+        });
+        target.classList.add(dragAfter ? 'drag-over-after' : 'drag-over');
+    });
+
+    document.addEventListener('dragleave', function (event) {
+        var target = event.target.closest('th[data-col]');
+        if (!target) return;
+        target.classList.remove('drag-over', 'drag-over-after');
+    });
+
+    document.addEventListener('drop', function (event) {
+        if (resizingState) return;
+        var target = event.target.closest('th[data-col]');
+        if (!draggingHeader || !target || target === draggingHeader) return;
+        event.preventDefault();
+        var panel = target.closest('.tab-panel');
+        reorderColumns(panel, draggingHeader, target, dragAfter);
+        saveState();
+        setStatus('Moved column "' + draggingHeader.dataset.col + '".', 'success');
+        updateTableSummary(panel);
+        updateVisibleCount(panel);
+        document.querySelectorAll('th[data-col].drag-over, th[data-col].drag-over-after').forEach(function (th) {
+            th.classList.remove('drag-over', 'drag-over-after');
+        });
+    });
+
+    document.addEventListener('dragend', function () {
+        document.querySelectorAll('th[data-col].dragging, th[data-col].drag-over, th[data-col].drag-over-after').forEach(function (th) {
+            th.classList.remove('dragging', 'drag-over', 'drag-over-after');
+        });
+        draggingHeader = null;
+        dragAfter = false;
     });
 
     document.querySelectorAll('.chip').forEach(function (chip) {
@@ -795,11 +832,12 @@
             const panel = chip.closest('.tab-panel');
             panel.querySelectorAll('.chip').forEach(c => c.classList.remove('active'));
             chip.classList.add('active');
-            const filter = chip.dataset.filter;
-            panel.querySelectorAll('tbody tr').forEach(function (row) {
-                if (filter === 'all') row.style.display = '';
-                else row.style.display = row.dataset.type === filter.slice(5) ? '' : 'none';
-            });
+            applyPanelView(panel);
+            saveState();
         });
+    });
+
+    document.querySelectorAll('.tab-panel').forEach(function (panel) {
+        applyPanelView(panel);
     });
 }());

@@ -54,6 +54,20 @@ describe('calendar model', () => {
         assert.equal(model.months['2026-03'].length, 3);
         assert.ok(model.months['2026-03'].some(row => row.itemKind === 'created' && row.fileId === 'b'));
     });
+
+    test('uses note date field before created and normalises supported formats', () => {
+        const model = buildCalendarModel([], new Map([
+            ['a', { type: 'mission', title: 'Alpha', date: '04/03/2026', created: '2026-03-01' }],
+            ['b', { type: 'note', title: 'Bravo', date: 'March 6, 2026' }],
+            ['c', { type: 'note', title: 'Charlie', created: '2026-03-07' }]
+        ]), '2026-03-04');
+
+        assert.equal(model.stats.total, 3);
+        assert.equal(model.stats.created, 3);
+        assert.ok(model.months['2026-03'].some(row => row.fileId === 'a' && row.date === '2026-03-04' && row.itemKind === 'date'));
+        assert.ok(model.months['2026-03'].some(row => row.fileId === 'b' && row.date === '2026-03-06' && row.itemKind === 'date'));
+        assert.ok(model.months['2026-03'].some(row => row.fileId === 'c' && row.date === '2026-03-07' && row.itemKind === 'created'));
+    });
 });
 
 Module._resolveFilename = originalResolve;

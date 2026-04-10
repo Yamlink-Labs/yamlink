@@ -307,10 +307,11 @@ function validateDocument(document, getIndex) {
             );
 
             if (suggestions.length > 0) {
+                const top = suggestions[0];
                 const diagnostic = new vscode.Diagnostic(
                     fullRange,
                     suggestions.length === 1
-                        ? `Yamlink: ${suggestions[0].count} ${suggestions[0].sourceType}s linked via "${suggestions[0].field}" — click 💡 to insert a view`
+                        ? `Yamlink: ${top.title} — click 💡 to insert`
                         : `Yamlink: ${suggestions.length} view suggestions available — click 💡 to insert`,
                     vscode.DiagnosticSeverity.Hint
                 );

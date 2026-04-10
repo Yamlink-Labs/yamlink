@@ -171,7 +171,9 @@ const {
     invalidateFileCache,
     removeFileFromIndex,
     getIndex,
-    getFieldsCache
+    getFieldsCache,
+    extractEdgesFromFrontmatter,
+    extractBodyLinks
 } = require('../src/core/index.js');
 const { writeFieldValue } = require('../src/core/writeField.js');
 
@@ -245,6 +247,52 @@ describe('parseFrontmatter', () => {
 
     test('empty frontmatter block returns null', () => {
         assert.equal(parseFrontmatter('---\n---\n'), null);
+    });
+});
+
+describe('wikilink edge extraction', () => {
+    test('canonicalizes frontmatter wikilink targets', () => {
+        const edges = extractEdgesFromFrontmatter(
+            '---\n' +
+            'id: call-rico\n' +
+            'account: [[CloudLabs Solutions]]\n' +
+            'contacts:\n' +
+            '  - [[Andreas Storms]]\n' +
+            '---\n'
+        );
+        assert.deepEqual(edges, [
+            { field: 'account', targetId: 'cloudlabs-solutions' },
+            { field: 'contacts', targetId: 'andreas-storms' }
+        ]);
+    });
+
+    test('canonicalizes body wikilinks and strips aliases anchors and block refs', () => {
+        const edges = extractBodyLinks(
+            '---\nid: meeting-1\ntype: meeting\n---\n' +
+            'Review [[Andreas Storms|Andreas]] with [[CloudLabs Solutions#Contacts]].\n' +
+            'Follow up on [[Call Matt^task-1]].\n'
+        );
+        assert.deepEqual(edges, [
+            { field: 'body', targetId: 'andreas-storms' },
+            { field: 'body', targetId: 'cloudlabs-solutions' },
+            { field: 'body', targetId: 'call-matt' }
+        ]);
+    });
+
+    test('buildIndex registers canonicalized body-link edges', () => {
+        setupVault();
+        writeNode('andreas.md', '---\nid: andreas-storms\ntype: contact\n---\n');
+        const filePath = writeNode(
+            'meeting.md',
+            '---\nid: call-andreas\ntype: meeting\n---\nMet with [[Andreas Storms]].\n'
+        );
+        buildIndex([{ uri: { fsPath: tmpDir } }]);
+        assert.deepEqual(require.cache.__stub_graph__.exports.getEdges('call-andreas'), [
+            { field: 'body', targetId: 'andreas-storms' }
+        ]);
+        assert.equal(getIndex().get('andreas-storms').endsWith('andreas.md'), true);
+        assert.equal(getIndex().get('call-andreas'), filePath);
+        teardownVault();
     });
 });
 

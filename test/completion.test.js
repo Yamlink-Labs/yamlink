@@ -88,10 +88,12 @@ Module._resolveFilename = function (request, parent, ...rest) {
 
 const {
     resolveFrontmatterRelationCandidates,
+    resolveQueryRelationCandidates,
     inferTargetTypeFromFieldName,
     collectObservedFrontmatterFields,
     collectArchetypeFieldSuggestions,
-    rankCandidateIds
+    rankCandidateIds,
+    buildFieldInferenceDetail
 } = require('../src/features/completion');
 
 function makeDocument(text) {
@@ -111,7 +113,7 @@ describe('frontmatter relation completion', () => {
         assert.equal(inferTargetTypeFromFieldName('account_id'), 'account');
     });
 
-    test('uses schema target types for relation fields before [[ is typed', () => {
+    test('uses schema target types as a preference, not a hard filter', () => {
         const doc = makeDocument([
             '---',
             'id: alice-smith',
@@ -123,7 +125,8 @@ describe('frontmatter relation completion', () => {
         const result = resolveFrontmatterRelationCandidates(doc, { line: 3, character: 'account: ac'.length }, INDEX);
         assert.ok(result);
         assert.equal(result.targetType, 'account');
-        assert.deepEqual(result.candidateIds.sort(), ['acme-inc', 'globex']);
+        assert.deepEqual(result.preferredIds.sort(), ['acme-inc', 'globex']);
+        assert.deepEqual(result.candidateIds.sort(), ['acme-inc', 'alice-smith', 'bob-jones', 'globex']);
     });
 
     test('falls back to all indexed notes when relation field has no target inference', () => {
@@ -178,9 +181,33 @@ describe('frontmatter relation completion', () => {
         assert.ok(suggestions.some(entry => entry.key === 'contacts'));
     });
 
-    test('ranks candidate ids by prefix before weaker contains matches', () => {
-        const ranked = rankCandidateIds(['great-account', 'accounting', 'beta-acc'], 'acc');
-        assert.deepEqual(ranked, ['accounting', 'beta-acc', 'great-account']);
+    test('ranks preferred target ids ahead of weaker non-preferred matches', () => {
+        const ranked = rankCandidateIds(
+            ['great-account', 'accounting', 'beta-acc'],
+            'acc',
+            ['great-account']
+        );
+        assert.deepEqual(ranked, ['great-account', 'accounting', 'beta-acc']);
+    });
+
+    test('field inference detail surfaces semantic reasoning instead of only labels', () => {
+        const detail = buildFieldInferenceDetail('suggested for account notes', {
+            relational: true,
+            targetType: 'account',
+            semanticRole: 'relation',
+            reasons: ['field name strongly resembles the "account" type']
+        });
+        assert.match(detail, /suggested for account notes/);
+        assert.match(detail, /account/);
+        assert.match(detail, /field name strongly resembles/);
+    });
+
+    test('query relation candidates use the same target preference model as frontmatter', () => {
+        const result = resolveQueryRelationCandidates('account', 'contact', 'ac', INDEX);
+        assert.ok(result);
+        assert.equal(result.targetType, 'account');
+        assert.deepEqual(result.preferredIds.sort(), ['acme-inc', 'globex']);
+        assert.match(result.reasonText, /account/);
     });
 });
 

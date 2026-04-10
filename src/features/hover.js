@@ -2,7 +2,7 @@ const vscode = require('vscode');
 const fs     = require('fs');
 const { parseFrontmatter, getPathIndex } = require('../core/index');
 const { parseViewQuery, runQuery }       = require('../engine/query');
-const { computeSuggestionsForNode }      = require('../engine/suggestions');
+const { computeSuggestionsForNode, explainSuggestionState }      = require('../engine/suggestions');
 
 // ─────────────────────────────────────────────────────────────────
 // hover.js — Hover preview (Stage 2B + relation enrichment 0.2.0)
@@ -200,25 +200,39 @@ function registerQueryPreviewHover(context, getIndex) {
                 if (!nodeId) return;
 
                 const docText     = document.getText();
-                const suggestions = computeSuggestionsForNode(nodeId, docText);
-                if (suggestions.length === 0) return;
-
                 const md = new vscode.MarkdownString();
                 md.isTrusted         = true;
                 md.supportThemeIcons = true;
+
+                const suggestions = computeSuggestionsForNode(nodeId, docText);
+                if (suggestions.length === 0) {
+                    const explanation = explainSuggestionState(nodeId);
+                    md.appendMarkdown(`### $(lightbulb) ${explanation.title}
+
+${explanation.description}
+
+`);
+                    for (const reason of explanation.reasons || []) {
+                        md.appendMarkdown(`- ${reason}
+
+`);
+                    }
+                    return new vscode.Hover(md);
+                }
 
                 md.appendMarkdown(`### $(lightbulb) View suggestions
 
 `);
 
-                for (const { field, sourceType, count, queryText } of suggestions) {
-                    const plural = count === 1 ? sourceType : sourceType + 's';
-                    md.appendMarkdown(`**${count} ${plural}** linked via \`${field}\`
+                for (const suggestion of suggestions) {
+                    md.appendMarkdown(`**${suggestion.title}**
+
+${suggestion.description}
 
 `);
 
                     // Run the query and show a 3-row preview
-                    const preview = buildQueryPreview(queryText, nodeId, getIndex);
+                    const preview = buildQueryPreview(suggestion.queryText, nodeId, getIndex);
                     if (preview) {
                         md.appendMarkdown(preview);
                     }

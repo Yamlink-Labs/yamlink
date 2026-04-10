@@ -22,6 +22,7 @@ const { openGraphPanel, refreshGraphPanel, parseGraphBlocks } = require('./src/f
 const { syncEntityHub, refreshEntityHub, registerEntityHubView, focusEntityHub } = require('./src/features/entityHub');
 const { registerActiveViewRuntime } = require('./src/runtime/activeViewRuntime');
 const { createRefreshRouter } = require('./src/runtime/refreshRouter');
+const { createStatusRuntime } = require('./src/runtime/statusRuntime');
 
 // ─────────────────────────────────────────────────────────────────
 // First-run setup
@@ -92,89 +93,15 @@ function copySampleFiles(src, dest) {
 async function activate(context) {
     console.log("Yamlink activated");
 
-// ─────────────────────────────────────────────────────────────────
-// Status bar — three items, each with one permanent purpose.
-//
-//  vaultBar   (left, 100) — always: node count + broken count → Health Panel
-//  actionBar  (left, 98)  — contextual action like Run views / Calendar / Run graph
-//
-// Commands NEVER change. Only text and visibility change.
-// ─────────────────────────────────────────────────────────────────
-
-    // Vault summary — always visible, always opens Health Panel
-    const vaultBar = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 100);
-    vaultBar.name    = 'Yamlink Vault';
-    vaultBar.command = 'yamlink.openHealthPanel';
-    context.subscriptions.push(vaultBar);
-
-    const actionBar = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 98);
-    actionBar.name = 'Yamlink Action';
-    context.subscriptions.push(actionBar);
-
-    // Suggestion bar — shown on the RIGHT when the active node has view suggestions.
-    // Yamlink-owned UI: never cursor-dependent, always visible, bypasses lightbulb.
-    const suggestionBar = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 90);
-    suggestionBar.name    = 'Yamlink Suggestions';
-    suggestionBar.command = 'yamlink.showQuerySuggestionsQuickPick';
-    context.subscriptions.push(suggestionBar);
-
-    // ── Status bar rendering ─────────────────────────────────────────────────
-    function updateStatusBar() {
-        const nodeCount = getIndex().size;
-        const broken    = getBrokenCount();
-        const editor    = vscode.window.activeTextEditor;
-
-        // ── vaultBar — always shown, always the same command ────────────────
-        if (broken > 0) {
-            vaultBar.text            = '$(graph) Yamlink  $(warning) ' + nodeCount + ' nodes \u00b7 ' + broken + ' broken';
-            vaultBar.backgroundColor = new vscode.ThemeColor('statusBarItem.warningBackground');
-            vaultBar.tooltip         = 'Yamlink — ' + broken + ' broken link' + (broken !== 1 ? 's' : '') + ' · Click to open Vault Health';
-        } else {
-            vaultBar.text            = '$(graph) Yamlink  ' + nodeCount + ' nodes';
-            vaultBar.backgroundColor = undefined;
-            vaultBar.tooltip         = 'Yamlink — Click to open Vault Health';
-        }
-        vaultBar.show();
-
-        const isMarkdown = editor && editor.document.languageId === 'markdown';
-        const filePath   = isMarkdown ? editor.document.uri.fsPath : null;
-        const id         = filePath ? getPathIndex().get(filePath) : null;
-        const orphan     = id ? isOrphan(id) : false;
-
-        const hasViews  = isMarkdown && editor.document.getText().includes('!view ');
-        const hasGraphs = isMarkdown && editor.document.getText().includes('yamlink-graph');
-        const hasTasks = isMarkdown && /^\s*[-*]\s+\[( |x|X)\]\s+/m.test(editor.document.getText());
-
-        if (hasViews) {
-            actionBar.command = 'yamlink.runViews';
-            actionBar.text = '$(play) Run views';
-            actionBar.tooltip = 'Yamlink — Run !view blocks in this file';
-            actionBar.show();
-        } else if (hasTasks) {
-            actionBar.command = 'yamlink.openCalendar';
-            actionBar.text = '$(calendar) Calendar';
-            actionBar.tooltip = 'Yamlink — Open the task calendar';
-            actionBar.show();
-        } else if (id) {
-            actionBar.command = 'yamlink.openHub';
-            actionBar.text = orphan ? '$(warning) Note report' : '$(preview) Note report';
-            actionBar.tooltip = orphan
-                ? 'Yamlink — Open the note report for this orphan node'
-                : 'Yamlink — Open the note report for this node';
-            actionBar.show();
-        } else if (hasGraphs) {
-            actionBar.command = 'yamlink.runGraph';
-            actionBar.text = '$(type-hierarchy) Run graph';
-            actionBar.tooltip = 'Yamlink — Render yamlink-graph blocks in this file';
-            actionBar.show();
-        } else {
-            actionBar.hide();
-        }
-
-    }
-
     // ── Build index ──────────────────────────────────────────────────────────
     buildIndex(vscode.workspace.workspaceFolders);
+
+    const { updateStatusBar, refreshSuggestionBar, resetSuggestionCache } = createStatusRuntime(context, {
+        getIndex,
+        getPathIndex,
+        getBrokenCount,
+        computeSuggestionsForNode: require('./src/engine/suggestions').computeSuggestionsForNode
+    });
 
     // ── Register providers ───────────────────────────────────────────────────
     // registerDiagnostics MUST come before validateAll.
@@ -199,6 +126,12 @@ async function activate(context) {
     const router = createRefreshRouter({
         clearDiagnostics:  clearAll,
         validateAll:       () => validateAll(getIndex),
+        validateTargeted:  () => {
+            const editor = vscode.window.activeTextEditor;
+            if (editor && editor.document.languageId === 'markdown') {
+                validateDocument(editor.document, getIndex);
+            }
+        },
         refreshBacklinks:  () => {},
         refreshRelated:    () => {},
         refreshDecorations:() => decorationsProvider.refresh(),
@@ -356,53 +289,6 @@ async function activate(context) {
             }
         })
     );
-    // ── Suggestion bar refresh — separated from updateStatusBar so it can
-    // run on its own schedule and always reads a fully-settled graph.
-    //
-    // The critical difference: we scan EVERY indexed file for mtime changes,
-    // not just the active one. Backlinks for node X live in the graph entries
-    // of the SOURCE files that point to X — updating X's own file does nothing
-    // to refresh getBacklinks(X). Scanning all vault files ensures inbound
-    // edge data is current before computeSuggestionsForNode runs.
-    let suggestionDebounce = null;
-
-    function refreshSuggestionBar() {
-        clearTimeout(suggestionDebounce);
-        suggestionDebounce = setTimeout(() => {
-            const editor = vscode.window.activeTextEditor;
-            if (!editor || editor.document.languageId !== 'markdown') {
-                suggestionBar.hide();
-                return;
-            }
-
-            // Scan every indexed file — catches edge changes in source files
-            // whose mtime changed since the last buildIndex or save handler.
-            let needsFull = false;
-            for (const filePath of getIndex().values()) {
-                const r = updateSingleFile(filePath);
-                if (r.needsFull) { needsFull = true; break; }
-            }
-            if (needsFull && vscode.workspace.workspaceFolders) {
-                buildIndex(vscode.workspace.workspaceFolders);
-            }
-
-            const nodeId = getPathIndex().get(editor.document.uri.fsPath);
-            if (!nodeId) { suggestionBar.hide(); return; }
-
-            const { computeSuggestionsForNode } = require('./src/engine/suggestions');
-            const sugg = computeSuggestionsForNode(nodeId, editor.document.getText());
-            if (sugg.length > 0) {
-                suggestionBar.text    = `$(light-bulb) ${sugg.length} view suggestion${sugg.length > 1 ? 's' : ''}`;
-                suggestionBar.tooltip = sugg.map(s =>
-                    `${s.count} ${s.sourceType}s linked via "${s.field}" → ${s.queryText}`
-                ).join('\n');
-                suggestionBar.show();
-            } else {
-                suggestionBar.hide();
-            }
-        }, 250);
-    }
-
     context.subscriptions.push(vscode.window.onDidChangeActiveTextEditor((editor) => {
         updateStatusBar();
         if (editor && editor.document.languageId === 'markdown') {
@@ -412,6 +298,7 @@ async function activate(context) {
         } else {
             syncEntityHub(context);
         }
+        resetSuggestionCache();
         refreshSuggestionBar();
     }));
 
@@ -482,7 +369,9 @@ async function activate(context) {
         vscode.commands.registerCommand('yamlink.runVaultGraph', () => {
             // Synthesise a !view * block — shows every indexed node
             const editor = vscode.window.activeTextEditor;
-            const docText = editor ? editor.document.getText() : '';
+            const docText = editor && editor.document.languageId === 'markdown'
+                ? editor.document.getText()
+                : '';
             openGraphPanel(context, '```yamlink-graph\n!view *\n```\n', docText);
         })
     );
