@@ -35,7 +35,7 @@ It strengthens the parts of Yamlink that were already central to the product pro
 
 ### Adaptive intelligence
 
-Yamlink is now moving toward an adaptive intelligence model instead of isolated heuristics.
+Yamlink is now moving toward a system focused on understanding a user's workflow and tendencies, instead of relying on isolated heuristics.
 
 That means it increasingly learns from:
 
@@ -59,7 +59,7 @@ Ace+ now pushes them toward:
 - schema-backed suggestions even before repeated backlinks exist
 - mixed-type relation awareness
 - current-note relation context
-- note-role-aware explanation when no suggestion qualifies yet
+- smarter note analysis for better system suggestions
 
 Autocomplete also got much stronger:
 
@@ -70,7 +70,7 @@ Autocomplete also got much stronger:
 
 ### Graph and link truth
 
-Body/frontmatter wikilinks are now canonicalized more aggressively before indexing.
+Body/frontmatter wikilinks are now normalized more reliably before indexing.
 
 That means links with:
 
