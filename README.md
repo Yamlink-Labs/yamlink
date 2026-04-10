@@ -3,7 +3,7 @@
 Structured knowledge for Markdown, inside VS Code.
 
 [![VS Code Marketplace](https://img.shields.io/visual-studio-marketplace/v/yamlink.yamlink?label=Marketplace)](https://marketplace.visualstudio.com/items?itemName=yamlink.yamlink)
-![Version](https://img.shields.io/badge/version-0.3.1--Ace-blue)
+![Version](https://img.shields.io/badge/version-0.3.5--Ace%2B-blue)
 ![License](https://img.shields.io/badge/license-MIT-green)
 ![VS Code](https://img.shields.io/badge/VS%20Code-%5E1.85.0-blueviolet)
 
@@ -31,7 +31,7 @@ It strengthens the parts of Yamlink that were already central to the product pro
 - stronger wikilink truth in the graph
 - safer relation autocomplete
 - better query-side relation completion
-- broader quality-of-life and hardening work across tables, graph, report, calendar, and health
+- broader quality-of-life and hardening work across tables, graph, reports, calendar, and vault health
 
 ### Adaptive intelligence
 
@@ -68,7 +68,7 @@ Autocomplete also got much stronger:
 - query `where ... = [[` completion now follows the same target-preference model
 - completion detail text explains more of Yamlink's reasoning directly
 
-### Graph and truth
+### Graph and link truth
 
 Body/frontmatter wikilinks are now canonicalized more aggressively before indexing.
 
@@ -133,11 +133,11 @@ With Yamlink, you can:
 
 `0.3.5 - Ace+`
 
-Ace+ strengthens Ace (0.3.0) in the areas where the product promise most needed follow-through (that's on me, my bad):
+Ace+ strengthens Ace (0.3.0) in the areas where the product promise most needed follow-through:
 
-- adaptive intelligence is now a real product track, not just a loose set of heuristics. This area was not properly revised/polished
-- smart suggestions are broader, more explainable, and less brittle. THere's now more consistency for your daily workflow
-- autocomplete is more transparent and less restrictive. I felt it was just too narrow, especially when your vault/personal schema wasn't fully established.
+- adaptive intelligence is now a real product track, not just a loose set of heuristics
+- smart suggestions are broader, more explainable, and less brittle. There's now more consistency in daily use
+- autocomplete is more transparent and less restrictive, especially when a vault's schema is still taking shape
 - body/frontmatter wikilink truth is much stronger
 - query/table/graph/sidebar surfaces all received real quality-of-life and hardening work
 
