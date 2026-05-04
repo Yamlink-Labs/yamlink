@@ -121,6 +121,19 @@
         searchInput.addEventListener('input', applySearch);
     }
 
+    // ── Scroll preservation ──────────────────────────────────────────
+    var _scrollTimer = null;
+    window.addEventListener('scroll', function () {
+        if (_scrollTimer) clearTimeout(_scrollTimer);
+        _scrollTimer = setTimeout(function () {
+            vscode.postMessage({ command: 'saveState', scrollY: Math.round(window.scrollY), nodeId: CURRENT_NODE_ID });
+        }, 150);
+    }, { passive: true });
+
+    if (INITIAL_SCROLL_Y > 0) {
+        window.scrollTo(0, INITIAL_SCROLL_Y);
+    }
+
     // ── Signal ready ─────────────────────────────────────────────────
     var status = document.getElementById('jsstatus');
     if (status) {

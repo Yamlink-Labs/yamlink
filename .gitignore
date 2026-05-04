@@ -1,18 +1,34 @@
 node_modules/
 *.vsix
 .vscode-test/
+
+# Claude / AI tooling
 .claude/
 .codex/
-internal/
 .github/copilot-instructions.md
 CLAUDE.md
-node_modules/.package-lock.json
+CODEX.md
+CONTRIBUTING.md
+TESTING.md
+
+# Internal / working documents
+internal/
+docs/
+SESSION_LOG.md
 PROJECT_LOG.md
 ROADMAP.md
 INTELLIGENCE_CORE_CONTRACTS.md
 README-draft.md
+.vscode/settings.json
+
+# Temp / OS
 *.log
 *.tmp
 *.bak
 .DS_Store
 Thumbs.db
+node_modules/.package-lock.json
+
+# Local backups
+backup/
+tmp-graph.html

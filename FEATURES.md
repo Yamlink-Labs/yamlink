@@ -36,7 +36,7 @@ Yamlink turns Markdown files into a structured graph:
 
 ### Adaptive intelligence
 
-- Yamlink is now moving toward one shared adaptive-intelligence model instead of isolated per-surface heuristics
+- Yamlink now uses one shared adaptive-intelligence model instead of isolated per-surface heuristics
 - intelligence currently draws from:
   - frontmatter structure
   - body/frontmatter wikilinks
@@ -50,15 +50,54 @@ Yamlink turns Markdown files into a structured graph:
   - person-like
   - container-like
   - topic-like
-- the rest of the system is being pushed toward user-adaptive behavior instead of one hardcoded ontology
-- the current Ace+ direction is:
-  - shared field-role intelligence core
-  - note-role inference
-  - smarter suggestions
-  - smarter autocomplete
-  - clearer explainability when intelligence is weak
-  - more transparent reasoning inside completions so likely matches and inferred field roles are not opaque
-  - query relation autocomplete now uses the same target-preference model as frontmatter relation autocomplete
+- the rest of the system is moving toward user-adaptive behavior instead of one hardcoded ontology
+- current payoff:
+  - note-role inference with supporting and conflicting signals
+  - smarter suggestions, autocomplete, and Note Report guidance from shared vault patterns
+  - likely next fields and likely next links from similar notes
+  - repeated body wikilinks as supporting evidence when they reinforce a pattern
+  - family-aware field learning even when the vault uses different names like:
+    - `account` / `company` / `client`
+    - `owner` / `assignee` / `reporter`
+    - `date` / `deadline` / `followup`
+  - likely-context, nearby-note, same-flow, and surrounding-setup guidance across:
+    - completion
+    - hover
+    - Note Report
+    - frontmatter lightbulbs
+  - confidence-aware behavior so weak signals stay quieter and stronger signals surface more clearly
+  - simpler explanation language so the system feels direct instead of technical
+
+### Frontmatter intelligence
+
+- frontmatter is Yamlink's main structured input surface
+- Carmen improves it through:
+  - looser field-name detection
+  - stronger type-like field detection beyond exact `type:`
+  - workflow-weighted suggestions even before a note is perfectly typed
+  - smarter ranking from semantic date-like and relation-like signals
+  - visible payoff in completion, hover, Note Report, and lightbulbs
+
+### Deterministic assistant direction
+
+- Yamlink should eventually support a vault-native assistant surface tentatively framed as `Yamchat`
+- this is not meant to be "AI chat" inside notes
+- the goal is deterministic interaction grounded in the vault itself:
+  - query generation from plain-language prompts
+  - relationship tracing across notes
+  - structured Q&A over notes, tasks, dates, and views
+  - explanation of why Yamlink suggested something
+  - next-step recommendations that stay bounded to actual vault structure
+- the target feel is conversational and fluid, but the engine stays:
+  - explainable
+  - query-backed
+  - vault-bounded
+  - non-hallucinatory
+- the right UX model is ambient, not intrusive:
+  - lightbulbs when there is a real action
+  - hover when the user is already inspecting context
+  - Note Report for richer deterministic guidance
+  - a later sidebar/menu surface for Yamchat itself
 
 ### Graph awareness
 
@@ -116,6 +155,14 @@ Yamlink queries live inside notes.
 - `limit`
 - `via`
 
+### Where operators
+
+- Equality: `where status = active`
+- OR (same field): `where status = active or done`
+- Contains: `where body contains keyword`
+- Comparison: `where date >= 2026-01-01`, `where deadline < 2026-05-01`
+- Combined: `where status = open and date >= 2026-04-01`
+
 ### Example
 
 ```md
@@ -164,10 +211,14 @@ This is not the final visual query builder. It is the first stage for a more dev
 
 ### Current query-builder behavior
 
+- smart note-aware starters now lead the insert flow when Yamlink already understands the active note's surrounding system
 - quick presets before deeper custom flows
 - contextual query recipes inside Note Report
 - `Open Yamlink Query Builder` lightbulb action on `!view` blocks
 - `Refine this view` action for existing queries
+- query warnings can now suggest closer type, field, sort, and relation-field repairs instead of only failing silently
+- refinement can now offer one-step smart repairs for common query mistakes instead of always forcing more picker steps
+- refinement can now fall back to direct raw query editing when the fastest fix is simply rewriting the block
 - insert/refine flows now run the updated view automatically so users see the result immediately
 
 ---
@@ -179,7 +230,6 @@ Query results now open as live tables.
 ### Supported table behaviors
 
 - multiple query tabs per note
-- sort by column
 - search within a result
 - filter chips
 - visible-row count vs total rows
@@ -252,9 +302,11 @@ It is the structured inspector for the active note.
 - schema-backed relation fields can trigger view suggestions before backlinks exist
 - mixed-type backlinks on the same field can trigger broader incoming suggestions
 - current-note relation fields can now suggest adjacent views across types when the vault schema says they share the same linked context
+- relation intelligence can now suggest related-thread views when notes cluster around the same shared context even without one rigid schema
 - examples:
   - a contact linked to an account can surface meetings for that same account
   - a product linked to a concept can surface other product/concept views that share the same structured relation
+  - a task-like note linked to a project can surface the surrounding task thread for that same project
 
 ---
 
@@ -293,7 +345,7 @@ Much like the newer addition, this is a foundational step, not yet a fully matur
 
 ## Tasks
 
-Yamlink has began working on tasks as well. It is very much a work in progress, but something to test out. Feedback is always appreciated.
+Tasks are now a real workflow surface in Yamlink, though still lighter than a dedicated PM app.
 
 ### Current task functionality
 
@@ -302,6 +354,13 @@ Yamlink has began working on tasks as well. It is very much a work in progress, 
 - task visibility in Calendar
 - task visibility in Note Report
 - task-oriented shortcut queries
+- broader date handling in task and note text such as:
+  - `Mar 26th 2026`
+  - `26th Mar 2026`
+  - `Mar 26`
+  - `26 Mar`
+  - `by Friday`
+  - `due next Tue`
 - natural-language date extraction in task text such as:
   - `tomorrow`
   - `Friday`
@@ -312,7 +371,7 @@ Yamlink has began working on tasks as well. It is very much a work in progress, 
   - `this weekend`
   - `next weekend`
 
-### Not fully mature yet
+### Still lighter than a full PM suite
 
 - dedicated task dashboards
 - richer task editing workflows
@@ -323,26 +382,56 @@ Yamlink has began working on tasks as well. It is very much a work in progress, 
 
 ## Graph
 
-The graph is now a real surface, not just a raw canvas.
+The graph is now a real exploration surface, not just a raw canvas.
+
+### How to open it
+
+- `Yamlink: Run Graph`
+  - opens a local graph centered on the active Markdown note
+- `Yamlink: Vault Graph`
+  - opens explorer mode for the broader vault
+
+### Local graph depth
+
+- `Direct links`
+  - the current note plus the notes linked directly to it
+- `Extended links`
+  - adds a second layer of notes linked to those direct notes
+- `Broad links`
+  - adds a third layer for the widest local view around the current note
 
 ### Current graph capabilities
 
+- local graph centered on the active note
+- vault explorer mode
+- depth control for local graph link layers
 - search
 - type filtering
-- relation filtering
 - map key
 - node selection
-- neighborhood focus
+- focused-note reading
+- expand-neighbor workflow
 - selected-node inspector
-- stronger spacing and layout
+- active-note reveal
+- fit / zoom controls
+- rebuilt boot-once webview architecture
+- cleaner host/client/runtime split for safer maintenance
 - keyboard shortcuts:
   - `/` to focus graph search
-  - `F` to fit the visible graph
-  - `R` to reset graph state
-  - `L` to toggle edge labels
-  - `N` to focus the active note
-  - `O` to open the selected node's note
-  - `Esc` to clear the current graph state
+  - `Enter` to open the selected node's note
+  - `F` to focus the graph on the selected node
+  - `E` to expand the selected node
+  - `Esc` to clear the current selection
+
+### Current graph behavior
+
+- local mode is for understanding the nearby linked notes around one note
+- explorer mode is for browsing the broader vault without dumping the full graph at once
+- the sidebar shows:
+  - selected note details
+  - type filters
+  - most-connected notes
+  - relation summaries
 
 ### Current graph role
 
@@ -412,6 +501,7 @@ Yamlink’s autocomplete is not limited to raw ID completion.
 - frontmatter field suggestions from schema
 - observed-field fallback for schema-less note types
 - archetype-based field suggestions
+- body wikilink → field suggestion: if you mention `[[x]]` 2+ times in the note body and it is not already a frontmatter field, Yamlink surfaces it as a "add as field" action in the lightbulb and a hint in the hover card
 - adaptive field-role inference is now starting to power completion from shared signals:
   - schema evidence
   - observed wikilink values
@@ -422,9 +512,20 @@ Yamlink’s autocomplete is not limited to raw ID completion.
   - schema targets
   - field names
   - observed graph usage
+  - same-family relation behavior already present elsewhere in the vault
 - relation suggestions before typing `[[`
 - fallback to all indexed notes when smart inference is weak
 - ranked note suggestions, not strict prefix-only behavior
+- smart starter actions for likely next steps when Yamlink has enough signal
+
+---
+
+## Writer Ergonomics
+
+- bottom status-bar writing metrics for Markdown notes
+- body-only word count
+- body-only character count
+- counts ignore frontmatter so longform notes are measured more honestly
 
 ### Examples of heuristic fields
 
@@ -458,6 +559,8 @@ Suggestions can now come from multiple signals:
 - mixed-type backlinks that converge on the same relation field
 - peer-relation logic from the current note's own structured fields
 - explanation when nothing qualifies yet
+- learned context flows and companion-note patterns from similar notes in the vault
+- surrounding setup hints learned from the companion note types that usually cluster around the same context
 
 Examples:
 
@@ -570,6 +673,22 @@ Recommended release gate:
 
 Yamlink is becoming very powerful, but it should remain disciplined.
 
+### North star
+
+Yamlink should aim to be the best structured Markdown extension for VS Code:
+
+- powerful for note-takers who want systems, not just pages
+- powerful for coders who want structure without leaving the editor
+- writer- and researcher-friendly without becoming a separate app shell
+
+That means Yamlink should win through:
+
+- editor-native workflows
+- local-first structured Markdown
+- trust, safety, and integrity
+- intelligent guidance without forcing users into one ontology
+- fast, practical utility in daily note and coding workflows
+
 ### Yamlink should own
 
 - local-first structured Markdown workflows
@@ -578,6 +697,10 @@ Yamlink is becoming very powerful, but it should remain disciplined.
 - side-panel operational context
 - export/reporting
 - practical tasks/calendar support
+- adaptive intelligence across notes, links, fields, and queries
+- strong hover, codelens, completion, diagnostics, and quick-fix UX
+- template and system bootstrapping for real vaults
+- developer-native knowledge workflows inside VS Code
 
 ### Atomix should own
 
@@ -585,6 +708,8 @@ Yamlink is becoming very powerful, but it should remain disciplined.
 - heavier block-native workflows
 - the more ambitious operating-system layer
 - the richer hybrid editor experience
+- the more advanced visual query-builder experience
+- broader workspace-level orchestration beyond the extension model
 
 That boundary matters for roadmap discipline.
 
@@ -616,3 +741,19 @@ Yamlink now has a recognizable visual direction inside the extension, but the pa
 Yamlink UI improvements should stay theme-agnostic whenever possible.
 
 The goal is not to make the extension look good only under one preferred dark theme. The goal is to make it feel intentional across both dark and light VS Code setups.
+
+### Carmen visual polish lane
+
+The active Carmen visual lane now includes:
+
+- tighter Calendar and Note Report polish
+- tighter Calendar and task-surface polish
+- a more refined Graph visual finish
+- prettier, denser hover cards
+- investigation into what Yamlink can realistically improve around note live preview without overreaching past VS Code's own preview surface
+- Monaco-adjacent UX improvements where Yamlink actually controls the experience:
+  - hover presentation
+  - completion detail text
+  - codelens / lightbulb / inline affordances
+
+The important boundary is that Yamlink should improve the editor experience around Monaco, not pretend it can fully retheme VS Code's editor chrome.

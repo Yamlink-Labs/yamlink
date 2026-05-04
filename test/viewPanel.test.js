@@ -17,7 +17,11 @@ Module._resolveFilename = function (request, parent, ...rest) {
     return originalResolve(request, parent, ...rest);
 };
 
-const { normaliseTableDisplayValue, extractIdFromText } = require('../src/features/viewPanel');
+const {
+    normaliseTableDisplayValue,
+    extractIdFromText,
+    buildTableEmptyStateTitle
+} = require('../src/features/viewPanel');
 
 describe('view panel display helpers', () => {
     test('keeps canonical dates untouched and normalises parseable datetime strings', () => {
@@ -42,6 +46,15 @@ describe('view panel display helpers', () => {
             ''
         ].join('\n');
         assert.equal(extractIdFromText(text), 'jaime-ramirez');
+    });
+    test('uses the incoming empty-state title for backlink views', () => {
+        const title = buildTableEmptyStateTitle({
+            incoming: true,
+            type: 'contact',
+            wheres: [],
+            where: null
+        }, []);
+        assert.equal(title, 'No notes link here yet.');
     });
 });
 

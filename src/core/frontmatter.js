@@ -106,7 +106,8 @@ function serializeFrontmatterDocument(doc) {
         noRefs: true,
         sortKeys: false,
         quotingType: '"',
-        forceQuotes: false
+        forceQuotes: false,
+        flowLevel: 1
     }).trimEnd();
 
     const body = normalizeText(doc?.body || '');
@@ -183,6 +184,7 @@ function coerceScalar(value, existingValue) {
 }
 
 module.exports = {
+    normalizeText,
     parseFrontmatterDocument,
     setField,
     deleteField,

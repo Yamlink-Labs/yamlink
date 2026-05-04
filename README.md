@@ -3,13 +3,13 @@
 Structured knowledge for Markdown, inside VS Code.
 
 [![VS Code Marketplace](https://img.shields.io/visual-studio-marketplace/v/yamlink.yamlink?label=Marketplace)](https://marketplace.visualstudio.com/items?itemName=yamlink.yamlink)
-![Version](https://img.shields.io/badge/version-0.3.5--Ace%2B-blue)
+![Version](https://img.shields.io/badge/version-0.4.0--Carmen-blue)
 ![License](https://img.shields.io/badge/license-MIT-green)
 ![VS Code](https://img.shields.io/badge/VS%20Code-%5E1.85.0-blueviolet)
 
 Yamlink turns a folder of Markdown files into a local-first knowledge system:
 
-- notes get stable `id:` identities
+- notes get stable `id:`
 - `[[wikilinks]]` become graph relationships
 - YAML frontmatter becomes structured data
 - `!view` blocks become live, editable tables
@@ -17,27 +17,28 @@ Yamlink turns a folder of Markdown files into a local-first knowledge system:
 
 Yamlink is built for people who want their notes to stay plain-text, Git-friendly, queryable, and local.
 
-If you want the practical onboarding path, use [GETTING_STARTED.md](./GETTING_STARTED.md).
+If you want the practical start, use [GETTING_STARTED.md](./GETTING_STARTED.md).
+
+If Yamlink is useful to you, please star the repo on [GitHub](https://github.com/javierigaciorm/yamlink)  and leave a review on the VS Code Marketplace. All input helps moving forward.
 
 ---
 
-## New in Ace+
+## New in Carmen
 
-Ace+ is the trust-and-intelligence follow-up to Ace.
+Carmen is the hardening and intelligence release.
 
-It strengthens the parts of Yamlink that were already central to the product promise:
+It strengthens the parts of Yamlink that matter most day to day:
 
-- smarter suggested views
-- stronger wikilink truth in the graph
-- safer relation autocomplete
-- better query-side relation completion
-- broader quality-of-life and hardening work across tables, graph, reports, calendar, and vault health
+- smarter next-step guidance across completion, hover, Note Report, and suggestions
+- stronger frontmatter and body-link intelligence
+- a rebuilt graph experience after the old webview path broke under a VS Code update
+- broader date handling
+- better writer ergonomics
+- deeper codebase hardening across graph, tables, health, Note Report, and intelligence
 
 ### Adaptive intelligence
 
-Yamlink is now moving toward a system focused on understanding a user's workflow and tendencies, instead of relying on isolated heuristics.
-
-That means it increasingly learns from:
+Yamlink is now built around one shared adaptive-intelligence model. It learns from:
 
 - frontmatter structure
 - body and frontmatter wikilinks
@@ -45,28 +46,32 @@ That means it increasingly learns from:
 - observed field usage across the vault
 - graph patterns
 
-The goal is simple:
+That shows up in practical ways:
 
-- keep a small set of foundational semantics
-- let the user's vault teach the rest of the system
+- likely next fields
+- likely next links
+- note-role inference
+- same-flow guidance
+- better setup hints
+- simpler, more direct explanations
 
 ### Smarter suggestions and completions
 
 Smart suggestions are no longer just repeated-backlink prompts.
 
-Ace+ now pushes them toward:
+Carmen pushes them further toward:
 
 - schema-backed suggestions even before repeated backlinks exist
 - mixed-type relation awareness
 - current-note relation context
-- smarter note analysis for better system suggestions
+- smarter note analysis for better next-step suggestions
 
-Autocomplete also got much stronger:
+Autocomplete also got stronger:
 
-- frontmatter relation completion no longer blindfolds the user
-- likely targets still rise first, but the rest of the vault stays visible
+- frontmatter relation completion no longer hides the rest of the vault
+- likely targets still rise first, but broader candidates stay visible
 - query `where ... = [[` completion now follows the same target-preference model
-- completion detail text explains more of Yamlink's reasoning directly
+- completion text is cleaner and more direct
 
 ### Graph and link truth
 
@@ -75,15 +80,28 @@ Body/frontmatter wikilinks are now normalized more reliably before indexing.
 That means links with:
 
 - aliases
-- heading anchors
 - block refs
 - casing or spacing differences
 
-are much less likely to silently miss their real node in the graph.
+The graph itself also changed a lot:
+
+- local graph now follows the active note
+- vault graph is now the broader view
+- local depth is now shown as 1, 2, or 3 layers of linked notes
+- graph controls are now simpler and easier to understand
+
+### Dates and writing
+
+Carmen also broadens the practical side of daily use:
+
+- broader date usage
+- better task/date interpretation
+- body-only word count in the status bar
+- body-only character count in the status bar
 
 ---
 
-## New in Ace
+## What Yamlink Looks Like
 
 ### Live tables
 
@@ -93,13 +111,13 @@ Editable query tables are now strong enough for real operational work. You can u
 
 ### Note Report and Calendar
 
-The Yamlink sidebar now gives the vault a real operational shell. Note Report helps you understand where a note sits in the system, and Calendar lets you review dated activity across the vault.
+The Yamlink sidebar now gives the vault a real operational hub. Note Report helps you understand where a note sits in the system, and Calendar lets you review dated activity across the vault.
 
 ![Note Report and Calendar](./media/readme/calendar-note-report.gif)
 
 ### Graph
 
-The graph is no longer just a cloud of dots. It now has filtering, a map key, stronger spacing, node inspection, and a layout that makes relationships readable.
+The graph is now easier to read and easier to drive. It gives you a local note view, a broader vault view, type filtering, node inspection, and simpler controls.
 
 ![Graph](./media/readme/graph.gif)
 
@@ -110,7 +128,7 @@ The graph is no longer just a cloud of dots. It now has filtering, a map key, st
 In my daily workflow, I don't want to work separately with:
 
 - freeform writing
-- structured databases
+- structured databases - crm functionalities
 - graph relationships
 - local ownership
 
@@ -126,46 +144,6 @@ With Yamlink, you can:
 - inspect a note through Note Report
 - track dated activity across the vault
 - export notes and views to PDF
-
----
-
-## What Changed In Ace+
-
-`0.3.5 - Ace+`
-
-Ace+ strengthens Ace (0.3.0) in the areas where the product promise most needed follow-through:
-
-- adaptive intelligence is now a real product track, not just a loose set of heuristics
-- smart suggestions are broader, more explainable, and less brittle. There's now more consistency in daily use
-- autocomplete is more transparent and less restrictive, especially when a vault's schema is still taking shape
-- body/frontmatter wikilink truth is much stronger
-- query/table/graph/sidebar surfaces all received real quality-of-life and hardening work
-
-Ace remains the shaping release.
-Ace+ is the release line where that foundation gets smarter, safer, and more trustworthy.
-
----
-
-## What Changed In Ace
-
-`0.3.0 - Ace`
-
-Ace adds or stabilizes:
-
-- a real Yamlink sidebar with:
-  - Note Report
-  - Calendar
-  - Vault Health
-- much stronger query tables:
-  - typed cells
-  - bulk paste
-  - row revert
-  - PDF / CSV / JSON export
-- smarter frontmatter and relation autocomplete
-- stable task block IDs
-- vault-wide calendar activity
-- a much stronger graph surface
-- broader reliability and test coverage
 
 ---
 
@@ -243,6 +221,7 @@ Use the Yamlink sidebar to inspect:
   - `!view calendar`
 - Guided query-builder foundation
 - Smart query suggestions based on graph patterns
+- Smarter note-aware query starters from the active note context
 
 ### Live tables
 
@@ -271,25 +250,18 @@ Use the Yamlink sidebar to inspect:
 - Vault Health
 - Graph / relationship map
 
-### Frontmatter intelligence
-
-- Smart relation completions in frontmatter
-- Observed-field fallback when schemas are absent
-- Archetype-based field suggestions
-- Relation target inference from field names and schema
-- Fallback to all indexed notes when inference is weak
-
-### Ace+ intelligence direction
+### Carmen intelligence
 
 - Shared field-role intelligence core
-- First note-role inference layer
+- Note-role inference with supporting and conflicting signals
 - Smarter suggestion generation from:
-  - schema-backed relations
-  - mixed-type relation patterns
+  - schema relations
+  - mixed relation patterns
   - current-note relation context
-- Clearer explainability when suggestions are absent
+  - repeated body-link evidence
+- "Cleaner explanations" when suggestions are absent or weak
 - Query-side relation completion aligned with frontmatter relation completion
-- More transparent completion detail text so users can understand inferred targets and field-role reasoning
+- More transparent completion to easier understand likely targets and field-role reasoning
 
 ### Tasks and date activity
 
@@ -298,6 +270,17 @@ Use the Yamlink sidebar to inspect:
 - Calendar month / week / day views
 - Created-note activity in calendar
 - Timeline context inside Note Report
+- Broader date parsing:
+  - textual months
+  - ordinal dates
+  - month/day without a year
+  - phrases like `by Friday` and `due next Tue`
+
+### Writer ergonomics
+
+- Bottom-bar word count for Markdown note bodies
+- Bottom-bar character count for Markdown note bodies
+- Frontmatter is excluded from those writing counts
 
 ### Export and sharing
 
@@ -307,281 +290,6 @@ Use the Yamlink sidebar to inspect:
 
 For the fuller capability reference, see [FEATURES.md](./FEATURES.md).
 For setup guidance and recommended vault structures, see [GETTING_STARTED.md](./GETTING_STARTED.md).
-
----
-
-## Example Workflows
-
-### Knowledge system
-
-- create stable note identities with `id:`
-- link concepts, people, projects, or ideas with `[[wikilinks]]`
-- inspect structure through Note Report, Graph, and backlinks
-
-### CRM / operations
-
-- model accounts, contacts, opportunities, or projects with frontmatter
-- query them into live tables
-- track follow-ups in Calendar
-- export structured views to PDF for reporting
-
-### Research / worldbuilding / longform writing
-
-- keep dossiers, source notes, timelines, and chapter support notes in Markdown
-- use Note Report as a contextual inspector while drafting
-- use tables and queries to surface scenes, entities, unresolved links, or supporting material
-
----
-
-## The Mental Model
-
-```text
-Markdown files  -> add id: fields  -> Nodes
-Nodes           -> add [[links]]   -> Relations
-Relations       -> form a          -> Graph
-Graph           -> queried by      -> !view blocks
-!view blocks    -> render as       -> Live tables
-```
-
-That is the whole system.
-
-You can stop at any layer:
-
-- use only IDs and links and you get rename-safe notes plus backlinks
-- add `!view` and you get live databases
-- add dates and tasks and you get planning surfaces
-- add note reports and vault health and you get operational context
-
----
-
-## Query Language
-
-### Basic query
-
-```md
-!view mission
-```
-
-### Filtered query
-
-```md
-!view mission | Missions led by Rico
-where commander = [[johnny-rico]]
-select date, outcome, unit
-sort date desc
-limit 10
-```
-
-### Incoming relation query
-
-```md
-!view incoming mission
-via commander
-select date, outcome
-```
-
-### Supported clauses
-
-| Clause | Example | Purpose |
-|---|---|---|
-| `select` | `select name, rank, unit` | choose and order columns |
-| `where =` | `where unit = [[roughnecks]]` | exact field match |
-| `where contains` | `where notes contains plasma` | substring filter |
-| `sort` | `sort date desc` | ordering |
-| `limit` | `limit 5` | trim result set |
-| `via` | `via commander` | relation field filter for incoming views |
-| `| label` | `!view mission | Latest` | custom tab name |
-
-### Shortcut queries
-
-```md
-!view today
-!view upcoming
-!view calendar
-```
-
-These are currently task/date-oriented query shortcuts, while the sidebar Calendar is the richer vault-wide planning surface.
-
----
-
-## Current Surfaces
-
-### Note Report
-
-The Note Report is Yamlink's structured inspector for the active note.
-
-It currently shows:
-
-- summary fields
-- incoming links
-- outgoing links
-- task sections
-- timeline context
-- suggested views
-
-### Calendar
-
-The Calendar is vault-wide, not note-specific.
-
-It currently supports:
-
-- month view
-- week view
-- day view
-- task activity
-- created-note activity
-
-### Vault Health
-
-Vault Health gives a structured snapshot of:
-
-- node count
-- edge count
-- broken links
-- orphan nodes
-- type distribution
-- overall vault quality
-
-### Graph
-
-The graph is now a real product surface, not just a prototype canvas.
-
-It includes:
-
-- search
-- type and relation filtering
-- a map key
-- a selected-node inspector
-- stronger first-open layout and spacing
-
----
-
-## Feature Status
-
-### Strong today
-
-- identity and link graph
-- diagnostics and rename propagation
-- query parsing and execution
-- live editable tables
-- frontmatter intelligence
-- Note Report foundation
-- vault-wide Calendar foundation
-- Vault Health
-- graph surface
-- PDF export
-
-### Still being polished
-
-- Note Report smoothness during navigation
-- Calendar density and responsiveness
-- very large-vault performance
-- task workflows beyond the current foundation
-- simple query UX and builder depth
-- broader date/time support
-
----
-
-## Templates, IDs, and Dates
-
-### Templates
-
-Yamlink already supports `_templates/`-based note creation, which is one of the most important foundations for custom vault design.
-
-Templates currently allow users to:
-
-- create notes from Markdown templates
-- shape custom frontmatter structures
-- set up repeatable note types for CRM, research, worldbuilding, and ops
-
-Templates are already useful today, and they are an important part of Carmen's roadmap.
-
-### ID Policy
-
-Yamlink IDs are canonical machine IDs, not display labels.
-
-Recommended:
-
-```text
-johnny-rico
-mission-klendathu
-crm-contact-alfa
-note-report-test
-```
-
-Rules:
-
-- lowercase kebab-case is strongly recommended
-- letters, numbers, `_`, and `-` are safe
-- use `name` or `title` for human-facing labels
-- accented input can be normalized into safe canonical IDs
-
-Examples:
-
-- `Jaime Ramirez` -> `jaime-ramirez`
-- `Jaime Ramírez` -> `jaime-ramirez`
-
-### Dates
-
-Today, Yamlink stores and renders dates canonically as:
-
-```text
-YYYY-MM-DD
-```
-
-That keeps:
-
-- sorting predictable
-- queries reliable
-- round-tripping safe
-- tables stable
-
-Yamlink has already begun broader date parsing work, but canonical ISO-style storage remains the rule for now.
-
-This matters especially for:
-
-- CRM workflows
-- operational follow-ups
-- long-lived planning systems
-
----
-
-## PDF Export
-
-Yamlink can export:
-
-- live view tables to PDF
-- the active note to PDF
-
-Note export currently includes:
-
-- summary/frontmatter data
-- note body content
-- embedded `!view` results
-
-That makes Yamlink useful not just for in-editor work, but also for reporting and sharing.
-
----
-
-## Longform Writing Direction
-
-Yamlink is not just a graph/database tool.
-
-It can also become a strong Markdown-native companion for:
-
-- books
-- reports
-- research dossiers
-- proposals
-- worldbuilding
-- CRM-style narrative work
-
-The direction here is:
-
-- support structure first
-- support references and linked context
-- support writer dashboards and drafting workflows
-- avoid adding rich-text chrome unless it clearly beats VS Code defaults
 
 ---
 
@@ -595,63 +303,7 @@ Or search for `Yamlink` inside VS Code.
 
 On first activation, Yamlink can copy a sample vault into your workspace so you can explore the model immediately.
 
----
-
-## Sample Vault Files
-
-The `sample/` folder exists so demos and manual testing stay repeatable.
-
-Useful examples:
-
-- `dashboard.md`
-- `query-shortcuts.md`
-- `table-types.md`
-- `note-report.md`
-- `tasks-calendar.md`
-
----
-
-## Roadmap Snapshot
-
-### `0.3.0 - Ace`
-
-Ace is the shaping release:
-
-- dependable indexing
-- stronger tables
-- sidebar surfaces
-- graph brought up to product quality
-- better export and document structure
-
-### `0.3.x - Ace+`
-
-Ace+ is the refinement and trust release:
-
-- intelligence overhaul
-- stronger link truth
-- safer autocomplete
-- broader QOL and hardening
-
-### `0.4.0 - Carmen`
-
-Carmen should be about:
-
-- scale
-- polish
-- hardening
-- quality-of-life improvements
-- only a few small, high-leverage features
-
-Likely Carmen priorities:
-
-- smoother Note Report behavior
-- tighter Calendar responsiveness and planning UX
-- stronger large-vault performance
-- better query-builder and simple query UX
-- task workflow refinement
-- broader date/time support
-- stronger template workflows for custom vault creation
-
+If Yamlink is useful to you, please star the repo on [GitHub](https://github.com/javierigaciorm/yamlink) and leave a review on the VS Code Marketplace.
 
 ---
 
@@ -667,9 +319,6 @@ It can begin in:
 - VS Code
 
 And from there, grow only when the user is ready.
-
-
-*Would you like to know **more?***
 
 ---
 

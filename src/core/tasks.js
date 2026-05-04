@@ -1,5 +1,6 @@
 const fs = require('fs');
 const { extractDateFromText } = require('./date');
+const { normalizeText } = require('./frontmatter');
 
 function hashString(str) {
   let h = 5381;
@@ -13,13 +14,13 @@ function hashString(str) {
 function stripFrontmatter(content) {
   if (!/^\s*---/.test(content)) return content;
   const first = content.indexOf('---');
-  const second = content.indexOf('---', first + 3);
-  if (second === -1) return content;
-  return content.slice(second + 3);
+  const closeIdx = content.indexOf('\n---', first + 3);
+  if (closeIdx === -1) return content;
+  return content.slice(closeIdx + 4);
 }
 
 function parseTasksFromContent(content, fileId, filePath, referenceDate = null) {
-  const body = stripFrontmatter(content.replace(/\r\n/g, '\n').replace(/\r/g, '\n'));
+  const body = stripFrontmatter(normalizeText(content));
   const lines = body.split('\n');
   const tasks = [];
   let taskNumber = 0;

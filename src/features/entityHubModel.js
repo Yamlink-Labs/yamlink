@@ -5,6 +5,30 @@ const vscode = require('vscode');
 const { getBacklinks } = require('../core/graph');
 const { buildTaskRows } = require('../core/tasks');
 const { normaliseDateInput } = require('../core/date');
+const { getSchema, getSchemaTargets } = require('../registries/schemaRegistry');
+const {
+    DEFAULT_STATUS_LIKE_VALUES,
+    DEFAULT_SEMANTIC_ROLE_PRIORS
+} = require('../intelligence/fieldRolesCore');
+const { summarizeNoteRoleReasons, summarizeNoteRole } = require('../intelligence/noteRolesCore');
+const { filterItemsForSurface, shouldSurface } = require('../intelligence/confidence');
+const {
+    buildFrontmatterOpportunityModel,
+    buildFrontmatterGuidanceSummary,
+    summarizeGuidanceExplanation,
+    buildBodyMentionHints
+} = require('../intelligence/frontmatterIntelligence');
+const {
+    buildObservedFields,
+    buildNoteContext,
+    buildBridgePaths,
+    buildSharedContextTraces,
+    buildAdaptiveFieldPatterns,
+    describeContextOrigin,
+    summarizeBridgeHints,
+    summarizeTraceHints,
+    summarizeAdaptiveFieldHints
+} = require('../intelligence/suggestionCore');
 const { computeSuggestionsForNode, explainSuggestionState, queryAlreadyExists } = require('../engine/suggestions');
 const { buildIncomingViewQuery, buildTypeViewQuery, getSchemaBackedDefaultSortField } = require('../actions/viewBuilder');
 
@@ -18,10 +42,19 @@ function buildEntityHubModel(nodeId, idIndex, fieldsCache) {
     const taskSections = buildTaskSections(nodeId, idIndex);
     const timelineRows = buildTimelineRows(nodeId, nodeFields, taskSections);
     const docText = getNodeDocText(nodeId, idIndex);
-    const suggestions = buildSuggestionRows(nodeId, idIndex, docText);
+    const suggestions = buildSuggestionRows(nodeId, docText);
     const suggestionExplanation = explainSuggestionState(nodeId);
-    const recipes = buildContextualQueryRecipes(nodeId, nodeFields, incomingGroups, outgoingGroups, docText);
-    const vaultPositionRows = buildVaultPositionRows(nodeFields, incomingGroups, outgoingGroups);
+    const recipes = buildContextualQueryRecipes(nodeId, nodeFields, incomingGroups, outgoingGroups, docText, fieldsCache);
+    const vaultPositionRows = buildVaultPositionRows(
+        nodeId,
+        nodeFields,
+        incomingGroups,
+        outgoingGroups,
+        fieldsCache,
+        docText,
+        suggestions,
+        suggestionExplanation
+    );
 
     return {
         nodeFields,
@@ -87,9 +120,24 @@ function buildOutgoingGroups(nodeFields, idIndex, fieldsCache) {
 
 function buildSummaryRows(nodeFields) {
     return Object.entries(nodeFields)
-        .filter(([key, value]) => !SKIP_FIELDS.has(key) && value && extractRelations(value).length === 0)
+        .filter(([key, value]) => !SKIP_FIELDS.has(key) && key !== 'type' && value && extractRelations(value).length === 0)
         .map(([key, value]) => ({ key, value: String(value) }))
         .sort((a, b) => a.key.localeCompare(b.key));
+}
+
+function summarizeFieldNames(items, limit = 3) {
+    return items
+        .slice(0, limit)
+        .map((hint) => hint.field)
+        .join('; ');
+}
+
+function summarizeConnectionHints(items, limit = 2) {
+    return items
+        .slice(0, limit)
+        .map((hint) => hint.summary || hint.field || hint.targetId || '')
+        .filter(Boolean)
+        .join('; ');
 }
 
 function summariseTypeCounts(rows) {
@@ -112,7 +160,145 @@ function summariseFieldCounts(groups) {
         .join(', ');
 }
 
-function buildVaultPositionRows(nodeFields, incomingGroups, outgoingGroups) {
+function buildIntelligenceRows(nodeId, nodeFields, fieldsCache, docText) {
+    const nodeType = String(nodeFields.type || '').trim().toLowerCase();
+    const observedFields = buildObservedFields(fieldsCache);
+    const noteContext = buildNoteContext(nodeFields, nodeType, {
+        observedFields,
+        getSchemaForType: getSchema,
+        dateParser: normaliseDateInput,
+        statusLikeValues: DEFAULT_STATUS_LIKE_VALUES,
+        semanticRolePriors: DEFAULT_SEMANTIC_ROLE_PRIORS
+    });
+    const rows = [];
+    if (noteContext.noteRole?.noteRole && shouldSurface(noteContext.noteRole, 'report-note-role', { confidenceKey: 'confidence' })) {
+        rows.push({
+            key: 'note role',
+            value: `${summarizeNoteRole(noteContext.noteRole)} (${Math.round((noteContext.noteRole.confidence || 0) * 100)}%)`
+        });
+        const why = summarizeNoteRoleReasons(noteContext.noteRole);
+        if (why) rows.push({ key: 'why', value: why });
+    }
+
+    const bridgePaths = buildBridgePaths(nodeId, nodeFields, noteContext, fieldsCache, {
+        nodeType, observedFields, getSchemaTargets, getSchemaForType: getSchema
+    });
+    const bridgeHints = summarizeBridgeHints(bridgePaths, 2);
+    if (bridgeHints.length) {
+        rows.push({ key: 'related notes', value: bridgeHints.map(b => b.summary).join('; ') });
+        rows.push({ key: 'next links', value: bridgeHints.map(b => `link ${b.candidateId}`).join('; ') });
+    }
+
+    const traces = buildSharedContextTraces(nodeId, nodeFields, noteContext, fieldsCache, {
+        nodeType, observedFields, getSchemaTargets, getSchemaForType: getSchema
+    });
+    const traceHints = summarizeTraceHints(traces, 2);
+    if (traceHints.length) {
+        rows.push({
+            key: 'paths',
+            value: traceHints.slice(0, 1).map(t => `${t.summary}: ${t.path.join(' -> ')}`).join('; ')
+        });
+    }
+
+    const frontmatterOpportunities = buildFrontmatterOpportunityModel(nodeFields, {
+        nodeId, nodeType, fieldsCache, observedFields, noteContext,
+        content: docText,
+        getSchemaForType: getSchema, dateParser: normaliseDateInput,
+        statusLikeValues: DEFAULT_STATUS_LIKE_VALUES,
+        semanticRolePriors: DEFAULT_SEMANTIC_ROLE_PRIORS, limit: 4
+    });
+    const guidance = buildFrontmatterGuidanceSummary(frontmatterOpportunities);
+    const reportFields = filterItemsForSurface(frontmatterOpportunities.likelyFields, 'report-opportunities', { scoreScale: 700 });
+    const reportGaps = filterItemsForSurface(frontmatterOpportunities.likelyGaps, 'report-opportunities', { scoreScale: 700 });
+    const reportContexts = filterItemsForSurface(frontmatterOpportunities.likelyContexts, 'report-opportunities', { scoreScale: 700 });
+    const reportConnections = filterItemsForSurface(frontmatterOpportunities.likelyConnections, 'report-opportunities', { scoreScale: 700 });
+    const reportCompanions = filterItemsForSurface(frontmatterOpportunities.likelyCompanions, 'report-opportunities', { scoreScale: 700 });
+    const reportThreadViews = filterItemsForSurface(frontmatterOpportunities.contextThreadViews || [], 'report-opportunities', { scoreScale: 900 });
+    const reportSetups = filterItemsForSurface(frontmatterOpportunities.surroundingSetups || [], 'report-opportunities', { scoreScale: 1100 });
+    const bodyHints = docText
+        ? buildBodyMentionHints(docText, nodeFields, fieldsCache, { threshold: 2 }).slice(0, 2)
+        : [];
+
+    if (guidance.headline) rows.push({ key: 'next step', value: guidance.headline });
+    const guidanceWhy = summarizeGuidanceExplanation(guidance);
+    if (guidanceWhy) rows.push({ key: 'why', value: guidanceWhy });
+    if (guidance.workflowSummary) rows.push({ key: 'pattern', value: guidance.workflowSummary });
+    if (guidance.setupSummary) rows.push({ key: 'setup', value: guidance.setupSummary });
+
+    const adaptiveFieldHints = reportFields.slice(0, 2);
+    if (adaptiveFieldHints.length) {
+        rows.push({ key: 'next fields', value: summarizeFieldNames(adaptiveFieldHints, 3) });
+        const relationHint = adaptiveFieldHints.find(h => h.relational && h.sampleTargets.length);
+        if (relationHint) {
+            rows.push({ key: 'next link', value: `${relationHint.field} often points to ${relationHint.sampleTargets.slice(0, 2).join('; ')}` });
+        } else if (bodyHints.length) {
+            rows.push({ key: 'next link', value: `link ${bodyHints[0].id}` });
+        }
+    }
+    if (reportGaps.length) rows.push({ key: 'missing', value: summarizeFieldNames(reportGaps, 3) });
+    if (frontmatterOpportunities.setupFields.length > 0 && frontmatterOpportunities.setupInsertText) {
+        rows.push({ key: 'setup fields', value: frontmatterOpportunities.setupFields.map(h => h.field).join(', ') });
+    }
+    if (frontmatterOpportunities.recommendedBundle?.fields?.length) {
+        rows.push({ key: 'useful fields', value: summarizeFieldNames(frontmatterOpportunities.recommendedBundle.fields, 4) });
+    }
+    if (reportContexts.length) {
+        rows.push({ key: 'context', value: reportContexts.slice(0, 2).map(h => `${h.field} -> ${h.targetId}`).join('; ') });
+    }
+    if (reportConnections.length) {
+        rows.push({ key: 'related note', value: reportConnections.slice(0, 1).map(h => h.summary).join('; ') });
+    }
+    if (bodyHints.length) {
+        rows.push({ key: 'body links', value: bodyHints.map(h => `${h.id} (${h.count})`).join('; ') });
+    }
+    if (reportCompanions.length) {
+        rows.push({ key: 'nearby note', value: reportCompanions.slice(0, 2).map(h => h.summary).join('; ') });
+    }
+    if (frontmatterOpportunities.contextBundle?.summary) {
+        rows.push({ key: 'flow', value: frontmatterOpportunities.contextBundle.summary });
+    }
+    if (reportThreadViews.length) {
+        rows.push({ key: 'common view', value: reportThreadViews.slice(0, 2).map(v => v.summary).join('; ') });
+    }
+    if (reportSetups.length) {
+        rows.push({ key: 'common setup', value: reportSetups.slice(0, 2).map(s => s.summary).join('; ') });
+    }
+
+    return rows;
+}
+
+function buildSuggestionSignalRows(suggestions, explanation) {
+    const rows = [];
+    const visibleSuggestions = filterItemsForSurface(suggestions, 'report-suggestions', { scoreScale: 130 });
+    if (Array.isArray(visibleSuggestions) && visibleSuggestions.length) {
+        const top = visibleSuggestions[0];
+        rows.push({
+            key: 'next view',
+            value: top.title
+        });
+        rows.push({
+            key: 'hints',
+            value: visibleSuggestions
+                .slice(0, 1)
+                .map(function (suggestion) {
+                    return suggestion.description;
+                })
+                .join('; ')
+        });
+        return rows;
+    }
+
+    const reasons = Array.isArray(explanation?.reasons) ? explanation.reasons.filter(Boolean) : [];
+    if (reasons.length) {
+        rows.push({
+            key: 'hints',
+            value: reasons.slice(0, 2).join('; ')
+        });
+    }
+    return rows;
+}
+
+function buildVaultPositionRows(nodeId, nodeFields, incomingGroups, outgoingGroups, fieldsCache, docText = null, suggestions = [], suggestionExplanation = null) {
     const incomingRows = incomingGroups.flatMap(group => group.rows);
     const outgoingRows = outgoingGroups.flatMap(group => group.rows);
     const bodyMentions = incomingGroups
@@ -136,7 +322,11 @@ function buildVaultPositionRows(nodeFields, incomingGroups, outgoingGroups) {
     if (inboundTypes) rows.push({ key: 'linked from types', value: inboundTypes });
     if (outboundTypes) rows.push({ key: 'links to types', value: outboundTypes });
 
-    return rows;
+    return [
+        ...buildIntelligenceRows(nodeId, nodeFields, fieldsCache, docText),
+        ...buildSuggestionSignalRows(suggestions, suggestionExplanation),
+        ...rows
+    ];
 }
 
 function buildTaskSections(nodeId, idIndex) {
@@ -203,8 +393,7 @@ function getNodeDocText(nodeId, idIndex) {
     return null;
 }
 
-function buildSuggestionRows(nodeId, idIndex, docText) {
-    void idIndex;
+function buildSuggestionRows(nodeId, docText) {
     return computeSuggestionsForNode(nodeId, docText, { keepExisting: true }).map(function (row) {
         return {
             ...row,
@@ -213,7 +402,7 @@ function buildSuggestionRows(nodeId, idIndex, docText) {
     });
 }
 
-function buildContextualQueryRecipes(nodeId, nodeFields, incomingGroups, outgoingGroups, docText) {
+function buildContextualQueryRecipes(nodeId, nodeFields, incomingGroups, outgoingGroups, docText, fieldsCache = new Map()) {
     const recipes = [];
     const nodeType = String(nodeFields.type || '').trim().toLowerCase();
     const inboundTypes = [...new Set(
@@ -279,6 +468,50 @@ function buildContextualQueryRecipes(nodeId, nodeFields, incomingGroups, outgoin
         });
     }
 
+    if (fieldsCache && fieldsCache.size) {
+        const observedFields = buildObservedFields(fieldsCache);
+        const noteContext = buildNoteContext(nodeFields, nodeType, {
+            observedFields,
+            getSchemaForType: getSchema,
+            dateParser: normaliseDateInput,
+            statusLikeValues: DEFAULT_STATUS_LIKE_VALUES,
+            semanticRolePriors: DEFAULT_SEMANTIC_ROLE_PRIORS
+        });
+        const opportunities = buildFrontmatterOpportunityModel(nodeFields, {
+            nodeId,
+            nodeType,
+            content: docText,
+            fieldsCache,
+            observedFields,
+            noteContext,
+            getSchemaTargets,
+            getSchemaForType: getSchema,
+            getDefaultSortField: getSchemaBackedDefaultSortField,
+            dateParser: normaliseDateInput,
+            statusLikeValues: DEFAULT_STATUS_LIKE_VALUES,
+            semanticRolePriors: DEFAULT_SEMANTIC_ROLE_PRIORS,
+            limit: 4,
+            connectionLimit: 3
+        });
+
+        for (const view of opportunities.relationViews.slice(0, 2)) {
+            recipes.push({
+                title: `Related thread: ${view.relatedId}`,
+                description: view.description,
+                queryText: view.queryText,
+                inserted: docText ? docText.includes(view.queryText) : false
+            });
+        }
+        for (const setup of opportunities.surroundingSetups.slice(0, 2)) {
+            recipes.push({
+                title: `Surrounding setup: ${setup.targetId}`,
+                description: setup.description,
+                queryText: setup.queryText,
+                inserted: docText ? docText.includes(setup.queryText) : false
+            });
+        }
+    }
+
     const seen = new Set();
     return recipes.filter(recipe => {
         if (!recipe.queryText || seen.has(recipe.queryText)) return false;
@@ -288,6 +521,7 @@ function buildContextualQueryRecipes(nodeId, nodeFields, incomingGroups, outgoin
 }
 
 function getVisibleRelationColumns(rows) {
+    const priority = ['type', 'status', 'owner', 'date', 'name', 'title', 'role', 'priority'];
     const fieldSet = new Set();
     for (const { fields } of rows) {
         for (const key of Object.keys(fields || {})) {
@@ -296,7 +530,14 @@ function getVisibleRelationColumns(rows) {
             if (String(raw ?? '').trim()) fieldSet.add(key);
         }
     }
-    return ['id', ...Array.from(fieldSet).sort()];
+    const fields = Array.from(fieldSet);
+    const ordered = [
+        ...priority.filter((key) => fields.includes(key)),
+        ...fields
+            .filter((key) => !priority.includes(key))
+            .sort((a, b) => a.localeCompare(b))
+    ];
+    return ['id', ...ordered.slice(0, 6)];
 }
 
 function getVisibleTaskColumns(rows) {

@@ -10,8 +10,6 @@ function createServices() {
         clearDiagnostics: 0,
         validateAll: 0,
         validateTargeted: 0,
-        refreshBacklinks: 0,
-        refreshRelated: 0,
         refreshDecorations: 0,
         refreshStatusBar: 0,
         refreshHealthPanel: 0,

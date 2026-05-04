@@ -1,0 +1,123 @@
+const { getFieldsCache } = require('../core/indexService');
+const { normaliseDateInput } = require('../core/date');
+const { getSchema, getSchemaTargets } = require('../registries/schemaRegistry');
+const {
+    DEFAULT_STATUS_LIKE_VALUES,
+    DEFAULT_SEMANTIC_ROLE_PRIORS,
+    inferFieldRole,
+    normalizeFieldName
+} = require('../intelligence/fieldRolesCore');
+const {
+    buildObservedFields,
+    buildObservedNoteIndex,
+    buildNoteContext
+} = require('../intelligence/suggestionCore');
+const { buildFrontmatterOpportunityModel } = require('../intelligence/frontmatterIntelligence');
+
+function getDefaultSortFieldForType(type, options = {}) {
+    const schema = type ? getSchema(type) : null;
+    if (schema && schema.fields) {
+        if (schema.fields.created) return 'created';
+        if (schema.fields.date) return 'date';
+        if (schema.fields.name) return 'name';
+    }
+    const fieldsCache = options.fieldsCache || getFieldsCache();
+    const observedFields = options.observedFields || buildObservedFields(fieldsCache);
+    let hasCreated = false;
+    let hasDate = false;
+    let hasName = false;
+    const semanticCandidates = new Map();
+    const normalizedType = String(type || '').trim().toLowerCase();
+
+    for (const fields of fieldsCache.values()) {
+        const nodeType = String(fields?.type || '').trim().toLowerCase();
+        if (nodeType !== normalizedType) continue;
+        hasCreated = hasCreated || Boolean(fields.created);
+        hasDate = hasDate || Boolean(fields.date);
+        hasName = hasName || Boolean(fields.name);
+
+        for (const [fieldName, rawValue] of Object.entries(fields || {})) {
+            if (!String(rawValue || '').trim()) continue;
+            if (fieldName === 'id' || fieldName === 'type') continue;
+            const result = inferFieldRole(fieldName, {
+                documentType: normalizedType,
+                observedFields,
+                dateParser: normaliseDateInput,
+                statusLikeValues: DEFAULT_STATUS_LIKE_VALUES,
+                semanticRolePriors: DEFAULT_SEMANTIC_ROLE_PRIORS
+            });
+            if (result.semanticRole !== 'date') continue;
+            const normalizedField = normalizeFieldName(fieldName);
+            semanticCandidates.set(
+                normalizedField,
+                (semanticCandidates.get(normalizedField) || 0) + 1
+            );
+        }
+    }
+    if (hasCreated) return 'created';
+    if (hasDate) return 'date';
+    if (hasName) return 'name';
+    if (semanticCandidates.size) {
+        return [...semanticCandidates.entries()]
+            .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))[0][0];
+    }
+    return '';
+}
+
+function createDefaultSortFieldResolver(fieldsCache, observedFields = null) {
+    const cache = new Map();
+    const resolvedObservedFields = observedFields || buildObservedFields(fieldsCache);
+    return function resolve(type) {
+        const normalizedType = String(type || '').trim().toLowerCase();
+        if (!normalizedType) return '';
+        if (!cache.has(normalizedType)) {
+            cache.set(normalizedType, getDefaultSortFieldForType(normalizedType, {
+                fieldsCache,
+                observedFields: resolvedObservedFields
+            }));
+        }
+        return cache.get(normalizedType) || '';
+    };
+}
+
+function buildActivationContext(nodeId, nodeFields, nodeType, fieldsCache) {
+    const observedFields = buildObservedFields(fieldsCache);
+    const observedIndex = buildObservedNoteIndex(fieldsCache, {
+        observedFields,
+        getSchemaForType: getSchema,
+        dateParser: normaliseDateInput,
+        statusLikeValues: DEFAULT_STATUS_LIKE_VALUES,
+        semanticRolePriors: DEFAULT_SEMANTIC_ROLE_PRIORS
+    });
+    const getDefaultSortField = createDefaultSortFieldResolver(fieldsCache, observedFields);
+    const noteContext = buildNoteContext(nodeFields, nodeType, {
+        observedFields,
+        getSchemaForType: getSchema,
+        dateParser: normaliseDateInput,
+        statusLikeValues: DEFAULT_STATUS_LIKE_VALUES,
+        semanticRolePriors: DEFAULT_SEMANTIC_ROLE_PRIORS
+    });
+    const frontmatterOpportunities = buildFrontmatterOpportunityModel(nodeFields, {
+        nodeId,
+        nodeType,
+        fieldsCache,
+        observedFields,
+        observedIndex,
+        noteContext,
+        getSchemaTargets,
+        getSchemaForType: getSchema,
+        getDefaultSortField,
+        dateParser: normaliseDateInput,
+        statusLikeValues: DEFAULT_STATUS_LIKE_VALUES,
+        semanticRolePriors: DEFAULT_SEMANTIC_ROLE_PRIORS,
+        limit: 4,
+        connectionLimit: 4
+    });
+    return { observedFields, observedIndex, noteContext, frontmatterOpportunities, getDefaultSortField };
+}
+
+module.exports = {
+    createDefaultSortFieldResolver,
+    getDefaultSortFieldForType,
+    buildActivationContext
+};

@@ -21,13 +21,17 @@ function registerViewCodeLens(context, getOpenViewDocumentPath) {
                 ? getOpenViewDocumentPath()
                 : null;
             const open = !!openDocumentPath && document.uri?.fsPath === openDocumentPath;
+            let viewIndex = 0;
             for (let i = 0; i < lines.length; i++) {
                 if (lines[i].trimStart().startsWith('!view ')) {
                     const range = new vscode.Range(i, 0, i, lines[i].length);
+                    const idx = viewIndex;
                     lenses.push(new vscode.CodeLens(range, {
                         title: open ? '✕ Close view' : '▶ Run',
-                        command: open ? 'yamlink.closeViewPanel' : 'yamlink.runViews'
+                        command: open ? 'yamlink.closeViewPanel' : 'yamlink.runViewsAt',
+                        arguments: [idx]
                     }));
+                    viewIndex++;
                 }
             }
             return lenses;

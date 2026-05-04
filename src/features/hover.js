@@ -1,8 +1,33 @@
 const vscode = require('vscode');
 const fs     = require('fs');
-const { parseFrontmatter, getPathIndex } = require('../core/index');
+const { parseFrontmatter, getPathIndex, getFieldsCache } = require('../core/indexService');
+const { normaliseDateInput } = require('../core/date');
+const { getSchema, getSchemaTargets } = require('../registries/schemaRegistry');
+const {
+    DEFAULT_STATUS_LIKE_VALUES,
+    DEFAULT_SEMANTIC_ROLE_PRIORS
+} = require('../intelligence/fieldRolesCore');
+const { summarizeNoteRoleReasons } = require('../intelligence/noteRolesCore');
+const { filterItemsForSurface, shouldSurface } = require('../intelligence/confidence');
+const {
+    buildObservedFields,
+    buildNoteContext,
+    buildSharedContextTraces,
+    summarizeTraceHints
+} = require('../intelligence/suggestionCore');
+const {
+    buildFrontmatterOpportunityModel,
+    buildFrontmatterGuidanceSummary,
+    summarizeGuidanceExplanation,
+    buildBodyMentionHints
+} = require('../intelligence/frontmatterIntelligence');
 const { parseViewQuery, runQuery }       = require('../engine/query');
-const { computeSuggestionsForNode, explainSuggestionState }      = require('../engine/suggestions');
+const {
+    computeSuggestionsForNode,
+    explainSuggestionState,
+    getDefaultSortFieldForType
+} = require('../engine/suggestions');
+const { getCachedContext } = require('../intelligence/activationCache');
 
 // ─────────────────────────────────────────────────────────────────
 // hover.js — Hover preview (Stage 2B + relation enrichment 0.2.0)
@@ -44,9 +69,8 @@ function registerHover(context, getIndex) {
                     const filePath = idIndex.get(id);
 
                     if (!filePath) {
-                        // Node doesn't exist — hint that it can be created
                         const md = new vscode.MarkdownString(
-                            `⚠ **Yamlink**: \`${id}\` is not indexed.\n\n` +
+                            `Warning: **Yamlink** could not find \`${id}\` in the index.\n\n` +
                             `_Use Quick Fix (Ctrl+.) to create this node._`
                         );
                         md.isTrusted = true;
@@ -83,11 +107,14 @@ function buildHoverContent(id, content, filePath, idIndex) {
     // ── Header ──
     md.appendMarkdown(`### $(file) \`${id}\`\n\n`);
 
-    // ── YAML fields ──
     const frontmatter = parseFrontmatter(content);
-    if (frontmatter && Object.keys(frontmatter).length > 0) {
-        md.appendMarkdown(`---\n`);
+    const intelligenceSummary = buildHoverIntelligenceSummary(id, content, frontmatter);
+    if (intelligenceSummary) {
+        md.appendMarkdown(`${intelligenceSummary}\n\n---\n`);
+    }
 
+    // ── YAML fields ──
+    if (frontmatter && Object.keys(frontmatter).length > 0) {
         for (const [key, value] of Object.entries(frontmatter)) {
             if (key === 'id') continue; // Already shown in header
 
@@ -137,6 +164,142 @@ function buildHoverContent(id, content, filePath, idIndex) {
     }
 
     return md;
+}
+
+// Local activation context builder — mirrors suggestions.js's buildActivationContext.
+// Defined here so hover.js uses its own real intelligence imports rather than the
+// suggestions.js export (which test stubs intercept), while still sharing cache
+// entries with suggestions.js when both use getCachedContext on the same nodeId.
+function buildHoverActivationContext(nodeId, nodeFields, nodeType, fieldsCache) {
+    const observedFields = buildObservedFields(fieldsCache);
+    const noteContext = buildNoteContext(nodeFields, nodeType, {
+        observedFields,
+        getSchemaForType: getSchema,
+        dateParser: normaliseDateInput,
+        statusLikeValues: DEFAULT_STATUS_LIKE_VALUES,
+        semanticRolePriors: DEFAULT_SEMANTIC_ROLE_PRIORS
+    });
+    const frontmatterOpportunities = buildFrontmatterOpportunityModel(nodeFields, {
+        nodeId,
+        nodeType,
+        fieldsCache,
+        observedFields,
+        noteContext,
+        getSchemaTargets,
+        getSchemaForType: getSchema,
+        getDefaultSortField: getDefaultSortFieldForType,
+        dateParser: normaliseDateInput,
+        statusLikeValues: DEFAULT_STATUS_LIKE_VALUES,
+        semanticRolePriors: DEFAULT_SEMANTIC_ROLE_PRIORS,
+        limit: 4,
+        connectionLimit: 4
+    });
+    return { observedFields, noteContext, frontmatterOpportunities };
+}
+
+function buildHoverIntelligenceSummary(id, content, frontmatter) {
+    if (!frontmatter) frontmatter = parseFrontmatter(content);
+    if (!frontmatter) return '';
+
+    const fieldsCache  = getFieldsCache();
+    const cachedFields = fieldsCache.get(id);
+    const nodeFields   = cachedFields || frontmatter;
+    const nodeType     = String(nodeFields.type || '').trim().toLowerCase();
+
+    const { observedFields, noteContext, frontmatterOpportunities } = fieldsCache.has(id)
+        ? getCachedContext(id, () => buildHoverActivationContext(id, nodeFields, nodeType, fieldsCache))
+        : buildHoverActivationContext(id, nodeFields, nodeType, fieldsCache);
+
+    if (!noteContext.noteRole?.noteRole) return '';
+
+    const roleVisible = shouldSurface(noteContext.noteRole, 'hover-note-role', { confidenceKey: 'confidence' });
+    const reason = summarizeNoteRoleReasons(noteContext.noteRole, 1);
+    let summary = '';
+    if (roleVisible) {
+        summary = `$(sparkle) This looks like a **${noteContext.noteRole.roleLabel || noteContext.noteRole.noteRole}** note`;
+        if (reason) summary += `\n\n_${reason}_`;
+    } else {
+        summary = `$(sparkle) Getting to know this note`;
+    }
+
+    const traceHints = summarizeTraceHints(
+        buildSharedContextTraces(id, nodeFields, noteContext, fieldsCache, {
+            nodeType,
+            observedFields,
+            getSchemaTargets,
+            getSchemaForType: getSchema
+        }),
+        1
+    );
+    if (traceHints.length) {
+        summary += `\n\n$(link) Nearby: ${traceHints[0].summary}`;
+    }
+    const guidance = buildFrontmatterGuidanceSummary(frontmatterOpportunities);
+    const hoverFields = filterItemsForSurface(frontmatterOpportunities.likelyFields, 'hover-opportunities', { scoreScale: 700 });
+    const hoverGaps = filterItemsForSurface(frontmatterOpportunities.likelyGaps, 'hover-opportunities', { scoreScale: 700 });
+    const hoverContexts = filterItemsForSurface(frontmatterOpportunities.likelyContexts, 'hover-opportunities', { scoreScale: 700 });
+    const hoverConnections = filterItemsForSurface(frontmatterOpportunities.likelyConnections, 'hover-opportunities', { scoreScale: 700 });
+    const hoverCompanions = filterItemsForSurface(frontmatterOpportunities.likelyCompanions, 'hover-opportunities', { scoreScale: 700 });
+    const hoverRelationViews = filterItemsForSurface(frontmatterOpportunities.relationViews, 'hover-opportunities', { scoreScale: 900 });
+    const hoverThreadViews = filterItemsForSurface(frontmatterOpportunities.contextThreadViews, 'hover-opportunities', { scoreScale: 900 });
+    const hoverSetups = filterItemsForSurface(frontmatterOpportunities.surroundingSetups, 'hover-opportunities', { scoreScale: 1100 });
+
+    if (guidance.headline) {
+        summary += `\n\n$(milestone) Next step: ${guidance.headline}`;
+    }
+    const guidanceWhy = summarizeGuidanceExplanation(guidance);
+    if (guidanceWhy) {
+        summary += `\n\n$(comment-discussion) Why: ${guidanceWhy}`;
+    }
+    if (hoverFields.length) {
+        summary += `\n\n$(plus) Next field: ${hoverFields[0].summary}`;
+    }
+    if (hoverGaps.length) {
+        summary += `\n\n$(diff-added) Missing: ${hoverGaps[0].missingSummary}`;
+    }
+    if (hoverContexts.length) {
+        summary += `\n\n$(organization) Context: ${hoverContexts[0].summary}`;
+    }
+    if (frontmatterOpportunities.contextBundle?.summary) {
+        summary += `\n\n$(symbol-structure) Flow: ${frontmatterOpportunities.contextBundle.summary}`;
+    }
+    if (frontmatterOpportunities.setupFields.length) {
+        summary += `\n\n$(list-unordered) Try: add ${frontmatterOpportunities.setupFields.map((hint) => hint.field).slice(0, 3).join(', ')}`;
+    }
+    if (frontmatterOpportunities.recommendedBundle?.fields?.length) {
+        summary += `\n\n$(package) Useful fields: ${frontmatterOpportunities.recommendedBundle.fields.map((hint) => hint.field).slice(0, 3).join(', ')}`;
+    }
+    if (guidance.workflowSummary) {
+        summary += `\n\n$(symbol-structure) Pattern: ${guidance.workflowSummary}`;
+    }
+    if (hoverConnections.length) {
+        summary += `\n\n$(git-pull-request) Related note: ${hoverConnections[0].summary}`;
+    }
+    if (hoverCompanions.length) {
+        summary += `\n\n$(group-by-ref-type) Nearby note: ${hoverCompanions[0].summary}`;
+    }
+    if (hoverRelationViews.length) {
+        summary += `\n\n$(list-tree) Thread: ${hoverRelationViews[0].summary}`;
+    }
+    if (hoverThreadViews.length) {
+        summary += `\n\n$(references) Common view: ${hoverThreadViews[0].summary}`;
+    }
+    if (hoverSetups.length) {
+        summary += `\n\n$(hubot) Setup: ${hoverSetups[0].summary}`;
+    }
+
+    const bodyMentions = buildBodyMentionHints(content, frontmatter, fieldsCache, { threshold: 2 });
+    if (bodyMentions.length) {
+        const top = bodyMentions[0];
+        const times = top.count === 1 ? 'once' : `${top.count}×`;
+        summary += `\n\n$(references) Body link: [[${top.id}]] mentioned ${times}`;
+    }
+
+    const suggestions = computeSuggestionsForNode(id, content);
+    if (suggestions.length) {
+        summary += `\n\n$(lightbulb) Next view: ${suggestions[0].title}`;
+    }
+    return summary;
 }
 
 // ─────────────────────────────────────────────────────────────────
@@ -316,4 +479,8 @@ function getFrontmatterEndLine(document) {
     return -1;
 }
 
-module.exports = { registerHover, registerQueryPreviewHover };
+module.exports = {
+    registerHover,
+    registerQueryPreviewHover,
+    buildHoverIntelligenceSummary
+};

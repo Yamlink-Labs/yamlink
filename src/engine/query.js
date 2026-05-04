@@ -3,10 +3,16 @@
 // Importable by extension, desktop app, or tests
 
 const fs = require('fs');
-const { getIndex, getFieldsCache } = require('../core/index');
+const { getIndex, getFieldsCache } = require('../core/indexService');
 const { getBacklinks } = require('../core/graph');
 const { buildTaskRows } = require('../core/tasks');
 const { normaliseDateInput, getTodayIsoLocal, addDaysIso } = require('../core/date');
+const { normalizeText } = require('../core/frontmatter');
+const {
+    addQueryWarnings,
+    closestFieldMatch,
+    collectFieldCandidates
+} = require('../intelligence/queryDiagnostics');
 
 const BODY_CACHE_MAX = 200;
 const bodyCache = new Map();
@@ -27,7 +33,7 @@ function readBody(filePath) {
 
     let content;
     try { content = fs.readFileSync(filePath, 'utf8'); } catch (e) { return null; }
-    content = content.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+    content = normalizeText(content);
 
     let body;
     if (/^\s*---/.test(content)) {
@@ -79,9 +85,45 @@ function parseCondition(text) {
         };
     }
 
+    const compareOp = text.match(/^([\w-]+)\s*(>=|<=|>|<)\s*(.+)$/i);
+    if (compareOp) {
+        let rawValue = compareOp[3].trim();
+        if ((rawValue.startsWith('"') && rawValue.endsWith('"')) || (rawValue.startsWith("'") && rawValue.endsWith("'"))) {
+            rawValue = rawValue.slice(1, -1);
+        }
+        const opMap = { '>=': 'gte', '<=': 'lte', '>': 'gt', '<': 'lt' };
+        return {
+            field: compareOp[1].toLowerCase(),
+            op: opMap[compareOp[2]],
+            value: rawValue.toLowerCase(),
+            valueKind: 'string'
+        };
+    }
+
     const eqScalar = text.match(/^([\w-]+)\s*(?:=|\bis\b)\s*(.+)$/i);
     if (eqScalar) {
-        let rawValue = eqScalar[2].trim();
+        let rawFull = eqScalar[2].trim();
+        const orParts = rawFull.split(/\s+or\s+/i);
+        if (orParts.length > 1) {
+            const looksLikeCondition = /\s*(?:=|contains\b|>=|<=|>|<)/i;
+            const allSimple = orParts.slice(1).every(p => !looksLikeCondition.test(p.trim()));
+            if (allSimple) {
+                const values = orParts.map(v => {
+                    let s = v.trim();
+                    if ((s.startsWith('"') && s.endsWith('"')) || (s.startsWith("'") && s.endsWith("'"))) s = s.slice(1, -1);
+                    if (s.startsWith('[[') && s.endsWith(']]')) s = s.slice(2, -2).trim();
+                    return s.toLowerCase();
+                }).filter(Boolean);
+                return {
+                    field: eqScalar[1].toLowerCase(),
+                    op: 'in',
+                    values,
+                    value: values[0],
+                    valueKind: 'string'
+                };
+            }
+        }
+        let rawValue = rawFull;
         if ((rawValue.startsWith('"') && rawValue.endsWith('"')) || (rawValue.startsWith("'") && rawValue.endsWith("'"))) {
             rawValue = rawValue.slice(1, -1);
         }
@@ -145,97 +187,35 @@ function matchesCondition(cond, fields, filePath) {
 
     const raw = String(fields[cond.field] == null ? '' : fields[cond.field]).toLowerCase();
     if (cond.op === 'contains') return raw.includes(cond.value);
+
+    if (cond.op === 'in') {
+        const clean = raw.replace(/^\[\[|\]\]$/g, '').trim();
+        return (cond.values || []).some(v => clean === v || raw === v);
+    }
+
+    if (cond.op === 'gte' || cond.op === 'lte' || cond.op === 'gt' || cond.op === 'lt') {
+        const normStored = normaliseDateInput(raw) || raw;
+        const normQuery  = normaliseDateInput(cond.value) || cond.value;
+        const cmp = normStored.localeCompare(normQuery);
+        if (cond.op === 'gte') return cmp >= 0;
+        if (cond.op === 'lte') return cmp <= 0;
+        if (cond.op === 'gt')  return cmp > 0;
+        return cmp < 0;
+    }
+
     const clean = raw.replace(/^\[\[|\]\]$/g, '').trim();
     return clean === cond.value || raw === cond.value;
 }
 
-function levenshtein(a, b) {
-    const left = String(a ?? '');
-    const right = String(b ?? '');
-    const dp = Array.from({ length: left.length + 1 }, () => new Array(right.length + 1).fill(0));
-    for (let i = 0; i <= left.length; i++) dp[i][0] = i;
-    for (let j = 0; j <= right.length; j++) dp[0][j] = j;
-    for (let i = 1; i <= left.length; i++) {
-        for (let j = 1; j <= right.length; j++) {
-            const cost = left[i - 1] === right[j - 1] ? 0 : 1;
-            dp[i][j] = Math.min(
-                dp[i - 1][j] + 1,
-                dp[i][j - 1] + 1,
-                dp[i - 1][j - 1] + cost
-            );
-        }
-    }
-    return dp[left.length][right.length];
-}
-
-function closestTypeMatch(type, fieldCache) {
-    const candidates = [...new Set(
-        [...fieldCache.values()]
-            .map(fields => String(fields.type || '').trim().toLowerCase())
-            .filter(Boolean)
-    )];
-    if (candidates.length === 0) return null;
-    const ranked = candidates
-        .map(candidate => ({ candidate, distance: levenshtein(type, candidate) }))
-        .sort((a, b) => a.distance - b.distance || a.candidate.localeCompare(b.candidate));
-    return ranked[0].distance <= 3 ? ranked[0].candidate : null;
-}
-
-function hasTypeMatch(type, fieldCache) {
-    if (!type || type === '*' || type === 'tasks') return true;
-    for (const fields of fieldCache.values()) {
-        if (String(fields.type || '').trim().toLowerCase() === type) return true;
-    }
-    return false;
-}
-
 function addZeroResultWarnings(query, rows, warnings, index, fieldCache) {
     if (rows.length > 0) return;
-
-    if (index.size === 0) {
-        warnings.push('No indexed nodes found. Add id: fields to your Markdown files and save them to index.');
-        return;
-    }
-
-    if (query.incoming) {
-        if (query.type !== '*' && !hasTypeMatch(query.type, fieldCache)) {
-            const suggestion = closestTypeMatch(query.type, fieldCache);
-            if (suggestion && suggestion !== query.type) {
-                warnings.push(`No nodes matched incoming type "${query.type}". Did you mean "${suggestion}"?`);
-            } else {
-                warnings.push(`No nodes matched incoming type "${query.type}". Check the type: field in your notes.`);
-            }
-            return;
-        }
-        if (query.via && query.type !== '*') {
-            warnings.push(`No "${query.type}" nodes link to this note via the "${query.via}" field.`);
-        } else if (query.via) {
-            warnings.push(`No nodes link to this note via the "${query.via}" field.`);
-        } else if (query.type !== '*') {
-            warnings.push(`No "${query.type}" nodes link to this note yet.`);
-        } else {
-            warnings.push('No nodes link to this note yet. Add [[this-note-id]] to another note\'s frontmatter to create a connection.');
-        }
-        return;
-    }
-
-    if (query.type !== '*' && query.type !== 'tasks') {
-        const suggestion = closestTypeMatch(query.type, fieldCache);
-        if (suggestion && suggestion !== query.type) {
-            warnings.push(`No nodes matched type "${query.type}". Did you mean "${suggestion}"?`);
-        } else {
-            warnings.push(`No nodes matched type "${query.type}". Check the type: field in your notes.`);
-        }
-    }
+    addQueryWarnings(query, rows, warnings, index, fieldCache);
 
     const wheres = query.wheres && query.wheres.length > 0 ? query.wheres : (query.where ? [query.where] : []);
     for (const cond of wheres) {
-        if (cond.op !== 'eq') continue;
-        if (cond.field === 'id' && !index.has(cond.value)) {
-            warnings.push(`No indexed node with id "${cond.value}". Save that note first or check the id.`);
-        }
-        if (cond.valueKind === 'string' && normaliseDateInput(cond.value) && cond.field !== 'id') {
-            warnings.push(`Date filters work best when stored values normalise to YYYY-MM-DD.`);
+        const isDateOp = cond.op === 'eq' || cond.op === 'gte' || cond.op === 'lte' || cond.op === 'gt' || cond.op === 'lt';
+        if (isDateOp && cond.valueKind === 'string' && normaliseDateInput(cond.value) && cond.field !== 'id') {
+            warnings.push('Date filters work best when stored values normalise to YYYY-MM-DD.');
         }
     }
 }
@@ -317,7 +297,7 @@ function parseSingleViewBlock(lines) {
     const whereBlocks = clauseText.match(/\bwhere\s+(?:(?!\b(?:where|sort|limit|select|via)\b).)+/gi) || [];
     for (const block of whereBlocks) {
         const condText = block.replace(/^where\s+/i, '').trim();
-        const parts = condText.split(/\s+and\s+(?=[\w*-]+\s+(?:=|contains\s))/i);
+        const parts = condText.split(/\s+and\s+(?=[\w*-]+\s+(?:contains\b|=|>=|<=|>|<))/i);
         for (const part of parts) {
             const cond = parseCondition(part.trim());
             if (cond) wheres.push(cond);
@@ -431,6 +411,14 @@ function runQuery(query, contextNodeId) {
         return { success: false, rows: [], columns: [], types: [], warnings, error: `Runtime error: ${e.message}` };
     }
 
+    const fieldCandidates = collectFieldCandidates(query.type, fieldCache);
+    if (query.sort?.field && !fieldCandidates.includes(query.sort.field)) {
+        const sortSuggestion = closestFieldMatch(query.sort.field, query.type, fieldCache);
+        if (sortSuggestion) {
+            warnings.push(`Sort field "${query.sort.field}" is uncommon here. Try "${sortSuggestion}" instead.`);
+        }
+    }
+
     addZeroResultWarnings(query, rows, warnings, index, fieldCache);
     return finaliseRows(query, rows, warnings);
 }
@@ -490,10 +478,15 @@ function buildQueryString(query) {
     if (query.via) s += ' via ' + query.via;
     if (query.select) s += '\nselect ' + query.select.join(', ');
     const wheres = query.wheres && query.wheres.length > 0 ? query.wheres : (query.where ? [query.where] : []);
+    const opSymbol = { gte: '>=', lte: '<=', gt: '>', lt: '<' };
     for (const w of wheres) {
         s += '\nwhere ' + w.field + ' ';
         if (w.op === 'contains') {
             s += 'contains ' + w.value;
+        } else if (w.op === 'in') {
+            s += '= ' + (w.values || [w.value]).join(' or ');
+        } else if (opSymbol[w.op]) {
+            s += opSymbol[w.op] + ' ' + w.value;
         } else if (w.valueKind === 'relation') {
             s += '= [[' + w.value + ']]';
         } else if (w.valueKind === 'string' && /\s/.test(w.value)) {

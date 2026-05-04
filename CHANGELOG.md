@@ -1,13 +1,98 @@
 # Changelog
 
-## [Unreleased] - 0.3.5 "Ace+"
+## [0.4.0] - "Carmen"
+
+Carmen is the hardening and intelligence release.
+
+It turns the post-Ace+ adaptive work into a cleaner, stronger baseline:
+
+- much deeper frontmatter and note-context intelligence
+- cleaner, more direct user-facing language across suggestions, hover, and Note Report
+- broader date handling
+- improvement in writer ergonomics
+- a more maintainable codebase, reworking graph, table, health, note report, and intelligence files
+- a rebuilt graph architecture after an unexpected VS Code webview break which forced a reset of the old rendering path
+
+### Added
+
+- **Query OR logic** — `where status = open or done` matches any value in the list
+- **Query date-range operators** — `where date >= 2026-01-01`, `where deadline < 2026-05-01`; comparison uses ISO date ordering so `YYYY-MM-DD` sorts correctly
+- **Body wikilink → frontmatter suggestion** — if `[[x]]` appears 2+ times in the note body and is not already a frontmatter field, Yamlink surfaces "Add as field" in the lightbulb and a hint in the hover card
+- **Note-context-aware query builder** — smart starters now lead the insert flow when Yamlink already understands the active note's surrounding structure
+- **Scroll preservation in Note Report** — scroll position now survives file saves and re-renders when the same note stays active
+- **Template system** — `_templates/`-based note creation with `yamlink.newNodeFromTemplate` and smart frontmatter generation
+- **Activation cache** — vault-generation-keyed LRU cache eliminates redundant `buildFrontmatterOpportunityModel` calls on hover and lightbulb triggers
+- **Bottom-bar writing stats** — Markdown notes now show body-only word count and character count in the status bar
+- **Body-aware Note Report intelligence** — repeated body wikilinks can now reinforce adaptive report guidance and surface quiet `body links` hints
+- **Body-aware adaptive frontmatter suggestions** — repeated body wikilinks now count as supporting evidence for likely next fields and links
+
+### Changed
+
+- **Graph is simpler to read and use** — in Carmen:
+  - local graph now follows the current note
+  - vault graph is now the broader view
+  - local depth is now shown as 1, 2, or 3 layers of linked notes
+  - graph controls are now simpler and easier to understand
+- **Graph experience rebuilt** — the graph now runs on a cleaner, boot-once webview architecture with two clearer modes:
+  - `Run Graph` opens a local graph centered on the active note
+  - `Vault Graph` opens explorer mode for the broader vault
+- **Graph controls simplified** — the rebuilt graph now centers on:
+  - Local / Explorer mode switching
+  - depth control for local graph link layers
+  - search
+  - type filtering
+  - selected-node inspection
+- **Graph codebase split** — graph host, state, payload building, boot HTML, client runtime, styling, and interaction logic are now separated into focused modules
+- **Table/view codebase split** — table host, HTML shell, state runtime, value runtime, edit runtime, and UI runtime are now separated into focused modules
+- **Health panel split** — panel host, health stats, and render shell are now separate modules
+- **Note Report split** — render shell, sections, and model logic are now separated
+- **Intelligence layer split** — field families, relation learning, gap learning, context building, neighborhood suggestions, affinity suggestions, body-link hints, and explanation surfaces now have clear module boundaries
+- **Completion surface tightened** — adaptive field/gap suggestions and starter actions now suppress weaker matches more aggressively
+- **Suggestion explanations tightened** — reasons are shorter, plainer, and more direct across suggestions, hover, and Note Report
+
+### Intelligence
+
+- Adaptive field learning now weighs:
+  - shared frontmatter content/structure
+  - note-role alignment
+  - shared relation fields
+  - shared linked IDs
+  - repeated body wikilinks as supporting evidence
+- Note Report, hover, suggestions, and frontmatter actions now share a much more consistent intelligence model instead of drifting apart
+- Same-flow relation suggestions are more precise because they now track the matched relation field instead of leaking unrelated candidate fields
+- Completion starter actions are deduped and ranked more cleanly
+- Repeated body links can now influence:
+  - adaptive frontmatter suggestions
+  - Note Report hints
+  - hover guidance
+
+### Fixed
+
+- Date "flexible" — string dates like "April 15, 2025" or "15/04/2025" normalize to `YYYY-MM-DD` in `fieldsCache`; queries like `where date = 2025-04-15` no longer silently return zero results
+- Graph inference path was live but never ran against real vault data due to `new Map()` fallback — now correctly calls `getIndex()`
+- **Date parsing is broader and safer** — now handles:
+  - abbreviated textual months
+  - elements like `26th`
+  - month/day formats without using the reference year
+  - terms like `by Friday` and `due next Tue`
+- **Same-flow graph/report hints were corrected** — matched relation fields now stay aligned with the visible suggestion instead of drifting to an unrelated candidate field
+- **Note Report opportunity model now uses live note body context**, not only frontmatter/index content
+- **Graph controls now match the rebuilt runtime** — the older keyboard-heavy graph behavior was replaced by a simpler local/explorer model with explicit focus, expand, and active-note actions
+
+### Reliability
+
+- Structural hotspots across graph, tables, health, Note Report, actions, completions, and intelligence were split into smaller modules to reduce blast radius and make debugging safer
+
+---
+
+## [0.3.5] - "Ace+" - 2026-04-10
 
 The Ace+ release line addresses major "trust issues" we failed to recognize before releasing Ace. From the "intelligence" standpoint, we had several issues either unpolished or unadressed.
 
 
 ### Added
 
-- Adaptive intelligence foundation:
+- "Adaptive intelligence" foundation:
   - shared field-role inference core
   - first note-role inference layer
   - clearer explanation paths when suggestions are absent
@@ -65,7 +150,7 @@ The Ace+ release line addresses major "trust issues" we failed to recognize befo
 ### Reliability
 
 - Full local suite remains the release gate
-- Current full baseline after Ace+ work: `181/181`
+- Current full baseline after the post-release audit: `285/285`
 
 ---
 
@@ -77,21 +162,6 @@ Hotfix release for the initial Ace publish.
 
 - VSIX packaging now includes runtime dependencies again
 - Yamlink commands, Note Report, Calendar, Vault Health, Run Views, and Graph can activate correctly in the Marketplace build
-
----
-
-## [Unreleased] - 0.4.0 "Carmen"
-
-The focus after Ace is not feature sprawl. Carmen is the scale, polish, and hardening release.
-
-Planned direction:
-
-- improve large-vault performance and refresh behavior
-- polish Note Report and Calendar further
-- refine tasks into a stronger workflow layer
-- improve query-builder / simple-query UX
-- broaden date and time flexibility carefully
-- keep Yamlink powerful without consuming Atomix's role
 
 ---
 

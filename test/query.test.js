@@ -84,6 +84,7 @@ const Module = require('module');
 const _origResolve = Module._resolveFilename.bind(Module);
 Module._resolveFilename = function (req, parent, ...rest) {
     if (req === '../core/index') return '__stub_index__';
+    if (req === '../core/indexService') return '__stub_index__';
     if (req === '../core/graph') return '__stub_graph__';
     if (req === '../core/tasks') return '__stub_tasks__';
     return _origResolve(req, parent, ...rest);
@@ -93,6 +94,7 @@ require.cache['__stub_index__'] = {
     exports: {
         getIndex:      () => MOCK_INDEX,
         getFieldsCache: () => MOCK_FIELDS,
+        getVaultGeneration: () => 0
     }
 };
 require.cache['__stub_graph__'] = {
@@ -356,6 +358,56 @@ describe('parseSingleViewBlock — where', () => {
         assert.equal(q.where, null);
     });
 
+    test('same-field OR produces op:in with values array', () => {
+        const q = parseSingleViewLine('!view mission where outcome = victory or defeat');
+        assert.equal(q.wheres[0].op, 'in');
+        assert.deepEqual(q.wheres[0].values, ['victory', 'defeat']);
+    });
+
+    test('same-field OR with three values', () => {
+        const q = parseSingleViewLine('!view mission where type = character or mission or unit');
+        assert.equal(q.wheres[0].op, 'in');
+        assert.equal(q.wheres[0].values.length, 3);
+    });
+
+    test('cross-field OR falls back to plain eq (no junk values)', () => {
+        // "or type = ..." looks like a condition — should not activate OR parsing
+        const q = parseSingleViewLine('!view mission where outcome = victory or type = mission');
+        // Falls back to single eq treating everything after = as the value (safe degradation)
+        assert.equal(q.wheres[0].op, 'eq');
+    });
+
+    test('date-range >= parses as gte', () => {
+        const q = parseSingleViewLine('!view mission where date >= 2297-09-01');
+        assert.equal(q.wheres[0].op, 'gte');
+        assert.equal(q.wheres[0].value, '2297-09-01');
+    });
+
+    test('date-range < parses as lt', () => {
+        const q = parseSingleViewLine('!view mission where date < 2297-09-01');
+        assert.equal(q.wheres[0].op, 'lt');
+        assert.equal(q.wheres[0].value, '2297-09-01');
+    });
+
+    test('date-range <= parses as lte', () => {
+        const q = parseSingleViewLine('!view mission where date <= 2297-09-15');
+        assert.equal(q.wheres[0].op, 'lte');
+        assert.equal(q.wheres[0].value, '2297-09-15');
+    });
+
+    test('date-range > parses as gt', () => {
+        const q = parseSingleViewLine('!view mission where date > 2297-08-01');
+        assert.equal(q.wheres[0].op, 'gt');
+        assert.equal(q.wheres[0].value, '2297-08-01');
+    });
+
+    test('AND with date-range splits correctly', () => {
+        const q = parseSingleViewLine('!view mission where outcome = victory and date >= 2297-09-01');
+        assert.equal(q.wheres.length, 2);
+        assert.equal(q.wheres[0].field, 'outcome');
+        assert.equal(q.wheres[1].op, 'gte');
+    });
+
 });
 
 describe('parseSingleViewBlock — select / sort / limit', () => {
@@ -424,6 +476,55 @@ describe('parseAllViewQueries', () => {
 // ─────────────────────────────────────────────────────────────────
 // runQuery — FORWARD
 // ─────────────────────────────────────────────────────────────────
+
+describe('runQuery — forward — OR and date-range', () => {
+
+    test('where outcome = victory or defeat returns both missions', () => {
+        const r = runQuery(parseSingleViewLine('!view mission where outcome = victory or defeat'));
+        assert.deepEqual(ids(r), ['mission-klendathu', 'mission-klendathu-ii']);
+    });
+
+    test('where outcome = victory or defeat but only one exists returns one', () => {
+        const r = runQuery(parseSingleViewLine('!view mission where outcome = victory or unknownval'));
+        assert.deepEqual(ids(r), ['mission-klendathu-ii']);
+    });
+
+    test('where type = character or mission returns all of each', () => {
+        const r = runQuery(parseSingleViewLine('!view * where type = character or mission'));
+        assert.deepEqual(ids(r), ['carl-jenkins', 'johnny-rico', 'mission-klendathu', 'mission-klendathu-ii']);
+    });
+
+    test('where date >= 2297-09-01 returns only later missions', () => {
+        const r = runQuery(parseSingleViewLine('!view mission where date >= 2297-09-01'));
+        assert.deepEqual(ids(r), ['mission-klendathu-ii']);
+    });
+
+    test('where date > 2297-08-01 returns later mission', () => {
+        const r = runQuery(parseSingleViewLine('!view mission where date > 2297-08-01'));
+        assert.deepEqual(ids(r), ['mission-klendathu-ii']);
+    });
+
+    test('where date < 2297-09-01 returns earlier mission', () => {
+        const r = runQuery(parseSingleViewLine('!view mission where date < 2297-09-01'));
+        assert.deepEqual(ids(r), ['mission-klendathu']);
+    });
+
+    test('where date <= 2297-08-01 returns exact match', () => {
+        const r = runQuery(parseSingleViewLine('!view mission where date <= 2297-08-01'));
+        assert.deepEqual(ids(r), ['mission-klendathu']);
+    });
+
+    test('AND combining eq and date-range', () => {
+        const r = runQuery(parseSingleViewLine('!view mission where outcome = victory and date >= 2297-09-01'));
+        assert.deepEqual(ids(r), ['mission-klendathu-ii']);
+    });
+
+    test('date-range on field with no values returns empty', () => {
+        const r = runQuery(parseSingleViewLine('!view character where date >= 2297-01-01'));
+        assert.equal(r.rows.length, 0);
+    });
+
+});
 
 describe('runQuery — forward — type filter', () => {
 
@@ -629,6 +730,20 @@ describe('runQuery — forward — structured error return', () => {
         assert.ok(r.warnings.some(w => w.includes('No indexed node with id "missing-node"')));
     });
 
+    test('suggests close field names when a filter field is uncommon', () => {
+        const r = runQuery(parseSingleViewBlock(['!view mission', 'where comandr = [[johnny-rico]]']));
+        assert.equal(r.success, true);
+        assert.equal(r.rows.length, 0);
+        assert.ok(r.warnings.some(w => w.includes('Try "commander" instead')));
+    });
+
+    test('suggests close sort fields when sort is uncommon', () => {
+        const r = runQuery(parseSingleViewBlock(['!view mission', 'sort dat desc']));
+        assert.equal(r.success, true);
+        assert.equal(r.rows.length, 2);
+        assert.ok(r.warnings.some(w => w.includes('Sort field "dat" is uncommon')));
+    });
+
 });
 
 // ─────────────────────────────────────────────────────────────────
@@ -697,6 +812,13 @@ describe('runQuery — incoming', () => {
         assert.equal(r.success, true);
         assert.equal(r.rows.length, 0);
         assert.ok(r.warnings.some(w => w.includes('Did you mean "mission"')));
+    });
+
+    test('suggests close via fields for incoming queries', () => {
+        const r = runQuery(parseSingleViewLine('!view incoming mission via inteligence'), 'carl-jenkins');
+        assert.equal(r.success, true);
+        assert.equal(r.rows.length, 0);
+        assert.ok(r.warnings.some(w => w.includes('Try "intelligence" instead')));
     });
 
     test('empty vault guidance still appears for incoming queries', () => {
@@ -776,6 +898,24 @@ describe('buildQueryString', () => {
         assert.equal(buildQueryString(parseSingleViewLine('!view done-tasks')), '!view done-tasks');
         assert.equal(buildQueryString(parseSingleViewLine('!view undated-tasks')), '!view undated-tasks');
         assert.equal(buildQueryString(parseSingleViewLine('!view overdue')), '!view overdue');
+    });
+
+    test('OR condition roundtrip', () => {
+        const q = parseSingleViewLine('!view mission where outcome = victory or defeat');
+        const s = buildQueryString(q);
+        assert.ok(s.includes('where outcome = victory or defeat'));
+    });
+
+    test('date-range >= roundtrip', () => {
+        const q = parseSingleViewLine('!view mission where date >= 2297-09-01');
+        const s = buildQueryString(q);
+        assert.ok(s.includes('where date >= 2297-09-01'));
+    });
+
+    test('date-range < roundtrip', () => {
+        const q = parseSingleViewLine('!view mission where date < 2297-09-01');
+        const s = buildQueryString(q);
+        assert.ok(s.includes('where date < 2297-09-01'));
     });
 
 });

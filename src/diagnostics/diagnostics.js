@@ -1,7 +1,7 @@
 const vscode = require('vscode');
 const { isKnownType } = require('../registries/typeRegistry');
 const { hasSchema, getSchema, getDuplicateSchemas } = require('../registries/schemaRegistry');
-const { getDuplicateIds, getFieldsCache } = require('../core/index');
+const { getDuplicateIds, getFieldsCache } = require('../core/indexService');
 const { getBacklinks } = require('../core/graph');
 const { computeSuggestionsForNode, QUERY_SUGGESTION_THRESHOLD } = require('../engine/suggestions');
 const { extractCanonicalIdFromFrontmatter } = require('../core/id');
@@ -10,9 +10,9 @@ const { extractCanonicalIdFromFrontmatter } = require('../core/id');
 const MIN_VAULT_SIZE_FOR_TYPE_ADVISORY = 10;
 
 let diagnosticCollection;
-let debounceTimer;
 
 function registerDiagnostics(context, getIndex) {
+    let debounceTimer;
     diagnosticCollection = vscode.languages.createDiagnosticCollection("yamlink");
     context.subscriptions.push(diagnosticCollection);
 

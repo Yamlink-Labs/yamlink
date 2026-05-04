@@ -7,14 +7,17 @@ const { normaliseDateInput } = require('./date');
 const { extractCanonicalIdFromFrontmatter, canonicalizeId } = require('./id');
 const { clearRegistry, registerType, unregisterType, getRegistryStats, getTypes } = require('../registries/typeRegistry');
 const { clearSchemaRegistry, registerSchemaNode } = require('../registries/schemaRegistry');
+const { normalizeText } = require('./frontmatter');
 
-let idIndex      = new Map();
-let pathIndex    = new Map();
-let duplicateIds = new Map();
-let fieldsCache  = new Map(); // id → parsed frontmatter fields
-let mtimeCache   = new Map(); // filePath → mtime (ms) — skip unchanged files on incremental update
+let idIndex        = new Map();
+let pathIndex      = new Map();
+let duplicateIds   = new Map();
+let fieldsCache    = new Map(); // id → parsed frontmatter fields
+let mtimeCache     = new Map(); // filePath → mtime (ms) — skip unchanged files on incremental update
+let vaultGeneration = 0;        // incremented on every vault mutation — invalidates activation caches
 
 function buildIndex(workspaceFolders) {
+    vaultGeneration++;
     idIndex.clear();
     pathIndex.clear();
     duplicateIds.clear();
@@ -79,7 +82,7 @@ function indexFile(fullPath) {
 
     // Normalize Windows line endings once at the entry point.
     // Every downstream function receives clean \n-only content.
-    content = content.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+    content = normalizeText(content);
 
     const id = extractId(content);
     if (!id) return;
@@ -142,7 +145,7 @@ function extractId(content) {
 function extractIdFromFrontmatter(filePath) {
     let content;
     try { content = fs.readFileSync(filePath, 'utf8'); } catch (e) { return null; }
-    content = content.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+    content = normalizeText(content);
     return extractId(content);
 }
 
@@ -279,7 +282,9 @@ function stringifyFrontmatterValue(value) {
     if (value instanceof Date) {
         return normaliseDateInput(value.toISOString().slice(0, 10)) || value.toISOString().slice(0, 10);
     }
-    return String(value);
+    const str        = String(value);
+    const normalised = normaliseDateInput(str);
+    return normalised !== null ? normalised : str;
 }
 
 // ─────────────────────────────────────────────────────────────────
@@ -330,18 +335,18 @@ function updateSingleFile(filePath, options = {}) {
         const mtime = fs.statSync(filePath).mtimeMs;
         if (!force && mtimeCache.get(filePath) === mtime) return NO_CHANGE;
         mtimeCache.set(filePath, mtime);
-    } catch (e) { return NEEDS_FULL; }
+    } catch (e) { vaultGeneration++; return NEEDS_FULL; }
 
     let newContent;
     try {
         newContent = fs.readFileSync(filePath, 'utf8');
-        newContent = newContent.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
-    } catch (e) { return NEEDS_FULL; }
+        newContent = normalizeText(newContent);
+    } catch (e) { vaultGeneration++; return NEEDS_FULL; }
 
     const oldId = pathIndex.get(filePath) ?? null;
     const newId = extractId(newContent);
 
-    if (oldId !== newId) return NEEDS_FULL;
+    if (oldId !== newId) { vaultGeneration++; return NEEDS_FULL; }
     if (!newId)          return NO_CHANGE;
 
     const oldFields = fieldsCache.get(newId) || {};
@@ -349,7 +354,7 @@ function updateSingleFile(filePath, options = {}) {
     const newFields = parseFrontmatterCached(newContent);
     const newType   = newFields && newFields.type ? newFields.type.trim().toLowerCase() : null;
 
-    if (oldType === 'schema' || newType === 'schema') return NEEDS_FULL;
+    if (oldType === 'schema' || newType === 'schema') { vaultGeneration++; return NEEDS_FULL; }
 
     removeEdgesForSource(newId);
 
@@ -373,6 +378,7 @@ function updateSingleFile(filePath, options = {}) {
         if (newType) registerType(newType, newId);
     }
 
+    vaultGeneration++;
     return INCREMENTAL;
 }
 
@@ -397,13 +403,15 @@ function removeFileFromIndex(filePath) {
     if (deletedType) unregisterType(deletedType, id);
     fieldsCache.delete(id);
 
+    vaultGeneration++;
     return true;
 }
 
-function getIndex()        { return idIndex; }
-function getPathIndex()    { return pathIndex; }
-function getDuplicateIds() { return duplicateIds; }
-function getFieldsCache()  { return fieldsCache; }
+function getIndex()           { return idIndex; }
+function getPathIndex()       { return pathIndex; }
+function getDuplicateIds()    { return duplicateIds; }
+function getFieldsCache()     { return fieldsCache; }
+function getVaultGeneration() { return vaultGeneration; }
 function invalidateFileCache(filePath) {
     if (!filePath) return;
     mtimeCache.delete(filePath);
@@ -418,6 +426,7 @@ module.exports = {
     getPathIndex,
     getDuplicateIds,
     getFieldsCache,
+    getVaultGeneration,
     getGraphStats,
     extractIdFromFrontmatter,
     extractEdgesFromFrontmatter,

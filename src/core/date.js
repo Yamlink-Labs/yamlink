@@ -103,12 +103,21 @@ function normaliseTextualMonth(match, dayFirst) {
     const monthToken = String(dayFirst ? match[2] : match[1]).toLowerCase();
     const month = MONTHS.get(monthToken);
     if (!month) return null;
-    const day = dayFirst ? match[1] : match[2];
+    const day = String(dayFirst ? match[1] : match[2]).replace(/(?:st|nd|rd|th)$/i, '');
     const year = match[3];
     return toIsoDate(year, month, day);
 }
 
-function normaliseDateInput(value) {
+function normaliseTextualMonthNoYear(match, dayFirst, referenceDate) {
+    const monthToken = String(dayFirst ? match[2] : match[1]).toLowerCase();
+    const month = MONTHS.get(monthToken);
+    if (!month) return null;
+    const day = String(dayFirst ? match[1] : match[2]).replace(/(?:st|nd|rd|th)$/i, '');
+    const base = getReferenceDate(referenceDate);
+    return toIsoDate(base.getFullYear(), month, day);
+}
+
+function normaliseDateInput(value, referenceDate = null) {
     const raw = String(value ?? '').trim();
     if (!raw) return null;
 
@@ -118,11 +127,17 @@ function normaliseDateInput(value) {
     match = raw.match(/^(\d{1,2})[-/.](\d{1,2})[-/.](\d{4})$/);
     if (match) return normaliseDayOrMonthFirst(match);
 
-    match = raw.match(/^([A-Za-z]+)\s+(\d{1,2}),?\s+(\d{4})$/);
+    match = raw.match(/^([A-Za-z]+)\s+(\d{1,2}(?:st|nd|rd|th)?),?\s+(\d{4})$/);
     if (match) return normaliseTextualMonth(match, false);
 
-    match = raw.match(/^(\d{1,2})\s+([A-Za-z]+),?\s+(\d{4})$/);
+    match = raw.match(/^(\d{1,2}(?:st|nd|rd|th)?)\s+([A-Za-z]+),?\s+(\d{4})$/);
     if (match) return normaliseTextualMonth(match, true);
+
+    match = raw.match(/^([A-Za-z]+)\s+(\d{1,2}(?:st|nd|rd|th)?)$/);
+    if (match) return normaliseTextualMonthNoYear(match, false, referenceDate);
+
+    match = raw.match(/^(\d{1,2}(?:st|nd|rd|th)?)\s+([A-Za-z]+)$/);
+    if (match) return normaliseTextualMonthNoYear(match, true, referenceDate);
 
     return null;
 }
@@ -170,7 +185,13 @@ function extractRelativeDateFromText(text, referenceDate) {
         if (unit.startsWith('month')) return toIsoFromLocalDate(addLocalMonths(base, amount));
     }
 
-    let match = lowered.match(/\b(this|next|coming)\s+(monday|tuesday|wednesday|thursday|friday|saturday|sunday|mon|tue|tues|wed|thu|thur|thurs|fri|sat|sun)\b/);
+    let match = lowered.match(/\b(?:by|due)\s+(this|next|coming)\s+(monday|tuesday|wednesday|thursday|friday|saturday|sunday|mon|tue|tues|wed|thu|thur|thurs|fri|sat|sun)\b/);
+    if (match) return resolveWeekdayFromReference(match[2], match[1], base);
+
+    match = lowered.match(/\b(?:by|due)\s+(monday|tuesday|wednesday|thursday|friday|saturday|sunday|mon|tue|tues|wed|thu|thur|thurs|fri|sat|sun)\b/);
+    if (match) return resolveWeekdayFromReference(match[1], '', base);
+
+    match = lowered.match(/\b(this|next|coming)\s+(monday|tuesday|wednesday|thursday|friday|saturday|sunday|mon|tue|tues|wed|thu|thur|thurs|fri|sat|sun)\b/);
     if (match) return resolveWeekdayFromReference(match[2], match[1], base);
 
     match = lowered.match(/\b(monday|tuesday|wednesday|thursday|friday|saturday|sunday|mon|tue|tues|wed|thu|thur|thurs|fri|sat|sun)\b/);
@@ -184,14 +205,16 @@ function extractDateFromText(text, referenceDate) {
     const patterns = [
         /\b(\d{4}[-/.]\d{1,2}[-/.]\d{1,2})\b/,
         /\b(\d{1,2}[-/.]\d{1,2}[-/.]\d{4})\b/,
-        /\b([A-Za-z]+\s+\d{1,2},?\s+\d{4})\b/,
-        /\b(\d{1,2}\s+[A-Za-z]+,?\s+\d{4})\b/
+        /\b([A-Za-z]+\s+\d{1,2}(?:st|nd|rd|th)?,?\s+\d{4})\b/,
+        /\b(\d{1,2}(?:st|nd|rd|th)?\s+[A-Za-z]+,?\s+\d{4})\b/,
+        /\b([A-Za-z]+\s+\d{1,2}(?:st|nd|rd|th)?)\b/,
+        /\b(\d{1,2}(?:st|nd|rd|th)?\s+[A-Za-z]+)\b/
     ];
 
     for (const pattern of patterns) {
         const match = raw.match(pattern);
         if (!match) continue;
-        const iso = normaliseDateInput(match[1]);
+        const iso = normaliseDateInput(match[1], referenceDate);
         if (iso) return iso;
     }
     return extractRelativeDateFromText(raw, referenceDate);

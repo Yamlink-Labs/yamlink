@@ -1,226 +1,42 @@
+'use strict';
+
 const vscode = require('vscode');
-const { getTypes, getRegistry } = require('../registries/typeRegistry');
-const { getFieldsCache } = require('../core/index');
-const { inferFieldRole, inferTargetTypeFromFieldName } = require('../intelligence/fieldRoles');
-
-const CLAUSE_KEYWORDS = ['select', 'where', 'sort', 'limit', 'via'];
-const SIMPLE_VIEW_TYPES = ['*', 'task', 'tasks', 'calendar', 'today', 'upcoming', 'agenda'];
-const FRONTMATTER_ARCHETYPES = {
-    account: ['name', 'status', 'owner', 'contacts', 'website', 'domain', 'industry', 'stage', 'email', 'phone'],
-    company: ['name', 'status', 'owner', 'contacts', 'website', 'domain', 'industry', 'stage', 'email', 'phone'],
-    contact: ['name', 'account', 'email', 'phone', 'title', 'status', 'owner', 'city'],
-    lead: ['name', 'account', 'email', 'phone', 'status', 'owner', 'source', 'stage'],
-    opportunity: ['name', 'account', 'owner', 'status', 'stage', 'value', 'close-date'],
-    mission: ['name', 'date', 'commander', 'unit', 'outcome', 'status'],
-    character: ['name', 'status', 'rank', 'unit', 'species', 'homeworld'],
-    task: ['status', 'owner', 'date', 'priority', 'account']
-};
-const TITLE_ARCHETYPE_KEYWORDS = {
-    account: ['account', 'company', 'client', 'customer'],
-    contact: ['contact', 'person', 'lead'],
-    opportunity: ['deal', 'opportunity', 'pipeline'],
-    mission: ['mission', 'operation'],
-    character: ['character', 'profile', 'persona']
-};
-
-function isPositionInFrontmatter(document, lineIndex) {
-    const lines = document.getText().split('\n');
-    let openLine = -1;
-    let closeLine = -1;
-    for (let i = 0; i < lines.length; i++) {
-        if (/^---\s*$/.test(lines[i])) {
-            if (openLine === -1) openLine = i;
-            else { closeLine = i; break; }
-        }
-    }
-    if (openLine === -1 || closeLine === -1) return false;
-    return lineIndex > openLine && lineIndex < closeLine;
-}
-
-function getDocumentType(document) {
-    const match = document.getText().match(/^\s*type:\s*(.+?)\s*$/m);
-    return match ? match[1].trim().toLowerCase() : null;
-}
-
-function fieldLooksRelational(fieldName, document, idIndex) {
-    const docType = getDocumentType(document);
-    const role = inferFieldRole(fieldName, { documentType: docType, idIndex });
-    return {
-        relational: role.relational,
-        targetType: role.targetType,
-        semanticRole: role.semanticRole,
-        reasons: role.reasons
-    };
-}
-
-function summariseInferenceReasons(reasons = [], max = 2) {
-    return reasons
-        .filter(Boolean)
-        .slice(0, max)
-        .join('; ');
-}
-
-function buildFieldInferenceDetail(entryDetail, relationState) {
-    const reasonText = summariseInferenceReasons(relationState.reasons);
-    if (relationState.relational) {
-        const base = relationState.targetType
-            ? `${entryDetail} → ${relationState.targetType}`
-            : `${entryDetail} → relation`;
-        return reasonText ? `${base} · ${reasonText}` : base;
-    }
-    if (relationState.semanticRole) {
-        const base = `${entryDetail} · inferred ${relationState.semanticRole}`;
-        return reasonText ? `${base} · ${reasonText}` : base;
-    }
-    return reasonText ? `${entryDetail} · ${reasonText}` : entryDetail;
-}
-
-function buildRelationCandidateDetail(id, idIndex, frontmatterRelation, preferred) {
-    const reasonText = frontmatterRelation.reasonText || '';
-    if (frontmatterRelation.targetType) {
-        const base = preferred
-            ? `${frontmatterRelation.targetType} relation (preferred match)`
-            : `${idIndex.get(id) || 'Yamlink node'} (outside suggested ${frontmatterRelation.targetType} target)`;
-        return reasonText ? `${base} · ${reasonText}` : base;
-    }
-    const base = idIndex.get(id) || 'Yamlink node';
-    return reasonText ? `${base} · ${reasonText}` : base;
-}
-
-function resolveFrontmatterRelationCandidates(document, position, idIndex) {
-    if (!isPositionInFrontmatter(document, position.line)) return null;
-
-    const line = document.lineAt(position.line).text;
-    const before = line.substring(0, position.character);
-    const textAfterCursor = line.substring(position.character);
-    const match = before.match(/^\s*([\w-]+):\s*(\[\[)?([^\]]*)$/);
-    if (!match) return null;
-
-    const fieldName = match[1].toLowerCase();
-    const hasWiki = !!match[2];
-    const partial = (match[3] || '').trim();
-    const relationState = fieldLooksRelational(fieldName, document, idIndex);
-    if (!hasWiki && !relationState.relational) return null;
-
-    const candidateIds = Array.from(idIndex.keys());
-    let preferredIds = [];
-    if (relationState.targetType) {
-        const typeNodes = getRegistry().get(relationState.targetType) ?? new Set();
-        preferredIds = candidateIds.filter(id => typeNodes.has(id));
-    }
-
-    return {
-        fieldName,
-        partial,
-        hasWiki,
-        hasClosing: hasWiki && textAfterCursor.startsWith(']]'),
-        candidateIds,
-        preferredIds,
-        targetType: relationState.targetType,
-        reasonText: summariseInferenceReasons(relationState.reasons)
-    };
-}
-
-function resolveQueryRelationCandidates(fieldName, queryType, partial, idIndex) {
-    const normalizedType = String(queryType || '').trim().toLowerCase();
-    const relationState = inferFieldRole(fieldName, {
-        documentType: normalizedType && normalizedType !== '*' ? normalizedType : '',
-        idIndex
-    });
-    if (!relationState.relational) return null;
-
-    const candidateIds = Array.from(idIndex.keys());
-    let preferredIds = [];
-    if (relationState.targetType) {
-        const typeNodes = getRegistry().get(relationState.targetType) ?? new Set();
-        preferredIds = candidateIds.filter(id => typeNodes.has(id));
-    }
-
-    return {
-        fieldName,
-        partial,
-        candidateIds,
-        preferredIds,
-        targetType: relationState.targetType,
-        reasonText: summariseInferenceReasons(relationState.reasons)
-    };
-}
-
-function getViewBlockContext(document, position) {
-    const lines = document.getText().split('\n');
-    let start = position.line;
-    while (start >= 0) {
-        const t = lines[start].trim();
-        if (t.startsWith('!view ')) break;
-        if (!t || (!/^(select|where|sort|limit|via)\b/i.test(t) && start !== position.line)) return null;
-        start--;
-    }
-    if (start < 0 || !lines[start].trim().startsWith('!view ')) return null;
-
-    const block = [lines[start]];
-    let end = start + 1;
-    while (end < lines.length) {
-        const t = lines[end].trim();
-        if (!t) break;
-        if (t.startsWith('!view ')) break;
-        if (/^(select|where|sort|limit|via)\b/i.test(t)) {
-            block.push(lines[end]);
-            end++;
-        } else {
-            break;
-        }
-    }
-
-    const first = lines[start].trim();
-    const rest = first.slice(6).trim();
-    const typeMatch = rest.match(/^([\w*-]+)/);
-    const queryType = typeMatch ? typeMatch[1].toLowerCase() : null;
-
-    return { start, end, lines: block, queryType, currentLine: lines[position.line] };
-}
-
-function collectFieldsForType(type) {
-    const fieldsCache = getFieldsCache();
-    const fields = new Set();
-    for (const value of fieldsCache.values()) {
-        const nodeType = (value.type || '').trim().toLowerCase();
-        if (type !== '*' && type !== 'tasks' && nodeType !== type) continue;
-        for (const key of Object.keys(value)) {
-            if (key !== 'id') fields.add(key.toLowerCase());
-        }
-    }
-    if (type === 'tasks') ['text', 'done', 'date', 'file', 'line'].forEach(f => fields.add(f));
-    return Array.from(fields).sort();
-}
-
-function inferRelationField(fieldName, queryType) {
-    if (queryType === 'tasks') return false;
-    const fieldsCache = getFieldsCache();
-    let relationHits = 0;
-    let scalarHits = 0;
-    for (const value of fieldsCache.values()) {
-        const nodeType = (value.type || '').trim().toLowerCase();
-        if (queryType && queryType !== '*' && nodeType !== queryType) continue;
-        const raw = String(value[fieldName] ?? '');
-        if (!raw) continue;
-        if (/\[\[[^\]]+\]\]/.test(raw)) relationHits++;
-        else scalarHits++;
-    }
-    return relationHits > 0 && relationHits >= scalarHits;
-}
-
-function collectScalarValues(fieldName, queryType) {
-    const fieldsCache = getFieldsCache();
-    const values = new Map();
-    for (const value of fieldsCache.values()) {
-        const nodeType = (value.type || '').trim().toLowerCase();
-        if (queryType && queryType !== '*' && nodeType !== queryType) continue;
-        const raw = String(value[fieldName] ?? '').trim();
-        if (!raw || /\[\[[^\]]+\]\]/.test(raw)) continue;
-        values.set(raw.toLowerCase(), raw);
-    }
-    return Array.from(values.values()).sort();
-}
+const { getTypes } = require('../registries/typeRegistry');
+const { getSchema } = require('../registries/schemaRegistry');
+const {
+    CLAUSE_KEYWORDS,
+    SIMPLE_VIEW_TYPES,
+    normalizeFrontmatterKey,
+    isTypeLikeField,
+    isPositionInFrontmatter,
+    getDocumentType,
+    extractFrontmatterFields,
+    buildDocumentIntelligence,
+    fieldLooksRelational,
+    buildFieldInferenceDetail,
+    buildRelationCandidateDetail,
+    collectLocalLinkedIds,
+    collectObservedRelationUsage,
+    collectAdaptiveFrontmatterStarterSuggestions,
+    resolveFrontmatterRelationCandidates,
+    resolveQueryRelationCandidates,
+    getViewBlockContext,
+    collectFieldsForType,
+    inferRelationField,
+    collectScalarValues,
+    collectObservedFrontmatterFields,
+    collectRoleAlignedObservedFrontmatterFields,
+    collectContextualObservedFrontmatterFields,
+    collectAdaptiveFrontmatterFieldSuggestions,
+    collectSchemaAdaptiveGapSuggestions,
+    collectArchetypeFieldSuggestions,
+    collectNoteRoleFieldSuggestions,
+    scoreCandidateMatch,
+    scoreFieldSuggestion,
+    rankCandidateIds
+} = require('./completionHelpers');
+const { inferTargetTypeFromFieldName } = require('../intelligence/fieldRoles');
+const { summarizeNoteRoleReasons } = require('../intelligence/noteRolesCore');
 
 function createItems(values, kind, detail) {
     return values.map(v => {
@@ -228,95 +44,6 @@ function createItems(values, kind, detail) {
         if (detail) item.detail = detail;
         return item;
     });
-}
-
-function collectObservedFrontmatterFields(docType) {
-    const fieldsCache = getFieldsCache();
-    const counts = new Map();
-    for (const value of fieldsCache.values()) {
-        const nodeType = String(value.type || '').trim().toLowerCase();
-        if (!docType || nodeType !== docType) continue;
-        for (const key of Object.keys(value)) {
-            const normalized = String(key || '').trim().toLowerCase();
-            if (!normalized || normalized === 'id' || normalized === 'type') continue;
-            counts.set(normalized, (counts.get(normalized) || 0) + 1);
-        }
-    }
-    return Array.from(counts.entries())
-        .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
-        .map(([key, count]) => ({ key, count }));
-}
-
-function extractDocumentArchetype(document, docType) {
-    const candidates = new Set();
-    if (docType) candidates.add(String(docType).trim().toLowerCase());
-
-    const text = document.getText();
-    const headingMatch = text.match(/^#\s+(.+)$/m);
-    const nameMatch = text.match(/^\s*name:\s*(.+?)\s*$/m);
-    const pathBits = [];
-    if (headingMatch) pathBits.push(headingMatch[1]);
-    if (nameMatch) pathBits.push(nameMatch[1]);
-    if (document.uri?.fsPath) pathBits.push(document.uri.fsPath.split(/[\\/]/).pop() || '');
-    const haystack = pathBits.join(' ').toLowerCase();
-
-    for (const [type, keywords] of Object.entries(TITLE_ARCHETYPE_KEYWORDS)) {
-        if (keywords.some(keyword => haystack.includes(keyword))) {
-            candidates.add(type);
-        }
-    }
-    return Array.from(candidates);
-}
-
-function collectArchetypeFieldSuggestions(document, docType) {
-    const archetypes = extractDocumentArchetype(document, docType);
-    const fields = new Map();
-    for (const archetype of archetypes) {
-        const suggestions = FRONTMATTER_ARCHETYPES[archetype] || [];
-        suggestions.forEach((field, index) => {
-            const current = fields.get(field);
-            const score = 100 - index;
-            if (!current || score > current.score) {
-                fields.set(field, { key: field, score, source: archetype });
-            }
-        });
-    }
-    return Array.from(fields.values()).sort((a, b) => b.score - a.score || a.key.localeCompare(b.key));
-}
-
-function scoreCandidateMatch(value, partial) {
-    const candidate = String(value || '').toLowerCase();
-    const query = String(partial || '').trim().toLowerCase();
-    if (!query) return 500;
-    if (candidate === query) return 1000;
-    if (candidate.startsWith(query)) return 800 - candidate.length;
-    if (candidate.includes(query)) return 600 - candidate.indexOf(query);
-
-    let matched = 0;
-    let cursor = 0;
-    for (const ch of query) {
-        const idx = candidate.indexOf(ch, cursor);
-        if (idx === -1) return -1;
-        matched++;
-        cursor = idx + 1;
-    }
-    return matched === query.length ? 300 - candidate.length : -1;
-}
-
-function rankCandidateIds(candidateIds, partial, preferredIds = []) {
-    const preferred = new Set(preferredIds);
-    return candidateIds
-        .map(id => {
-            const matchScore = scoreCandidateMatch(id, partial);
-            return {
-                id,
-                score: matchScore >= 0 ? matchScore + (preferred.has(id) ? 1000 : 0) : matchScore,
-                preferred: preferred.has(id)
-            };
-        })
-        .filter(entry => entry.score >= 0)
-        .sort((a, b) => b.score - a.score || a.id.localeCompare(b.id))
-        .map(entry => entry.id);
 }
 
 function makeReplaceRange(document, position, prefixLength) {
@@ -346,7 +73,9 @@ function registerCompletion(context, getIndex) {
                         return rankCandidateIds(
                             frontmatterRelation.candidateIds,
                             frontmatterRelation.partial,
-                            frontmatterRelation.preferredIds
+                            frontmatterRelation.preferredIds,
+                            frontmatterRelation.localLinkedIds,
+                            frontmatterRelation.observedIdScores
                         )
                             .map(id => {
                                 const item = new vscode.CompletionItem(id, vscode.CompletionItemKind.Reference);
@@ -382,13 +111,15 @@ function registerCompletion(context, getIndex) {
                             });
                     }
 
-                    const typeMatch = textBeforeCursor.match(/^type:\s*(\S*)$/);
-                    if (typeMatch) return createItems([...getTypes()], vscode.CompletionItemKind.EnumMember, 'Type used in vault');
+                    const typeMatch = textBeforeCursor.match(/^\s*([^:\n]+):\s*(\S*)$/);
+                    if (typeMatch && isTypeLikeField(typeMatch[1])) {
+                        return createItems([...getTypes()], vscode.CompletionItemKind.EnumMember, 'Type used in vault');
+                    }
 
                     return undefined;
                 }
             },
-            '[', ':', ' '
+            '[', ':'
         )
     );
 
@@ -400,68 +131,172 @@ function registerCompletion(context, getIndex) {
                     if (!isPositionInFrontmatter(document, position.line)) return undefined;
                     const line = document.lineAt(position.line).text;
                     const trimmed = line.trimStart();
-                    const keyMatch = trimmed.match(/^([\w-]*)$/);
+                    const keyMatch = trimmed.match(/^([^:\n]*)$/);
                     if (!keyMatch) return undefined;
                     const docType = getDocumentType(document);
-                    if (!docType) return undefined;
                     const schema = getSchema(docType);
-                    const partialKey = keyMatch[1].toLowerCase();
+                    const partialKey = normalizeFrontmatterKey(keyMatch[1]);
                     const schemaFields = Object.entries(schema?.fields || {});
-                    if (schemaFields.length > 0) {
-                        schemaFields.sort((a, b) => (a[1].required ? 0 : 1) - (b[1].required ? 0 : 1) || a[0].localeCompare(b[0]));
-                        return schemaFields.filter(([key]) => key.toLowerCase().startsWith(partialKey)).map(([key, def]) => {
-                            const label = def.required ? `${key}*` : key;
-                            const item = new vscode.CompletionItem(label, vscode.CompletionItemKind.Field);
-                            item.detail = def.type === 'relation'
-                                ? `${def.type}${def.target ? ` → ${def.target}` : ''}${def.required ? ' (required)' : ''}`
-                                : `${def.type}${def.required ? ' (required)' : ''}`;
-                            item.insertText = def.type === 'relation' ? new vscode.SnippetString(`${key}: [[\${1}]]`) : `${key}: `;
-                            return item;
-                        });
-                    }
 
-                    const observedFields = collectObservedFrontmatterFields(docType);
+                    const observedFields = docType
+                        ? collectObservedFrontmatterFields(docType).map((entry) => ({ ...entry, roleAligned: false }))
+                        : collectRoleAlignedObservedFrontmatterFields(document, docType, getIndex());
                     const archetypeFields = collectArchetypeFieldSuggestions(document, docType);
+                    const noteRoleFields = collectNoteRoleFieldSuggestions(document, docType, getIndex());
+                    const contextualFields = collectContextualObservedFrontmatterFields(document, docType, getIndex());
+                    const adaptiveFields = collectAdaptiveFrontmatterFieldSuggestions(document, docType, getIndex());
+                    const adaptiveGapFields = collectSchemaAdaptiveGapSuggestions(document, docType, getIndex());
+                    const starterSuggestions = collectAdaptiveFrontmatterStarterSuggestions(document, docType, getIndex());
                     const combined = new Map();
 
-                    for (const entry of archetypeFields) {
-                        combined.set(entry.key, {
-                            key: entry.key,
-                            sortScore: 1000 + entry.score,
-                            detail: `suggested for ${entry.source} notes`,
-                            source: 'archetype'
+                    for (const [key, def] of schemaFields) {
+                        const label = normalizeFrontmatterKey(key);
+                        combined.set(label, {
+                            key: label,
+                            sortScore: 1400 + (def.required ? 80 : 0),
+                            detail: def.type === 'relation'
+                                ? `${key}${def.required ? ' (required)' : ''} · schema relation${def.target ? ` → ${def.target}` : ''}`
+                                : `${key}${def.required ? ' (required)' : ''} · from schema`,
+                            source: 'schema',
+                            snippetKey: key
                         });
                     }
-                    for (const entry of observedFields) {
+
+                    for (const entry of noteRoleFields) {
+                        const noteRoleReason = entry.noteRole
+                            ? summarizeNoteRoleReasons(entry.noteRole)
+                            : '';
+                        const roleLead = entry.roleSummary || `${entry.source} note`;
                         const existing = combined.get(entry.key);
-                        const observedDetail = `observed in ${entry.count} ${docType} note${entry.count === 1 ? '' : 's'}`;
                         if (!existing) {
                             combined.set(entry.key, {
                                 key: entry.key,
-                                sortScore: 500 + entry.count,
+                                sortScore: 900 + entry.score,
+                                detail: noteRoleReason
+                                    ? `common on ${roleLead}; ${noteRoleReason}`
+                                    : `common on ${roleLead}`,
+                                source: 'note-role'
+                            });
+                        } else {
+                            existing.detail = `${existing.detail}; common on ${roleLead}`;
+                            existing.sortScore += entry.score;
+                        }
+                    }
+                    for (const entry of archetypeFields) {
+                        const existing = combined.get(entry.key);
+                        if (!existing) {
+                            combined.set(entry.key, {
+                                key: entry.key,
+                                sortScore: 1000 + entry.score,
+                                detail: `suggested for ${entry.source} notes`,
+                                source: 'archetype'
+                            });
+                        } else {
+                            existing.detail = `${existing.detail}; suggested for ${entry.source} notes`;
+                            existing.sortScore += entry.score;
+                        }
+                    }
+                    for (const entry of observedFields) {
+                        const existing = combined.get(entry.key);
+                        const observedScope = docType || 'similar';
+                        const observedDetail = entry.roleAligned
+                            ? `common in ${entry.noteRole?.noteRole || observedScope} workflows (${entry.count} notes)`
+                            : `observed in ${entry.count} ${observedScope} note${entry.count === 1 ? '' : 's'}`;
+                        if (!existing) {
+                            combined.set(entry.key, {
+                                key: entry.key,
+                                sortScore: 500 + entry.count + (entry.roleAligned ? 120 : 0),
                                 detail: observedDetail,
                                 source: 'observed'
                             });
                         } else {
                             existing.detail = `${existing.detail}; ${observedDetail}`;
-                            existing.sortScore += entry.count;
+                            existing.sortScore += entry.count + (entry.roleAligned ? 40 : 0);
+                        }
+                    }
+                    for (const entry of contextualFields) {
+                        const existing = combined.get(entry.key);
+                        const sharedLead = entry.sharedFields.length
+                            ? `common alongside ${entry.sharedFields.slice(0, 2).join(', ')}`
+                            : `common in ${entry.role} notes`;
+                        const detail = `${sharedLead} (${entry.count} similar notes)`;
+                        if (!existing) {
+                            combined.set(entry.key, {
+                                key: entry.key,
+                                sortScore: 1100 + entry.score,
+                                detail,
+                                source: 'contextual'
+                            });
+                        } else {
+                            existing.detail = `${existing.detail}; ${detail}`;
+                            existing.sortScore += Math.min(180, entry.count * 20);
+                        }
+                    }
+                    for (const entry of adaptiveFields) {
+                        const existing = combined.get(entry.key);
+                        const detail = entry.summary;
+                        if (!existing) {
+                            combined.set(entry.key, {
+                                key: entry.key,
+                                sortScore: 1250 + entry.score,
+                                detail,
+                                source: 'adaptive-pattern'
+                            });
+                        } else {
+                            existing.detail = `${existing.detail}; ${detail}`;
+                            existing.sortScore += 160 + entry.score;
+                        }
+                    }
+                    for (const entry of adaptiveGapFields) {
+                        const existing = combined.get(entry.key);
+                        const alternatives = entry.alternatives?.length
+                            ? `; similar notes also use ${entry.alternatives.join(', ')}`
+                            : '';
+                        const detail = `${entry.missingSummary}. ${entry.summary}${alternatives}`;
+                        if (!existing) {
+                            combined.set(entry.key, {
+                                key: entry.key,
+                                sortScore: 1180 + entry.score,
+                                detail,
+                                source: 'adaptive-gap'
+                            });
+                        } else {
+                            existing.detail = `${existing.detail}; ${detail}`;
+                            existing.sortScore += 140 + Math.min(180, entry.score);
                         }
                     }
 
                     const rankedFields = Array.from(combined.values())
-                        .filter(entry => !partialKey || entry.key.startsWith(partialKey) || scoreCandidateMatch(entry.key, partialKey) >= 0)
-                        .sort((a, b) => b.sortScore - a.sortScore || a.key.localeCompare(b.key));
+                        .map((entry) => ({
+                            ...entry,
+                            matchScore: scoreFieldSuggestion(entry, partialKey)
+                        }))
+                        .filter(entry => entry.matchScore >= 0)
+                        .sort((a, b) => b.matchScore - a.matchScore || a.key.localeCompare(b.key));
 
                     if (!rankedFields.length) return undefined;
-                    return rankedFields.map(entry => {
+                    const starterItems = partialKey.length <= 2
+                        ? starterSuggestions.map((entry, index) => {
+                            const item = new vscode.CompletionItem(entry.label, vscode.CompletionItemKind.Snippet);
+                            item.detail = [entry.detail, entry.headline, entry.workflowSummary].filter(Boolean).join(' · ');
+                            item.documentation = entry.why || entry.headline || entry.detail;
+                            item.sortText = `00${index}`;
+                            item.insertText = new vscode.SnippetString(entry.insertText);
+                            return item;
+                        })
+                        : [];
+
+                    const fieldItems = rankedFields.map(entry => {
                         const relationState = fieldLooksRelational(entry.key, document, getIndex());
                         const item = new vscode.CompletionItem(entry.key, vscode.CompletionItemKind.Field);
                         item.detail = buildFieldInferenceDetail(entry.detail, relationState);
+                        const outputKey = entry.snippetKey || entry.key;
                         item.insertText = relationState.relational
-                            ? new vscode.SnippetString(`${entry.key}: [[\${1}]]`)
-                            : `${entry.key}: `;
+                            ? new vscode.SnippetString(`${outputKey}: [[\${1}]]`)
+                            : `${outputKey}: `;
                         return item;
                     });
+                    return [...starterItems, ...fieldItems];
                 }
             }
         )
@@ -521,12 +356,17 @@ function registerCompletion(context, getIndex) {
                     if (relationMatch) {
                         const fieldName = relationMatch[1].toLowerCase();
                         const partial = relationMatch[2].toLowerCase();
-                        const relationCandidates = resolveQueryRelationCandidates(fieldName, queryType, partial, getIndex());
+                        const relationCandidates = resolveQueryRelationCandidates(fieldName, queryType, partial, getIndex(), {
+                            localLinkedIds: collectLocalLinkedIds(document, getIndex()),
+                            document
+                        });
                         if (!relationCandidates) return undefined;
                         return rankCandidateIds(
                             relationCandidates.candidateIds,
                             partial,
-                            relationCandidates.preferredIds
+                            relationCandidates.preferredIds,
+                            relationCandidates.localLinkedIds,
+                            relationCandidates.observedIdScores
                         )
                             .map(id => {
                                 const item = new vscode.CompletionItem(id, vscode.CompletionItemKind.Reference);
@@ -566,10 +406,19 @@ function registerCompletion(context, getIndex) {
 
 module.exports = {
     registerCompletion,
+    // Re-export helpers so existing test imports continue to work
     resolveFrontmatterRelationCandidates,
     inferTargetTypeFromFieldName,
     collectObservedFrontmatterFields,
+    collectRoleAlignedObservedFrontmatterFields,
+    collectContextualObservedFrontmatterFields,
+    collectAdaptiveFrontmatterFieldSuggestions,
+    collectSchemaAdaptiveGapSuggestions,
+    collectAdaptiveFrontmatterStarterSuggestions,
     collectArchetypeFieldSuggestions,
+    collectNoteRoleFieldSuggestions,
+    collectLocalLinkedIds,
+    collectObservedRelationUsage,
     rankCandidateIds,
     buildFieldInferenceDetail,
     resolveQueryRelationCandidates

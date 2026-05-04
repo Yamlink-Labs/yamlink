@@ -276,4 +276,4 @@ function escapeRegex(value) {
     return String(value).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
-module.exports = { registerRename, findRenameMatchesInText, buildRenameRegex, extractIdFromDocument };
+module.exports = { registerRename, findRenameMatchesInText, extractIdFromDocument };

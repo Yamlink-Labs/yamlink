@@ -6,7 +6,7 @@ It focuses on:
 
 - how to structure a vault
 - how to think about IDs, links, and queries
-- how to use Yamlink day to day
+- how to use templates and the query builder day to day
 - what a good CRM setup looks like
 - what a good programmer / project-tracker setup looks like
 
@@ -34,7 +34,9 @@ That is the system.
 
 ### 1. Create 3-5 notes with frontmatter
 
-Example:
+The fastest way is `Yamlink: New Node from Template` if you have templates set up. Otherwise `Yamlink: Create Node` generates a minimal frontmatter stub.
+
+Example note:
 
 ```yaml
 ---
@@ -62,6 +64,8 @@ Met with [[contact-jane-doe]] about the [[deal-acme-expansion]] opportunity.
 
 ### 3. Add a query block to a dashboard note
 
+Type `!view` in a note and use `Yamlink: Insert View Block` — or write the query directly:
+
 ```md
 !view contact | Active contacts
 where status = active
@@ -80,9 +84,149 @@ Use:
 
 ---
 
+## Templates
+
+Templates are `.md` files in a `_templates/` folder at your workspace root. They define the frontmatter shape for a note type, with empty fields that get filled in when you create a note from the template.
+
+### Creating your first template
+
+Run `Yamlink: New Node from Template`. If no templates exist yet, Yamlink will offer to create the `_templates/` folder with a starter `contact.md` template and open it for you to edit.
+
+### Template structure
+
+A template is a regular Markdown file with frontmatter. Leave `id:` and `created:` empty — Yamlink fills them on creation. Leave relation fields as `[[]]` to mark where a link belongs.
+
+```yaml
+---
+id:
+type: contact
+name:
+account: [[]]
+email:
+status: active
+created:
+---
+```
+
+### Using a template
+
+Run `Yamlink: New Node from Template`. The picker shows each template's type and its field names so you can choose without opening the file first. After you enter the new note's ID, Yamlink creates the file, fills in `id:` and `created:`, opens the note, and positions your cursor on the first empty field ready to type.
+
+### Type-matched templates at note creation
+
+When you run `Yamlink: Create Node` and choose a type, Yamlink automatically checks for `_templates/<type>.md`. If it exists, the new note is created from that template instead of a blank stub.
+
+### Good template habits
+
+- One template per type you use regularly
+- Name the template file exactly after the type: `contact.md` for `type: contact`
+- Keep default values in the template (e.g. `status: active`, `species: human`) so new notes start in the right state
+- Use `[[]]` as the value for relation fields you always fill in — it signals that a link is expected there
+
+---
+
+## Query Builder
+
+### Smart starters (the default)
+
+When you run `Yamlink: Insert View Block`, Yamlink reads the active note and surfaces context-aware suggestions at the top of the list — labelled **Smart:**. These are generated from the note's type, its relations, and what notes link to it.
+
+For example, if you are on an `account` note, you might see:
+
+- **Smart: Contacts in this account** — contacts whose `account` field links to this note
+- **Smart: Open deals** — deals related to this account
+- **Smart: Latest meetings** — meetings linked here
+
+These smart starters are vault-aware. They update as your vault grows.
+
+### Guided builder
+
+Pick **Guided builder** from the starter list to step through a structured flow:
+
+1. **Choose view kind** — Table of a type, Tasks and calendar, or Backlinks to this note
+2. **Choose type** — the current note's type floats to the top marked as "current note type"
+3. **Choose a preset** — Standard table, Latest entries, Active items, or a context-aware preset if applicable:
+   - If the chosen type has a schema relation field pointing back at the current note's type, a **"[Type]s linked to this [current type]"** preset appears at the top, pre-filtered to this note
+4. **Custom** — if none of the presets fit, choose columns, filter field and value, sort, and limit manually
+
+### Refine an existing view
+
+Position your cursor on any `!view` block and use `Yamlink: Refine This View` (or the lightbulb → Refine this view) to change the label, sort, limit, or filter without rewriting the block from scratch.
+
+### Query reference
+
+```md
+!view contact | Active contacts
+where status = active
+select name, company, owner, date
+sort date desc
+limit 10
+```
+
+#### Clauses
+
+| Clause | Purpose |
+|---|---|
+| `select field, field` | Which columns to show (omit for auto) |
+| `where field = value` | Filter by exact match |
+| `where field contains value` | Filter by partial match |
+| `sort field` / `sort field desc` | Sort order |
+| `limit N` | Cap the number of rows |
+| `via field` | Narrow an incoming query to a specific relation field |
+
+#### Shortcut queries
+
+```md
+!view today
+!view upcoming
+!view calendar
+!view open-tasks
+!view done-tasks
+!view overdue
+!view undated-tasks
+```
+
+#### Incoming (backlinks) query
+
+```md
+!view incoming meeting
+via account
+select date, title
+sort date desc
+```
+
+---
+
+## Tasks
+
+Tasks in Yamlink are Markdown checkboxes anywhere in a note body:
+
+```md
+- [ ] Call Jane tomorrow
+- [x] Send proposal Friday
+- [ ] Review pipeline next Monday
+```
+
+They appear in the Calendar, Note Report, and task queries. You do not need a separate note per task — tasks live inside notes and are tracked from there.
+
+### Toggling tasks
+
+In a `!view tasks` table, click the **True/False** cell in the `done` column to toggle a task's checkbox directly. Yamlink rewrites the `- [ ]` / `- [x]` line in the file.
+
+### Date extraction from task text
+
+Yamlink extracts dates from task text automatically:
+
+- `26/03/2026`, `March 26 2026`
+- `tomorrow`, `Friday`, `next Monday`, `end of month`
+
+Use `YYYY-MM-DD` for canonical dates in frontmatter.
+
+---
+
 ## Recommended Setup: CRM
 
-If your main use is CRM, I would recommend starting with these note types:
+Start with these note types:
 
 - `account`
 - `contact`
@@ -172,12 +316,13 @@ sort date desc
 - use Note Report for local context
 - use Calendar for dated activity and follow-ups
 - use tables for the actual working views
+- create a `_templates/contact.md`, `_templates/account.md`, etc. so new records start consistently
 
 ---
 
 ## Recommended Setup: Programmer / Project Tracker
 
-If your main use is engineering work, I would recommend starting with:
+Start with:
 
 - `project`
 - `task`
@@ -263,121 +408,24 @@ sort date desc
 - use frontmatter for structured fields like `status`, `priority`, `owner`, and `project`
 - keep tasks in the body when they are part of a running work log
 - use Graph for structural understanding, not as the primary work surface
-
----
-
-## Query Structure
-
-Yamlink queries live directly in notes.
-
-### Basic
-
-```md
-!view contact
-```
-
-### With a custom tab label
-
-```md
-!view contact | Active contacts
-```
-
-### Common clauses
-
-- `select`
-- `where`
-- `contains`
-- `sort`
-- `limit`
-- `via`
-
-### Example
-
-```md
-!view deal | Open deals
-where account = [[account-acme]]
-select name, owner, stage, value, date
-sort date desc
-limit 10
-```
-
-### Incoming query
-
-```md
-!view incoming meeting
-via account
-select date, title
-sort date desc
-```
-
-### Shortcuts
-
-```md
-!view today
-!view upcoming
-!view calendar
-!view open-tasks
-!view done-tasks
-!view overdue
-!view undated-tasks
-```
-
----
-
-## Date and Task Usage
-
-### Best practice
-
-Use canonical dates in frontmatter:
-
-```text
-YYYY-MM-DD
-```
-
-Example:
-
-```yaml
-date: 2026-04-08
-```
-
-### Task date parsing
-
-Yamlink can now extract dates from task text such as:
-
-- `26/03/2026`
-- `March 26, 2026`
-- `tomorrow`
-- `Friday`
-- `next Monday`
-- `end of month`
-
-Example:
-
-```md
-- [ ] Call Jane tomorrow
-- [ ] Send proposal Friday
-- [ ] Review pipeline next Monday
-```
-
-Those dates can then appear in:
-
-- Calendar
-- Note Report
-- task-oriented shortcut queries
+- add a schema note for your main types so Yamlink can infer relation targets automatically
 
 ---
 
 ## Best Commands To Learn First
 
-- `Yamlink: Create Node`
-- `Yamlink: New Node from Template`
-- `Yamlink: Query Builder`
-- `Yamlink: Run Views in Current File`
-- `Yamlink: Open Note Report`
-- `Yamlink: Open Calendar`
-- `Yamlink: Open Vault Health`
-- `Yamlink: Vault Graph`
-- `Yamlink: Export Active Note to PDF`
+| Command | What it does |
+|---|---|
+| `Yamlink: Create Node` | Create a new note with frontmatter (uses template if one exists for the chosen type) |
+| `Yamlink: New Node from Template` | Pick a template and create a note with its field shape |
+| `Yamlink: Insert View Block` | Insert a `!view` query — shows smart starters for the current note |
+| `Yamlink: Refine This View` | Edit an existing view block's label, sort, filter, or limit |
+| `Yamlink: Run Views in Current File` | Execute all `!view` blocks in the current note |
+| `Yamlink: Open Note Report` | See relations, tasks, timeline, and suggestions for the current note |
+| `Yamlink: Open Calendar` | Month / week / day view of dated notes and tasks |
+| `Yamlink: Open Vault Health` | Broken links, duplicate IDs, schema violations |
+| `Yamlink: Vault Graph` | Visual graph of all note connections |
+| `Yamlink: Export Active Note to PDF` | Export current note or its live views to PDF |
 
 ---
 
@@ -390,7 +438,7 @@ Those dates can then appear in:
 - `R` reset graph state
 - `L` toggle edge labels
 - `N` focus the active note
-- `O` open the selected node’s note
+- `O` open the selected node's note
 - `Esc` clear the current graph state
 
 ### Calendar
@@ -405,6 +453,8 @@ Those dates can then appear in:
 ### Tables
 
 - double-click editable cells to edit
+- click a boolean cell twice to toggle it
+- click the `done` column in a tasks table to toggle the checkbox in the file
 - `Tab` / `Shift+Tab` move across editable cells
 - paste spreadsheet ranges directly into selected cells
 - `Ctrl/Cmd+Z` undo recent table edits
@@ -422,13 +472,6 @@ If you are new to Yamlink, I would recommend this order:
 5. `tasks-calendar.md`
 6. `table-types.md`
 
-Current sample files are still demo-oriented. Dedicated sample vaults for:
-
-- CRM
-- programming / project tracking
-
-should be added as a future improvement.
-
 ---
 
 ## Good Working Habits
@@ -439,6 +482,7 @@ should be added as a future improvement.
 - use body text for narrative detail
 - query from dashboard notes instead of trying to turn every note into a dashboard
 - prefer a few clear note types over too many vague ones
+- use `_templates/` for every type you create more than once
 
 ---
 

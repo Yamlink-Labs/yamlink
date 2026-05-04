@@ -12,21 +12,27 @@
 // and engineering use cases without forcing one rigid field model.
 
 const { getBacklinks } = require('../core/graph');
-const { getFieldsCache } = require('../core/index');
-const { normaliseDateInput } = require('../core/date');
+const { getFieldsCache } = require('../core/indexService');
 const { getSchema, getSchemaTargets } = require('../registries/schemaRegistry');
 const {
-    DEFAULT_STATUS_LIKE_VALUES,
-    DEFAULT_SEMANTIC_ROLE_PRIORS
+    inferFieldRole
 } = require('../intelligence/fieldRolesCore');
 const {
     buildObservedFields,
-    buildNoteContext,
     extractRelationIds,
     groupStructuredBacklinks,
     buildSchemaRelationGroups,
-    buildSharedRelationContexts
+    buildObservedRelationGroups,
+    buildSharedRelationContexts,
+    describeContextOrigin
 } = require('../intelligence/suggestionCore');
+const { scoreToConfidence } = require('../intelligence/confidence');
+const { getCachedContext } = require('../intelligence/activationCache');
+const {
+    buildActivationContext,
+    getDefaultSortFieldForType
+} = require('./suggestionsContext');
+const { explainSuggestionState } = require('./suggestionsExplain');
 
 const QUERY_SUGGESTION_THRESHOLD = 2;
 
@@ -58,25 +64,16 @@ function pluralize(type, count) {
     return count === 1 ? type : `${type}s`;
 }
 
-function getDefaultSortFieldForType(type) {
-    const schema = type ? getSchema(type) : null;
-    if (!schema || !schema.fields) return '';
-    if (schema.fields.created) return 'created';
-    if (schema.fields.date) return 'date';
-    if (schema.fields.name) return 'name';
-    return '';
-}
-
-function buildForwardRelationQuery(sourceType, field, nodeId) {
+function buildForwardRelationQuery(sourceType, field, nodeId, getDefaultSortField = getDefaultSortFieldForType) {
     let query = `!view ${sourceType}\nwhere ${field} = [[${nodeId}]]`;
-    const sortField = getDefaultSortFieldForType(sourceType);
+    const sortField = getDefaultSortField(sourceType);
     if (sortField) query += `\nsort ${sortField} desc`;
     return query;
 }
 
-function buildPeerRelationQuery(nodeType, field, relatedId) {
+function buildPeerRelationQuery(nodeType, field, relatedId, getDefaultSortField = getDefaultSortFieldForType) {
     let query = `!view ${nodeType}\nwhere ${field} = [[${relatedId}]]`;
-    const sortField = getDefaultSortFieldForType(nodeType);
+    const sortField = getDefaultSortField(nodeType);
     if (sortField) query += `\nsort ${sortField} desc`;
     return query;
 }
@@ -97,6 +94,7 @@ function addSuggestion(results, seen, suggestion, docText, keepExisting) {
     seen.add(queryKey);
     results.push({
         inserted,
+        confidence: suggestion.confidence ?? scoreToConfidence(suggestion.score, 130),
         ...suggestion
     });
 }
@@ -106,14 +104,11 @@ function computeSuggestionsForNode(nodeId, docText = null, options = {}) {
     const fieldsCache = getFieldsCache();
     const nodeFields = fieldsCache.get(nodeId) || {};
     const nodeType = String(nodeFields.type || '').trim().toLowerCase();
-    const observedFields = buildObservedFields(fieldsCache);
-    const noteContext = buildNoteContext(nodeFields, nodeType, {
-        observedFields,
-        getSchemaForType: getSchema,
-        dateParser: normaliseDateInput,
-        statusLikeValues: DEFAULT_STATUS_LIKE_VALUES,
-        semanticRolePriors: DEFAULT_SEMANTIC_ROLE_PRIORS
-    });
+
+    const { observedFields, observedIndex, noteContext, frontmatterOpportunities, getDefaultSortField } = fieldsCache.has(nodeId)
+        ? getCachedContext(nodeId, () => buildActivationContext(nodeId, nodeFields, nodeType, fieldsCache))
+        : buildActivationContext(nodeId, nodeFields, nodeType, fieldsCache);
+
     const keepExisting = options.keepExisting === true;
 
     const { typedGroups, fieldGroups } = groupStructuredBacklinks(backlinks, fieldsCache);
@@ -121,6 +116,7 @@ function computeSuggestionsForNode(nodeId, docText = null, options = {}) {
         getSchemaTargets,
         getSchemaForType: getSchema
     });
+    const observedRelationGroups = buildObservedRelationGroups(nodeType, fieldsCache);
 
     const results = [];
     const seen = new Set();
@@ -143,9 +139,29 @@ function computeSuggestionsForNode(nodeId, docText = null, options = {}) {
         }, docText, keepExisting);
     }
 
+    for (const group of observedRelationGroups.values()) {
+        const typedKey = `${group.field}\x00${group.sourceType}`;
+        if (schemaRelationKeys.has(typedKey)) continue;
+        if (group.count < 1) continue;
+        if (group.sourceType === 'note' && group.count < QUERY_SUGGESTION_THRESHOLD) continue;
+
+        addSuggestion(results, seen, {
+            kind: 'observed-relation',
+            nodeId,
+            field: group.field,
+            sourceType: group.sourceType,
+            count: group.count,
+            score: 85 + group.count,
+            title: `${capitalize(pluralize(group.sourceType, 2))} for this ${nodeType || 'note'}`,
+            description: `Other ${pluralize(nodeType || 'note', 2)} are often linked from ${pluralize(group.sourceType, 2)} through "${group.field}"`,
+            queryText: buildForwardRelationQuery(group.sourceType, group.field, nodeId, getDefaultSortField)
+        }, docText, keepExisting);
+    }
+
     for (const group of typedGroups.values()) {
         const typedKey = `${group.field}\x00${group.sourceType}`;
         if (schemaRelationKeys.has(typedKey)) continue;
+        if (observedRelationGroups.has(typedKey)) continue;
         if (group.count < QUERY_SUGGESTION_THRESHOLD) continue;
 
         addSuggestion(results, seen, {
@@ -195,18 +211,21 @@ function computeSuggestionsForNode(nodeId, docText = null, options = {}) {
                     score: 40,
                     title: `${capitalize(pluralize(nodeType, 2))} for this ${fieldName}`,
                     description: `Find other ${pluralize(nodeType, 2)} sharing ${fieldName} → ${relatedId}`,
-                    queryText: buildPeerRelationQuery(nodeType, fieldName, relatedId)
+                    queryText: buildPeerRelationQuery(nodeType, fieldName, relatedId, getDefaultSortField)
                 }, docText, keepExisting);
             }
         }
     }
 
     for (const context of buildSharedRelationContexts(nodeFields, noteContext, fieldsCache, {
+        nodeType,
+        observedFields,
+        observedIndex,
         getSchemaTargets,
         getSchemaForType: getSchema
     })) {
         const descriptionLead = noteContext.noteRole?.noteRole && noteContext.noteRole.noteRole !== 'record'
-            ? `${capitalize(context.sourceType)}s related to this ${noteContext.noteRole.noteRole}`
+            ? `${capitalize(context.sourceType)}s related to this ${noteContext.noteRole.roleLabel || noteContext.noteRole.noteRole}`
             : `${capitalize(context.sourceType)}s related to this note`;
         addSuggestion(results, seen, {
             kind: 'shared-relation-context',
@@ -217,7 +236,47 @@ function computeSuggestionsForNode(nodeId, docText = null, options = {}) {
             score: context.sourceType === nodeType ? 42 : 48,
             title: `${capitalize(pluralize(context.sourceType, 2))} for this ${context.field}`,
             description: `${descriptionLead} through ${context.field} → ${context.relatedId}`,
-            queryText: buildForwardRelationQuery(context.sourceType, context.field, context.relatedId)
+            queryText: buildForwardRelationQuery(context.sourceType, context.field, context.relatedId, getDefaultSortField)
+        }, docText, keepExisting);
+    }
+
+    for (const relationView of frontmatterOpportunities.relationViews || []) {
+        addSuggestion(results, seen, {
+            kind: 'relation-cluster',
+            nodeId,
+            field: relationView.field,
+            sourceType: relationView.sourceType,
+            count: 1,
+            score: 58 + Math.min(24, Math.round((relationView.score || 0) / 20)),
+            title: capitalize(relationView.title),
+            description: relationView.description,
+            queryText: relationView.queryText
+        }, docText, keepExisting);
+    }
+    for (const contextView of frontmatterOpportunities.contextThreadViews || []) {
+        addSuggestion(results, seen, {
+            kind: 'context-thread',
+            nodeId,
+            field: contextView.field,
+            sourceType: contextView.sourceType,
+            count: 1,
+            score: 62 + Math.min(28, Math.round((contextView.score || 0) / 20)),
+            title: `Usual thread: ${capitalize(contextView.summary)}`,
+            description: contextView.description,
+            queryText: contextView.queryText
+        }, docText, keepExisting);
+    }
+    for (const setup of frontmatterOpportunities.surroundingSetups || []) {
+        addSuggestion(results, seen, {
+            kind: 'surrounding-setup',
+            nodeId,
+            field: setup.field,
+            sourceType: setup.companionKinds?.[0]?.type || '*',
+            count: setup.companionKinds?.reduce((sum, hint) => sum + Number(hint.count || 0), 0) || 1,
+            score: 64 + Math.min(32, Math.round((setup.score || 0) / 30)),
+            title: `Usual setup: ${capitalize(setup.targetId)}`,
+            description: setup.description,
+            queryText: setup.queryText
         }, docText, keepExisting);
     }
 
@@ -226,91 +285,6 @@ function computeSuggestionsForNode(nodeId, docText = null, options = {}) {
         (b.count - a.count) ||
         a.title.localeCompare(b.title)
     );
-}
-
-function explainSuggestionState(nodeId) {
-    const backlinks = getBacklinks(nodeId);
-    const fieldsCache = getFieldsCache();
-    const nodeFields = fieldsCache.get(nodeId) || {};
-    const nodeType = String(nodeFields.type || '').trim().toLowerCase();
-    const observedFields = buildObservedFields(fieldsCache);
-    const noteContext = buildNoteContext(nodeFields, nodeType, {
-        observedFields,
-        getSchemaForType: getSchema,
-        dateParser: normaliseDateInput,
-        statusLikeValues: DEFAULT_STATUS_LIKE_VALUES,
-        semanticRolePriors: DEFAULT_SEMANTIC_ROLE_PRIORS
-    });
-    const structuredBacklinks = backlinks.filter(edge => edge.field !== 'body');
-    const bodyMentions = backlinks.filter(edge => edge.field === 'body').length;
-
-    const typedGroups = new Map();
-    for (const { field, sourceId } of structuredBacklinks) {
-        const sourceFields = fieldsCache.get(sourceId);
-        if (!sourceFields) continue;
-        const sourceType = String(sourceFields.type || '').trim().toLowerCase();
-        if (!sourceType) continue;
-        const key = `${field}\x00${sourceType}`;
-        typedGroups.set(key, {
-            field,
-            sourceType,
-            count: (typedGroups.get(key)?.count || 0) + 1
-        });
-    }
-
-    const strongest = [...typedGroups.values()].sort((a, b) =>
-        b.count - a.count || a.field.localeCompare(b.field) || a.sourceType.localeCompare(b.sourceType)
-    )[0] || null;
-
-    const schemaHints = [];
-    if (nodeType) {
-        for (const sourceType of getSchemaTargets()) {
-            const schema = getSchema(sourceType);
-            if (!schema || !schema.fields) continue;
-            for (const [fieldName, fieldDef] of Object.entries(schema.fields)) {
-                if (fieldDef.type !== 'relation') continue;
-                if (String(fieldDef.target || '').trim().toLowerCase() !== nodeType) continue;
-                schemaHints.push(`${sourceType} → ${fieldName}`);
-            }
-        }
-    }
-
-    const ownRelationFields = [];
-    if (noteContext.fieldRoleResults.length) {
-        for (const result of noteContext.fieldRoleResults) {
-            if (!result.relational) continue;
-            if (extractRelationIds(nodeFields[result.fieldName]).length > 0) ownRelationFields.push(result.fieldName);
-        }
-    }
-
-    const reasons = [];
-    if (noteContext.noteRole?.noteRole) {
-        reasons.push(`Current note reads most like a ${noteContext.noteRole.noteRole}-style note`);
-    }
-    if (schemaHints.length) {
-        reasons.push(`Schemas already say this ${nodeType} can connect through: ${schemaHints.join(', ')}`);
-    }
-    if (strongest && strongest.count < QUERY_SUGGESTION_THRESHOLD) {
-        reasons.push(`Strongest observed pattern so far is ${strongest.count} ${pluralize(strongest.sourceType, strongest.count)} via "${strongest.field}"`);
-    } else if (!structuredBacklinks.length) {
-        reasons.push('No structured backlinks point here yet');
-    }
-    if (bodyMentions > 0) {
-        reasons.push(`There ${bodyMentions === 1 ? 'is' : 'are'} ${bodyMentions} body mention${bodyMentions === 1 ? '' : 's'}, but prose mentions are still lower-confidence than structured relations`);
-    }
-    if (ownRelationFields.length) {
-        reasons.push(`This note already has relation fields that can drive peer suggestions: ${ownRelationFields.join(', ')}`);
-    }
-
-    if (!reasons.length) {
-        reasons.push('Yamlink needs either clearer structured relations or stronger repeated patterns before it can propose a view confidently');
-    }
-
-    return {
-        title: 'No suggested views yet',
-        description: 'Yamlink is looking for schema-backed relations, repeated backlink patterns, and shared structured fields.',
-        reasons
-    };
 }
 
 function capitalize(str) {
@@ -322,5 +296,7 @@ module.exports = {
     computeSuggestionsForNode,
     explainSuggestionState,
     queryAlreadyExists,
+    buildActivationContext,
+    getDefaultSortFieldForType,
     QUERY_SUGGESTION_THRESHOLD
 };

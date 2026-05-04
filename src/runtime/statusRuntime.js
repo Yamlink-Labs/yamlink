@@ -20,6 +20,10 @@ function createStatusRuntime(context, services) {
     actionBar.name = 'Yamlink Action';
     context.subscriptions.push(actionBar);
 
+    const writingBar = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 97);
+    writingBar.name = 'Yamlink Writing';
+    context.subscriptions.push(writingBar);
+
     const suggestionBar = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 90);
     suggestionBar.name = 'Yamlink Suggestions';
     suggestionBar.command = 'yamlink.showQuerySuggestionsQuickPick';
@@ -32,6 +36,28 @@ function createStatusRuntime(context, services) {
         blue: '#6eb3f0',
         rose: '#c96d78'
     };
+
+    function getBodyText(documentText) {
+        const text = String(documentText || '');
+        if (!/^\s*---/.test(text)) return text.trim();
+        const first = text.indexOf('---');
+        const closeIdx = text.indexOf('\n---', first + 3);
+        if (closeIdx === -1) return text.trim();
+        return text.slice(closeIdx + 4).trim();
+    }
+
+    function countWordsAndChars(documentText) {
+        const body = getBodyText(documentText);
+        const wordMatches = body.match(/\S+/g) || [];
+        return {
+            words: wordMatches.length,
+            chars: body.length
+        };
+    }
+
+    function formatCompactCount(value) {
+        return Number(value || 0).toLocaleString('en-US');
+    }
 
     function updateStatusBar() {
         const nodeCount = getIndex().size;
@@ -89,6 +115,16 @@ function createStatusRuntime(context, services) {
             actionBar.show();
         } else {
             actionBar.hide();
+        }
+
+        if (isMarkdown) {
+            const counts = countWordsAndChars(text);
+            writingBar.text = `$(pencil) ${formatCompactCount(counts.words)}w · ${formatCompactCount(counts.chars)}c`;
+            writingBar.color = palette.blue;
+            writingBar.tooltip = 'Yamlink — Note body word count and character count';
+            writingBar.show();
+        } else {
+            writingBar.hide();
         }
     }
 

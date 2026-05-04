@@ -69,6 +69,43 @@ describe('rename propagation matching', () => {
         const matches = findRenameMatchesInText('johnny-rico survived.', 'johnny-rico');
         assert.equal(matches.length, 0);
     });
+
+    test('matches multiple occurrences on the same line', () => {
+        const text = 'see [[alpha]] and also [[alpha|Alpha Note]]';
+        const matches = findRenameMatchesInText(text, 'alpha');
+        assert.equal(matches.length, 2);
+    });
+
+    test('match range targets only the id, not the brackets', () => {
+        const text = 'link: [[some-node]]';
+        const matches = findRenameMatchesInText(text, 'some-node');
+        assert.equal(matches.length, 1);
+        assert.equal(text.slice(matches[0].start, matches[0].end), 'some-node');
+    });
+
+    test('does not match a prefix of a longer id', () => {
+        const matches = findRenameMatchesInText('ref: [[alpha-extended]]', 'alpha');
+        assert.equal(matches.length, 0);
+    });
+
+    test('handles ids with regex special characters safely', () => {
+        const matches = findRenameMatchesInText('see [[note.v2+final]]', 'note.v2+final');
+        assert.equal(matches.length, 1);
+    });
+
+    test('returns empty array for empty text', () => {
+        assert.deepEqual(findRenameMatchesInText('', 'alpha'), []);
+    });
+
+    test('extractIdFromDocument returns null when no id field present', () => {
+        const document = { getText() { return '---\ntype: note\n---\n'; } };
+        assert.equal(extractIdFromDocument(document), null);
+    });
+
+    test('extractIdFromDocument returns null for plain body with no frontmatter', () => {
+        const document = { getText() { return 'Just a note.\n'; } };
+        assert.equal(extractIdFromDocument(document), null);
+    });
 });
 
 Module._resolveFilename = originalResolve;

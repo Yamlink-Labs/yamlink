@@ -63,8 +63,33 @@ require.cache.__qb_suggestions__ = {
     filename: '__qb_suggestions__',
     loaded: true,
     exports: {
-        computeSuggestionsForNode() { return []; },
+        computeSuggestionsForNode() {
+            return [{
+                title: 'Related contacts',
+                description: 'Contacts already connected to this note pattern',
+                queryText: '!view contact\nwhere account = [[account-1]]'
+            }];
+        },
         QUERY_SUGGESTION_THRESHOLD: 2
+    }
+};
+
+require.cache.__qb_entityHub__ = {
+    id: '__qb_entityHub__',
+    filename: '__qb_entityHub__',
+    loaded: true,
+    exports: {
+        buildEntityHubModel() {
+            return {
+                nodeFields: { type: 'contact' },
+                recipes: [{
+                    title: 'Latest related meetings',
+                    description: 'Recent meetings around this note',
+                    queryText: '!view meeting\nwhere account = [[account-1]]\nsort created desc',
+                    inserted: false
+                }]
+            };
+        }
     }
 };
 
@@ -73,7 +98,51 @@ require.cache.__qb_query__ = {
     filename: '__qb_query__',
     loaded: true,
     exports: {
-        parseSingleViewBlock() { return null; },
+        parseSingleViewBlock(lines) {
+            const block = Array.isArray(lines) ? lines : [String(lines || '')];
+            const head = String(block[0] || '').trim();
+            if (!head.startsWith('!view ')) return null;
+            const first = head.slice(6).trim();
+            const [typePart, labelPart] = first.split('|').map(part => part.trim());
+            const incomingMatch = typePart.match(/^incoming\s+(.+)$/i);
+            const incoming = Boolean(incomingMatch);
+            const resolvedType = incoming ? incomingMatch[1].trim() : typePart;
+            const wheres = [];
+            let sort = null;
+            let via = null;
+            for (const line of block.slice(1)) {
+                const trimmed = String(line || '').trim();
+                const viaMatch = trimmed.match(/^via\s+([\w-]+)$/i);
+                if (viaMatch) {
+                    via = viaMatch[1].toLowerCase();
+                    continue;
+                }
+                const whereMatch = trimmed.match(/^where\s+([\w-]+)\s*=\s*(.+)$/i);
+                if (whereMatch) {
+                    wheres.push({
+                        field: whereMatch[1].toLowerCase(),
+                        op: '=',
+                        value: whereMatch[2].trim().replace(/^\[\[|\]\]$/g, ''),
+                        valueKind: whereMatch[2].includes('[[') ? 'relation' : 'string'
+                    });
+                }
+                const sortMatch = trimmed.match(/^sort\s+([\w-]+)(\s+desc)?$/i);
+                if (sortMatch) {
+                    sort = { field: sortMatch[1].toLowerCase(), desc: Boolean(sortMatch[2]) };
+                }
+            }
+            return {
+                type: resolvedType.toLowerCase(),
+                incoming,
+                label: labelPart || null,
+                select: null,
+                wheres,
+                where: wheres[0] || null,
+                sort,
+                limit: null,
+                via
+            };
+        },
         buildQueryString(query) {
             let text = `!view ${query.incoming ? `incoming ${query.type}` : query.type}`;
             if (query.label) text += ` | ${query.label}`;
@@ -100,8 +169,15 @@ require.cache.__qb_index__ = {
     filename: '__qb_index__',
     loaded: true,
     exports: {
-        getFieldsCache() { return new Map(); },
-        getPathIndex() { return new Map(); },
+        getFieldsCache() {
+            return new Map([
+                ['account-1', { type: 'account', name: 'Acme', created: '2026-04-19' }],
+                ['account-2', { type: 'account', name: 'Globex', created: '2026-04-18' }],
+                ['contact-1', { type: 'contact', name: 'Alice', company: 'Acme', status: 'active', owner: 'account-1', created: '2026-04-20' }],
+                ['contact-2', { type: 'contact', name: 'Bob', company: 'Globex', status: 'active', owner: 'account-2', created: '2026-04-21' }]
+            ]);
+        },
+        getPathIndex() { return new Map([['/vault/account-1.md', 'account-1']]); },
         updateSingleFile() {}
     }
 };
@@ -135,18 +211,23 @@ Module._resolveFilename = function (request, parent, ...rest) {
     if (request === '../registries/schemaRegistry') return '__qb_schemaRegistry__';
     if (request === '../core/graph') return '__qb_graph__';
     if (request === '../engine/suggestions') return '__qb_suggestions__';
+    if (request === '../features/entityHubModel') return '__qb_entityHub__';
     if (request === '../engine/query') return '__qb_query__';
     if (request === '../core/index') return '__qb_index__';
+    if (request === '../core/indexService') return '__qb_index__';
     if (request === '../core/workspace') return '__qb_workspace__';
     return originalResolve(request, parent, ...rest);
 };
 
 const {
+    buildStarterViewQuery,
+    buildLikelyRepairActions,
     buildTypeViewQuery,
     buildIncomingViewQuery,
     appendQueryOptions,
     getAvailableFieldsForType,
     runGuidedViewBuilder,
+    runViewRefinementBuilder,
     refineParsedQuery,
     buildRefinedBlockText
 } = require('../src/actions/codeActions');
@@ -258,6 +339,119 @@ describe('query builder helpers', () => {
 
         const query = await runGuidedViewBuilder(null, null, ['contact']);
         assert.equal(query, '!view open-tasks');
+    });
+
+    test('starter query picker leads with smart note-aware starters', async () => {
+        let firstList = null;
+        require.cache.__qb_vscode__.exports.window.showQuickPick = async function (items) {
+            firstList = items;
+            return items[0];
+        };
+
+        const query = await buildStarterViewQuery({
+            uri: { fsPath: '/vault/account-1.md' },
+            getText() { return ''; }
+        });
+
+        assert.equal(query, '!view meeting\nwhere account = [[account-1]]\nsort created desc');
+        assert.ok(firstList[0].label.startsWith('Smart: '));
+    });
+
+    test('refinement can apply likely repairs in one step', async () => {
+        require.cache.__qb_vscode__.exports.window.showQuickPick = async function (items) {
+            return items.find(function (item) {
+                return String(item.label || '').includes('Apply likely repairs');
+            }) || null;
+        };
+
+        const refined = await runViewRefinementBuilder({
+            getText() {
+                return '!view contact\nwhere stats = active\nsort creatd desc';
+            }
+        }, { start: { line: 1 } });
+
+        assert.equal(refined.nextText, '!view contact\nwhere status = active\nsort created desc');
+    });
+
+    test('likely repair actions keep incoming relation fixes relation-shaped', () => {
+        const repairs = buildLikelyRepairActions({
+            type: 'contact',
+            incoming: true,
+            label: null,
+            wheres: [],
+            where: null,
+            sort: { field: 'creatd', desc: true },
+            limit: null,
+            via: 'owenr'
+        }, ['created', 'name', 'status'], ['name', 'status'], require.cache.__qb_index__.exports.getFieldsCache());
+
+        const relationRepair = repairs.find(function (item) {
+            return String(item.label || '').includes('Repair relation field: use owner');
+        });
+
+        assert.ok(relationRepair);
+        assert.equal(relationRepair.apply({
+            type: 'contact',
+            incoming: true,
+            label: null,
+            wheres: [],
+            where: null,
+            sort: { field: 'creatd', desc: true },
+            limit: null,
+            via: 'owenr'
+        }).via, 'owner');
+    });
+
+    test('bulk likely repairs keep incoming relation fixes relation-shaped', () => {
+        const repairs = buildLikelyRepairActions({
+            type: 'contact',
+            incoming: true,
+            label: null,
+            wheres: [],
+            where: null,
+            sort: { field: 'creatd', desc: true },
+            limit: null,
+            via: 'owenr'
+        }, ['created', 'name', 'status'], ['name', 'status'], require.cache.__qb_index__.exports.getFieldsCache());
+
+        const bundled = repairs.find(function (item) {
+            return String(item.label || '').includes('Apply likely repairs');
+        });
+
+        assert.ok(bundled);
+        const applied = bundled.apply({
+            type: 'contact',
+            incoming: true,
+            label: null,
+            wheres: [],
+            where: null,
+            sort: { field: 'creatd', desc: true },
+            limit: null,
+            via: 'owenr'
+        });
+
+        assert.equal(applied.via, 'owner');
+        assert.equal(applied.sort.field, 'created');
+    });
+
+    test('refinement can edit query text directly', async () => {
+        let pickCount = 0;
+        require.cache.__qb_vscode__.exports.window.showQuickPick = async function (items) {
+            pickCount += 1;
+            return items.find(function (item) { return item.value === 'raw-edit'; });
+        };
+        require.cache.__qb_vscode__.exports.window.showInputBox = async function () {
+            return '!view contact | Latest contacts\nsort created desc';
+        };
+
+        const refined = await runViewRefinementBuilder({
+            getText() {
+                return '!view contact';
+            }
+        }, { start: { line: 0 } });
+
+        assert.equal(pickCount, 1);
+        assert.equal(refined.nextText, '!view contact | Latest contacts\nsort created desc');
     });
 
     test('refineParsedQuery updates label, sort, and limit without rebuilding from scratch', () => {

@@ -12,8 +12,6 @@ function createRefreshRouter(services) {
             services.validateTargeted();
         }
 
-        if (full || dirty.has('backlinks')) services.refreshBacklinks();
-        if (full || dirty.has('related')) services.refreshRelated();
         if (full || dirty.has('decorations')) services.refreshDecorations();
         if (full || dirty.has('status')) services.refreshStatusBar();
         if (full || dirty.has('health')) services.refreshHealthPanel();
@@ -28,7 +26,7 @@ function createRefreshRouter(services) {
         const indexChanged = !!(result.changed || result.needsFull || options.forceHeavy);
         const diagnosticsDirty = !!(result.needsFull || options.forceHeavy);
         const dirty = indexChanged
-            ? ['backlinks', 'related', 'decorations', 'status', 'suggestions']
+            ? ['decorations', 'status', 'suggestions']
             : ['status', 'suggestions'];
 
         if (diagnosticsDirty) dirty.unshift('fullDiagnostics');
@@ -38,7 +36,7 @@ function createRefreshRouter(services) {
     }
 
     function refreshForPassiveIndexSweep() {
-        refresh({ dirty: ['fullDiagnostics', 'backlinks', 'decorations', 'status', 'health', 'views', 'graph', 'entityHub', 'calendar', 'suggestions'] });
+        refresh({ dirty: ['fullDiagnostics', 'decorations', 'status', 'health', 'views', 'graph', 'entityHub', 'calendar', 'suggestions'] });
     }
 
     return {

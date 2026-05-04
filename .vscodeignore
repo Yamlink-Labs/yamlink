@@ -3,6 +3,9 @@
 .vscode/**
 .vscode-test/**
 .claude/**
+backup/**
+docs/**
+sample/**
 internal/**
 test/**
 media/legacy/**
@@ -13,7 +16,14 @@ PROJECT_LOG.md
 ROADMAP.md
 INTELLIGENCE_CORE_CONTRACTS.md
 CLAUDE.md
+CODEX.md
+CONTRIBUTING.md
+TESTING.md
+ARCHITECTURE.md
+SESSION_LOG.md
 .DS_Store
 Thumbs.db
 *.vsix
 package-lock.json
+tmp-graph.html
+test-html.js

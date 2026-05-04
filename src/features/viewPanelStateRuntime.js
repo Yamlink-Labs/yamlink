@@ -34,6 +34,9 @@
                         const activeChip = panel.querySelector('.chip.active');
                         return activeChip ? activeChip.dataset.filter : 'all';
                     })(),
+                    columnFilters: (() => {
+                        try { return JSON.parse(panel.dataset.columnFilters || '{}'); } catch (_) { return {}; }
+                    })(),
                     hiddenCols,
                     columnOrder,
                     columnWidths,
@@ -71,6 +74,37 @@
             return panel.querySelector('thead th.sorted');
         }
 
+        function getColumnFilters(panel) {
+            try { return JSON.parse(panel.dataset.columnFilters || '{}'); } catch (_) { return {}; }
+        }
+
+        function setColumnFilters(panel, filters) {
+            panel.dataset.columnFilters = JSON.stringify(filters || {});
+        }
+
+        function renderColumnFilters(panel) {
+            var host = panel.querySelector('.table-filters');
+            if (!host) return;
+            var filters = getColumnFilters(panel);
+            var entries = Object.entries(filters);
+            if (!entries.length) {
+                host.innerHTML = '';
+                host.style.display = 'none';
+                return;
+            }
+            host.innerHTML = entries.map(function (entry) {
+                var col = entry[0];
+                var filter = entry[1] || {};
+                var label = filter.mode === 'exclude' ? 'not' : 'is';
+                return '<span class="filter-pill">' +
+                    '<span class="filter-pill-label">' + col + '</span>' +
+                    '<span>' + label + ' "' + String(filter.value || '') + '"</span>' +
+                    '<button type="button" data-remove-filter="' + col + '" aria-label="Remove filter">×</button>' +
+                    '</span>';
+            }).join('');
+            host.style.display = 'flex';
+        }
+
         function updateVisibleCount(panel) {
             var count = panel.querySelector('.fcount');
             if (!count) return;
@@ -98,6 +132,14 @@
             if (search && search.value.trim()) {
                 parts.push('Search: "' + search.value.trim() + '"');
             }
+            var columnFilters = getColumnFilters(panel);
+            var filterEntries = Object.entries(columnFilters);
+            if (filterEntries.length) {
+                parts.push(filterEntries.map(function (entry) {
+                    var filter = entry[1] || {};
+                    return entry[0] + ' ' + (filter.mode === 'exclude' ? 'is not' : 'is') + ' "' + String(filter.value || '') + '"';
+                }).join(' | '));
+            }
             if (sorted) {
                 parts.push('Sorted by ' + sorted.dataset.col + ' ' + (sorted.dataset.asc === 'true' ? 'asc' : 'desc'));
             }
@@ -108,12 +150,25 @@
         function applyPanelView(panel) {
             var term = ((panel.querySelector('.fsearch') || {}).value || '').toLowerCase();
             var filter = getActiveFilter(panel);
+            var columnFilters = getColumnFilters(panel);
             panel.querySelectorAll('tbody tr').forEach(function (row) {
                 if (row.children.length <= 1) return;
                 var matchesSearch = !term || row.textContent.toLowerCase().includes(term);
                 var matchesFilter = filter === 'all' || row.dataset.type === filter.slice(5);
-                row.style.display = matchesSearch && matchesFilter ? '' : 'none';
+                var matchesColumns = Object.entries(columnFilters).every(function (entry) {
+                    var col = entry[0];
+                    var filterRule = entry[1] || {};
+                    var index = getColumnIndex(panel, col);
+                    if (index < 0) return true;
+                    var cell = row.children[index];
+                    var cellValue = String((cell && cell.dataset && cell.dataset.value) || (cell && cell.textContent) || '').trim().toLowerCase();
+                    var expected = String(filterRule.value || '').trim().toLowerCase();
+                    if (!expected) return true;
+                    return filterRule.mode === 'exclude' ? cellValue !== expected : cellValue === expected;
+                });
+                row.style.display = matchesSearch && matchesFilter && matchesColumns ? '' : 'none';
             });
+            renderColumnFilters(panel);
             updateVisibleCount(panel);
             updateTableSummary(panel);
         }
@@ -159,6 +214,7 @@
             panel.querySelectorAll('thead th[data-col]').forEach(function (th) {
                 th.style.width = '';
             });
+            setColumnFilters(panel, {});
             applyPanelView(panel);
             saveState();
             setStatus('Reset table filters, search, sort, and widths.', 'success');
@@ -312,12 +368,15 @@
             reorderColumns,
             resetPanelState,
             saveState,
+            setColumnFilters,
             selectCell,
             setStatus,
             switchTab,
             syncColumnToggleOrder,
             updateTableSummary,
-            updateVisibleCount
+            updateVisibleCount,
+            getColumnFilters,
+            renderColumnFilters
         };
     }
 

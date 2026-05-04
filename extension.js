@@ -18,7 +18,7 @@ const { openHealthPanel, updatePanel } = require('./src/features/healthPanel');
 const { openViewPanel, refreshViewPanel, closeViewPanel, getOpenViewDocumentPath, setViewPanelStateListener } = require('./src/features/viewPanel');
 const { registerViewCodeLens } = require('./src/features/viewCodeLens');
 const { openCalendarPanel, refreshCalendarPanel, registerCalendarView, focusCalendarView } = require('./src/features/calendarPanel');
-const { openGraphPanel, refreshGraphPanel, parseGraphBlocks } = require('./src/features/graphPanel');
+const { openGraphPanel, refreshGraphPanel } = require('./src/features/graphPanel');
 const { syncEntityHub, refreshEntityHub, registerEntityHubView, focusEntityHub } = require('./src/features/entityHub');
 const { registerActiveViewRuntime } = require('./src/runtime/activeViewRuntime');
 const { createRefreshRouter } = require('./src/runtime/refreshRouter');
@@ -111,7 +111,7 @@ async function activate(context) {
     registerHover(context, getIndex);
     registerQueryPreviewHover(context, getIndex);
     registerDiagnostics(context, getIndex);
-    registerCodeActions(context, getIndex, buildIndex);
+    registerCodeActions(context, getIndex);
     registerRename(context, getIndex, getPathIndex, buildIndex, validateAll);
     registerEntityHubView(context);
     registerCalendarView(context);
@@ -132,8 +132,6 @@ async function activate(context) {
                 validateDocument(editor.document, getIndex);
             }
         },
-        refreshBacklinks:  () => {},
-        refreshRelated:    () => {},
         refreshDecorations:() => decorationsProvider.refresh(),
         refreshStatusBar:  updateStatusBar,
         refreshHealthPanel:updatePanel,
@@ -173,15 +171,14 @@ async function activate(context) {
             if (!needsFullRebuild) return;
             if (!vscode.workspace.workspaceFolders) return;
 
-            const prevText = vaultBar.text;
-            vaultBar.text  = '$(sync~spin) Yamlink  re-indexing…';
-            vaultBar.tooltip = 'Yamlink — Re-indexing vault in background…';
+            const clearSpinner = vscode.window.setStatusBarMessage('$(sync~spin) Yamlink  re-indexing…');
 
             // yield to the event loop so the status bar update paints first
             setImmediate(() => {
                 try {
                     buildIndex(vscode.workspace.workspaceFolders);
                     needsFullRebuild = false;
+                    updateStatusBar();
                     const s = getGraphStats();
                     vscode.window.setStatusBarMessage(
                         `Yamlink indexed: ${getIndex().size} nodes · ${s.totalEdges} edges`,
@@ -189,6 +186,8 @@ async function activate(context) {
                     );
                 } catch (e) {
                     console.error('Yamlink — Background rebuild failed:', e.message);
+                } finally {
+                    clearSpinner.dispose();
                 }
                 router.refreshForPassiveIndexSweep();
             });
@@ -295,8 +294,10 @@ async function activate(context) {
             validateDocument(editor.document, getIndex);
             syncEntityHub(context);
             refreshCalendarPanel();
+            refreshGraphPanel();
         } else {
             syncEntityHub(context);
+            refreshGraphPanel();
         }
         resetSuggestionCache();
         refreshSuggestionBar();
@@ -350,6 +351,17 @@ async function activate(context) {
     );
 
     context.subscriptions.push(
+        vscode.commands.registerCommand('yamlink.runViewsAt', (tabIndex) => {
+            const editor = vscode.window.activeTextEditor;
+            if (editor && editor.document.languageId === 'markdown') {
+                openViewPanel(context, editor.document.getText(), refreshAfterViewEdit, editor.document.uri.fsPath, typeof tabIndex === 'number' ? tabIndex : 0);
+                if (typeof activeViewRuntime !== 'undefined' && activeViewRuntime) activeViewRuntime.reset();
+                codeLensProvider.refresh();
+            }
+        })
+    );
+
+    context.subscriptions.push(
         vscode.commands.registerCommand('yamlink.closeViewPanel', () => {
             closeViewPanel();
             codeLensProvider.refresh();
@@ -358,21 +370,44 @@ async function activate(context) {
 
     context.subscriptions.push(
         vscode.commands.registerCommand('yamlink.runGraph', () => {
+            console.log('Yamlink — runGraph invoked');
             const editor = vscode.window.activeTextEditor;
-            if (editor && editor.document.languageId === 'markdown') {
-                openGraphPanel(context, editor.document.getText());
+            if (!editor || editor.document.languageId !== 'markdown') {
+                vscode.window.showErrorMessage('Yamlink: Open a Markdown note before running the graph.');
+                return;
+            }
+            try {
+                openGraphPanel(context, {
+                    mode: 'local',
+                    centerNodeId: getPathIndex().get(editor.document.uri.fsPath) || null,
+                    depth: 1
+                });
+            } catch (error) {
+                const message = error && error.message ? error.message : String(error || 'Unknown graph error');
+                console.error('Yamlink — runGraph failed:', error);
+                vscode.window.showErrorMessage(`Yamlink graph failed: ${message}`);
             }
         })
     );
 
     context.subscriptions.push(
         vscode.commands.registerCommand('yamlink.runVaultGraph', () => {
-            // Synthesise a !view * block — shows every indexed node
+            console.log('Yamlink — runVaultGraph invoked');
             const editor = vscode.window.activeTextEditor;
-            const docText = editor && editor.document.languageId === 'markdown'
-                ? editor.document.getText()
-                : '';
-            openGraphPanel(context, '```yamlink-graph\n!view *\n```\n', docText);
+            try {
+                openGraphPanel(context, {
+                    mode: 'vault',
+                    centerNodeId: editor && editor.document.languageId === 'markdown'
+                        ? (getPathIndex().get(editor.document.uri.fsPath) || null)
+                        : null,
+                    depth: 2,
+                    maxNodes: 80
+                });
+            } catch (error) {
+                const message = error && error.message ? error.message : String(error || 'Unknown graph error');
+                console.error('Yamlink — runVaultGraph failed:', error);
+                vscode.window.showErrorMessage(`Yamlink vault graph failed: ${message}`);
+            }
         })
     );
 

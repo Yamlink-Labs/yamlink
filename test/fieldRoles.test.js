@@ -17,7 +17,8 @@ const FIELDS = new Map([
     ['alice-smith', { type: 'contact', account: '[[acme-inc]]', status: 'active', followup: '2026-04-10' }],
     ['bob-jones', { type: 'contact', account: '[[globex]]', status: 'pending', followup: 'April 11, 2026' }],
     ['cloudlabs-solutions', { type: 'partner' }],
-    ['taskalfa-15000c', { type: 'product', concepts: '[[inkjet-printing]], [[high-speed-print]]' }]
+    ['taskalfa-15000c', { type: 'product', concepts: '[[inkjet-printing]], [[high-speed-print]]' }],
+    ['issue-graph-selection', { type: 'note', progress: 'in-progress', reporter: '[[alice-smith]]', project: '[[acme-inc]]' }]
 ]);
 
 const INDEX = new Map([
@@ -73,7 +74,9 @@ require.cache.__field_roles_index_stub__ = {
     filename: '__field_roles_index_stub__',
     loaded: true,
     exports: {
-        getFieldsCache: () => FIELDS
+        getFieldsCache: () => FIELDS,
+        getIndex:       () => INDEX,
+        getVaultGeneration: () => 0
     }
 };
 
@@ -82,6 +85,7 @@ Module._resolveFilename = function (request, parent, ...rest) {
     if (request === '../registries/schemaRegistry') return '__field_roles_schema_registry_stub__';
     if (request === '../core/graph') return '__field_roles_graph_stub__';
     if (request === '../core/index') return '__field_roles_index_stub__';
+    if (request === '../core/indexService') return '__field_roles_index_stub__';
     return originalResolve(request, parent, ...rest);
 };
 
@@ -120,6 +124,13 @@ describe('field-role intelligence', () => {
         const role = inferFieldRole('status', { documentType: 'contact', idIndex: INDEX });
         assert.equal(role.semanticRole, 'status');
         assert.ok(role.reasons.some(reason => reason.includes('workflow states')));
+    });
+
+    test('broader workflow vocabulary still infers status and person roles', () => {
+        const progressRole = inferFieldRole('progress', { documentType: 'note', idIndex: INDEX });
+        assert.equal(progressRole.semanticRole, 'status');
+        const reporterRole = inferFieldRole('reporter', { documentType: 'note', idIndex: INDEX });
+        assert.equal(reporterRole.semanticRole, 'person');
     });
 
     test('wikilink-heavy fields become relational even without schema', () => {
