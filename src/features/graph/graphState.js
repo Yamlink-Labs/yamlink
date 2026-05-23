@@ -5,7 +5,7 @@ const DEFAULT_DEPTH = 1;
 const DEFAULT_VAULT_LIMIT = 80;
 
 function normaliseState(options, activeNodeId, previousState = null) {
-    const requestedMode = options && options.mode === 'vault' ? 'vault' : 'local';
+    const requestedMode = (options && options.mode === 'local') ? 'local' : 'vault';
     const previousExpanded = previousState && previousState.expandedNodeIds instanceof Set
         ? previousState.expandedNodeIds
         : new Set();

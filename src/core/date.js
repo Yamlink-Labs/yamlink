@@ -237,10 +237,68 @@ function addDaysIso(isoDate, days) {
     return toIsoDate(dt.getUTCFullYear(), dt.getUTCMonth() + 1, dt.getUTCDate());
 }
 
+function resolveDateShortcutToken(token, referenceDate = null) {
+    const normalized = String(token || '').trim().toLowerCase().replace(/^@+/, '');
+    const base = getReferenceDate(referenceDate);
+    if (!normalized) return null;
+
+    switch (normalized) {
+    case 'today':
+        return toIsoFromLocalDate(base);
+    case 'tomorrow':
+        return toIsoFromLocalDate(addLocalDays(base, 1));
+    case 'yesterday':
+        return toIsoFromLocalDate(addLocalDays(base, -1));
+    case 'next-week':
+        return toIsoFromLocalDate(addLocalDays(base, 7));
+    case 'next-month':
+        return toIsoFromLocalDate(addLocalMonths(base, 1));
+    case 'this-weekend':
+        return toIsoFromLocalDate(nextWeekendDate(base, 0));
+    case 'next-weekend':
+        return toIsoFromLocalDate(nextWeekendDate(base, 1));
+    case 'eom':
+    case 'end-of-month':
+        return toIsoFromLocalDate(endOfMonth(base));
+    default:
+        if (WEEKDAYS.has(normalized)) {
+            return resolveWeekdayFromReference(normalized, '', base);
+        }
+        return null;
+    }
+}
+
+function buildDateShortcutEntries(referenceDate = null) {
+    const entries = [
+        ['today', 'Today'],
+        ['tomorrow', 'Tomorrow'],
+        ['yesterday', 'Yesterday'],
+        ['next-week', 'Next week'],
+        ['next-month', 'Next month'],
+        ['this-weekend', 'This weekend'],
+        ['next-weekend', 'Next weekend'],
+        ['eom', 'End of month'],
+        ['monday', 'Next Monday'],
+        ['tuesday', 'Next Tuesday'],
+        ['wednesday', 'Next Wednesday'],
+        ['thursday', 'Next Thursday'],
+        ['friday', 'Next Friday']
+    ];
+
+    return entries
+        .map(([token, label]) => {
+            const iso = resolveDateShortcutToken(token, referenceDate);
+            return iso ? { token, label, iso } : null;
+        })
+        .filter(Boolean);
+}
+
 module.exports = {
     normaliseDateInput,
     extractDateFromText,
     isDateLike,
     getTodayIsoLocal,
-    addDaysIso
+    addDaysIso,
+    resolveDateShortcutToken,
+    buildDateShortcutEntries
 };

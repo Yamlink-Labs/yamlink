@@ -9,65 +9,184 @@ function buildGraphClientCyScript() {
   }
   S.cy = cytoscape({
     container: E.graph, elements: [],
-    wheelSensitivity: 0.25, minZoom: 0.08, maxZoom: 4,
+    wheelSensitivity: 0.22, minZoom: 0.06, maxZoom: 5,
     style: [
-      { selector:'node', style:{
-          'background-color':'data(color)', 'background-opacity':0.88,
-          'label':'data(label)', 'text-valign':'bottom', 'text-margin-y':10,
-          'text-wrap':'ellipsis', 'text-max-width':96,
-          'color':'#c9d1d9', 'font-size':11, 'font-weight':500,
-          'border-width':1.5, 'border-color':'data(color)', 'border-opacity':0.32,
-          'width':'mapData(degree, 0, 14, 26, 52)', 'height':'mapData(degree, 0, 14, 26, 52)',
-          'shadow-blur':10, 'shadow-color':'data(color)', 'shadow-opacity':0.2,
-          'shadow-offset-x':0, 'shadow-offset-y':0,
-          'transition-property':'opacity, border-opacity, border-width, background-opacity',
-          'transition-duration':'180ms'
+
+      /* ── Base node ────────────────────────────────────────────────── */
+      { selector: 'node', style: {
+        'shape': 'ellipse',
+        'background-color': 'data(color)',
+        'background-opacity': 0.88,
+        'border-width': 2.5,
+        'border-color': 'data(color)',
+        'border-opacity': 0.65,
+        'width':  'mapData(hubScore, 0, 32, 26, 64)',
+        'height': 'mapData(hubScore, 0, 32, 26, 64)',
+        'shadow-blur': 14,
+        'shadow-color': 'data(color)',
+        'shadow-opacity': 0.32,
+        'shadow-offset-x': 0,
+        'shadow-offset-y': 0,
+        'label': 'data(label)',
+        'text-valign': 'bottom',
+        'text-margin-y': 9,
+        'text-wrap': 'ellipsis',
+        'text-max-width': 112,
+        'color': '#d4dce6',
+        'font-size': 11,
+        'font-weight': 600,
+        'font-family': "'Segoe UI', system-ui, sans-serif",
+        'text-background-color': '#0c1117',
+        'text-background-opacity': 0.78,
+        'text-background-padding': '3px',
+        'z-index': 4,
+        'transition-property': 'opacity, border-opacity, border-width, background-opacity',
+        'transition-duration': '160ms'
       }},
-      { selector:'node:hover', style:{
-          'background-opacity':1, 'border-opacity':0.82, 'border-width':2,
-          'shadow-blur':18, 'shadow-opacity':0.5, 'z-index':10
+
+      /* ── Depth 2+ — secondary, visually recessed ────────────────── */
+      { selector: 'node[depth >= 2]', style: {
+        'width':  'mapData(hubScore, 0, 32, 13, 30)',
+        'height': 'mapData(hubScore, 0, 32, 13, 30)',
+        'background-opacity': 0.48,
+        'border-width': 1.5,
+        'border-opacity': 0.28,
+        'shadow-blur': 5,
+        'shadow-opacity': 0.10,
+        'font-size': 9,
+        'font-weight': 400,
+        'color': '#6a7a8a',
+        'text-background-opacity': 0.45,
+        'z-index': 2
       }},
-      { selector:'node.sel', style:{
-          'border-width':4, 'border-color':'#4fc4a0', 'border-opacity':1,
-          'background-opacity':1, 'shadow-blur':34, 'shadow-color':'#4fc4a0', 'shadow-opacity':0.92,
-          'text-background-color':'#0f1419', 'text-background-opacity':0.92, 'text-background-padding':'4px',
-          'text-border-color':'#4fc4a0', 'text-border-width':1, 'text-border-opacity':0.85,
-          'font-weight':700, 'font-size':12, 'z-index':20
+
+      /* ── Hover ───────────────────────────────────────────────────── */
+      { selector: 'node:hover', style: {
+        'background-opacity': 1,
+        'border-opacity': 1,
+        'border-width': 3.5,
+        'shadow-blur': 32,
+        'shadow-opacity': 0.72,
+        'z-index': 10
       }},
-      { selector:'node.center', style:{
-          'border-width':5, 'border-color':'#6eb3f0', 'border-opacity':1,
-          'shadow-blur':42, 'shadow-color':'#6eb3f0', 'shadow-opacity':0.95,
-          'overlay-color':'#6eb3f0', 'overlay-opacity':0.08, 'overlay-padding':10,
-          'text-background-color':'#0f1419', 'text-background-opacity':0.82, 'text-background-padding':'5px',
-          'text-border-color':'#6eb3f0', 'text-border-width':1, 'text-border-opacity':0.7,
-          'font-size':12, 'font-weight':700, 'z-index':16
+
+      /* ── Selected — clearly dominant ─────────────────────────────── */
+      { selector: 'node.sel', style: {
+        'width':  'mapData(hubScore, 0, 32, 46, 84)',
+        'height': 'mapData(hubScore, 0, 32, 46, 84)',
+        'background-opacity': 1,
+        'border-width': 5,
+        'border-color': '#4fc4a0',
+        'border-opacity': 1,
+        'shadow-blur': 60,
+        'shadow-color': '#4fc4a0',
+        'shadow-opacity': 1,
+        'overlay-color': '#4fc4a0',
+        'overlay-opacity': 0.05,
+        'overlay-padding': 14,
+        'color': '#9ef0d0',
+        'font-size': 12,
+        'font-weight': 700,
+        'text-background-color': '#061a10',
+        'text-background-opacity': 0.96,
+        'text-background-padding': '4px',
+        'z-index': 20
       }},
-      { selector:'node.focus-neighbor', style:{
-          'border-width':2.5, 'border-color':'#e5a96a', 'border-opacity':0.9,
-          'background-opacity':0.96, 'shadow-blur':18, 'shadow-color':'#e5a96a', 'shadow-opacity':0.36,
-          'z-index':12
+
+      /* ── Center / focus node ─────────────────────────────────────── */
+      { selector: 'node.center', style: {
+        'width': 76,
+        'height': 76,
+        'background-opacity': 1,
+        'border-width': 5,
+        'border-color': '#6eb3f0',
+        'border-opacity': 1,
+        'shadow-blur': 64,
+        'shadow-color': '#6eb3f0',
+        'shadow-opacity': 0.95,
+        'overlay-color': '#6eb3f0',
+        'overlay-opacity': 0.08,
+        'overlay-padding': 14,
+        'color': '#b0d8ff',
+        'font-size': 13,
+        'font-weight': 700,
+        'text-background-color': '#060f1e',
+        'text-background-opacity': 0.96,
+        'text-background-padding': '5px',
+        'z-index': 16
       }},
-      { selector:'node.dim', style:{
-          'opacity':0.12,
-          'transition-property':'opacity', 'transition-duration':'200ms'
+
+      /* ── Focus neighbors ─────────────────────────────────────────── */
+      { selector: 'node.focus-neighbor', style: {
+        'background-opacity': 1,
+        'border-width': 2.5,
+        'border-color': '#e5a96a',
+        'border-opacity': 0.92,
+        'shadow-blur': 24,
+        'shadow-color': '#e5a96a',
+        'shadow-opacity': 0.48,
+        'z-index': 12
       }},
-      { selector:'node.search-hi', style:{
-          'border-color':'#e5a96a', 'border-width':2.5, 'border-opacity':1
+
+      /* ── Search highlight ────────────────────────────────────────── */
+      { selector: 'node.search-hi', style: {
+        'border-color': '#e5a96a',
+        'border-width': 3,
+        'border-opacity': 1,
+        'shadow-color': '#e5a96a',
+        'shadow-blur': 26,
+        'shadow-opacity': 0.68
       }},
-      { selector:'edge', style:{
-          'curve-style':'bezier', 'target-arrow-shape':'vee',
-          'target-arrow-color':'data(color)', 'arrow-scale':0.9,
-          'line-color':'data(color)', 'width':1.5, 'opacity':0.5, 'label':'',
-          'transition-property':'opacity, width', 'transition-duration':'180ms'
+
+      /* ── Dimmed ──────────────────────────────────────────────────── */
+      { selector: 'node.dim', style: {
+        'opacity': 0.07,
+        'transition-property': 'opacity',
+        'transition-duration': '200ms'
       }},
-      { selector:'edge.sel', style:{
-          'opacity':1, 'width':2.5, 'label':'data(label)',
-          'font-size':10, 'color':'#95a1ac',
-          'text-background-opacity':0, 'text-border-opacity':0, 'z-index':5
+
+      /* ── Base edge ───────────────────────────────────────────────── */
+      { selector: 'edge', style: {
+        'curve-style': 'bezier',
+        'target-arrow-shape': 'triangle',
+        'target-arrow-color': 'data(color)',
+        'arrow-scale': 1.2,
+        'line-color': 'data(color)',
+        'width': 'mapData(weight, 0.85, 3.4, 1.2, 4.2)',
+        'opacity': 'mapData(weight, 0.85, 3.4, 0.2, 0.78)',
+        'label': '',
+        'z-index': 1,
+        'transition-property': 'opacity, width',
+        'transition-duration': '160ms'
       }},
-      { selector:'edge.dim', style:{
-          'opacity':0.05,
-          'transition-property':'opacity', 'transition-duration':'200ms'
+
+      /* ── Weak / mention edges — dashed, subdued ──────────────────── */
+      { selector: "edge[strength = 'weak']", style: {
+        'line-style': 'dashed',
+        'line-dash-pattern': [5, 4],
+        'arrow-scale': 0.85,
+        'opacity': 'mapData(weight, 0.85, 1.5, 0.1, 0.26)'
+      }},
+
+      /* ── Strong relation edges — solid, prominent ────────────────── */
+      { selector: "edge[strength = 'strong']", style: {
+        'arrow-scale': 1.35,
+        'opacity': 'mapData(weight, 3.2, 5.0, 0.68, 0.92)'
+      }},
+
+      /* ── Selected edges ──────────────────────────────────────────── */
+      { selector: 'edge.sel', style: {
+        'opacity': 0.92,
+        'width': 3,
+        'line-style': 'solid',
+        'z-index': 2
+      }},
+
+      /* ── Dimmed edges ────────────────────────────────────────────── */
+      { selector: 'edge.dim', style: {
+        'opacity': 0.04,
+        'transition-property': 'opacity',
+        'transition-duration': '200ms'
       }}
     ]
   });

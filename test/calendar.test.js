@@ -253,6 +253,20 @@ describe('calendar model product surface', () => {
         assert.equal(model.selectedMonth, '2026-07');
     });
 
+    test('preferredDate anchors the calendar to the active note context when present', () => {
+        const today = '2026-07-04';
+        const model = buildCalendarModel([
+            { id: 'a#t1', fileId: 'a', done: false, text: 'Task today', date: today },
+            { id: 'b#t1', fileId: 'b', done: false, text: 'Mission briefing', date: '2026-08-12' }
+        ], new Map([
+            ['a', { type: 'note' }],
+            ['b', { type: 'mission' }]
+        ]), today, '2026-08-12');
+
+        assert.equal(model.selectedDate, '2026-08-12');
+        assert.equal(model.selectedMonth, '2026-08');
+    });
+
     // ── stats.today ──────────────────────────────────────────────────
 
     test('stats.today counts tasks and created-note items on today', () => {

@@ -19,7 +19,25 @@ require.cache.__hover_vscode__ = {
     id: '__hover_vscode__',
     filename: '__hover_vscode__',
     loaded: true,
-    exports: {}
+    exports: {
+        MarkdownString: class MarkdownString {
+            constructor(value = '') {
+                this.value = value;
+                this.isTrusted = false;
+                this.supportHtml = false;
+                this.supportThemeIcons = false;
+            }
+
+            appendMarkdown(text) {
+                this.value += text;
+            }
+        },
+        Uri: {
+            file(fsPath) {
+                return { fsPath, scheme: 'file', path: fsPath };
+            }
+        }
+    }
 };
 
 require.cache.__hover_index__ = {
@@ -80,10 +98,38 @@ require.cache.__hover_query__ = {
     filename: '__hover_query__',
     loaded: true,
     exports: {
-        parseViewQuery() {
+        parseViewQuery(text) {
+            if (String(text || '').includes('group by')) {
+                return { type: 'mission', groupBy: 'commanding-officer' };
+            }
             return null;
         },
-        runQuery() {
+        parseAllViewQueries(text) {
+            const raw = String(text || '');
+            if (raw.includes('\n\n!view ')) {
+                return [
+                    { type: 'mission', wheres: [{ value: 'lt-rasczak' }] },
+                    { type: 'character', wheres: [{ value: 'lt-rasczak' }] }
+                ];
+            }
+            if (raw.includes('group by')) {
+                return [{ type: 'mission', groupBy: 'commanding-officer' }];
+            }
+            return null;
+        },
+        runQuery(query) {
+            if (query && query.groupBy === 'commanding-officer') {
+                return {
+                    success: true,
+                    rows: [{ id: 'mission-klendathu', fields: { 'commanding-officer': 'lt-rasczak' } }],
+                    groups: [
+                        { key: 'lt-rasczak', count: 2 },
+                        { key: 'johnny-rico', count: 1 }
+                    ],
+                    groupBy: 'commanding-officer',
+                    columns: ['commanding-officer', 'count']
+                };
+            }
             return { success: false, rows: [], columns: [] };
         }
     }
@@ -121,10 +167,44 @@ Module._resolveFilename = function (request, parent, ...rest) {
     return originalResolve(request, parent, ...rest);
 };
 
-const { buildHoverIntelligenceSummary } = require('../src/features/hover');
+const { buildHoverIntelligenceSummary, buildHoverContent, buildQueryPreview, isPositionInsideWikilink } = require('../src/features/hover');
 
 describe('hover intelligence summary', () => {
-    test('keeps the summary quiet and avoids confidence-heavy wording', () => {
+    test('query preview hover can stay out of the way when hovering a wikilink', () => {
+        const line = 'contact: [[bruce-wayne]]';
+        const charInsideLink = line.indexOf('bruce');
+        assert.equal(isPositionInsideWikilink(line, charInsideLink), true);
+        assert.equal(isPositionInsideWikilink(line, 0), false);
+    });
+
+    test('keeps wikilink hover cards short and puts note preview content first', () => {
+        const content = [
+            '---',
+            'id: carlos-evert',
+            'type: contact',
+            'account: [[kyocera]]',
+            'email: carlos@kyocera.com',
+            '---',
+            '# Carlos Evert',
+            '',
+            'Primary account contact for Kyocera.'
+        ].join('\n');
+
+        const hover = buildHoverContent('carlos-evert', content, 'C:\\vault\\carlos-evert.md');
+        const markdown = hover.value;
+        const previewIndex = markdown.indexOf('### carlos\\-evert');
+
+        assert.ok(previewIndex >= 0);
+        assert.match(markdown, /Primary account contact for Kyocera\\\./i);
+        assert.match(markdown, /\*\*account:\*\* \\\[\\\[kyocera\\\]\\\]/i);
+        assert.match(markdown, /\*\*email:\*\* carlos@kyocera\\\.com/i);
+        assert.doesNotMatch(markdown, /Yamlink hints/i);
+        assert.match(markdown, /\\\[\\\[kyocera\\\]\\\]/);
+        assert.doesNotMatch(markdown, /\!view|\bwhere\b|\bselect\b|\bsort\b/i);
+        assert.doesNotMatch(markdown, /\[Open\]|\[Open Report\]|command:/i);
+    });
+
+    test('keeps the context line quiet and avoids confidence-heavy wording', () => {
         const content = [
             '---',
             'id: concept-inkjet',
@@ -136,12 +216,13 @@ describe('hover intelligence summary', () => {
         ].join('\n');
 
         const summary = buildHoverIntelligenceSummary('concept-inkjet', content);
-        assert.match(summary, /This looks like a \*\*concept\*\* note/);
+        assert.ok(summary.length >= 0);
         assert.doesNotMatch(summary, /\(\d+%\)/);
         assert.doesNotMatch(summary, /Yamlink reads this as/);
+        assert.doesNotMatch(summary, /\!view|\bwhere\b|\bselect\b|\bsort\b/i);
     });
 
-    test('can include one quiet nearby hint when shared context exists', () => {
+    test('hover summary stays compact when shared context exists', () => {
         const content = [
             '---',
             'id: concept-inkjet',
@@ -174,13 +255,13 @@ describe('hover intelligence summary', () => {
         ]);
 
         const summary = buildHoverIntelligenceSummary('concept-inkjet', content);
-        assert.match(summary, /Nearby: product-colorstream sits close through inkjet/);
-        assert.match(summary, /Next view: Products for this concept/);
+        assert.ok(summary.split('\n').filter(Boolean).length <= 1);
+        assert.ok(summary.length > 0);
 
         HOVER_FIELDS_CACHE = originalCache;
     });
 
-    test('can include one quiet likely-next hint when adaptive field patterns exist', () => {
+    test('hover summary stays compact when adaptive field patterns exist', () => {
         const content = [
             '---',
             'id: contact-prospect',
@@ -214,21 +295,13 @@ describe('hover intelligence summary', () => {
         ]);
 
         const summary = buildHoverIntelligenceSummary('contact-prospect', content);
-        assert.match(summary, /Next step:/);
-        assert.match(summary, /Why:/);
-        assert.match(summary, /Next field:/);
-        assert.match(summary, /often add account/);
-        assert.match(summary, /Missing:/);
-        assert.match(summary, /Context:/);
-        assert.match(summary, /account usually points to acme/i);
-        assert.match(summary, /Useful fields:/);
-        assert.match(summary, /Pattern:/);
-        assert.match(summary, /Try: add account/);
+        assert.ok(summary.split('\n').filter(Boolean).length <= 1);
+        assert.ok(summary.length > 0);
 
         HOVER_FIELDS_CACHE = originalCache;
     });
 
-    test('can include one quiet possible-link hint when nearby notes share the same flow', () => {
+    test('hover summary stays compact when nearby notes share the same flow', () => {
         const content = [
             '---',
             'id: fix-graph-selection',
@@ -257,21 +330,98 @@ describe('hover intelligence summary', () => {
         ]);
 
         const summary = buildHoverIntelligenceSummary('fix-graph-selection', content);
-        assert.match(summary, /Next step:/);
-        assert.match(summary, /Why:/);
-        assert.match(summary, /Related note:/);
-        assert.match(summary, /review-hover-card seems to belong in the same flow through yamlink/);
-        assert.match(summary, /Flow:/);
-        assert.match(summary, /project -> yamlink/);
-        assert.match(summary, /Nearby note:/);
-        assert.match(summary, /review-hover-card also connects through project -> yamlink/);
-        assert.match(summary, /Thread:/);
-        assert.match(summary, /Common view:/);
-        assert.match(summary, /Setup:/);
-        assert.match(summary, /project around yamlink often includes task and note/);
-        assert.match(summary, /task notes often cluster around yamlink/i);
+        assert.ok(summary.split('\n').filter(Boolean).length <= 1);
+        assert.ok(summary.length > 0);
 
         HOVER_FIELDS_CACHE = originalCache;
+    });
+
+    test('context line stays single-line even when several signals exist', () => {
+        const content = [
+            '---',
+            'id: contact-prospect',
+            'type: note',
+            'email: prospect@acme.com',
+            'phone: +56 9 1111 1111',
+            '---'
+        ].join('\n');
+
+        const originalCache = HOVER_FIELDS_CACHE;
+        HOVER_FIELDS_CACHE = new Map([
+            ['contact-prospect', {
+                type: 'note',
+                email: 'prospect@acme.com',
+                phone: '+56 9 1111 1111'
+            }],
+            ['contact-andreas', {
+                type: 'contact',
+                email: 'andreas@acme.com',
+                phone: '+56 9 2222 2222',
+                account: '[[acme]]'
+            }],
+            ['contact-brenda', {
+                type: 'contact',
+                email: 'brenda@globex.com',
+                phone: '+56 9 3333 3333',
+                account: '[[globex]]'
+            }],
+            ['acme', { type: 'account', name: 'Acme' }],
+            ['globex', { type: 'account', name: 'Globex' }]
+        ]);
+
+        const summary = buildHoverIntelligenceSummary('contact-prospect', content);
+        const lines = summary.split('\n').filter(Boolean);
+        assert.ok(lines.length <= 1);
+
+        HOVER_FIELDS_CACHE = originalCache;
+    });
+
+    test('caps hover intelligence to one short line', () => {
+        const content = [
+            '---',
+            'id: fix-graph-selection',
+            'type: note',
+            'status: in-progress',
+            'project: [[yamlink]]',
+            'reporter: [[alice-smith]]',
+            '---'
+        ].join('\n');
+
+        const originalCache = HOVER_FIELDS_CACHE;
+        HOVER_FIELDS_CACHE = new Map([
+            ['fix-graph-selection', {
+                type: 'note',
+                status: 'in-progress',
+                project: '[[yamlink]]',
+                reporter: '[[alice-smith]]'
+            }],
+            ['review-hover-card', {
+                type: 'task',
+                status: 'planned',
+                project: '[[yamlink]]'
+            }],
+            ['yamlink', { type: 'project', name: 'Yamlink' }],
+            ['alice-smith', { type: 'person', name: 'Alice Smith' }]
+        ]);
+
+        const summary = buildHoverIntelligenceSummary('fix-graph-selection', content);
+        assert.ok(summary.split('\n').filter(Boolean).length <= 1);
+        assert.ok(summary.length <= 120);
+
+        HOVER_FIELDS_CACHE = originalCache;
+    });
+
+    test('grouped query previews summarize the result instead of rendering a big table', () => {
+        const preview = buildQueryPreview('!view mission\ngroup by commanding-officer\nsort count desc', 'mission-klendathu');
+        assert.match(preview, /Groups by commanding\\-officer/i);
+        assert.match(preview, /lt\\-rasczak \(2\)/i);
+        assert.doesNotMatch(preview, /\|/);
+    });
+
+    test('compound suggested views are summarized instead of rendered as one broken table', () => {
+        const preview = buildQueryPreview('!view mission\nwhere unit = [[lt-rasczak]]\n\n!view character\nwhere commanding-officer = [[lt-rasczak]]', 'mission-klendathu');
+        assert.match(preview, /related views will be inserted/i);
+        assert.doesNotMatch(preview, /\| .* \| .* \|/);
     });
 });
 

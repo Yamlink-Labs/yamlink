@@ -1,39 +1,70 @@
 'use strict';
 
 const { getRegistry } = require('../registries/typeRegistry');
-const { getFieldsCache } = require('../core/indexService');
+const { getFieldsCache, getVaultGeneration } = require('../core/indexService');
 const { inferFieldRole } = require('../intelligence/fieldRoles');
 const { buildFieldFamilyRelationModel } = require('../intelligence/frontmatterIntelligence');
 const { buildObservedFields } = require('../intelligence/suggestionCore');
+const { getCachedPriors, inferLikelyTypesForNote } = require('../intelligence/vaultPriors');
 const {
     normalizeFrontmatterKey,
     isPositionInFrontmatter,
+    isTypeLikeField,
     getDocumentType,
     buildDocumentIntelligence,
     fieldLooksRelational,
     summariseInferenceReasons
 } = require('./completionContextHelpers');
 
-function buildRelationCandidateDetail(id, idIndex, frontmatterRelation, preferred) {
-    const reasonText = frontmatterRelation.reasonText || '';
-    const observedText = frontmatterRelation.observedPreferredIds?.includes(id)
-        ? (frontmatterRelation.observedReasonText || 'similar notes already connect here')
-        : '';
-    const learnedText = frontmatterRelation.observedPreferredIds?.includes(id) && frontmatterRelation.learnedSummary
-        ? frontmatterRelation.learnedSummary
-        : '';
-    const localText = frontmatterRelation.localLinkedIds?.includes(id)
-        ? 'already referenced in this note'
-        : '';
-    if (frontmatterRelation.targetType) {
-        const base = preferred
-            ? `${frontmatterRelation.targetType} relation (preferred match)`
-            : `${idIndex.get(id) || 'Yamlink node'} (outside suggested ${frontmatterRelation.targetType} target)`;
-        const detail = [base, localText, observedText, learnedText, reasonText].filter(Boolean).join(' · ');
-        return detail || base;
+function getHumanLabel(id) {
+    const fieldsCache = getFieldsCache();
+    const fields = fieldsCache.get(String(id || '').trim().toLowerCase());
+    if (!fields) return null;
+    const raw = fields.name || fields.title || fields.label || null;
+    if (!raw || typeof raw !== 'string') return null;
+    return raw.replace(/\[\[([^\]|]+)(?:\|([^\]]+))?\]\]/g, (_, target, alias) => alias || target).trim() || null;
+}
+
+function buildRelationCandidateDetail(id, _idIndex, frontmatterRelation, preferred) {
+    const fieldsCache = getFieldsCache();
+    const noteType = String(fieldsCache.get(String(id || '').trim().toLowerCase())?.type || '').trim();
+    const parts = [];
+    if (noteType) parts.push(noteType);
+    if (!preferred && frontmatterRelation.targetType && noteType !== frontmatterRelation.targetType) {
+        parts.push(`expected: ${frontmatterRelation.targetType}`);
     }
-    const base = idIndex.get(id) || 'Yamlink node';
-    return [base, localText, observedText, learnedText, reasonText].filter(Boolean).join(' · ');
+    if (frontmatterRelation.localLinkedIds?.includes(id)) {
+        parts.push('already linked');
+    }
+    if (frontmatterRelation.observedPreferredIds?.includes(id)) {
+        parts.push(frontmatterRelation.observedReasonText || 'commonly linked here');
+    }
+    return parts.filter(Boolean).join(' · ') || 'Yamlink note';
+}
+
+function canonicalizeCandidateIds(candidateIds, idIndex = null) {
+    const seen = new Set();
+    const resolved = [];
+    for (const rawId of candidateIds || []) {
+        const trimmed = String(rawId || '').trim();
+        if (!trimmed) continue;
+        const canonical = trimmed.toLowerCase();
+        if (seen.has(canonical)) continue;
+        seen.add(canonical);
+        resolved.push(idIndex?.has(canonical) ? canonical : trimmed);
+    }
+    return resolved;
+}
+
+function collectIdsForType(candidateIds, targetType) {
+    if (!targetType) return [];
+    const normalizedType = String(targetType || '').trim().toLowerCase();
+    const registryIds = getRegistry().get(normalizedType) ?? new Set();
+    const registryMatches = canonicalizeCandidateIds(candidateIds).filter((id) => registryIds.has(String(id || '').trim().toLowerCase()));
+    if (registryMatches.length) return registryMatches;
+
+    const fieldsCache = getFieldsCache();
+    return canonicalizeCandidateIds(candidateIds).filter((id) => String(fieldsCache.get(String(id || '').trim().toLowerCase())?.type || '').trim().toLowerCase() === normalizedType);
 }
 
 function collectLocalLinkedIds(document, idIndex) {
@@ -83,7 +114,77 @@ function collectObservedRelationUsage(fieldName, document, docType, idIndex) {
         learnedVariants: learned.variants,
         learnedSummary: learned.summary,
         learnedReasonText: learned.reasonText,
-        learnedTargetType
+        learnedTargetType,
+        nodeFields: intelligence.nodeFields || {}
+    };
+}
+
+const _FAMILY_WIKILINK_RE = /^\[\[([^\]|#]+)/;
+
+function buildRelationRankingHints(fieldName, targetType, preferredIds = [], observedPreferredIds = [], noteFields = null) {
+    const fieldsCache = getFieldsCache();
+    const priors = getCachedPriors(fieldsCache, getVaultGeneration());
+    const fieldKey = normalizeFrontmatterKey(fieldName);
+    const ambiguity = priors.fieldAmbiguity.get(fieldKey) || null;
+    const typeCounts = priors.fieldTargetTypes.get(fieldKey) || null;
+    const candidateTypeScores = new Map();
+    let familyHint = null;
+
+    if (typeCounts && typeCounts.size) {
+        const total = Array.from(typeCounts.values()).reduce((sum, count) => sum + count, 0);
+        for (const [type, count] of typeCounts.entries()) {
+            if (!total) continue;
+            candidateTypeScores.set(String(type || '').trim().toLowerCase(), count / total);
+        }
+    } else if (targetType) {
+        candidateTypeScores.set(String(targetType || '').trim().toLowerCase(), 1);
+    } else if (noteFields && Object.keys(noteFields).length > 0) {
+        // No vault-wide signal and no schema target — infer the note's family from its
+        // existing fields, then scan that family's notes for any wikilinks in this field.
+        const likelyTypes = inferLikelyTypesForNote(
+            noteFields, fieldsCache, priors.typeFieldBundles, priors.noteRoleTypePriors,
+            null, { limit: 1, minScore: 0.50 }
+        );
+        if (likelyTypes.length > 0) {
+            const inferredNoteType = likelyTypes[0].noteType;
+            const linkTypeCounts = new Map();
+            let linkTotal = 0;
+            for (const [, noteFieldData] of fieldsCache) {
+                const noteType = String(noteFieldData?.type || '').trim().toLowerCase();
+                if (noteType !== inferredNoteType) continue;
+                const rawValue = noteFieldData[fieldKey];
+                if (!rawValue) continue;
+                const values = Array.isArray(rawValue) ? rawValue : [rawValue];
+                for (const v of values) {
+                    const m = _FAMILY_WIKILINK_RE.exec(String(v || '').trim());
+                    if (!m) continue;
+                    const targetId = m[1].trim().toLowerCase();
+                    const targetType2 = String(fieldsCache.get(targetId)?.type || '').trim().toLowerCase();
+                    if (!targetType2) continue;
+                    linkTypeCounts.set(targetType2, (linkTypeCounts.get(targetType2) || 0) + 1);
+                    linkTotal++;
+                }
+            }
+            if (linkTotal > 0) {
+                for (const [type, count] of linkTypeCounts.entries()) {
+                    candidateTypeScores.set(type, (count / linkTotal) * 0.7);
+                }
+                const topEntry = Array.from(linkTypeCounts.entries()).sort((a, b) => b[1] - a[1])[0];
+                if (topEntry) {
+                    familyHint = `${inferredNoteType} notes usually link ${fieldKey} to ${topEntry[0]} notes`;
+                }
+            }
+        }
+    }
+
+    return {
+        fieldName: fieldKey,
+        targetType: String(targetType || '').trim().toLowerCase(),
+        ambiguity,
+        candidateTypeScores,
+        familyHint,
+        observedPreferredIds: canonicalizeCandidateIds(observedPreferredIds),
+        preferredIds: canonicalizeCandidateIds(preferredIds)
     };
 }
 
@@ -93,9 +194,9 @@ function resolveFrontmatterRelationCandidates(document, position, idIndex) {
     const line = document.lineAt(position.line).text;
     const before = line.substring(0, position.character);
     const textAfterCursor = line.substring(position.character);
-    const match = before.match(/^\s*([\w-]+):\s*(\[\[)?([^\]]*)$/);
+    const match = before.match(/^\s*([\w-]+):\s*(\[\[?)*([^\]]*)$/);
     if (!match) {
-        const fallbackMatch = before.match(/^\s*([^:\n]+):\s*(\[\[)?([^\]]*)$/);
+        const fallbackMatch = before.match(/^\s*([^:\n]+):\s*(\[\[?)*([^\]]*)$/);
         if (!fallbackMatch) return null;
         return resolveFrontmatterRelationCandidatesFromMatch(document, position, idIndex, line, textAfterCursor, fallbackMatch);
     }
@@ -106,42 +207,49 @@ function resolveFrontmatterRelationCandidatesFromMatch(document, position, idInd
     if (!match) return null;
 
     const fieldName = normalizeFrontmatterKey(match[1]);
-    const hasWiki = !!match[2];
+    if (isTypeLikeField(fieldName)) return null;
+    const wikiPrefix = match[2] || '';
+    const hasWiki = wikiPrefix.length > 0;
     const partial = (match[3] || '').trim();
     const relationState = fieldLooksRelational(fieldName, document, idIndex);
     const docType = getDocumentType(document);
     const observedUsage = collectObservedRelationUsage(fieldName, document, docType, idIndex);
     if (!hasWiki && !relationState.relational && !observedUsage.preferredIds.length) return null;
 
-    const candidateIds = Array.from(idIndex.keys());
-    const localLinkedIds = collectLocalLinkedIds(document, idIndex);
+    const allCandidateIds = canonicalizeCandidateIds(Array.from(idIndex.keys()), idIndex);
+    const localLinkedIds = canonicalizeCandidateIds(collectLocalLinkedIds(document, idIndex), idIndex);
     let preferredIds = [];
     if (relationState.targetType) {
-        const typeNodes = getRegistry().get(relationState.targetType) ?? new Set();
-        preferredIds = candidateIds.filter(id => typeNodes.has(id));
+        preferredIds = collectIdsForType(allCandidateIds, relationState.targetType);
     }
     if (!preferredIds.length && observedUsage.learnedTargetType) {
-        const typeNodes = getRegistry().get(observedUsage.learnedTargetType) ?? new Set();
-        preferredIds = candidateIds.filter(id => typeNodes.has(id));
+        preferredIds = collectIdsForType(allCandidateIds, observedUsage.learnedTargetType);
     }
+    const targetType = relationState.targetType || observedUsage.learnedTargetType;
+    const candidateIds = allCandidateIds;
 
     return {
         fieldName,
         partial,
         hasWiki,
-        hasClosing: hasWiki && textAfterCursor.startsWith(']]'),
+        wikiPrefixLength: wikiPrefix.length,
+        closingLength: hasWiki
+            ? (textAfterCursor.startsWith(']]') ? 2 : (textAfterCursor.startsWith(']') ? 1 : 0))
+            : 0,
         candidateIds,
-        preferredIds,
-        observedPreferredIds: observedUsage.preferredIds,
+        preferredIds: canonicalizeCandidateIds(preferredIds, idIndex),
+        observedPreferredIds: canonicalizeCandidateIds(observedUsage.preferredIds, idIndex),
         observedIdScores: observedUsage.idScores,
         localLinkedIds,
-        targetType: relationState.targetType || observedUsage.learnedTargetType,
+        targetType,
+        missingTargetType: !!targetType && preferredIds.length === 0,
         reasonText: summariseInferenceReasons(relationState.reasons),
         observedReasonText: observedUsage.supportingNotes
             ? (observedUsage.family && observedUsage.learnedField && observedUsage.learnedField !== fieldName
                 ? `similar notes often use ${fieldName} like ${observedUsage.learnedField}`
                 : `similar notes often use ${fieldName} this way`)
-            : ''
+            : '',
+        rankingHints: buildRelationRankingHints(fieldName, targetType, preferredIds, observedUsage.preferredIds, observedUsage.nodeFields)
     };
 }
 
@@ -156,32 +264,32 @@ function resolveQueryRelationCandidates(fieldName, queryType, partial, idIndex, 
         : { preferredIds: [], idScores: new Map(), supportingNotes: 0, learnedTargetType: null };
     if (!relationState.relational && !observedUsage.preferredIds.length) return null;
 
-    const candidateIds = Array.from(idIndex.keys());
+    const candidateIds = canonicalizeCandidateIds(Array.from(idIndex.keys()), idIndex);
     let preferredIds = [];
     if (relationState.targetType) {
-        const typeNodes = getRegistry().get(relationState.targetType) ?? new Set();
-        preferredIds = candidateIds.filter(id => typeNodes.has(id));
+        preferredIds = collectIdsForType(candidateIds, relationState.targetType);
     }
     if (!preferredIds.length && observedUsage.learnedTargetType) {
-        const typeNodes = getRegistry().get(observedUsage.learnedTargetType) ?? new Set();
-        preferredIds = candidateIds.filter(id => typeNodes.has(id));
+        preferredIds = collectIdsForType(candidateIds, observedUsage.learnedTargetType);
     }
 
     return {
         fieldName,
         partial,
         candidateIds,
-        preferredIds,
-        observedPreferredIds: observedUsage.preferredIds,
+        preferredIds: canonicalizeCandidateIds(preferredIds, idIndex),
+        observedPreferredIds: canonicalizeCandidateIds(observedUsage.preferredIds, idIndex),
         observedIdScores: observedUsage.idScores,
-        localLinkedIds: options.localLinkedIds || [],
+        localLinkedIds: canonicalizeCandidateIds(options.localLinkedIds || [], idIndex),
         targetType: relationState.targetType || observedUsage.learnedTargetType,
+        missingTargetType: !!(relationState.targetType || observedUsage.learnedTargetType) && preferredIds.length === 0,
         reasonText: summariseInferenceReasons(relationState.reasons),
         observedReasonText: observedUsage.supportingNotes
             ? (observedUsage.family && observedUsage.learnedField && observedUsage.learnedField !== fieldName
                 ? `similar ${fieldName} links already appear through ${observedUsage.learnedField}`
                 : `similar ${fieldName} links already appear in the vault`)
-            : ''
+            : '',
+        rankingHints: buildRelationRankingHints(fieldName, relationState.targetType || observedUsage.learnedTargetType, preferredIds, observedUsage.preferredIds)
     };
 }
 
@@ -286,19 +394,37 @@ function scoreFieldSuggestion(entry, partialKey) {
     return entry.sortScore + matchScore;
 }
 
-function rankCandidateIds(candidateIds, partial, preferredIds = [], localLinkedIds = [], observedIdScores = new Map()) {
-    const preferred = new Set(preferredIds);
-    const local = new Set(localLinkedIds);
-    return candidateIds
+function rankCandidateIds(candidateIds, partial, preferredIds = [], localLinkedIds = [], observedIdScores = new Map(), rankingHints = null) {
+    const normalizedCandidates = canonicalizeCandidateIds(candidateIds);
+    const preferred = new Set(canonicalizeCandidateIds(preferredIds).map((id) => String(id || '').trim().toLowerCase()));
+    const local = new Set(canonicalizeCandidateIds(localLinkedIds).map((id) => String(id || '').trim().toLowerCase()));
+    const observedPreferred = new Set(canonicalizeCandidateIds(rankingHints?.observedPreferredIds || []).map((id) => String(id || '').trim().toLowerCase()));
+    const candidateTypeScores = rankingHints?.candidateTypeScores instanceof Map ? rankingHints.candidateTypeScores : new Map();
+    const ambiguity = rankingHints?.ambiguity || null;
+    const relationBiasScale = ambiguity
+        ? (ambiguity.linkRatio >= 0.75 ? 1.0 : ambiguity.linkRatio >= 0.5 ? 0.75 : 0.45)
+        : 0.8;
+    const fieldsCache = getFieldsCache();
+    return normalizedCandidates
         .map(id => {
+            const canonicalId = String(id || '').trim().toLowerCase();
+            const candidateType = String(fieldsCache.get(canonicalId)?.type || '').trim().toLowerCase();
             const matchScore = scoreCandidateMatch(id, partial);
+            const candidateTypeScore = candidateType ? (candidateTypeScores.get(candidateType) || 0) : 0;
+            const typeBias = Math.round(candidateTypeScore * 260 * relationBiasScale);
+            const observedBias = observedPreferred.has(canonicalId) ? 220 : 0;
             return {
                 id,
                 score: matchScore >= 0
-                    ? matchScore + (preferred.has(id) ? 1000 : 0) + (local.has(id) ? 150 : 0) + Math.min(500, observedIdScores.get(id) || 0)
+                    ? matchScore
+                        + (preferred.has(canonicalId) ? 1000 : 0)
+                        + (local.has(canonicalId) ? 150 : 0)
+                        + observedBias
+                        + typeBias
+                        + Math.min(500, observedIdScores.get(canonicalId) || observedIdScores.get(id) || 0)
                     : matchScore,
-                preferred: preferred.has(id),
-                local: local.has(id)
+                preferred: preferred.has(canonicalId),
+                local: local.has(canonicalId)
             };
         })
         .filter(entry => entry.score >= 0)
@@ -307,6 +433,7 @@ function rankCandidateIds(candidateIds, partial, preferredIds = [], localLinkedI
 }
 
 module.exports = {
+    getHumanLabel,
     buildRelationCandidateDetail,
     collectLocalLinkedIds,
     collectObservedRelationUsage,
@@ -319,5 +446,6 @@ module.exports = {
     collectScalarValues,
     scoreCandidateMatch,
     scoreFieldSuggestion,
-    rankCandidateIds
+    rankCandidateIds,
+    canonicalizeCandidateIds
 };

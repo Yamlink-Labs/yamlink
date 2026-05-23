@@ -32,17 +32,19 @@ function runLayout() {
       activeLayout = cy.layout({
         name: 'concentric',
         animate: false,
-        fit: true, padding: 100,
-        minNodeSpacing: 110,
+        fit: true,
+        padding: 120,
+        minNodeSpacing: 220,
         avoidOverlap: true,
         nodeDimensionsIncludeLabels: true,
         startAngle: 3 / 2 * Math.PI,
+        equidistant: false,
         concentric: n => Math.max(0, 10 - (n.data('depth') || 0)),
         levelWidth: () => 1
       });
       activeLayout.run();
     } catch (e) { activeLayout = null; }
-    try { cy.fit(undefined, 80); } catch (_) {}
+    try { cy.fit(undefined, 90); } catch (_) {}
     return;
   }
 
@@ -51,24 +53,24 @@ function runLayout() {
       name: 'cose',
       animate: false,
       fit: true,
-      padding: 64,
-      nodeRepulsion: 10000,
-      idealEdgeLength: 160,
-      edgeElasticity: 80,
-      gravity: 0.2,
-      nestingFactor: 0.8,
-      componentSpacing: 140,
-      numIter: 1400,
+      padding: 72,
+      nodeRepulsion: 20000,
+      idealEdgeLength: 200,
+      edgeElasticity: 55,
+      gravity: 0.24,
+      nestingFactor: 0.9,
+      componentSpacing: 220,
+      numIter: 2200,
       avoidOverlap: true,
       nodeDimensionsIncludeLabels: true,
       randomize: false,
-      initialTemp: 140,
-      coolingFactor: 0.96,
-      minTemp: 1
+      initialTemp: 220,
+      coolingFactor: 0.97,
+      minTemp: 1.0
     });
     activeLayout.run();
   } catch (e) { activeLayout = null; }
-  try { cy.fit(undefined, 80); } catch (_) {}
+  try { cy.fit(undefined, 72); } catch (_) {}
 }
 
 function renderPayload(payload) {
@@ -90,7 +92,8 @@ function renderPayload(payload) {
   }
 
   const s = payload.model.summary;
-  E.statusbar.textContent = (payload.mode === 'vault' ? 'Explorer' : 'Local') + ' · ' + s.nodeCount + ' nodes · ' + s.edgeCount + ' edges · ' + s.typeCount + ' types  ·  ' + BUILD;
+  const strongestRelation = s.strongestRelation ? (' · strongest: ' + s.strongestRelation) : '';
+  E.statusbar.textContent = (payload.mode === 'vault' ? 'Explorer' : 'Local') + ' · ' + s.nodeCount + ' nodes · ' + s.edgeCount + ' edges · ' + s.typeCount + ' types' + strongestRelation + '  ·  ' + BUILD;
 
   const showEmpty = payload.noCenter || s.nodeCount === 0;
   E.empty.classList.toggle('show', showEmpty);
@@ -99,7 +102,7 @@ function renderPayload(payload) {
     E.emptyDesc.innerHTML = 'Open a Markdown note then press <b>Current Note</b>,<br>or switch to Explorer mode.';
   } else {
     E.emptyTitle.textContent = 'No graph nodes';
-    E.emptyDesc.innerHTML = 'Open a Yamlink note with links,<br>or switch to Explorer mode.';
+    E.emptyDesc.innerHTML = 'Open a Yamlink note with meaningful links,<br>or switch to Explorer mode.';
   }
 
   renderSidebar(payload);
@@ -111,7 +114,11 @@ function renderPayload(payload) {
   const changed = newHash !== S.lastHash;
   S.lastHash = newHash;
 
-  if (changed || payload.forceLayout) {
+  const centerChanged = (payload.centerNodeId || '') !== (S.lastCenterId || '') || payload.mode !== S.lastMode;
+  S.lastCenterId = payload.centerNodeId || '';
+  S.lastMode = payload.mode;
+
+  if (changed || (payload.forceLayout && centerChanged)) {
     if (activeLayout) { try { activeLayout.stop(); } catch(_) {} activeLayout = null; }
     try { cy.elements().stop(true, true); } catch(_) {}
     if (changed) {
@@ -135,7 +142,7 @@ function renderPayload(payload) {
       const pulseId = payload.mode === 'vault'
         ? (payload.selectedNodeId || (payload.model.topNodes[0] && payload.model.topNodes[0].id) || null)
         : payload.centerNodeId;
-      if (pulseId) {
+      if (pulseId && centerChanged) {
         const cid = pulseId;
         setTimeout(() => { const n = S.cy && S.cy.getElementById(cid); if (n && n.length) pulse(n); }, 80);
       }
@@ -174,10 +181,25 @@ E.btnLocal.addEventListener('click',   () => vsc.postMessage({ type:'setMode', m
 E.btnVault.addEventListener('click',   () => vsc.postMessage({ type:'setMode', mode:'vault' }));
 E.btnReveal.addEventListener('click',  () => vsc.postMessage({ type:'revealActive' }));
 E.depthSel.addEventListener('change',  () => vsc.postMessage({ type:'setDepth', depth:+E.depthSel.value }));
+E.typeSel.addEventListener('change',   () => { S.primaryTypeFilter = E.typeSel.value || ''; applyTypeFilter(); });
 E.searchInp.addEventListener('input',  () => { S.searchTerm = E.searchInp.value; applySearch(); });
 E.btnZoomIn.addEventListener('click',  () => S.cy && S.cy.zoom(S.cy.zoom() * 1.3));
 E.btnZoomOut.addEventListener('click', () => S.cy && S.cy.zoom(S.cy.zoom() * 0.77));
-E.btnZoomFit.addEventListener('click', () => S.cy && S.cy.fit(undefined, 60));
+E.btnZoomFit.addEventListener('click', () => {
+  if (!S.cy) return;
+  const vis = S.cy.elements().not('.dim');
+  try { S.cy.fit(vis.length ? vis : undefined, 60); } catch(_) {}
+});
+E.btnReset.addEventListener('click', () => {
+  S.searchTerm = '';
+  S.typeFilters.clear();
+  S.primaryTypeFilter = '';
+  E.searchInp.value = '';
+  if (E.typeSel) E.typeSel.value = '';
+  if (S.cy) S.cy.elements().removeClass('dim search-hi');
+  if (S.selectedId) selectNode(S.selectedId);
+  if (S.payload) renderSidebar(S.payload);
+});
 
 document.addEventListener('keydown', e => {
   if (e.target === E.searchInp) return;

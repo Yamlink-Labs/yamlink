@@ -4,6 +4,7 @@ const { test, describe } = require('node:test');
 const assert = require('node:assert/strict');
 
 const { createRefreshRouter } = require('../src/runtime/refreshRouter');
+const { clearMutationEvents, getMutationEvents } = require('../src/runtime/mutationEventLog');
 
 function createServices() {
     const counts = {
@@ -34,6 +35,7 @@ function createServices() {
 
 describe('refresh router', () => {
     test('passive index sweep refreshes smart suggestions', () => {
+        clearMutationEvents();
         const { counts, services } = createServices();
         const router = createRefreshRouter(services);
 
@@ -47,6 +49,7 @@ describe('refresh router', () => {
     });
 
     test('index mutations still refresh suggestions in both light and heavy paths', () => {
+        clearMutationEvents();
         const { counts, services } = createServices();
         const router = createRefreshRouter(services);
 
@@ -61,5 +64,26 @@ describe('refresh router', () => {
         assert.equal(counts.refreshCalendar, 1);
         assert.equal(counts.validateTargeted, 1);
         assert.equal(counts.validateAll, 0);
+    });
+
+    test('index mutations append structured mutation events', () => {
+        clearMutationEvents();
+        const { services } = createServices();
+        const router = createRefreshRouter(services);
+
+        router.refreshForIndexMutation({
+            changed: true,
+            needsFull: false,
+            changedId: 'carl-jenkins',
+            mutationEvents: [
+                { timestamp: '2026-05-17T00:00:00.000Z', type: 'note_created', noteId: 'carl-jenkins' },
+                { timestamp: '2026-05-17T00:00:03.000Z', type: 'field_added', noteId: 'carl-jenkins', field: 'unit', newValue: '[[roughnecks]]' }
+            ]
+        });
+
+        const events = getMutationEvents();
+        assert.equal(events.length, 2);
+        assert.equal(events[1].type, 'field_added');
+        assert.equal(events[1].field, 'unit');
     });
 });

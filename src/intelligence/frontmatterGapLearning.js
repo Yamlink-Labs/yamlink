@@ -13,11 +13,17 @@ function buildSchemaAdaptiveGaps(nodeFields, noteContext, fieldsCache, options =
     const observedIndex = options.observedIndex || buildObservedNoteIndex(fieldsCache, options);
     const currentFamilies = collectCurrentFieldFamilies(nodeFields, noteContext);
     const currentFields = new Set(
-        Object.keys(nodeFields || {})
-            .map((key) => String(key || '').trim().toLowerCase())
+        Object.entries(nodeFields || {})
+            .filter(([, value]) => String(value ?? '').trim() !== '')
+            .map(([key]) => String(key || '').trim().toLowerCase())
             .filter(Boolean)
     );
     const currentRole = noteContext?.noteRole?.noteRole || 'record';
+    const hasIdentitySignal = Boolean(
+        String(nodeFields?.name || '').trim()
+        || String(nodeFields?.title || '').trim()
+        || String(nodeFields?.id || '').trim()
+    );
     const families = new Map();
 
     for (const observed of observedIndex.notes) {
@@ -42,6 +48,7 @@ function buildSchemaAdaptiveGaps(nodeFields, noteContext, fieldsCache, options =
             });
             const family = detectFieldFamily(rawFieldName, matchingRole?.semanticRole || null);
             if (!family || currentFamilies.has(family)) continue;
+            if (family === 'title' && hasIdentitySignal) continue;
 
             const entry = families.get(family) || {
                 family,

@@ -4,9 +4,8 @@ const { getTypes } = require('../registries/typeRegistry');
 const { getSchema } = require('../registries/schemaRegistry');
 const { isOrphan } = require('../core/graph');
 const { computeSuggestionsForNode } = require('../engine/suggestions');
-const { buildEntityHubModel } = require('../features/entityHubModel');
 const { getFieldsCache, getPathIndex } = require('../core/indexService');
-const { canonicalizeId } = require('../core/id');
+const { canonicalizeId, extractCanonicalIdFromFrontmatter } = require('../core/id');
 const { buildStarterViewQuery, registerViewCommands } = require('./codeActionsViewCommands');
 const { registerNodeCommands } = require('./codeActionsNodeCommands');
 const {
@@ -15,7 +14,6 @@ const {
     buildIncomingViewQuery,
     buildRefinedBlockText,
     buildTypeViewQuery,
-    defaultSelectClauseForType,
     getAvailableFieldsForType,
     getSchemaBackedDefaultSortField,
     getViewBlockAtRange,
@@ -97,6 +95,24 @@ function registerCodeActions(context, getIndex) {
                                 qAction.diagnostics = [diagnostic];
                                 qAction.isPreferred = true;
                                 actions.push(qAction);
+                            }
+                        }
+
+                        if (code === 'yamlink.duplicateId') {
+                            const thisId = extractCanonicalIdFromFrontmatter(document.getText());
+                            if (thisId) {
+                                const action = new vscode.CodeAction(
+                                    `Yamlink: Rename id "${thisId}" to resolve conflict`,
+                                    vscode.CodeActionKind.QuickFix
+                                );
+                                action.command = {
+                                    command: 'yamlink.resolveIdConflict',
+                                    title: 'Rename ID',
+                                    arguments: [document, thisId]
+                                };
+                                action.diagnostics = [diagnostic];
+                                action.isPreferred = true;
+                                actions.push(action);
                             }
                         }
 

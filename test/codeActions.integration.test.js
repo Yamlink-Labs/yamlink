@@ -9,6 +9,10 @@ const originalResolve = Module._resolveFilename.bind(Module);
 const commandMap = new Map();
 const infoMessages = [];
 const shownDocuments = [];
+let buildIndexCalls = 0;
+let invalidateFileCacheCalls = [];
+let updateSingleFileResult = { changed: true, needsFull: false };
+let lastRevealOptions = null;
 
 class Position {
     constructor(line, character) {
@@ -95,7 +99,11 @@ const mockWindow = {
     activeTextEditor: null,
     async showTextDocument(document) {
         shownDocuments.push(document.uri.fsPath);
-        return { document };
+        return {
+            document,
+            selection: null,
+            revealRange() {}
+        };
     },
     async showQuickPick(items) {
         return items[0] || null;
@@ -219,13 +227,21 @@ require.cache.__ca_index__ = {
     filename: '__ca_index__',
     loaded: true,
     exports: {
+        buildIndex() {
+            buildIndexCalls += 1;
+        },
         getFieldsCache() {
             return new Map([['contact-1', { type: 'contact', name: 'Alice', status: 'active' }]]);
         },
         getPathIndex() {
             return new Map([['C:\\vault\\note.md', 'contact-1']]);
         },
-        updateSingleFile() {}
+        invalidateFileCache(filePath) {
+            invalidateFileCacheCalls.push(filePath);
+        },
+        updateSingleFile() {
+            return updateSingleFileResult;
+        }
     }
 };
 
@@ -248,7 +264,7 @@ require.cache.__ca_viewBuilder__ = {
         getViewBlockAtRange() { return null; },
         getViewBlockByIndex() { return null; },
         refineParsedQuery(query) { return query; },
-        async revealDocumentAndRunViews() { revealCalls += 1; },
+        async revealDocumentAndRunViews(_document, options) { revealCalls += 1; lastRevealOptions = options || null; },
         async runGuidedViewBuilder() { return '!view contact'; },
         async runViewRefinementBuilder() { return refinementResult; },
         async runViewRefinementByIndex() { return refinementResult; }
@@ -294,10 +310,14 @@ afterEach(() => {
     infoMessages.length = 0;
     shownDocuments.length = 0;
     revealCalls = 0;
+    lastRevealOptions = null;
     refinementResult = null;
     mockWindow.activeTextEditor = null;
     mockCommands.executeCommand = defaultExecuteCommand;
     commandMap.clear();
+    buildIndexCalls = 0;
+    invalidateFileCacheCalls = [];
+    updateSingleFileResult = { changed: true, needsFull: false };
 });
 
 describe('code actions integration', () => {
@@ -318,6 +338,9 @@ describe('code actions integration', () => {
         assert.match(document.getText(), /!view contact\nselect name, status/);
         assert.equal(document.saveCalls, 1);
         assert.equal(revealCalls, 1);
+        assert.ok(lastRevealOptions && lastRevealOptions.selection);
+        assert.equal(typeof lastRevealOptions.selection.line, 'number');
+        assert.equal(typeof lastRevealOptions.selection.character, 'number');
         assert.ok(infoMessages.some((message) => message.includes('Inserted !view contact block')));
     });
 
@@ -390,5 +413,35 @@ describe('code actions integration', () => {
 
         assert.equal(document.saveCalls, 0);
         assert.equal(revealCalls, 0);
+    });
+
+    test('create note command forces a rebuild when incremental indexing reports needsFull', async () => {
+        const context = { subscriptions: [] };
+        registerCodeActions(context, () => new Map(), null);
+
+        const realExistsSync = require('fs').existsSync;
+        const realWriteFileSync = require('fs').writeFileSync;
+        updateSingleFileResult = { changed: true, needsFull: true };
+        mockWorkspace.openTextDocument = async (filePath) => createDocument('---\nid: lex-luthor\n---\n', filePath);
+
+        let writtenPath = null;
+        let writtenContent = null;
+        require('fs').existsSync = () => false;
+        require('fs').writeFileSync = (filePath, content) => {
+            writtenPath = filePath;
+            writtenContent = content;
+        };
+
+        try {
+            await commandMap.get('yamlink.createNote')('lex-luthor', 'contact', 'C:\\vault\\lexcorp.md', 'lexcorp', 'account');
+        } finally {
+            require('fs').existsSync = realExistsSync;
+            require('fs').writeFileSync = realWriteFileSync;
+        }
+
+        assert.equal(writtenPath, 'C:\\vault\\lex-luthor.md');
+        assert.match(writtenContent, /id: lex-luthor/);
+        assert.deepEqual(invalidateFileCacheCalls, ['C:\\vault\\lex-luthor.md']);
+        assert.equal(buildIndexCalls, 1);
     });
 });

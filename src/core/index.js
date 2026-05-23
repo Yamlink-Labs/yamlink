@@ -2,19 +2,99 @@ const fs   = require('fs');
 const path = require('path');
 const yaml = require('js-yaml');
 const { clearGraph, registerEdges, getGraphStats, removeEdgesForSource } = require('./graph');
-const { getWorkspaceRoots } = require('./workspace');
+const { getWorkspaceRoots, getWorkspaceRootForFile } = require('./workspace');
+const { loadIgnoreRules, isIgnoredPath } = require('./ignore');
 const { normaliseDateInput } = require('./date');
-const { extractCanonicalIdFromFrontmatter, canonicalizeId } = require('./id');
+const { extractCanonicalIdFromFrontmatter, canonicalizeId, canonicalizeLinkedTarget } = require('./id');
 const { clearRegistry, registerType, unregisterType, getRegistryStats, getTypes } = require('../registries/typeRegistry');
 const { clearSchemaRegistry, registerSchemaNode } = require('../registries/schemaRegistry');
 const { normalizeText } = require('./frontmatter');
+const { extractTagsFromText, extractTagsFromNodeFields } = require('../intelligence/tagSignals');
 
 let idIndex        = new Map();
 let pathIndex      = new Map();
 let duplicateIds   = new Map();
 let fieldsCache    = new Map(); // id → parsed frontmatter fields
+let aliasIndex     = new Map(); // alias → canonical id
 let mtimeCache     = new Map(); // filePath → mtime (ms) — skip unchanged files on incremental update
 let vaultGeneration = 0;        // incremented on every vault mutation — invalidates activation caches
+
+function isNonEmptyFieldValue(rawValue) {
+    if (Array.isArray(rawValue)) return rawValue.some((value) => String(value || '').trim());
+    return String(rawValue || '').trim().length > 0;
+}
+
+function extractRelationTargets(rawValue) {
+    const values = Array.isArray(rawValue) ? rawValue : [rawValue];
+    const targets = [];
+    for (const value of values) {
+        const text = String(value || '');
+        for (const match of text.matchAll(/\[\[([^\]]+)\]\]/g)) {
+            const targetId = canonicalizeLinkedTarget(match[1]);
+            if (targetId) targets.push(targetId);
+        }
+    }
+    return [...new Set(targets)].sort();
+}
+
+function buildMutationEvents(oldFields, newFields, noteId) {
+    const events = [];
+    const timestamp = new Date().toISOString();
+    const oldExists = oldFields && Object.keys(oldFields).length > 0;
+    const newExists = newFields && Object.keys(newFields).length > 0;
+    if (!newExists || !noteId) return events;
+
+    const normalizedOld = oldFields || {};
+    const normalizedNew = newFields || {};
+    const oldType = String(normalizedOld.type || '').trim();
+    const newType = String(normalizedNew.type || '').trim();
+
+    if (!oldExists) {
+        events.push({ timestamp, type: 'note_created', noteId });
+    }
+    if (newType && oldType !== newType) {
+        events.push({ timestamp, type: 'type_set', noteId, field: 'type', oldValue: oldType || null, newValue: newType });
+    }
+
+    const fieldNames = new Set([...Object.keys(normalizedOld), ...Object.keys(normalizedNew)]);
+    for (const fieldName of fieldNames) {
+        const fn = String(fieldName || '').trim().toLowerCase();
+        if (!fn || fn === 'id' || fn === 'type') continue;
+        const oldValue = normalizedOld[fieldName];
+        const newValue = normalizedNew[fieldName];
+        if (!isNonEmptyFieldValue(oldValue) && isNonEmptyFieldValue(newValue)) {
+            events.push({
+                timestamp,
+                type: 'field_added',
+                noteId,
+                field: fieldName,
+                oldValue: oldValue ?? null,
+                newValue
+            });
+        }
+        const oldTargets = extractRelationTargets(oldValue);
+        const newTargets = extractRelationTargets(newValue);
+        if (oldTargets.join('|') !== newTargets.join('|') && (oldTargets.length > 0 || newTargets.length > 0)) {
+            events.push({
+                timestamp,
+                type: 'relation_changed',
+                noteId,
+                field: fieldName,
+                oldValue: oldTargets.join(', ') || null,
+                newValue: newTargets.join(', ') || null
+            });
+        }
+    }
+
+    return events;
+}
+
+function extractAliasesFromFields(fields) {
+    if (!fields || !fields.aliases) return [];
+    const raw = String(fields.aliases || '').trim();
+    if (!raw) return [];
+    return raw.split(/,\s*/).map(a => canonicalizeId(String(a || '').trim())).filter(Boolean);
+}
 
 function buildIndex(workspaceFolders) {
     vaultGeneration++;
@@ -22,6 +102,7 @@ function buildIndex(workspaceFolders) {
     pathIndex.clear();
     duplicateIds.clear();
     fieldsCache.clear();
+    aliasIndex.clear();
     mtimeCache.clear();  // must clear so updateSingleFile re-reads all files after a full rebuild
     clearGraph();
     clearRegistry();
@@ -30,7 +111,10 @@ function buildIndex(workspaceFolders) {
     if (!workspaceFolders) return;
 
     const roots = getWorkspaceRoots(workspaceFolders);
-    for (const root of roots) scanDirectory(root);
+    for (const root of roots) {
+        const ignoreRules = loadIgnoreRules(root);
+        scanDirectory(root, root, ignoreRules);
+    }
 
     const graphStats    = getGraphStats();
     const registryStats = getRegistryStats();
@@ -43,7 +127,7 @@ function buildIndex(workspaceFolders) {
     );
 }
 
-function scanDirectory(dir) {
+function scanDirectory(dir, workspaceRoot, ignoreRules = []) {
     let files;
     try {
         files = fs.readdirSync(dir);
@@ -59,12 +143,13 @@ function scanDirectory(dir) {
 
         if (fullPath.includes(`${path.sep}_templates${path.sep}`) ||
             fullPath.endsWith(`${path.sep}_templates`)) continue;
+        if (isIgnoredPath(fullPath, workspaceRoot, ignoreRules)) continue;
 
         let stat;
         try { stat = fs.statSync(fullPath); } catch (e) { continue; }
 
         if (stat.isDirectory()) {
-            scanDirectory(fullPath);
+            scanDirectory(fullPath, workspaceRoot, ignoreRules);
         } else if (file.endsWith('.md')) {
             indexFile(fullPath);
         }
@@ -106,10 +191,13 @@ function indexFile(fullPath) {
         ...extractBodyLinks(content)
     ];
 
-    // Deduplicate: same field + targetId pair should only produce one edge
+    // Deduplicate: same field + targetId pair should only produce one edge.
+    // Self-loops (a note pointing to itself) are excluded — they arise from
+    // !view query clauses like `where owner = [[self]]` and carry no structural meaning.
     const seen  = new Set();
     const edges = [];
     for (const edge of rawEdges) {
+        if (edge.targetId === id) continue;
         const key = `${edge.field}:${edge.targetId}`;
         if (!seen.has(key)) {
             seen.add(key);
@@ -121,7 +209,11 @@ function indexFile(fullPath) {
 
     const fields = parseFrontmatter(content);
     if (fields) {
-        fieldsCache.set(id, fields);
+        const enriched = enrichFieldsWithTagSignals(fields, content);
+        fieldsCache.set(id, enriched);
+        for (const alias of extractAliasesFromFields(enriched)) {
+            if (!aliasIndex.has(alias)) aliasIndex.set(alias, id);
+        }
 
         if (fields.type) {
             registerType(fields.type, id);
@@ -221,11 +313,6 @@ function extractBodyLinks(content) {
     return edges;
 }
 
-function canonicalizeLinkedTarget(raw) {
-    const target = String(raw || '').trim().split('|')[0].trim().split('#')[0].trim().split('^')[0].trim();
-    if (!target) return '';
-    return canonicalizeId(target);
-}
 
 // ─────────────────────────────────────────────────────────────────
 // parseFrontmatter
@@ -287,6 +374,20 @@ function stringifyFrontmatterValue(value) {
     return normalised !== null ? normalised : str;
 }
 
+function enrichFieldsWithTagSignals(fields, content) {
+    const baseFields = { ...(fields || {}) };
+    const combinedTags = new Set([
+        ...extractTagsFromNodeFields(baseFields),
+        ...extractTagsFromText(content)
+    ]);
+    if (combinedTags.size > 0) {
+        baseFields.__yamlink_tags = [...combinedTags].join(', ');
+    } else {
+        delete baseFields.__yamlink_tags;
+    }
+    return baseFields;
+}
+
 // ─────────────────────────────────────────────────────────────────
 // Tiny LRU cache for parseFrontmatter results.
 // Max 200 entries; oldest evicted on overflow via Map insertion order.
@@ -306,7 +407,12 @@ function hashContent(str) {
 function parseFrontmatterCached(content) {
     const key    = hashContent(content);
     const cached = parseCache.get(key);
-    if (cached !== undefined) return cached;
+    if (cached !== undefined) {
+        // Move to end so Map insertion order tracks recency (true LRU)
+        parseCache.delete(key);
+        parseCache.set(key, cached);
+        return cached;
+    }
     const result = parseFrontmatter(content);
     if (parseCache.size >= PARSE_CACHE_MAX) {
         parseCache.delete(parseCache.keys().next().value);
@@ -323,13 +429,17 @@ function parseFrontmatterCached(content) {
 //   needsFull — true: caller must run buildIndex() (ID change, schema)
 // ─────────────────────────────────────────────────────────────────
 function updateSingleFile(filePath, options = {}) {
-    const NO_CHANGE   = { changed: false, needsFull: false };
-    const NEEDS_FULL  = { changed: true,  needsFull: true  };
-    const INCREMENTAL = { changed: true,  needsFull: false };
+    const NO_CHANGE   = { changed: false, needsFull: false, changedId: null, mutationEvents: [] };
+    const NEEDS_FULL  = { changed: true,  needsFull: true,  changedId: null, mutationEvents: [] };
     const force = !!options.force;
 
     if (!filePath.endsWith('.md')) return NO_CHANGE;
     if (filePath.includes(`${path.sep}_templates${path.sep}`)) return NO_CHANGE;
+    const workspaceRoot = getWorkspaceRootForFile(options.workspaceFolders, filePath);
+    if (workspaceRoot) {
+        const ignoreRules = loadIgnoreRules(workspaceRoot);
+        if (isIgnoredPath(filePath, workspaceRoot, ignoreRules)) return NO_CHANGE;
+    }
 
     try {
         const mtime = fs.statSync(filePath).mtimeMs;
@@ -346,7 +456,12 @@ function updateSingleFile(filePath, options = {}) {
     const oldId = pathIndex.get(filePath) ?? null;
     const newId = extractId(newContent);
 
-    if (oldId !== newId) { vaultGeneration++; return NEEDS_FULL; }
+    if (oldId !== newId) {
+        const newFieldsForEvent = newId ? parseFrontmatterCached(newContent) : null;
+        const mutationEvents = newId ? buildMutationEvents(null, newFieldsForEvent, newId) : [];
+        vaultGeneration++;
+        return { changed: true, needsFull: true, changedId: newId || null, mutationEvents };
+    }
     if (!newId)          return NO_CHANGE;
 
     const oldFields = fieldsCache.get(newId) || {};
@@ -354,7 +469,11 @@ function updateSingleFile(filePath, options = {}) {
     const newFields = parseFrontmatterCached(newContent);
     const newType   = newFields && newFields.type ? newFields.type.trim().toLowerCase() : null;
 
-    if (oldType === 'schema' || newType === 'schema') { vaultGeneration++; return NEEDS_FULL; }
+    if (oldType === 'schema' || newType === 'schema') {
+        const mutationEvents = buildMutationEvents(oldFields, newFields || {}, newId);
+        vaultGeneration++;
+        return { changed: true, needsFull: true, changedId: newId, mutationEvents };
+    }
 
     removeEdgesForSource(newId);
 
@@ -365,21 +484,34 @@ function updateSingleFile(filePath, options = {}) {
     const seen  = new Set();
     const edges = [];
     for (const edge of rawEdges) {
+        if (edge.targetId === newId) continue;
         const key = `${edge.field}:${edge.targetId}`;
         if (!seen.has(key)) { seen.add(key); edges.push(edge); }
     }
     if (edges.length > 0) registerEdges(newId, edges);
 
-    if (newFields) fieldsCache.set(newId, newFields);
-    else           fieldsCache.delete(newId);
+    const oldAliases = extractAliasesFromFields(oldFields);
+    for (const alias of oldAliases) {
+        if (aliasIndex.get(alias) === newId) aliasIndex.delete(alias);
+    }
+    if (newFields) {
+        const enrichedNew = enrichFieldsWithTagSignals(newFields, newContent);
+        fieldsCache.set(newId, enrichedNew);
+        for (const alias of extractAliasesFromFields(enrichedNew)) {
+            if (!aliasIndex.has(alias)) aliasIndex.set(alias, newId);
+        }
+    } else {
+        fieldsCache.delete(newId);
+    }
 
     if (oldType !== newType) {
         if (oldType) unregisterType(oldType, newId);
         if (newType) registerType(newType, newId);
     }
 
+    const mutationEvents = buildMutationEvents(oldFields, newFields ? enrichFieldsWithTagSignals(newFields, newContent) : {}, newId);
     vaultGeneration++;
-    return INCREMENTAL;
+    return { changed: true, needsFull: false, changedId: newId, mutationEvents };
 }
 
 // ─────────────────────────────────────────────────────────────────
@@ -398,6 +530,9 @@ function removeFileFromIndex(filePath) {
     duplicateIds.delete(id);
     mtimeCache.delete(filePath);
     removeEdgesForSource(id);
+    for (const [alias, canonId] of aliasIndex.entries()) {
+        if (canonId === id) aliasIndex.delete(alias);
+    }
     const deletedFields = fieldsCache.get(id);
     const deletedType   = deletedFields && deletedFields.type ? deletedFields.type.trim().toLowerCase() : null;
     if (deletedType) unregisterType(deletedType, id);
@@ -411,6 +546,7 @@ function getIndex()           { return idIndex; }
 function getPathIndex()       { return pathIndex; }
 function getDuplicateIds()    { return duplicateIds; }
 function getFieldsCache()     { return fieldsCache; }
+function getAliasIndex()      { return aliasIndex; }
 function getVaultGeneration() { return vaultGeneration; }
 function invalidateFileCache(filePath) {
     if (!filePath) return;
@@ -426,6 +562,7 @@ module.exports = {
     getPathIndex,
     getDuplicateIds,
     getFieldsCache,
+    getAliasIndex,
     getVaultGeneration,
     getGraphStats,
     extractIdFromFrontmatter,

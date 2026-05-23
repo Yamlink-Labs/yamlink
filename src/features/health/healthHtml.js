@@ -66,6 +66,49 @@ function buildHealthHtml(stats) {
             `<span class="node-pill orphan-pill" data-id="${id}">${id}</span>`
         ).join('')
         : `<div class="empty-section"><div class="empty-title">No orphan nodes.</div><div class="empty-copy">Every indexed node has at least one connection. This part of the vault is structurally healthy.</div></div>`;
+    const driftSummary = stats.drift || null;
+    const driftTotal = driftSummary?.total ?? 0;
+    const driftCards = [
+        ['onTrack', 'On Track', 'Looks normal for its type in this vault.', ''],
+        ['minorDrift', 'Slightly unusual', 'A little different from similar notes, but not alarming.', ''],
+        ['drifting', 'Missing structure', 'Noticeably diverging from how this type usually looks in the vault.', 'drift-warn'],
+        ['outliers', 'Very unusual', 'Significantly different from similar notes and likely missing expected structure.', 'drift-danger']
+    ].map(([key, label, title, colorClass]) => `
+        <div class="lifecycle-card" title="${title}">
+            <div class="lifecycle-count${colorClass ? ` ${colorClass}` : ''}">${driftSummary ? (driftSummary[key] || 0) : '—'}</div>
+            <div class="lifecycle-label">${label}</div>
+        </div>
+    `).join('');
+    const driftNeedsAttention = (driftSummary?.needsAttention || []).slice(0, 10);
+    const driftPills = driftNeedsAttention.map(note => {
+        const cls = note.driftLabel === 'outlier'
+            ? 'node-pill outlier-pill'
+            : 'node-pill drift-pill';
+        const missing = (note.missingExpected || []).map(m => m.field).join(', ');
+        const tooltip = missing
+            ? `missing: ${missing} · score: ${note.driftScore}`
+            : `score: ${note.driftScore}`;
+        return `<span class="${cls}" data-id="${esc(note.noteId)}" title="${esc(tooltip)}">${esc(note.noteId)} · ${esc(note.driftLabel)}</span>`;
+    }).join('');
+
+    const lifecycleCounts = stats.lifecycle?.counts || {};
+    const lifecycleCards = [
+        ['draft', 'Draft', 'Barely started: very little structure and no real relation pattern yet.'],
+        ['growing', 'Growing', 'Taking shape: some structure exists, but the note is not complete for its kind yet.'],
+        ['consolidated', 'Established', 'Looks complete and structurally typical for its kind.'],
+        ['hub', 'Hub', 'A central note that many other notes point to.'],
+        ['stale', 'Stale', 'Likely needs review because it has not moved recently or its dates are too far in the past.']
+    ].map(([key, label, title]) => `
+        <div class="lifecycle-card" title="${title}">
+            <div class="lifecycle-count">${lifecycleCounts[key] || 0}</div>
+            <div class="lifecycle-label">${label}</div>
+        </div>
+    `).join('');
+    const lifecycleHighlights = (stats.lifecycle?.notes || [])
+        .filter((note) => note.state === 'stale' || note.state === 'hub')
+        .slice(0, 6)
+        .map((note) => `<span class="node-pill ${note.state === 'stale' ? 'orphan-pill' : ''}" data-id="${note.id}" title="${esc(note.summary)}">${esc(note.id)} · ${esc(note.label)}</span>`)
+        .join('');
 
     return `<!DOCTYPE html>
 <html lang="en">
@@ -176,15 +219,27 @@ function buildHealthHtml(stats) {
     .node-pill:hover { border-color: var(--link); color: var(--link); background: rgba(110,179,240,0.08); }
     .orphan-pill { color: var(--warn); border-color: rgba(229,169,106,0.25); background: rgba(229,169,106,0.05); }
     .orphan-pill:hover { border-color: var(--warn); background: rgba(229,169,106,0.12); }
+    .lifecycle-grid { display:grid; grid-template-columns:repeat(5,minmax(0,1fr)); gap:7px; }
+    .lifecycle-card { padding: 11px 12px; border: 1px solid var(--border); border-radius: 14px; background: var(--surface2); }
+    .lifecycle-count { font-size: 20px; line-height: 1; font-weight: 760; letter-spacing: -0.03em; margin-bottom: 6px; }
+    .lifecycle-label { font-size: 10px; text-transform: uppercase; letter-spacing: 0.11em; color: var(--dim); font-weight: 700; }
     .empty-section { display: flex; flex-direction: column; gap: 6px; padding: 12px 0; color: var(--dim); }
     .empty-title { font-size: 12px; font-weight: 700; color: var(--text); }
     .empty-copy { font-size: 12px; color: var(--mid); line-height: 1.55; }
     .empty-copy code { background: color-mix(in srgb, var(--surface2) 86%, transparent); border: 1px solid var(--border2); border-radius: 6px; padding: 1px 5px; font-size: 11px; color: var(--text); }
+    .drift-summary-grid { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+    .lifecycle-count.drift-warn { color: var(--warn); }
+    .lifecycle-count.drift-danger { color: var(--danger); }
+    .drift-pill { color: var(--warn); border-color: rgba(229,169,106,0.25); background: rgba(229,169,106,0.05); }
+    .drift-pill:hover { border-color: var(--warn); background: rgba(229,169,106,0.12); }
+    .outlier-pill { color: var(--danger); border-color: rgba(244,116,116,0.25); background: rgba(244,116,116,0.05); }
+    .outlier-pill:hover { border-color: var(--danger); background: rgba(244,116,116,0.12); }
 
     @media (max-width: 1080px) {
         .header { grid-template-columns: 1fr; }
         .stats-strip { grid-template-columns: repeat(3, minmax(0, 1fr)); }
         .header-side { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+        .lifecycle-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
     }
     @media (max-width: 760px) {
         .header, .content, .stats-strip { padding-left: 14px; padding-right: 14px; }
@@ -193,6 +248,7 @@ function buildHealthHtml(stats) {
         .hero-row { flex-direction: column; align-items: flex-start; }
         .type-header-right { width: 100%; justify-content: space-between; }
         .section-header { flex-direction: column; align-items: flex-start; gap: 6px; }
+        .lifecycle-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
     }
     @media (max-width: 520px) {
         .header, .content, .stats-strip { padding-left: 12px; padding-right: 12px; }
@@ -203,6 +259,7 @@ function buildHealthHtml(stats) {
         .hero-card-value, .stat-num { font-size: 20px; }
         .type-header-right { flex-direction: column; align-items: flex-start; gap: 7px; }
         .view-btn { width: 100%; text-align: center; }
+        .lifecycle-grid { grid-template-columns: 1fr; }
     }
 </style>
 </head>
@@ -220,50 +277,50 @@ function buildHealthHtml(stats) {
         <div class="header-sub">${riskLabel}. This snapshot covers ${stats.nodes} nodes, ${stats.edges} links, ${stats.uniqueTypes} types, and ${stats.schemas} schema${stats.schemas === 1 ? '' : 's'}.</div>
     </div>
     <div class="header-side">
-        <div class="hero-card">
+        <div class="hero-card" title="A quick cleanliness score. Broken links and isolated notes lower this number.">
             <div class="hero-card-label">Health score</div>
             <div class="hero-card-value">${healthScore}<span style="font-size:14px;color:var(--mid);margin-left:2px">%</span></div>
             <div class="hero-card-note">Updated at ${updatedAt}</div>
         </div>
-        <div class="hero-card">
-            <div class="hero-card-label">Connection density</div>
+        <div class="hero-card" title="Average number of links per indexed note in the vault.">
+            <div class="hero-card-label">Average connections</div>
             <div class="hero-card-value">${stats.density}</div>
-            <div class="hero-card-note">Average links per node</div>
+            <div class="hero-card-note">Average links per note</div>
         </div>
     </div>
 </div>
 
 <div class="stats-strip">
-    <div class="stat-cell clickable" data-action="openAllNodes" title="View all nodes">
+    <div class="stat-cell clickable" data-action="openAllNodes" title="Every indexed Yamlink note in the vault. Click to view the full list.">
         <div class="stat-num">${stats.nodes}</div>
         <div class="stat-lbl">Nodes</div>
         <div class="stat-action">View all →</div>
     </div>
-    <div class="stat-cell">
+    <div class="stat-cell" title="Every note-to-note link Yamlink found, including body wikilinks and frontmatter relations.">
         <div class="stat-num">${stats.edges}</div>
         <div class="stat-lbl">Edges</div>
         <div class="stat-hint">${stats.density} avg per node</div>
     </div>
-    <div class="stat-cell clickable ${stats.broken > 0 ? 'has-warning' : ''}" data-action="openProblems" title="Open Problems panel">
+    <div class="stat-cell clickable ${stats.broken > 0 ? 'has-warning' : ''}" data-action="openProblems" title="Links that point to IDs that do not exist in the vault. Click to open Problems.">
         <div class="stat-num ${stats.broken > 0 ? 'danger' : 'good'}">${stats.broken}</div>
         <div class="stat-lbl">Broken Links</div>
         ${stats.broken > 0
         ? '<div class="stat-hint">Open diagnostics to fix</div><div class="stat-action">Open Problems →</div>'
         : '<div class="stat-hint">All links resolve</div>'}
     </div>
-    <div class="stat-cell clickable ${stats.orphans.length > 0 ? 'has-caution' : ''}" data-action="scrollOrphans" title="Jump to orphan nodes">
+    <div class="stat-cell clickable ${stats.orphans.length > 0 ? 'has-caution' : ''}" data-action="scrollOrphans" title="Indexed notes with no inbound or outbound connections. Click to jump to the list.">
         <div class="stat-num ${stats.orphans.length > 0 ? 'warn' : 'good'}">${stats.orphans.length}</div>
         <div class="stat-lbl">Orphan Nodes</div>
         ${stats.orphans.length > 0
         ? '<div class="stat-hint">Nodes with no connections</div><div class="stat-action">Jump to list →</div>'
         : '<div class="stat-hint">No isolated nodes</div>'}
     </div>
-    <div class="stat-cell clickable" data-action="scrollTypes" title="Jump to entity types">
+    <div class="stat-cell clickable" data-action="scrollTypes" title="How many different note categories (type values) are in the vault. Click to jump to the type list.">
         <div class="stat-num">${stats.uniqueTypes}</div>
         <div class="stat-lbl">Types</div>
         <div class="stat-action">Jump to list →</div>
     </div>
-    <div class="stat-cell">
+    <div class="stat-cell" title="Formal type-definition notes that define expected fields for note categories.">
         <div class="stat-num">${stats.schemas}</div>
         <div class="stat-lbl">Schemas</div>
         <div class="stat-hint">${stats.schemas === 0 ? 'None defined yet' : `${stats.schemas} active`}</div>
@@ -271,6 +328,30 @@ function buildHealthHtml(stats) {
 </div>
 
 <div class="content">
+
+    <div class="section" id="section-lifecycle">
+        <div class="section-header">
+            <span class="section-title">Lifecycle States</span>
+            <span class="section-count">${Object.values(lifecycleCounts).reduce((sum, value) => sum + Number(value || 0), 0)} tracked</span>
+        </div>
+        <div class="lifecycle-grid">${lifecycleCards}</div>
+        ${lifecycleHighlights
+            ? `<div class="node-pills" style="margin-top:12px">${lifecycleHighlights}</div>`
+            : '<div class="empty-section"><div class="empty-title">No standout lifecycle signals yet.</div><div class="empty-copy">As notes accumulate structure, Yamlink will surface which ones are still drafts, which ones are consolidating, and which ones are turning into hubs.</div></div>'}
+    </div>
+
+    <div class="section" id="section-drift">
+        <div class="section-header">
+            <span class="section-title">Type Consistency</span>
+            <span class="section-count">${driftTotal} analyzed</span>
+        </div>
+        ${driftTotal > 0 ? `
+        <div class="lifecycle-grid drift-summary-grid">${driftCards}</div>
+        ${driftPills
+            ? `<div class="node-pills" style="margin-top:12px">${driftPills}</div>`
+            : '<div class="empty-section" style="margin-top:12px"><div class="empty-title">All notes are on track.</div><div class="empty-copy">No notes are diverging from how their type is normally shaped in this vault.</div></div>'}
+        ` : `<div class="empty-section"><div class="empty-title">Not enough data yet.</div><div class="empty-copy">Drift analysis requires at least 3 notes of the same type. Add more notes to start seeing structural patterns.</div></div>`}
+    </div>
 
     <div class="section" id="section-types">
         <div class="section-header">
@@ -344,3 +425,11 @@ function buildHealthHtml(stats) {
 module.exports = {
     buildHealthHtml
 };
+
+function esc(str) {
+    return String(str)
+        .replace(/&/g, '&amp;')
+        .replace(/"/g, '&quot;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;');
+}

@@ -2,12 +2,12 @@
 
 const vscode = require('vscode');
 const { getIndex, getPathIndex, getFieldsCache } = require('../core/indexService');
+const { getEdges, getBacklinks } = require('../core/graph');
 const {
     buildContextualQueryRecipes,
     buildEntityHubModel,
     getVisibleRelationColumns,
     getVisibleTaskColumns,
-    extractRelations
 } = require('./entityHubModel');
 const {
     buildHubHtml,
@@ -21,8 +21,6 @@ let _lastId = null;
 let _subscriptions = [];
 let _syncTimer = null;
 let _syncToken = 0;
-let _hubScrollY = 0;
-let _hubScrollNodeId = null;
 
 function syncEntityHub(context, options = {}) {
     _extUri = context.extensionUri;
@@ -57,8 +55,16 @@ function syncEntityHub(context, options = {}) {
     _syncTimer = setTimeout(run, 80);
 }
 
-function refreshEntityHub() {
-    if (sidebarView && _lastId) renderHub(_lastId);
+function refreshEntityHub(changedId) {
+    if (!sidebarView || !_lastId) return;
+    if (changedId && changedId !== _lastId) {
+        const neighbors = new Set([
+            ...getEdges(_lastId).map(e => e.targetId),
+            ...getBacklinks(_lastId).map(e => e.sourceId)
+        ]);
+        if (!neighbors.has(changedId)) return;
+    }
+    renderHub(_lastId);
 }
 
 function registerEntityHubView(context) {
@@ -82,13 +88,6 @@ function registerEntityHubView(context) {
                             }).catch(function (err) {
                                 console.error('Yamlink — openNode failed:', err.message);
                             });
-                            return;
-                        }
-                        if (msg.command === 'saveState') {
-                            if (msg.nodeId === _lastId) {
-                                _hubScrollY = msg.scrollY || 0;
-                                _hubScrollNodeId = msg.nodeId;
-                            }
                             return;
                         }
                         if (msg.command === 'insertView') {
@@ -154,13 +153,14 @@ function renderHub(nodeId) {
             suggestions,
             suggestionExplanation,
             recipes,
-            vaultPositionRows
+            vaultPositionRows,
+            vaultDiagnosticRows
         } = model;
 
         if ('title' in host) host.title = `${nodeId} · report`;
 
         if (model.isEmpty) {
-            host.webview.html = buildEmptyHtml(nodeId);
+            host.webview.html = buildEntityHubEmptyHtml(nodeId);
             return;
         }
 
@@ -177,9 +177,9 @@ function renderHub(nodeId) {
             suggestionExplanation,
             recipes,
             vaultPositionRows,
+            vaultDiagnosticRows,
             nodeFields,
-            idIndex,
-            initialScrollY: nodeId === _hubScrollNodeId ? Math.round(_hubScrollY) : 0
+            idIndex
         });
     } catch (error) {
         renderError(`Could not render report for ${nodeId}`, error);

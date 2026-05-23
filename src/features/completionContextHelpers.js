@@ -2,6 +2,8 @@
 
 const { inferFieldRole, normalizeFieldName } = require('../intelligence/fieldRoles');
 const { inferNoteRole } = require('../intelligence/noteRolesCore');
+const { collectDocumentTags } = require('../intelligence/tagSignals');
+const { collectBodySignals, buildBodySignalHints } = require('../intelligence/bodySignals');
 
 const FRONTMATTER_ARCHETYPES = {
     account: ['name', 'status', 'owner', 'contacts', 'website', 'domain', 'industry', 'stage', 'email', 'phone'],
@@ -122,10 +124,17 @@ function getDocumentType(document) {
 function extractNoteRoleHints(document, nodeFields = {}) {
     const text = document.getText();
     const hints = [];
+    const bodySignals = collectBodySignals(text);
     const headingMatch = text.match(/^#\s+(.+)$/m);
     if (headingMatch) hints.push(headingMatch[1]);
     if (nodeFields.name) hints.push(nodeFields.name);
     if (nodeFields.title) hints.push(nodeFields.title);
+    for (const hint of buildBodySignalHints(bodySignals)) {
+        hints.push(hint);
+    }
+    for (const tag of collectDocumentTags(document, nodeFields)) {
+        hints.push(tag);
+    }
     if (document.uri?.fsPath) {
         hints.push(document.uri.fsPath.split(/[\\/]/).pop() || '');
     }
@@ -134,6 +143,8 @@ function extractNoteRoleHints(document, nodeFields = {}) {
 
 function buildDocumentIntelligence(document, docType, idIndex) {
     const nodeFields = extractFrontmatterFields(document);
+    const currentTags = collectDocumentTags(document, nodeFields);
+    const bodySignals = collectBodySignals(document.getText());
     const fieldRoleResults = Object.keys(nodeFields)
         .filter((key) => key !== 'id' && !isTypeLikeField(key))
         .map((key) => inferFieldRole(key, { documentType: docType, idIndex }));
@@ -144,6 +155,8 @@ function buildDocumentIntelligence(document, docType, idIndex) {
     return {
         nodeFields,
         currentFields: new Set(Object.keys(nodeFields)),
+        currentTags: new Set(currentTags),
+        bodySignals,
         fieldRoleResults,
         noteRole
     };
@@ -194,6 +207,7 @@ module.exports = {
     extractDocumentArchetype,
     getDocumentType,
     extractNoteRoleHints,
+    collectDocumentTags,
     buildDocumentIntelligence,
     fieldLooksRelational,
     summariseInferenceReasons,

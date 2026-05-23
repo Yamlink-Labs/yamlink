@@ -1,0 +1,217 @@
+'use strict';
+/**
+ * surface.noteReport.test.js
+ *
+ * Scenario-based tests for the Note Report (entity hub model) surface.
+ * Tests build real vaults and assert on buildEntityHubModel() output.
+ */
+
+const { test, describe } = require('node:test');
+const assert = require('node:assert/strict');
+const { createVault } = require('./lib/vaultSim');
+
+// ── Fixtures ──────────────────────────────────────────────────────────────────
+
+const NOTE = (id, type, extra = '') =>
+    `---\nid: ${id}\ntype: ${type}\n${extra}---\n`;
+
+const CRM = {
+    'rico.md':      NOTE('rico',      'contact', 'name: Johnny Rico\naccount: "[[mi]]"\n'),
+    'carmen.md':    NOTE('carmen',    'contact', 'name: Carmen Ibanez\naccount: "[[navajo]]"\n'),
+    'dizzy.md':     NOTE('dizzy',     'contact', 'name: Dizzy Flores\naccount: "[[mi]]"\n'),
+    'mi.md':        NOTE('mi',        'account', 'name: Mobile Infantry\n'),
+    'navajo.md':    NOTE('navajo',    'account', 'name: FCV Navajo\n'),
+    'klendathu.md': NOTE('klendathu', 'mission', 'title: Battle of Klendathu\ncommander: "[[rico]]"\n')
+};
+
+// ── Vault position rows ───────────────────────────────────────────────────────
+
+describe('noteReport — vault position', () => {
+    test('vaultPositionRows includes note type row', () => {
+        const vault = createVault(CRM);
+        const model = vault.noteReport('rico');
+        assert.ok(model.vaultPositionRows.some(r => r.key === 'note type'));
+        vault.destroy();
+    });
+
+    test('note type row shows the correct type value', () => {
+        const vault = createVault(CRM);
+        const model = vault.noteReport('rico');
+        const typeRow = model.vaultPositionRows.find(r => r.key === 'note type');
+        assert.match(String(typeRow.value), /contact/i);
+        vault.destroy();
+    });
+
+    test('vaultPositionRows includes structured inbound links row', () => {
+        const vault = createVault(CRM);
+        const model = vault.noteReport('mi');
+        assert.ok(model.vaultPositionRows.some(r => r.key === 'structured inbound links'));
+        vault.destroy();
+    });
+
+    test('inbound count for hub note is above zero', () => {
+        const vault = createVault(CRM);
+        const model = vault.noteReport('mi');
+        const row = model.vaultPositionRows.find(r => r.key === 'structured inbound links');
+        const count = parseInt(String(row.value));
+        assert.ok(count > 0, `expected inbound > 0, got ${count}`);
+        vault.destroy();
+    });
+
+    test('outbound count for note with relations is above zero', () => {
+        const vault = createVault(CRM);
+        const model = vault.noteReport('rico');
+        const row = model.vaultPositionRows.find(r => r.key === 'structured outbound links');
+        const count = parseInt(String(row.value));
+        assert.ok(count > 0, `expected outbound > 0, got ${count}`);
+        vault.destroy();
+    });
+
+    test('vault position includes lifecycle row', () => {
+        const vault = createVault(CRM);
+        const model = vault.noteReport('rico');
+        assert.ok(model.vaultPositionRows.some(r => r.key === 'lifecycle'));
+        vault.destroy();
+    });
+
+    test('no AI advice rows appear', () => {
+        const vault = createVault(CRM);
+        const model = vault.noteReport('rico');
+        const forbidden = ['best next step', 'likely next fields', 'likely next link', 'nearby relationships'];
+        for (const key of forbidden) {
+            assert.ok(!model.vaultPositionRows.some(r => r.key === key),
+                `AI advice row "${key}" must not appear`);
+        }
+        vault.destroy();
+    });
+});
+
+// ── Diagnostic rows ───────────────────────────────────────────────────────────
+
+describe('noteReport — diagnostic rows', () => {
+    test('vaultDiagnosticRows includes total inbound link rows', () => {
+        const vault = createVault(CRM);
+        const model = vault.noteReport('mi');
+        assert.ok(model.vaultDiagnosticRows.some(r => r.key === 'total inbound link rows'));
+        vault.destroy();
+    });
+
+    test('body evidence row appears for note with body wikilinks', () => {
+        const files = {
+            'a.md': NOTE('a', 'contact'),
+            'b.md': `---\nid: b\ntype: note\n---\n\nMet with [[a]] yesterday and then [[a]] again.\n`
+        };
+        const vault = createVault(files);
+        const model = vault.noteReport('b');
+        assert.ok(model.vaultDiagnosticRows.some(r => r.key === 'body evidence'));
+        vault.destroy();
+    });
+
+    test('repeated body wikilink shows count in body evidence row', () => {
+        const files = {
+            'a.md': NOTE('a', 'account'),
+            'b.md': `---\nid: b\ntype: contact\n---\n\nSee [[a]] for info. Also [[a]] handled this.\n`
+        };
+        const vault = createVault(files);
+        const model = vault.noteReport('b');
+        const row = model.vaultDiagnosticRows.find(r => r.key === 'body evidence');
+        assert.ok(String(row.value).includes('a (2)'));
+        vault.destroy();
+    });
+});
+
+// ── Recipes ───────────────────────────────────────────────────────────────────
+
+describe('noteReport — contextual query recipes', () => {
+    test('recipes array is present', () => {
+        const vault = createVault(CRM);
+        const model = vault.noteReport('rico');
+        assert.ok(Array.isArray(model.recipes));
+        vault.destroy();
+    });
+
+    test('note report for hub node generates at least one recipe', () => {
+        const vault = createVault(CRM);
+        const model = vault.noteReport('mi');
+        assert.ok(model.recipes.length > 0, 'hub node should have at least one recipe');
+        vault.destroy();
+    });
+
+    test('each recipe has title, description, and queryText', () => {
+        const vault = createVault(CRM);
+        const model = vault.noteReport('mi');
+        for (const recipe of model.recipes) {
+            assert.ok(typeof recipe.title === 'string' && recipe.title.length > 0);
+            assert.ok(typeof recipe.queryText === 'string');
+        }
+        vault.destroy();
+    });
+
+    test('recipes include backlinks view for note with inbound links', () => {
+        const vault = createVault(CRM);
+        const model = vault.noteReport('mi');
+        const backlinksRecipe = model.recipes.find(r =>
+            r.title.toLowerCase().includes('backlinks') ||
+            r.queryText.includes('incoming')
+        );
+        assert.ok(backlinksRecipe, 'expected a backlinks/incoming recipe');
+        vault.destroy();
+    });
+});
+
+// ── Task sections ─────────────────────────────────────────────────────────────
+
+describe('noteReport — task sections', () => {
+    test('note with no tasks has no task sections', () => {
+        const vault = createVault(CRM);
+        const model = vault.noteReport('rico');
+        const ownTasks = model.taskSections.filter(s => s.label?.includes('this note'));
+        assert.equal(ownTasks.length === 0 || ownTasks[0].rows.length === 0, true);
+        vault.destroy();
+    });
+
+    test('note with tasks shows them in the task sections', () => {
+        const files = {
+            'work.md': [
+                '---',
+                'id: work',
+                'type: note',
+                '---',
+                '',
+                '- [ ] Review PR',
+                '- [x] Deploy staging'
+            ].join('\n')
+        };
+        const vault = createVault(files);
+        const model = vault.noteReport('work');
+        const ownSection = model.taskSections.find(s => s.label?.includes('this note'));
+        assert.ok(ownSection && ownSection.rows.length === 2,
+            `expected 2 tasks, got ${ownSection?.rows.length}`);
+        vault.destroy();
+    });
+});
+
+// ── Graph edge correctness ────────────────────────────────────────────────────
+
+describe('noteReport — outbound link edge correctness', () => {
+    test('frontmatter wikilinks count as outbound edges', () => {
+        const vault = createVault(CRM);
+        const model = vault.noteReport('rico');
+        const outRow = model.vaultPositionRows.find(r => r.key === 'structured outbound links');
+        assert.ok(parseInt(String(outRow.value)) >= 1);
+        vault.destroy();
+    });
+
+    test('body wikilinks appear in links-out-via diagnostic row', () => {
+        const files = {
+            'a.md': NOTE('a', 'account'),
+            'b.md': `---\nid: b\ntype: contact\n---\n\nSee [[a]] for details.\n`
+        };
+        const vault = createVault(files);
+        const model = vault.noteReport('b');
+        const linksRow = model.vaultDiagnosticRows.find(r => r.key === 'links out via');
+        assert.ok(linksRow, 'links out via row should exist');
+        assert.match(String(linksRow.value), /body/i);
+        vault.destroy();
+    });
+});

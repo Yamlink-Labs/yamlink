@@ -53,7 +53,7 @@
             var section = sectionHeader.closest('.hub-section');
             if (section) {
                 section.classList.toggle('open');
-                applySearch(); // re-count after collapse
+                applySearch();
             }
             return;
         }
@@ -93,25 +93,24 @@
         });
     });
 
-    // ── Global search — filters across all sections ──────────────────
+    // ── Global search — filters rows in the active tab ───────────────
     var searchInput  = document.getElementById('hubsearch');
     var visibleCount = document.getElementById('visible-count');
     var allRows      = Array.from(document.querySelectorAll('tbody tr'));
-    var total        = allRows.length;
 
     function applySearch() {
         var term    = searchInput ? searchInput.value.toLowerCase() : '';
         var visible = 0;
 
         allRows.forEach(function (row) {
-            // A row in a collapsed section doesn't contribute to visible count
+            var pane     = row.closest('.hub-tab-pane');
+            var inActive = !pane || pane.classList.contains('active');
             var section  = row.closest('.hub-section');
             var inOpen   = !section || section.classList.contains('open');
             var matches  = !term || row.textContent.toLowerCase().includes(term);
-            var show     = matches; // show/hide regardless of section state
 
-            row.style.display = show ? '' : 'none';
-            if (show && inOpen) visible++;
+            row.style.display = matches ? '' : 'none';
+            if (matches && inOpen && inActive) visible++;
         });
 
         if (visibleCount) visibleCount.textContent = visible;
@@ -121,24 +120,30 @@
         searchInput.addEventListener('input', applySearch);
     }
 
-    // ── Scroll preservation ──────────────────────────────────────────
-    var _scrollTimer = null;
-    window.addEventListener('scroll', function () {
-        if (_scrollTimer) clearTimeout(_scrollTimer);
-        _scrollTimer = setTimeout(function () {
-            vscode.postMessage({ command: 'saveState', scrollY: Math.round(window.scrollY), nodeId: CURRENT_NODE_ID });
-        }, 150);
-    }, { passive: true });
+    // ── Tab switching ─────────────────────────────────────────────────
+    var TAB_KEY  = 'yamlink.entityHubTab';
+    var tabBtns  = Array.from(document.querySelectorAll('.hub-tab-btn'));
+    var tabPanes = Array.from(document.querySelectorAll('.hub-tab-pane'));
+    var tabIds   = tabBtns.map(function (b) { return b.dataset.tab; });
 
-    if (INITIAL_SCROLL_Y > 0) {
-        window.scrollTo(0, INITIAL_SCROLL_Y);
+    function activateTab(tabId) {
+        if (tabIds.indexOf(tabId) === -1) tabId = tabIds[0] || 'overview';
+        tabBtns.forEach(function (btn) {
+            btn.classList.toggle('active', btn.dataset.tab === tabId);
+        });
+        tabPanes.forEach(function (pane) {
+            pane.classList.toggle('active', pane.id === 'tab-' + tabId);
+        });
+        try { localStorage.setItem(TAB_KEY, tabId); } catch (e) {}
+        applySearch();
     }
 
-    // ── Signal ready ─────────────────────────────────────────────────
-    var status = document.getElementById('jsstatus');
-    if (status) {
-        status.textContent = 'live · updates on save';
-        status.style.color = '';
-    }
+    tabBtns.forEach(function (btn) {
+        btn.addEventListener('click', function () { activateTab(btn.dataset.tab); });
+    });
+
+    var _savedTab = 'overview';
+    try { _savedTab = localStorage.getItem(TAB_KEY) || 'overview'; } catch (e) {}
+    activateTab(_savedTab);
 
 }());

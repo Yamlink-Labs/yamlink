@@ -89,9 +89,52 @@ function registerNodeLinkCommands(context) {
     );
 }
 
+function registerDuplicateIdCommand(context) {
+    context.subscriptions.push(
+        vscode.commands.registerCommand('yamlink.resolveIdConflict', async (document, currentId) => {
+            const newId = await vscode.window.showInputBox({
+                title: 'Rename ID to resolve conflict',
+                prompt: `Enter a new unique ID to replace "${currentId}"`,
+                value: `${currentId}-2`,
+                validateInput: (v) => {
+                    const trimmed = (v || '').trim();
+                    if (!trimmed) return 'ID cannot be empty';
+                    if (!/^[a-z0-9][a-z0-9-]*$/.test(trimmed)) {
+                        return 'ID must be kebab-case (lowercase letters, numbers, hyphens)';
+                    }
+                    return null;
+                }
+            });
+            if (!newId) return;
+
+            const text = document.getText();
+            const lines = text.split('\n');
+            const idLineIndex = lines.findIndex(l => /^\s*id:\s*.+/.test(l));
+            if (idLineIndex === -1) {
+                vscode.window.showErrorMessage('Yamlink: Could not find id field to rename.');
+                return;
+            }
+
+            const edit = new vscode.WorkspaceEdit();
+            edit.replace(
+                document.uri,
+                new vscode.Range(
+                    new vscode.Position(idLineIndex, 0),
+                    new vscode.Position(idLineIndex, lines[idLineIndex].length)
+                ),
+                `id: ${newId.trim()}`
+            );
+
+            await vscode.workspace.applyEdit(edit);
+            await document.save();
+        })
+    );
+}
+
 function registerNodeCommands(context, getIndex, getTypes) {
     registerNodeLinkCommands(context);
     registerNodeCreationCommands(context, getIndex, getTypes);
+    registerDuplicateIdCommand(context);
 }
 
 module.exports = {

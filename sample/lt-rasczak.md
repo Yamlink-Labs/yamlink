@@ -4,7 +4,7 @@ type: character
 name: Jean Rasczak
 rank: Lieutenant
 unit: [[roughnecks]]
-homeworld: unknown
+homeworld: Buenos Aires
 species: human
 status: KIA
 created: 2297-04-01

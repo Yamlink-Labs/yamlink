@@ -294,22 +294,26 @@ function validateDocument(document, getIndex) {
     // Diagnostic 6: Query suggestion available
     //
     // Computed via the shared suggestions engine so diagnostics and
-    // codeActions never disagree. Range covers the full frontmatter
-    // so the lightbulb is visible wherever the cursor rests in the header.
+    // codeActions never disagree. Anchor the hint to the id line so
+    // quick-fix does not select the whole document when invoked.
     // ─────────────────────────────────────────────
     if (hasFrontmatter && hasId) {
         const thisId = extractCanonicalIdFromFrontmatter(text);
         if (thisId) {
             const suggestions = computeSuggestionsForNode(thisId, text);
-            const fullRange   = new vscode.Range(
-                new vscode.Position(0, 0),
-                new vscode.Position(document.lineCount - 1, document.lineAt(document.lineCount - 1).text.length)
+            const lines = text.split('\n');
+            const idLineIndex = lines.findIndex(line => /^\s*id\s*:/.test(line));
+            const anchorLine = idLineIndex >= 0 ? idLineIndex : 0;
+            const anchorText = lines[anchorLine] || '';
+            const anchorRange = new vscode.Range(
+                new vscode.Position(anchorLine, 0),
+                new vscode.Position(anchorLine, anchorText.length)
             );
 
             if (suggestions.length > 0) {
                 const top = suggestions[0];
                 const diagnostic = new vscode.Diagnostic(
-                    fullRange,
+                    anchorRange,
                     suggestions.length === 1
                         ? `Yamlink: ${top.title} — click 💡 to insert`
                         : `Yamlink: ${suggestions.length} view suggestions available — click 💡 to insert`,

@@ -2,33 +2,25 @@
 
 const fs = require('fs');
 const vscode = require('vscode');
-const { getBacklinks } = require('../core/graph');
+const { getBacklinks, getEdges, getGraphStats } = require('../core/graph');
 const { buildTaskRows } = require('../core/tasks');
+const { getVaultGeneration } = require('../core/indexService');
 const { normaliseDateInput } = require('../core/date');
 const { getSchema, getSchemaTargets } = require('../registries/schemaRegistry');
 const {
     DEFAULT_STATUS_LIKE_VALUES,
     DEFAULT_SEMANTIC_ROLE_PRIORS
 } = require('../intelligence/fieldRolesCore');
-const { summarizeNoteRoleReasons, summarizeNoteRole } = require('../intelligence/noteRolesCore');
+const { inferNoteRole, summarizeNoteRole } = require('../intelligence/noteRolesCore');
+const { getCachedPriors } = require('../intelligence/vaultPriors');
+const { inferLifecycleState, summarizeLifecycleState } = require('../intelligence/lifecycleState');
 const { filterItemsForSurface, shouldSurface } = require('../intelligence/confidence');
 const {
     buildFrontmatterOpportunityModel,
-    buildFrontmatterGuidanceSummary,
-    summarizeGuidanceExplanation,
     buildBodyMentionHints
 } = require('../intelligence/frontmatterIntelligence');
-const {
-    buildObservedFields,
-    buildNoteContext,
-    buildBridgePaths,
-    buildSharedContextTraces,
-    buildAdaptiveFieldPatterns,
-    describeContextOrigin,
-    summarizeBridgeHints,
-    summarizeTraceHints,
-    summarizeAdaptiveFieldHints
-} = require('../intelligence/suggestionCore');
+const { buildNoteContext } = require('../intelligence/suggestionCore');
+const { getVaultPatterns } = require('../intelligence/intelligenceCache');
 const { computeSuggestionsForNode, explainSuggestionState, queryAlreadyExists } = require('../engine/suggestions');
 const { buildIncomingViewQuery, buildTypeViewQuery, getSchemaBackedDefaultSortField } = require('../actions/viewBuilder');
 
@@ -37,7 +29,7 @@ const SKIP_FIELDS = new Set(['id', 'created']);
 function buildEntityHubModel(nodeId, idIndex, fieldsCache) {
     const nodeFields = fieldsCache.get(nodeId) || {};
     const incomingGroups = buildIncomingGroups(nodeId, idIndex, fieldsCache);
-    const outgoingGroups = buildOutgoingGroups(nodeFields, idIndex, fieldsCache);
+    const outgoingGroups = buildOutgoingGroups(nodeId, nodeFields, idIndex, fieldsCache);
     const summaryRows = buildSummaryRows(nodeFields);
     const taskSections = buildTaskSections(nodeId, idIndex);
     const timelineRows = buildTimelineRows(nodeId, nodeFields, taskSections);
@@ -45,11 +37,15 @@ function buildEntityHubModel(nodeId, idIndex, fieldsCache) {
     const suggestions = buildSuggestionRows(nodeId, docText);
     const suggestionExplanation = explainSuggestionState(nodeId);
     const recipes = buildContextualQueryRecipes(nodeId, nodeFields, incomingGroups, outgoingGroups, docText, fieldsCache);
-    const vaultPositionRows = buildVaultPositionRows(
+    const {
+        vaultPositionRows,
+        vaultDiagnosticRows
+    } = buildVaultPositionRows(
         nodeId,
         nodeFields,
         incomingGroups,
         outgoingGroups,
+        idIndex,
         fieldsCache,
         docText,
         suggestions,
@@ -67,6 +63,7 @@ function buildEntityHubModel(nodeId, idIndex, fieldsCache) {
         suggestionExplanation,
         recipes,
         vaultPositionRows,
+        vaultDiagnosticRows,
         isEmpty: incomingGroups.length === 0
             && outgoingGroups.length === 0
             && summaryRows.length === 0
@@ -102,20 +99,40 @@ function extractRelations(raw) {
         .filter(Boolean);
 }
 
-function buildOutgoingGroups(nodeFields, idIndex, fieldsCache) {
-    const groups = [];
-    for (const [field, rawValue] of Object.entries(nodeFields)) {
+function buildOutgoingGroups(nodeId, nodeFields, idIndex, fieldsCache) {
+    const groups = new Map();
+
+    for (const { field, targetId } of getEdges(nodeId)) {
         if (SKIP_FIELDS.has(field)) continue;
-        const targets = extractRelations(rawValue);
-        if (targets.length === 0) continue;
-        const rows = targets.map(targetId => ({
+        if (!groups.has(field)) groups.set(field, []);
+        groups.get(field).push({
             sourceId: targetId,
             fields: fieldsCache.get(targetId) || { type: '', label: targetId },
             filePath: idIndex.get(targetId) || null
-        }));
-        groups.push({ field, rows, direction: 'outgoing' });
+        });
     }
-    return groups.sort((a, b) => a.field.localeCompare(b.field));
+
+    // Fallback to frontmatter parsing only if graph edges have not been built yet.
+    if (groups.size === 0) {
+        for (const [field, rawValue] of Object.entries(nodeFields)) {
+            if (SKIP_FIELDS.has(field)) continue;
+            const targets = extractRelations(rawValue);
+            if (targets.length === 0) continue;
+            groups.set(field, targets.map(targetId => ({
+                sourceId: targetId,
+                fields: fieldsCache.get(targetId) || { type: '', label: targetId },
+                filePath: idIndex.get(targetId) || null
+            })));
+        }
+    }
+
+    return [...groups.entries()]
+        .map(([field, rows]) => ({ field, rows, direction: 'outgoing' }))
+        .sort((a, b) => {
+            if (a.field === 'body') return 1;
+            if (b.field === 'body') return -1;
+            return a.field.localeCompare(b.field);
+        });
 }
 
 function buildSummaryRows(nodeFields) {
@@ -123,21 +140,6 @@ function buildSummaryRows(nodeFields) {
         .filter(([key, value]) => !SKIP_FIELDS.has(key) && key !== 'type' && value && extractRelations(value).length === 0)
         .map(([key, value]) => ({ key, value: String(value) }))
         .sort((a, b) => a.key.localeCompare(b.key));
-}
-
-function summarizeFieldNames(items, limit = 3) {
-    return items
-        .slice(0, limit)
-        .map((hint) => hint.field)
-        .join('; ');
-}
-
-function summarizeConnectionHints(items, limit = 2) {
-    return items
-        .slice(0, limit)
-        .map((hint) => hint.summary || hint.field || hint.targetId || '')
-        .filter(Boolean)
-        .join('; ');
 }
 
 function summariseTypeCounts(rows) {
@@ -162,7 +164,7 @@ function summariseFieldCounts(groups) {
 
 function buildIntelligenceRows(nodeId, nodeFields, fieldsCache, docText) {
     const nodeType = String(nodeFields.type || '').trim().toLowerCase();
-    const observedFields = buildObservedFields(fieldsCache);
+    const { observedFields } = getVaultPatterns(fieldsCache, getVaultGeneration());
     const noteContext = buildNoteContext(nodeFields, nodeType, {
         observedFields,
         getSchemaForType: getSchema,
@@ -172,184 +174,114 @@ function buildIntelligenceRows(nodeId, nodeFields, fieldsCache, docText) {
     });
     const rows = [];
     if (noteContext.noteRole?.noteRole && shouldSurface(noteContext.noteRole, 'report-note-role', { confidenceKey: 'confidence' })) {
-        rows.push({
-            key: 'note role',
-            value: `${summarizeNoteRole(noteContext.noteRole)} (${Math.round((noteContext.noteRole.confidence || 0) * 100)}%)`
-        });
-        const why = summarizeNoteRoleReasons(noteContext.noteRole);
-        if (why) rows.push({ key: 'why', value: why });
+        rows.push({ key: 'note role', value: summarizeNoteRole(noteContext.noteRole) });
     }
-
-    const bridgePaths = buildBridgePaths(nodeId, nodeFields, noteContext, fieldsCache, {
-        nodeType, observedFields, getSchemaTargets, getSchemaForType: getSchema
-    });
-    const bridgeHints = summarizeBridgeHints(bridgePaths, 2);
-    if (bridgeHints.length) {
-        rows.push({ key: 'related notes', value: bridgeHints.map(b => b.summary).join('; ') });
-        rows.push({ key: 'next links', value: bridgeHints.map(b => `link ${b.candidateId}`).join('; ') });
-    }
-
-    const traces = buildSharedContextTraces(nodeId, nodeFields, noteContext, fieldsCache, {
-        nodeType, observedFields, getSchemaTargets, getSchemaForType: getSchema
-    });
-    const traceHints = summarizeTraceHints(traces, 2);
-    if (traceHints.length) {
-        rows.push({
-            key: 'paths',
-            value: traceHints.slice(0, 1).map(t => `${t.summary}: ${t.path.join(' -> ')}`).join('; ')
-        });
-    }
-
-    const frontmatterOpportunities = buildFrontmatterOpportunityModel(nodeFields, {
-        nodeId, nodeType, fieldsCache, observedFields, noteContext,
-        content: docText,
-        getSchemaForType: getSchema, dateParser: normaliseDateInput,
-        statusLikeValues: DEFAULT_STATUS_LIKE_VALUES,
-        semanticRolePriors: DEFAULT_SEMANTIC_ROLE_PRIORS, limit: 4
-    });
-    const guidance = buildFrontmatterGuidanceSummary(frontmatterOpportunities);
-    const reportFields = filterItemsForSurface(frontmatterOpportunities.likelyFields, 'report-opportunities', { scoreScale: 700 });
-    const reportGaps = filterItemsForSurface(frontmatterOpportunities.likelyGaps, 'report-opportunities', { scoreScale: 700 });
-    const reportContexts = filterItemsForSurface(frontmatterOpportunities.likelyContexts, 'report-opportunities', { scoreScale: 700 });
-    const reportConnections = filterItemsForSurface(frontmatterOpportunities.likelyConnections, 'report-opportunities', { scoreScale: 700 });
-    const reportCompanions = filterItemsForSurface(frontmatterOpportunities.likelyCompanions, 'report-opportunities', { scoreScale: 700 });
-    const reportThreadViews = filterItemsForSurface(frontmatterOpportunities.contextThreadViews || [], 'report-opportunities', { scoreScale: 900 });
-    const reportSetups = filterItemsForSurface(frontmatterOpportunities.surroundingSetups || [], 'report-opportunities', { scoreScale: 1100 });
     const bodyHints = docText
         ? buildBodyMentionHints(docText, nodeFields, fieldsCache, { threshold: 2 }).slice(0, 2)
         : [];
-
-    if (guidance.headline) rows.push({ key: 'next step', value: guidance.headline });
-    const guidanceWhy = summarizeGuidanceExplanation(guidance);
-    if (guidanceWhy) rows.push({ key: 'why', value: guidanceWhy });
-    if (guidance.workflowSummary) rows.push({ key: 'pattern', value: guidance.workflowSummary });
-    if (guidance.setupSummary) rows.push({ key: 'setup', value: guidance.setupSummary });
-
-    const adaptiveFieldHints = reportFields.slice(0, 2);
-    if (adaptiveFieldHints.length) {
-        rows.push({ key: 'next fields', value: summarizeFieldNames(adaptiveFieldHints, 3) });
-        const relationHint = adaptiveFieldHints.find(h => h.relational && h.sampleTargets.length);
-        if (relationHint) {
-            rows.push({ key: 'next link', value: `${relationHint.field} often points to ${relationHint.sampleTargets.slice(0, 2).join('; ')}` });
-        } else if (bodyHints.length) {
-            rows.push({ key: 'next link', value: `link ${bodyHints[0].id}` });
-        }
-    }
-    if (reportGaps.length) rows.push({ key: 'missing', value: summarizeFieldNames(reportGaps, 3) });
-    if (frontmatterOpportunities.setupFields.length > 0 && frontmatterOpportunities.setupInsertText) {
-        rows.push({ key: 'setup fields', value: frontmatterOpportunities.setupFields.map(h => h.field).join(', ') });
-    }
-    if (frontmatterOpportunities.recommendedBundle?.fields?.length) {
-        rows.push({ key: 'useful fields', value: summarizeFieldNames(frontmatterOpportunities.recommendedBundle.fields, 4) });
-    }
-    if (reportContexts.length) {
-        rows.push({ key: 'context', value: reportContexts.slice(0, 2).map(h => `${h.field} -> ${h.targetId}`).join('; ') });
-    }
-    if (reportConnections.length) {
-        rows.push({ key: 'related note', value: reportConnections.slice(0, 1).map(h => h.summary).join('; ') });
-    }
     if (bodyHints.length) {
-        rows.push({ key: 'body links', value: bodyHints.map(h => `${h.id} (${h.count})`).join('; ') });
+        rows.push({ key: 'body evidence', value: bodyHints.map(h => `${h.id} (${h.count})`).join('; ') });
     }
-    if (reportCompanions.length) {
-        rows.push({ key: 'nearby note', value: reportCompanions.slice(0, 2).map(h => h.summary).join('; ') });
-    }
-    if (frontmatterOpportunities.contextBundle?.summary) {
-        rows.push({ key: 'flow', value: frontmatterOpportunities.contextBundle.summary });
-    }
-    if (reportThreadViews.length) {
-        rows.push({ key: 'common view', value: reportThreadViews.slice(0, 2).map(v => v.summary).join('; ') });
-    }
-    if (reportSetups.length) {
-        rows.push({ key: 'common setup', value: reportSetups.slice(0, 2).map(s => s.summary).join('; ') });
-    }
-
     return rows;
 }
 
-function buildSuggestionSignalRows(suggestions, explanation) {
-    const rows = [];
+function buildSuggestionSignalRows(suggestions) {
     const visibleSuggestions = filterItemsForSurface(suggestions, 'report-suggestions', { scoreScale: 130 });
     if (Array.isArray(visibleSuggestions) && visibleSuggestions.length) {
-        const top = visibleSuggestions[0];
-        rows.push({
-            key: 'next view',
-            value: top.title
-        });
-        rows.push({
-            key: 'hints',
-            value: visibleSuggestions
-                .slice(0, 1)
-                .map(function (suggestion) {
-                    return suggestion.description;
-                })
-                .join('; ')
-        });
-        return rows;
+        return [{ key: 'next view', value: visibleSuggestions[0].title }];
     }
-
-    const reasons = Array.isArray(explanation?.reasons) ? explanation.reasons.filter(Boolean) : [];
-    if (reasons.length) {
-        rows.push({
-            key: 'hints',
-            value: reasons.slice(0, 2).join('; ')
-        });
-    }
-    return rows;
+    return [];
 }
 
-function buildVaultPositionRows(nodeId, nodeFields, incomingGroups, outgoingGroups, fieldsCache, docText = null, suggestions = [], suggestionExplanation = null) {
+function buildVaultPositionRows(nodeId, nodeFields, incomingGroups, outgoingGroups, idIndex, fieldsCache, docText = null, suggestions = [], suggestionExplanation = null) {
+    const stats = getGraphStats();
+    const vaultAvg = stats.nodes > 0 ? (stats.totalEdges / stats.nodes).toFixed(1) : '0';
+    const { fieldTargetTypes, typeFieldBundles, noteRoleTypePriors } = getCachedPriors(fieldsCache, getVaultGeneration());
+
     const incomingRows = incomingGroups.flatMap(group => group.rows);
     const outgoingRows = outgoingGroups.flatMap(group => group.rows);
-    const bodyMentions = incomingGroups
+    const incomingBodyMentions = incomingGroups
         .filter(group => group.field === 'body')
         .reduce((sum, group) => sum + group.rows.length, 0);
-    const rows = [
-        { key: 'node type', value: String(nodeFields.type || 'node') },
-        { key: 'inbound links', value: String(incomingRows.length) },
-        { key: 'outbound links', value: String(outgoingRows.length) }
-    ];
+    const outgoingBodyMentions = outgoingGroups
+        .filter(group => group.field === 'body')
+        .reduce((sum, group) => sum + group.rows.length, 0);
+    const structuredIncomingGroups = incomingGroups.filter(group => group.field !== 'body');
+    const structuredOutgoingGroups = outgoingGroups.filter(group => group.field !== 'body');
+    const structuredIncomingRows = structuredIncomingGroups.flatMap(group => group.rows);
+    const structuredOutgoingRows = structuredOutgoingGroups.flatMap(group => group.rows);
 
-    if (bodyMentions > 0) rows.push({ key: 'body mentions', value: String(bodyMentions) });
+    const rows = [
+        { key: 'note type', value: String(nodeFields.type || 'note') },
+        { key: 'structured inbound links', value: `${structuredIncomingRows.length} (vault avg ${vaultAvg})` },
+        { key: 'structured outbound links', value: `${structuredOutgoingRows.length} (vault avg ${vaultAvg})` }
+    ];
 
     const inboundFields = summariseFieldCounts(incomingGroups);
     const outboundFields = summariseFieldCounts(outgoingGroups);
     const inboundTypes = summariseTypeCounts(incomingRows);
     const outboundTypes = summariseTypeCounts(outgoingRows);
+    const noteRole = inferNoteRole(nodeFields, {});
+    const lifecycle = inferLifecycleState(nodeId, nodeFields, {
+        idIndex,
+        fieldsCache,
+        fieldTargetTypes,
+        typeFieldBundles,
+        noteRoleTypePriors,
+        noteRole,
+        noteType: String(nodeFields.type || '').trim().toLowerCase(),
+        inboundCount: incomingRows.length,
+        avgInbound: stats.nodes > 0 ? (stats.totalBacklinks || 0) / stats.nodes : 0
+    });
 
-    if (inboundFields) rows.push({ key: 'linked here via', value: inboundFields });
-    if (outboundFields) rows.push({ key: 'links out via', value: outboundFields });
-    if (inboundTypes) rows.push({ key: 'linked from types', value: inboundTypes });
-    if (outboundTypes) rows.push({ key: 'links to types', value: outboundTypes });
+    rows.push({ key: 'lifecycle', value: summarizeLifecycleState(lifecycle) });
 
-    return [
-        ...buildIntelligenceRows(nodeId, nodeFields, fieldsCache, docText),
-        ...buildSuggestionSignalRows(suggestions, suggestionExplanation),
-        ...rows
+    const intelligenceRows = buildIntelligenceRows(nodeId, nodeFields, fieldsCache, docText);
+    const noteRoleRow = intelligenceRows.find(row => row.key === 'note role');
+    const bodyEvidenceRow = intelligenceRows.find(row => row.key === 'body evidence');
+    if (noteRoleRow) rows.push(noteRoleRow);
+    const suggestionRows = buildSuggestionSignalRows(suggestions);
+
+    const diagnosticRows = [
+        { key: 'total inbound link rows', value: `${incomingRows.length}` },
+        { key: 'total outbound link rows', value: `${outgoingRows.length}` }
     ];
+    if (incomingBodyMentions > 0) diagnosticRows.push({ key: 'body mentions to this note', value: String(incomingBodyMentions) });
+    if (outgoingBodyMentions > 0) diagnosticRows.push({ key: 'body mentions from this note', value: String(outgoingBodyMentions) });
+    if (inboundFields) diagnosticRows.push({ key: 'linked here via', value: inboundFields });
+    if (outboundFields) diagnosticRows.push({ key: 'links out via', value: outboundFields });
+    if (inboundTypes) diagnosticRows.push({ key: 'linked from types', value: inboundTypes });
+    if (outboundTypes) diagnosticRows.push({ key: 'links to types', value: outboundTypes });
+    if (bodyEvidenceRow) diagnosticRows.push(bodyEvidenceRow);
+
+    return {
+        vaultPositionRows: [
+            ...rows,
+            ...suggestionRows
+        ],
+        vaultDiagnosticRows: diagnosticRows
+    };
 }
 
 function buildTaskSections(nodeId, idIndex) {
-    const taskRows = buildTaskRows(idIndex);
+    const taskRows = buildTaskRows(idIndex, getVaultGeneration());
     const inNote = [];
-    const linkedHere = [];
 
     for (const row of taskRows) {
         const payload = {
             id: row.id,
-            text: row.text,
+            text: row.displayText || row.text,
             done: row.done ? 'true' : 'false',
             date: row.date || '',
             file: row.fileId,
-            line: String(row.line || '')
+            line: String(row.line || ''),
+            body: row.body || ''
         };
         if (row.fileId === nodeId) inNote.push(payload);
-        else if (Array.isArray(row.links) && row.links.includes(nodeId)) linkedHere.push(payload);
     }
 
     const sections = [];
-    if (inNote.length > 0) sections.push({ label: 'tasks in note', rows: inNote });
-    if (linkedHere.length > 0) sections.push({ label: 'tasks linking here', rows: linkedHere });
+    if (inNote.length > 0) sections.push({ label: 'tasks in this note', rows: inNote });
     return sections;
 }
 
@@ -469,7 +401,7 @@ function buildContextualQueryRecipes(nodeId, nodeFields, incomingGroups, outgoin
     }
 
     if (fieldsCache && fieldsCache.size) {
-        const observedFields = buildObservedFields(fieldsCache);
+        const { observedFields, observedIndex } = getVaultPatterns(fieldsCache, getVaultGeneration());
         const noteContext = buildNoteContext(nodeFields, nodeType, {
             observedFields,
             getSchemaForType: getSchema,
@@ -483,6 +415,7 @@ function buildContextualQueryRecipes(nodeId, nodeFields, incomingGroups, outgoin
             content: docText,
             fieldsCache,
             observedFields,
+            observedIndex,
             noteContext,
             getSchemaTargets,
             getSchemaForType: getSchema,
@@ -541,13 +474,16 @@ function getVisibleRelationColumns(rows) {
 }
 
 function getVisibleTaskColumns(rows) {
-    const candidates = ['date', 'done', 'file', 'text'];
+    const sameFile = rows.length > 0 && rows.every(function (row) {
+        return row.file && row.file === rows[0].file;
+    });
+    const candidates = sameFile ? ['text', 'date', 'done'] : ['text', 'date', 'done', 'file'];
     const visible = candidates.filter(function (col) {
         return rows.some(function (row) {
             return String(row[col] ?? '').trim();
         });
     });
-    return ['id', ...visible];
+    return visible;
 }
 
 module.exports = {

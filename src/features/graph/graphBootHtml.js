@@ -34,7 +34,7 @@ function buildBootHtml(webview, extensionUri) {
         <span id="focusMode" class="focus-mode">Local</span>
         <span id="focusName" class="focus-name">No focus</span>
       </div>
-      <span id="depthGroup" style="display:flex;align-items:center;gap:6px">
+      <span id="depthGroup" class="toolbar-advanced" style="display:flex;align-items:center;gap:6px">
         <span class="t-sep"></span>
         <span class="t-label">Depth</span>
         <select id="depthSel" class="inp" title="How many layers of linked notes to show around the focused note">
@@ -44,9 +44,17 @@ function buildBootHtml(webview, extensionUri) {
         </select>
         <span class="t-sep"></span>
       </span>
-      <input id="searchInp" class="inp" type="search" placeholder="Search nodes…">
-      <span class="t-sep"></span>
-      <button id="btnReveal" class="btn" title="Switch to Local mode and centre the graph on your currently open note">↺ Current Note</button>
+      <span id="typeGroup" class="toolbar-advanced" style="display:flex;align-items:center;gap:6px">
+        <span class="t-label">Type</span>
+        <select id="typeSel" class="inp" title="Filter the graph to one note type">
+          <option value="">All types</option>
+        </select>
+        <span class="t-sep"></span>
+      </span>
+      <input id="searchInp" class="inp toolbar-advanced" type="search" placeholder="Search nodes…">
+      <button id="btnReset" class="btn" title="Clear all filters">Reset</button>
+      <span class="t-sep toolbar-advanced"></span>
+      <button id="btnReveal" class="btn toolbar-advanced" title="Switch to Local mode and centre the graph on your currently open note">↺ Current Note</button>
     </div>
     <div id="modeHelp" class="mode-help">Local shows the current note, then adds one layer of linked notes around it.</div>
 
@@ -94,6 +102,10 @@ function buildBootHtml(webview, extensionUri) {
       <div class="card">
         <div class="card-hd">Types</div>
         <div id="typeChips" class="chips"></div>
+      </div>
+      <div class="card">
+        <div class="card-hd">Themes</div>
+        <div id="tagList" class="chips"></div>
       </div>
       <div class="card">
         <div class="card-hd">Most Connected</div>

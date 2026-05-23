@@ -15,16 +15,11 @@ const { getBacklinks } = require('../core/graph');
 const { getFieldsCache } = require('../core/indexService');
 const { getSchema, getSchemaTargets } = require('../registries/schemaRegistry');
 const {
-    inferFieldRole
-} = require('../intelligence/fieldRolesCore');
-const {
-    buildObservedFields,
     extractRelationIds,
     groupStructuredBacklinks,
     buildSchemaRelationGroups,
     buildObservedRelationGroups,
     buildSharedRelationContexts,
-    describeContextOrigin
 } = require('../intelligence/suggestionCore');
 const { scoreToConfidence } = require('../intelligence/confidence');
 const { getCachedContext } = require('../intelligence/activationCache');

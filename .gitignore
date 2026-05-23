@@ -14,9 +14,13 @@ TESTING.md
 # Internal / working documents
 internal/
 docs/
+website content/
+site/
 SESSION_LOG.md
 PROJECT_LOG.md
+TODO.md
 ROADMAP.md
+RELEASE_NOTES_0.5.0_ZIM.md
 INTELLIGENCE_CORE_CONTRACTS.md
 README-draft.md
 .vscode/settings.json
@@ -32,3 +36,5 @@ node_modules/.package-lock.json
 # Local backups
 backup/
 tmp-graph.html
+coverage/
+dist/

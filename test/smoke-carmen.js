@@ -20,7 +20,7 @@ const path = require('path');
 const { performance } = require('node:perf_hooks');
 
 const { buildIndex, getIndex, getFieldsCache, getVaultGeneration } = require('../src/core/index');
-const { getEdges, getBacklinks } = require('../src/core/graph');
+const { getEdges } = require('../src/core/graph');
 const { getRegistry } = require('../src/registries/typeRegistry');
 const { getSchema, getSchemaTargets } = require('../src/registries/schemaRegistry');
 const { normaliseDateInput } = require('../src/core/date');
@@ -39,7 +39,6 @@ const { getEdges: getEdgesForGraph } = require('../src/core/graph');
 const { buildFrontmatterOpportunityModel } = require('../src/intelligence/frontmatterIntelligence');
 const { computeSuggestionsForNode } = require('../src/engine/suggestions');
 const { shouldSurface, filterItemsForSurface, SURFACE_POLICY } = require('../src/intelligence/confidence');
-const { summarizeNoteRole } = require('../src/intelligence/noteRolesCore');
 
 // ─── helpers ───────────────────────────────────────────────────────
 
@@ -238,7 +237,6 @@ for (const fieldName of [...allFieldsToCheck].sort()) {
         // Sanity checks for the graph result
         const graphTarget = withGraph.targetType;
         const isKnownType = graphTarget ? idToType.has(graphTarget) || [...idToType.values()].includes(graphTarget) : true;
-        const reasonsMakeSense = withGraph.reasons.some(r => r.includes('graph usage'));
 
         if (graphTarget && !isKnownType) {
             fail(`NOISY graph inference: ${change} — "${graphTarget}" is not a known vault type`);
@@ -343,7 +341,6 @@ for (const [nodeId] of index) {
         const reportThreshold = SURFACE_POLICY['report-note-role'].minimum;
 
         const nearHover  = Math.abs(conf - hoverThreshold) <= BOUNDARY;
-        const nearReport = Math.abs(conf - reportThreshold) <= BOUNDARY;
 
         if (visibleInHover) {
             pass(`"${nodeId}" (${nodeType}) → role="${label}" conf=${conf.toFixed(2)} — surfaces in hover + report`);

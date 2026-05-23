@@ -13,14 +13,34 @@ require.cache.__ehr_vscode__ = {
     id: '__ehr_vscode__',
     filename: '__ehr_vscode__',
     loaded: true,
-    exports: { window: {} }
+    exports: {
+        window: {},
+        Uri: {
+            joinPath(...parts) {
+                return { fsPath: parts.map(part => String(part && (part.fsPath || part.path || part)).replace(/[\\/]+$/g, '')).join('/') };
+            }
+        }
+    }
 };
 
 require.cache.__ehr_graph__ = {
     id: '__ehr_graph__',
     filename: '__ehr_graph__',
     loaded: true,
-    exports: { getBacklinks() { return []; } }
+    exports: {
+        getBacklinks() { return []; },
+        getEdges(id) {
+            if (id === 'johnny-rico') {
+                return [
+                    { field: 'unit', targetId: 'roughnecks' },
+                    { field: 'body', targetId: 'dizzy-flores' },
+                    { field: 'body', targetId: 'mission-klendathu' }
+                ];
+            }
+            return [];
+        },
+        getGraphStats() { return { nodes: 10, totalEdges: 30, totalBacklinks: 8 }; }
+    }
 };
 
 require.cache.__ehr_index__ = {
@@ -35,11 +55,13 @@ require.cache.__ehr_index__ = {
     }
 };
 
+let taskRowsFixture = [];
+
 require.cache.__ehr_tasks__ = {
     id: '__ehr_tasks__',
     filename: '__ehr_tasks__',
     loaded: true,
-    exports: { buildTaskRows() { return []; } }
+    exports: { buildTaskRows() { return taskRowsFixture; } }
 };
 
 require.cache.__ehr_date__ = {
@@ -122,6 +144,7 @@ const {
     getVisibleRelationColumns,
     getVisibleTaskColumns
 } = require('../src/features/entityHub');
+const { buildHubHtml } = require('../src/features/entity/entityHubHtml');
 
 describe('entity hub query recipes', () => {
     test('builds contextual recipes from inbound and outbound note position', () => {
@@ -172,7 +195,16 @@ describe('entity hub query recipes', () => {
             { id: 'b', date: '', done: 'true', file: 'note-b', text: 'Reply' }
         ]);
 
-        assert.deepEqual(columns, ['id', 'done', 'file', 'text']);
+        assert.deepEqual(columns, ['text', 'done', 'file']);
+    });
+
+    test('task tables hide the file column when all tasks come from the same note', () => {
+        const columns = getVisibleTaskColumns([
+            { id: 'a', date: '', done: 'false', file: 'same-note', text: 'Follow up' },
+            { id: 'b', date: '2026-01-02', done: 'true', file: 'same-note', text: 'Reply' }
+        ]);
+
+        assert.deepEqual(columns, ['text', 'date', 'done']);
     });
 
     test('entity hub surfaces note-role intelligence in vault position rows', () => {
@@ -188,13 +220,22 @@ describe('entity hub query recipes', () => {
         ]);
 
         const model = buildEntityHubModel('fix-graph-selection', idIndex, fieldsCache);
+        // Facts appear first
+        assert.ok(model.vaultPositionRows.some(row => row.key === 'note type'));
+        assert.ok(model.vaultPositionRows.some(row => row.key === 'structured inbound links' && String(row.value).includes('vault avg')));
+        assert.ok(model.vaultPositionRows.some(row => row.key === 'structured outbound links' && String(row.value).includes('vault avg')));
+        assert.ok(model.vaultPositionRows.some(row => row.key === 'lifecycle'));
+        // Note role (intelligence row) appears after facts
         assert.ok(model.vaultPositionRows.some(row => row.key === 'note role'));
-        assert.ok(model.vaultPositionRows.some(row => row.value.includes('task')));
+        // Next-view suggestion still surfaces
         assert.ok(model.vaultPositionRows.some(row => row.key === 'next view'));
         assert.ok(model.vaultPositionRows.some(row => String(row.value).includes('Tasks for this project')));
+        // AI advice rows must not appear
+        assert.ok(!model.vaultPositionRows.some(row => row.key === 'best next step'), 'AI advice rows should not appear');
+        assert.ok(model.vaultDiagnosticRows.some(row => row.key === 'total inbound link rows'));
     });
 
-    test('entity hub surfaces shared-context bridge notes as next-link hints', () => {
+    test('entity hub surfaces contextual query recipes from shared-context notes', () => {
         const idIndex = new Map([['fix-graph-selection', '/vault/fix-graph-selection.md']]);
         const fieldsCache = new Map([
             ['fix-graph-selection', {
@@ -219,27 +260,17 @@ describe('entity hub query recipes', () => {
         ]);
 
         const model = buildEntityHubModel('fix-graph-selection', idIndex, fieldsCache);
-        assert.ok(model.vaultPositionRows.some(row => row.key === 'related notes'));
-        assert.ok(model.vaultPositionRows.some(row => String(row.value).includes('review-hover-card also connects around yamlink')));
-        assert.ok(model.vaultPositionRows.some(row => row.key === 'next links'));
-        assert.ok(model.vaultPositionRows.some(row => row.key === 'paths'));
-        assert.ok(model.vaultPositionRows.some(row => String(row.value).includes('review-hover-card sits close through yamlink: fix-graph-selection -> yamlink -> review-hover-card')));
-        assert.ok(model.vaultPositionRows.some(row => row.key === 'related note'));
-        assert.ok(model.vaultPositionRows.some(row => String(row.value).includes('review-hover-card seems to belong in the same flow through yamlink')));
-        assert.ok(model.vaultPositionRows.some(row => row.key === 'flow'));
-        assert.ok(model.vaultPositionRows.some(row => String(row.value).includes('project -> yamlink')));
-        assert.ok(model.vaultPositionRows.some(row => row.key === 'nearby note'));
-        assert.ok(model.vaultPositionRows.some(row => String(row.value).includes('review-hover-card also connects through project -> yamlink')));
-        assert.ok(model.vaultPositionRows.some(row => row.key === 'common view'));
-        assert.ok(model.vaultPositionRows.some(row => String(row.value).includes('project around yamlink')));
-        assert.ok(model.vaultPositionRows.some(row => row.key === 'common setup'));
-        assert.ok(model.vaultPositionRows.some(row => String(row.value).includes('project around yamlink often includes task and note')));
+        // AI advice rows must not appear
+        assert.ok(!model.vaultPositionRows.some(row => row.key === 'nearby relationships'), 'AI advice rows should not appear');
+        assert.ok(!model.vaultPositionRows.some(row => row.key === 'suggested links'), 'AI advice rows should not appear');
+        assert.ok(!model.vaultPositionRows.some(row => row.key === 'shared path'), 'AI advice rows should not appear');
+        // Contextual query recipes are still generated
         assert.ok(model.recipes.some(recipe => recipe.title === 'Related thread: yamlink'));
         assert.ok(model.recipes.some(recipe => recipe.queryText.includes('where project = [[yamlink]]')));
         assert.ok(model.recipes.some(recipe => recipe.title === 'Surrounding setup: yamlink'));
     });
 
-    test('entity hub can surface likely next links from adaptive field patterns', () => {
+    test('entity hub vault position shows inbound/outbound counts with vault averages', () => {
         const idIndex = new Map([
             ['contact-prospect', '/vault/contact-prospect.md'],
             ['contact-andreas', '/vault/contact-andreas.md'],
@@ -270,20 +301,12 @@ describe('entity hub query recipes', () => {
         ]);
 
         const model = buildEntityHubModel('contact-prospect', idIndex, fieldsCache);
-        assert.ok(model.vaultPositionRows.some(row => row.key === 'next step'));
-        assert.ok(model.vaultPositionRows.some(row => String(row.value).includes('account')));
-        assert.ok(model.vaultPositionRows.some(row => row.key === 'why'));
-        assert.ok(model.vaultPositionRows.some(row => row.key === 'pattern'));
-        assert.ok(model.vaultPositionRows.some(row => row.key === 'setup'));
-        assert.ok(model.vaultPositionRows.some(row => row.key === 'next fields'));
-        assert.ok(model.vaultPositionRows.some(row => String(row.value).includes('account')));
-        assert.ok(model.vaultPositionRows.some(row => row.key === 'next link'));
-        assert.ok(model.vaultPositionRows.some(row => String(row.value).includes('account often points to')));
-        assert.ok(model.vaultPositionRows.some(row => row.key === 'setup fields'));
-        assert.ok(model.vaultPositionRows.some(row => row.key === 'missing'));
-        assert.ok(model.vaultPositionRows.some(row => row.key === 'useful fields'));
-        assert.ok(model.vaultPositionRows.some(row => row.key === 'context'));
-        assert.ok(model.vaultPositionRows.some(row => String(row.value).includes('account -> acme')));
+        assert.ok(model.vaultPositionRows.some(row => row.key === 'note type'));
+        assert.ok(model.vaultPositionRows.some(row => row.key === 'structured inbound links' && String(row.value).includes('vault avg')));
+        assert.ok(model.vaultPositionRows.some(row => row.key === 'structured outbound links' && String(row.value).includes('vault avg')));
+        assert.ok(!model.vaultPositionRows.some(row => row.key === 'best next step'), 'AI advice rows should not appear');
+        assert.ok(!model.vaultPositionRows.some(row => row.key === 'likely next fields'), 'AI advice rows should not appear');
+        assert.ok(!model.vaultPositionRows.some(row => row.key === 'likely next link'), 'AI advice rows should not appear');
     });
 
     test('entity hub uses repeated body links as a note report signal', () => {
@@ -331,10 +354,117 @@ describe('entity hub query recipes', () => {
         ]);
 
         const model = buildEntityHubModel('contact-prospect', idIndex, fieldsCache);
-        assert.ok(model.vaultPositionRows.some(row => row.key === 'body links'));
-        assert.ok(model.vaultPositionRows.some(row => String(row.value).includes('acme (2)')));
-        assert.ok(model.vaultPositionRows.some(row => row.key === 'next link'));
-        assert.ok(model.vaultPositionRows.some(row => String(row.value).includes('acme')));
+        assert.ok(model.vaultDiagnosticRows.some(row => row.key === 'body evidence'));
+        assert.ok(model.vaultDiagnosticRows.some(row => String(row.value).includes('acme (2)')));
+        assert.ok(!model.vaultPositionRows.some(row => row.key === 'likely next link'), 'AI advice rows should not appear');
+    });
+
+    test('entity hub uses graph edges for outgoing links so body wikilinks count as outbound', () => {
+        const idIndex = new Map([
+            ['johnny-rico', '/vault/johnny-rico.md'],
+            ['roughnecks', '/vault/roughnecks.md'],
+            ['dizzy-flores', '/vault/dizzy-flores.md'],
+            ['mission-klendathu', '/vault/mission-klendathu.md']
+        ]);
+        const fieldsCache = new Map([
+            ['johnny-rico', { id: 'johnny-rico', type: 'character', unit: '[[roughnecks]]' }],
+            ['roughnecks', { id: 'roughnecks', type: 'unit', name: 'Roughnecks' }],
+            ['dizzy-flores', { id: 'dizzy-flores', type: 'character', name: 'Dizzy Flores' }],
+            ['mission-klendathu', { id: 'mission-klendathu', type: 'mission', title: 'Battle of Klendathu' }]
+        ]);
+
+        const model = buildEntityHubModel('johnny-rico', idIndex, fieldsCache);
+        const outbound = model.vaultPositionRows.find(row => row.key === 'structured outbound links');
+        const linksOutVia = model.vaultDiagnosticRows.find(row => row.key === 'links out via');
+
+        assert.equal(outbound.value, '1 (vault avg 3.0)');
+        assert.ok(String(linksOutVia.value).includes('body (2)'));
+        assert.ok(String(linksOutVia.value).includes('unit (1)'));
+    });
+
+    test('entity hub task sections only include tasks in the opened note', () => {
+        taskRowsFixture = [
+            {
+                id: 'a',
+                displayText: 'Task in note',
+                text: 'Task in note',
+                done: false,
+                date: '',
+                fileId: 'johnny-rico',
+                line: 3,
+                body: '',
+                links: []
+            },
+            {
+                id: 'b',
+                displayText: 'Task linking here',
+                text: 'Task linking here',
+                done: false,
+                date: '2026-03-30',
+                fileId: 'tasks-calendar',
+                line: 8,
+                body: '',
+                links: ['johnny-rico']
+            }
+        ];
+
+        const idIndex = new Map([
+            ['johnny-rico', '/vault/johnny-rico.md']
+        ]);
+        const fieldsCache = new Map([
+            ['johnny-rico', { id: 'johnny-rico', type: 'character' }]
+        ]);
+
+        const model = buildEntityHubModel('johnny-rico', idIndex, fieldsCache);
+        assert.deepEqual(model.taskSections.map(section => section.label), ['tasks in this note']);
+        assert.equal(model.taskSections[0].rows.length, 1);
+        assert.equal(model.timelineRows.length, 0);
+
+        taskRowsFixture = [];
+    });
+
+    test('entity hub html separates body mentions and limits views to one suggested and one inserted card', () => {
+        const html = buildHubHtml({
+            host: {
+                webview: {
+                    asWebviewUri(uri) { return uri; },
+                    cspSource: 'vscode-webview:'
+                }
+            },
+            extensionUri: { path: '/ext' },
+            nodeId: 'johnny-rico',
+            incomingGroups: [
+                { field: 'commander', rows: [{ sourceId: 'mission-klendathu', fields: { type: 'mission', title: 'Battle of Klendathu' } }], direction: 'incoming' },
+                { field: 'body', rows: [{ sourceId: 'dizzy-flores', fields: { type: 'character', name: 'Dizzy Flores' } }], direction: 'incoming' }
+            ],
+            outgoingGroups: [
+                { field: 'unit', rows: [{ sourceId: 'roughnecks', fields: { type: 'unit', name: 'Roughnecks' } }], direction: 'outgoing' },
+                { field: 'body', rows: [{ sourceId: 'carmen-ibanez', fields: { type: 'character', name: 'Carmen Ibanez' } }], direction: 'outgoing' }
+            ],
+            summaryRows: [],
+            taskSections: [],
+            timelineRows: [],
+            suggestions: [
+                { title: 'First view', count: 3, sourceType: 'mission', field: 'commander', queryText: '!view incoming mission\nvia commander', inserted: false },
+                { title: 'Second view', count: 2, sourceType: 'mission', field: 'unit', queryText: '!view incoming mission\nvia unit', inserted: false }
+            ],
+            suggestionExplanation: null,
+            recipes: [
+                { title: 'Backlinks to this note', description: 'See everything that links here', queryText: '!view incoming * | Backlinks', inserted: true },
+                { title: 'More character notes', description: 'Browse other character notes', queryText: '!view character', inserted: true }
+            ],
+            vaultPositionRows: [],
+            vaultDiagnosticRows: [{ key: 'body mentions to this note', value: '1' }],
+            nodeFields: { type: 'character' },
+            idIndex: new Map()
+        });
+
+        assert.ok(html.includes('outgoing relations'));
+        assert.ok(html.includes('incoming relations'));
+        assert.ok(html.includes('body mentions from this note'));
+        assert.ok(html.includes('body mentions to this note'));
+        assert.ok(html.includes('signal details'));
+        assert.equal((html.match(/class="suggestion-row"/g) || []).length, 2);
     });
 });
 

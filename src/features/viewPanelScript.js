@@ -67,12 +67,16 @@
         resetPanelState,
         saveState,
         setColumnFilters,
+        setCurrentPage,
+        setPageSize,
         selectCell,
         setStatus,
         switchTab,
         updateTableSummary,
         updateVisibleCount,
-        getColumnFilters
+        getColumnFilters,
+        renderPagination,
+        setColumnFilterValues
     } = viewRuntime;
 
     document.querySelectorAll('.tab-btn').forEach((btn, i) => {
@@ -128,17 +132,21 @@
         saveState,
         selectCell,
         setColumnFilters,
+        setCurrentPage,
+        setPageSize,
         setStatus,
         startEdit,
         updateTableSummary,
         updateVisibleCount,
         getColumnFilters,
+        renderPagination,
         applySelectionFilter,
         clearQuickFilters,
         revertRow,
         handleEditResult,
         handleBulkEditResult,
-        applyBulkPaste
+        applyBulkPaste,
+        setColumnFilterValues
     });
 
     uiRuntime.attach();

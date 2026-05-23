@@ -2,10 +2,13 @@ const vscode = require('vscode');
 const fs = require('fs');
 const path = require('path');
 const { validateAll } = require('../diagnostics/diagnostics');
-const { updateSingleFile } = require('../core/index');
+const { buildIndex, updateSingleFile, invalidateFileCache } = require('../core/index');
 const { canonicalizeId } = require('../core/id');
 const { getFieldsCache } = require('../core/indexService');
 const { getPrimaryWorkspaceRoot, getWorkspaceRootForFile } = require('../core/workspace');
+const { writeFieldValue } = require('../core/writeField');
+const { parseFrontmatterDocument } = require('../core/frontmatter');
+const { getSchema, getSchemaTargets } = require('../registries/schemaRegistry');
 
 const TEMPLATES_DIR = '_templates';
 
@@ -62,6 +65,25 @@ function buildSmartFrontmatter(id, type, fieldsCache, today, reverseField, rever
     }
     if (reverseField && reverseId && !commonFields.includes(reverseField)) {
         fm += `${reverseField}: [[${reverseId}]]\n`;
+    }
+    fm += `created: ${today}\n---\n\n`;
+    return fm;
+}
+
+function buildSchemaFrontmatter(id, type, schemaFields, today, reverseField, reverseId) {
+    const entries = Object.entries(schemaFields);
+    const required = entries.filter(([, def]) => def.required);
+    const optional = entries.filter(([, def]) => !def.required);
+
+    let fm = `---\nid: ${id}\ntype: ${type}\n`;
+    for (const [fieldName, fieldDef] of [...required, ...optional]) {
+        if (reverseField && fieldName === reverseField && reverseId) {
+            fm += `${fieldName}: [[${reverseId}]]\n`;
+        } else if (fieldDef.type === 'relation') {
+            fm += `${fieldName}: [[]]\n`;
+        } else {
+            fm += `${fieldName}:\n`;
+        }
     }
     fm += `created: ${today}\n---\n\n`;
     return fm;
@@ -137,7 +159,61 @@ function applyTemplate(content, newId, today) {
         result = result.replace(/^(\s*created:)\s*$/m, `$1 ${today}`);
     }
 
+    if (/^\s*date:\s*$/m.test(result)) {
+        result = result.replace(/^(\s*date:)\s*$/m, `$1 ${today}`);
+    }
+
     return result;
+}
+
+function buildSuggestedRelationNodeId(targetType, sourceId, fieldName) {
+    const source = canonicalizeId(String(sourceId || '').trim()) || 'note';
+    const target = canonicalizeId(String(targetType || fieldName || 'related').trim()) || 'related';
+    if (source && target) return `${source}-${target}`;
+    return `new-${target}`;
+}
+
+function inferReverseRelationField(targetType, sourceType, sourceId, fieldsCache) {
+    const normalizedSourceType = String(sourceType || '').trim().toLowerCase();
+    if (!normalizedSourceType) return null;
+
+    for (const fields of fieldsCache.values()) {
+        const noteType = String(fields?.type || '').trim().toLowerCase();
+        if (noteType !== String(targetType || '').trim().toLowerCase()) continue;
+        if (Object.prototype.hasOwnProperty.call(fields, normalizedSourceType)) return normalizedSourceType;
+        if (Object.prototype.hasOwnProperty.call(fields, `${normalizedSourceType}s`)) return `${normalizedSourceType}s`;
+    }
+
+    if (sourceId && normalizedSourceType) return normalizedSourceType;
+    return null;
+}
+
+function mergeRelationFieldValue(existingValue, targetId) {
+    const nextLink = `[[${targetId}]]`;
+    const current = String(existingValue || '').trim();
+    if (!current) return nextLink;
+    if (current.includes(nextLink)) return current;
+    return `${current}, ${nextLink}`;
+}
+
+function readExistingFieldValue(filePath, fieldName) {
+    try {
+        const content = fs.readFileSync(filePath, 'utf8');
+        const parsed = parseFrontmatterDocument(content);
+        if (!parsed?.hasFrontmatter) return '';
+        return parsed.data?.[fieldName] ?? '';
+    } catch (error) {
+        return '';
+    }
+}
+
+function syncIndexAfterWrite(filePath) {
+    if (!filePath) return;
+    invalidateFileCache(filePath);
+    const result = updateSingleFile(filePath, { force: true, workspaceFolders: vscode.workspace.workspaceFolders });
+    if (result.needsFull && vscode.workspace.workspaceFolders) {
+        buildIndex(vscode.workspace.workspaceFolders);
+    }
 }
 
 function registerNodeCreationCommands(context, getIndex, getTypes) {
@@ -214,11 +290,12 @@ function registerNodeCreationCommands(context, getIndex, getTypes) {
             const filePath = path.join(root, `${id}.md`);
             if (fs.existsSync(filePath)) {
                 vscode.window.showWarningMessage(`Yamlink: "${id}.md" already exists.`);
-                return;
+                return null;
             }
 
             const today = new Date().toISOString().split('T')[0];
             let content;
+            const reverseField = inferReverseRelationField(chosenType, sourceType, sourceId, getFieldsCache());
             const templatePath = chosenType
                 ? path.join(root, '_templates', chosenType + '.md')
                 : null;
@@ -230,16 +307,20 @@ function registerNodeCreationCommands(context, getIndex, getTypes) {
                     content = null;
                 }
             }
-            if (!content) {
-                if (chosenType) {
-                    content = buildSmartFrontmatter(id, chosenType, getFieldsCache(), today, sourceType || null, sourceId || null);
+            if (!content && chosenType) {
+                const schema = getSchema(chosenType);
+                if (schema && Object.keys(schema.fields).length > 0) {
+                    content = buildSchemaFrontmatter(id, chosenType, schema.fields, today, reverseField || null, sourceId || null);
                 } else {
-                    content = `---\nid: ${id}\ncreated: ${today}\n---\n\n`;
+                    content = buildSmartFrontmatter(id, chosenType, getFieldsCache(), today, reverseField || null, sourceId || null);
                 }
+            }
+            if (!content) {
+                content = `---\nid: ${id}\ncreated: ${today}\n---\n\n`;
             }
 
             fs.writeFileSync(filePath, content, 'utf8');
-            updateSingleFile(filePath);
+            syncIndexAfterWrite(filePath);
             validateAll(getIndex);
 
             const doc = await vscode.workspace.openTextDocument(filePath);
@@ -249,6 +330,55 @@ function registerNodeCreationCommands(context, getIndex, getTypes) {
             vscode.window.showInformationMessage(
                 `Yamlink: Created node "${id}"${chosenType ? ` (${chosenType})` : ''}`
             );
+
+            return {
+                id,
+                filePath,
+                type: chosenType || null
+            };
+        })
+    );
+
+    context.subscriptions.push(
+        vscode.commands.registerCommand('yamlink.createRelatedNote', async (options = {}) => {
+            const targetType = String(options.targetType || options.fieldName || 'related').trim().toLowerCase();
+            const sourceId = String(options.sourceId || '').trim() || null;
+            const sourceFilePath = options.sourceFilePath || null;
+            const sourceType = String(options.sourceType || '').trim().toLowerCase() || null;
+            const relationField = String(options.fieldName || targetType || 'related').trim().toLowerCase();
+            const suggestedId = buildSuggestedRelationNodeId(targetType, sourceId, relationField);
+
+            const rawId = await vscode.window.showInputBox({
+                title: `Create ${targetType} note`,
+                prompt: sourceId
+                    ? `Create a ${targetType} note to link from ${sourceId}`
+                    : `Create a ${targetType} note`,
+                value: suggestedId,
+                placeHolder: suggestedId,
+                validateInput: (v) => {
+                    if (!v || !v.trim()) return 'ID cannot be empty';
+                    if (!canonicalizeId(v)) return 'Enter text that can be turned into an ID';
+                    return null;
+                }
+            });
+            if (!rawId) return;
+
+            const cleanId = canonicalizeId(rawId);
+            const created = await vscode.commands.executeCommand(
+                'yamlink.createNote',
+                cleanId,
+                targetType,
+                sourceFilePath,
+                sourceId,
+                sourceType
+            );
+            if (!created || !sourceFilePath || !relationField) return;
+
+            const existingValue = readExistingFieldValue(sourceFilePath, relationField);
+            const nextValue = mergeRelationFieldValue(existingValue, cleanId);
+            await writeFieldValue(sourceFilePath, relationField, nextValue);
+            syncIndexAfterWrite(sourceFilePath);
+            validateAll(getIndex);
         })
     );
 
@@ -329,7 +459,7 @@ created:
 
             const finalContent = applyTemplate(picked.template.content, cleanId, today);
             fs.writeFileSync(filePath, finalContent, 'utf8');
-            updateSingleFile(filePath);
+            syncIndexAfterWrite(filePath);
             validateAll(getIndex);
 
             const doc = await vscode.workspace.openTextDocument(filePath);
@@ -337,6 +467,84 @@ created:
             positionCursorOnFirstEmptyField(editor, doc);
 
             vscode.window.showInformationMessage(`Yamlink: Created "${cleanId}" from template "${picked.label}"`);
+        })
+    );
+
+    context.subscriptions.push(
+        vscode.commands.registerCommand('yamlink.newNoteFromSchema', async () => {
+            if (!vscode.workspace.workspaceFolders) {
+                vscode.window.showErrorMessage('Yamlink: No workspace folder open.');
+                return;
+            }
+            const root = getPrimaryWorkspaceRoot(vscode.workspace.workspaceFolders);
+            if (!root) {
+                vscode.window.showErrorMessage('Yamlink: No workspace folder open.');
+                return;
+            }
+
+            const schemaTypes = [...getSchemaTargets()].sort();
+            if (!schemaTypes.length) {
+                vscode.window.showInformationMessage(
+                    'Yamlink: No schemas found. Create a note with type: schema and target: yourtype to define one.'
+                );
+                return;
+            }
+
+            const items = schemaTypes.map(type => {
+                const schema = getSchema(type);
+                const fields = schema ? Object.entries(schema.fields) : [];
+                const requiredCount = fields.filter(([, def]) => def.required).length;
+                const fieldSummary = fields.map(([name, def]) => def.required ? `${name}*` : name).join(', ');
+                return {
+                    label: type,
+                    description: fields.length
+                        ? `${fields.length} field${fields.length !== 1 ? 's' : ''}${requiredCount ? ` · ${requiredCount} required` : ''}`
+                        : 'no fields defined',
+                    detail: fieldSummary ? `Fields: ${fieldSummary}  (* = required)` : undefined,
+                    type,
+                    schema
+                };
+            });
+
+            const picked = await vscode.window.showQuickPick(items, {
+                title: 'New Note from Schema',
+                placeHolder: 'Select a schema type',
+                matchOnDescription: true,
+                matchOnDetail: true
+            });
+            if (!picked) return;
+
+            const rawId = await vscode.window.showInputBox({
+                title: `New ${picked.type} note`,
+                prompt: 'Note ID',
+                placeHolder: `my-${picked.type}`,
+                validateInput: (v) => {
+                    if (!v || !v.trim()) return 'ID cannot be empty';
+                    if (!canonicalizeId(v)) return 'Enter text that can be turned into an ID';
+                    return null;
+                }
+            });
+            if (!rawId) return;
+
+            const cleanId = canonicalizeId(rawId);
+            const today = new Date().toISOString().split('T')[0];
+            const filePath = path.join(root, `${cleanId}.md`);
+            if (fs.existsSync(filePath)) {
+                vscode.window.showWarningMessage(`Yamlink: "${cleanId}.md" already exists.`);
+                return;
+            }
+
+            const schemaFields = picked.schema?.fields || {};
+            const content = buildSchemaFrontmatter(cleanId, picked.type, schemaFields, today, null, null);
+            fs.writeFileSync(filePath, content, 'utf8');
+            syncIndexAfterWrite(filePath);
+            validateAll(getIndex);
+
+            const doc = await vscode.workspace.openTextDocument(filePath);
+            const editor = await vscode.window.showTextDocument(doc, { preview: false });
+            positionCursorOnFirstEmptyField(editor, doc);
+
+            vscode.window.showInformationMessage(`Yamlink: Created "${cleanId}" (${picked.type})`);
         })
     );
 
@@ -359,7 +567,7 @@ created:
 
             await vscode.workspace.applyEdit(edit);
             await document.save();
-            updateSingleFile(document.uri.fsPath);
+            syncIndexAfterWrite(document.uri.fsPath);
             validateAll(getIndex);
 
             vscode.window.showInformationMessage(`Yamlink: "${suggestedId}" is now a Yamlink node`);

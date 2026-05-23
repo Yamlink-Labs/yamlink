@@ -130,11 +130,6 @@ function makeDoc(text, languageId = 'markdown') {
     };
 }
 
-function getDiags(doc) {
-    // re-use the module-level diagnosticCollection set by registerDiagnostics
-    return diagnosticCollection.get(doc.uri);
-}
-
 // Initialise the collection by calling registerDiagnostics with a dummy context
 let diagnosticCollection;
 {
@@ -264,7 +259,12 @@ describe('validateDocument', () => {
         const idIndex = new Map([['alpha', {}]]);
         const doc = makeDoc('---\nid: alpha\n---\n');
         const diags = runValidate(doc, idIndex);
-        assert.ok(diags.some(d => d.code === 'yamlink.querySuggestion'));
+        const diag = diags.find(d => d.code === 'yamlink.querySuggestion');
+        assert.ok(diag);
+        assert.equal(diag.range.start.line, 1);
+        assert.equal(diag.range.start.character, 0);
+        assert.equal(diag.range.end.line, 1);
+        assert.equal(diag.range.end.character, 'id: alpha'.length);
     });
 });
 

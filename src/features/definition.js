@@ -1,29 +1,39 @@
+'use strict';
+
 const vscode = require('vscode');
+const { getAliasIndex } = require('../core/indexService');
+const { resolveLinkedTarget } = require('../core/id');
 
 function registerDefinition(context, getIndex) {
     context.subscriptions.push(
-        vscode.languages.registerDefinitionProvider('markdown', {
-            provideDefinition(document, position) {
+        vscode.languages.registerDocumentLinkProvider('markdown', {
+            provideDocumentLinks(document) {
                 const idIndex = getIndex();
-                const line = document.lineAt(position.line).text;
-                const regex = /\[\[([^\]]+)\]\]/g;
+                const aliasIdx = getAliasIndex();
+                const links = [];
 
-                let match;
-                while ((match = regex.exec(line)) !== null) {
-                    const start = match.index;
-                    const end = start + match[0].length;
+                for (let lineNumber = 0; lineNumber < document.lineCount; lineNumber += 1) {
+                    const line = document.lineAt(lineNumber).text;
+                    const regex = /!?\[\[([^\]]+)\]\]/g;
 
-                    if (position.character >= start && position.character <= end) {
-                        const id = match[1];
-                        const filePath = idIndex.get(id);
-                        if (!filePath) return;
+                    let match;
+                    while ((match = regex.exec(line)) !== null) {
+                        const resolvedId = resolveLinkedTarget(match[1], idIndex, aliasIdx);
+                        const filePath = resolvedId ? idIndex.get(resolvedId) : null;
+                        if (!filePath) continue;
 
-                        return new vscode.Location(
-                            vscode.Uri.file(filePath),
-                            new vscode.Position(0, 0)
+                        const start = match.index;
+                        const end = start + match[0].length;
+                        const range = new vscode.Range(
+                            new vscode.Position(lineNumber, start),
+                            new vscode.Position(lineNumber, end)
                         );
+
+                        links.push(new vscode.DocumentLink(range, vscode.Uri.file(filePath)));
                     }
                 }
+
+                return links;
             }
         })
     );

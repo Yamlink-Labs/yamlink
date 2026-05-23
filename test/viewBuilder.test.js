@@ -51,12 +51,8 @@ const {
     getViewBlockByIndex,
     getSchemaBackedDefaultSortField,
     getAvailableFieldsForType,
-    defaultSelectClauseForType,
     appendQueryOptions,
-    buildTypeViewQuery,
-    buildIncomingViewQuery,
     refineParsedQuery,
-    buildRefinedBlockText
 } = require('../src/actions/viewBuilder');
 
 function doc(text) {

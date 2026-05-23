@@ -10,13 +10,16 @@ const { createViewPanelController } = require('./view/viewPanelController');
 const {
     renderPanel,
     normaliseTableDisplayValue,
-    buildTableEmptyStateTitle
+    buildTableEmptyStateTitle,
+    buildEmptyStateHint,
+    classifyQueryWarnings,
+    buildWarningBanner
 } = require('./view/viewPanelHtml');
 
 function syncIndexAfterWrite(filePath) {
     if (!filePath) return;
     invalidateFileCache(filePath);
-    const result = updateSingleFile(filePath, { force: true });
+    const result = updateSingleFile(filePath, { force: true, workspaceFolders: vscode.workspace.workspaceFolders });
     if (result.needsFull && vscode.workspace.workspaceFolders) {
         buildIndex(vscode.workspace.workspaceFolders);
     }
@@ -185,5 +188,8 @@ module.exports = {
     writeFieldValue,
     normaliseTableDisplayValue,
     extractIdFromText,
-    buildTableEmptyStateTitle
+    buildTableEmptyStateTitle,
+    buildEmptyStateHint,
+    classifyQueryWarnings,
+    buildWarningBanner
 };

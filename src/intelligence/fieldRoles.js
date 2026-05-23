@@ -18,6 +18,26 @@ const {
     inferFieldRole: inferFieldRolePure
 } = require('./fieldRolesCore');
 
+const FALLBACK_TYPE_CANDIDATES = new Set([
+    'account',
+    'company',
+    'contact',
+    'lead',
+    'opportunity',
+    'project',
+    'task',
+    'meeting',
+    'event',
+    'note',
+    'mission',
+    'character',
+    'unit',
+    'artifact',
+    'concept',
+    'place',
+    'record'
+]);
+
 function buildObservedFields() {
     const observedFields = [];
     for (const value of getFieldsCache().values()) {
@@ -51,7 +71,10 @@ function buildGraphObservations(idIndex) {
 }
 
 function inferTargetTypeFromFieldName(fieldName) {
-    return inferTargetTypeFromFieldNamePure(fieldName, getTypes());
+    return inferTargetTypeFromFieldNamePure(fieldName, new Set([
+        ...Array.from(getTypes()),
+        ...Array.from(FALLBACK_TYPE_CANDIDATES)
+    ]));
 }
 
 function inferFieldRole(fieldName, options = {}) {
@@ -65,10 +88,13 @@ function inferFieldRole(fieldName, options = {}) {
         for (const id of ids) idToType.set(id, type);
     }
 
-    return inferFieldRolePure(normalizedField, {
+    const result = inferFieldRolePure(normalizedField, {
         documentType,
         schemaField,
-        knownTypes: getTypes(),
+        knownTypes: new Set([
+            ...Array.from(getTypes()),
+            ...Array.from(FALLBACK_TYPE_CANDIDATES)
+        ]),
         observedFields: buildObservedFields(),
         graphObservations: buildGraphObservations(options.idIndex || getIndex()),
         idToType,
@@ -77,6 +103,12 @@ function inferFieldRole(fieldName, options = {}) {
         semanticRolePriors: DEFAULT_SEMANTIC_ROLE_PRIORS,
         inferenceConfidence: DEFAULT_INFERENCE_CONFIDENCE
     });
+    // Cap name-only semantic role confidence at 0.40. Evidence-backed roles (date → 0.84,
+    // status → 0.75) are already above 0.62 and won't be affected.
+    if (result.semanticRole && result.semanticRole !== 'relation' && result.semanticConfidence <= 0.62) {
+        return { ...result, semanticConfidence: 0.40 };
+    }
+    return result;
 }
 
 module.exports = {

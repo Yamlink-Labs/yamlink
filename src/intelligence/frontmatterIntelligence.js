@@ -53,11 +53,17 @@ function buildFrontmatterOpportunityModel(nodeFields, options = {}) {
     });
     const currentMentionedIds = options.currentMentionedIds
         || [...extractBodyMentionedIds(options.content || '').keys()];
+    const mentionedIdSet = new Set(
+        currentMentionedIds
+            .map((id) => String(id || '').trim().toLowerCase())
+            .filter(Boolean)
+    );
 
     const patterns = buildAdaptiveFieldPatterns(nodeFields || {}, noteContext, fieldsCache, {
         nodeType,
         observedFields,
         observedIndex,
+        currentTags: Array.from(noteContext?.currentTags || []),
         currentMentionedIds,
         getSchemaForType: options.getSchemaForType,
         dateParser: options.dateParser,
@@ -69,23 +75,39 @@ function buildFrontmatterOpportunityModel(nodeFields, options = {}) {
         .slice(0, options.limit || 4)
         .map((pattern, index) => {
             const sampleTargets = Array.from(pattern.sampleTargets || []);
+            const bodySupportedTargets = sampleTargets.filter((target) =>
+                mentionedIdSet.has(String(target || '').trim().toLowerCase())
+            );
+            const bodySupportCount = bodySupportedTargets.length;
+            const bodyBoost = bodySupportCount > 0 ? (120 + (bodySupportCount * 30)) : 0;
+            const summary = summarizePattern(pattern);
             return {
                 key: pattern.field,
                 field: pattern.field,
-                score: Math.max(0, Math.round((pattern.score || 0) + 220 - (index * 18))),
+                score: Math.max(0, Math.round((pattern.score || 0) + 220 - (index * 18) + bodyBoost)),
                 count: pattern.count || 0,
                 relational: Boolean(pattern.relational),
                 semanticRole: pattern.semanticRole || null,
                 sharedFields: Array.from(pattern.sharedFields || []),
                 sourceRoles: Array.from(pattern.sourceRoles || []),
                 sampleTargets,
-                summary: summarizePattern(pattern),
+                bodySupported: bodySupportCount > 0,
+                bodySupportedTargets,
+                summary: bodySupportCount > 0
+                    ? `${summary}; the body also keeps pointing to ${bodySupportedTargets.join(', ')}`
+                    : summary,
                 insertText: pattern.relational ? `${pattern.field}: [[\n` : `${pattern.field}: \n`,
                 relationInsertText: pattern.relational && sampleTargets.length
                     ? `${pattern.field}: [[${sampleTargets[0]}]]\n`
                     : null
             };
-        });
+        })
+        .sort((a, b) =>
+            (Number(b.score || 0) - Number(a.score || 0))
+            || (Number(b.bodySupported ? 1 : 0) - Number(a.bodySupported ? 1 : 0))
+            || (Number(b.count || 0) - Number(a.count || 0))
+            || String(a.field || '').localeCompare(String(b.field || ''))
+        );
 
     const likelyLinks = likelyFields.filter((hint) => hint.relational && hint.sampleTargets.length);
     const connectionField = pickConnectionField(nodeFields);
@@ -146,7 +168,30 @@ function buildFrontmatterOpportunityModel(nodeFields, options = {}) {
         statusLikeValues: options.statusLikeValues || DEFAULT_STATUS_LIKE_VALUES,
         semanticRolePriors: options.semanticRolePriors || DEFAULT_SEMANTIC_ROLE_PRIORS,
         gapLimit: options.gapLimit || 4
-    });
+    }).map((gap) => {
+        const sampleTargets = Array.from(gap.sampleTargets || []);
+        const bodySupportedTargets = sampleTargets.filter((target) =>
+            mentionedIdSet.has(String(target || '').trim().toLowerCase())
+        );
+        const bodySupportCount = bodySupportedTargets.length;
+        const bodyBoost = bodySupportCount > 0 ? (110 + (bodySupportCount * 25)) : 0;
+        return {
+            ...gap,
+            score: Math.max(0, Math.round((gap.score || 0) + bodyBoost)),
+            bodySupported: bodySupportCount > 0,
+            bodySupportedTargets,
+            summary: bodySupportCount > 0
+                ? `${gap.summary}; the body also keeps pointing to ${bodySupportedTargets.join(', ')}`
+                : gap.summary,
+            missingSummary: bodySupportCount > 0
+                ? `${gap.missingSummary}; the body keeps pointing to ${bodySupportedTargets.join(', ')}`
+                : gap.missingSummary
+        };
+    }).sort((a, b) =>
+        (Number(b.score || 0) - Number(a.score || 0))
+        || (Number(b.bodySupported ? 1 : 0) - Number(a.bodySupported ? 1 : 0))
+        || String(a.field || '').localeCompare(String(b.field || ''))
+    );
     const recommendedBundle = buildRecommendedBundles(likelyFields, likelyGaps, {
         bundleLimit: options.bundleLimit || 3
     });
@@ -189,6 +234,9 @@ function buildFrontmatterOpportunityModel(nodeFields, options = {}) {
     const relationViews = buildRelationViewHints(mergedConnections, {
         getDefaultSortField: options.getDefaultSortField
     });
+    const bodyMentionHints = buildBodyMentionHints(options.content || '', nodeFields || {}, fieldsCache, {
+        threshold: options.bodyMentionThreshold || 2
+    }).slice(0, options.bodyMentionLimit || 3);
 
     return {
         nodeType,
@@ -205,6 +253,7 @@ function buildFrontmatterOpportunityModel(nodeFields, options = {}) {
         surroundingSetups,
         likelyConnections: mergedConnections,
         relationViews,
+        bodyMentionHints,
         setupFields,
         setupInsertText,
         relationSetupFields,
@@ -221,6 +270,7 @@ function buildFrontmatterGuidanceSummary(model = {}) {
     const nearbyCompanion = Array.isArray(model.likelyCompanions) ? model.likelyCompanions[0] : null;
     const threadView = Array.isArray(model.contextThreadViews) ? model.contextThreadViews[0] : null;
     const surroundingSetup = Array.isArray(model.surroundingSetups) ? model.surroundingSetups[0] : null;
+    const bodyMention = Array.isArray(model.bodyMentionHints) ? model.bodyMentionHints[0] : null;
     const recommendedBundle = model.recommendedBundle && Array.isArray(model.recommendedBundle.fields) && model.recommendedBundle.fields.length
         ? model.recommendedBundle
         : null;
@@ -236,6 +286,7 @@ function buildFrontmatterGuidanceSummary(model = {}) {
         nearbyCompanion,
         threadView,
         surroundingSetup,
+        bodyMention,
         recommendedBundle,
         contextBundle,
         headline: '',
@@ -243,6 +294,7 @@ function buildFrontmatterGuidanceSummary(model = {}) {
         why: '',
         workflowSummary: '',
         setupSummary: '',
+        bodyEvidence: '',
         starterActions: []
     };
 
@@ -276,6 +328,16 @@ function buildFrontmatterGuidanceSummary(model = {}) {
         };
         summary.why = nextField.summary;
         summary.starterActions.push(summary.bestNextStep);
+    } else if (bodyMention) {
+        summary.headline = `${bodyMention.id} keeps showing up in the body`;
+        summary.bestNextStep = {
+            label: `link ${bodyMention.id}`,
+            detail: `${bodyMention.id} appears ${bodyMention.count} times in the body without a matching frontmatter link`,
+            insertText: bodyMention.insertText,
+            kind: 'body-mention'
+        };
+        summary.why = summary.bestNextStep.detail;
+        summary.starterActions.push(summary.bestNextStep);
     }
 
     if (recommendedBundle) {
@@ -303,6 +365,12 @@ function buildFrontmatterGuidanceSummary(model = {}) {
     }
     if (!summary.workflowSummary && nearbyCompanion) {
         summary.workflowSummary = nearbyCompanion.summary;
+    }
+    if (bodyMention) {
+        const bodyHints = (model.bodyMentionHints || []).slice(0, 2);
+        summary.bodyEvidence = bodyHints.length === 1
+            ? `the body already points at ${bodyHints[0].id}`
+            : `the body already points at ${bodyHints.map((hint) => hint.id).join(' and ')}`;
     }
 
     if (nextConnection) {

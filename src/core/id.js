@@ -28,7 +28,28 @@ function extractCanonicalIdFromFrontmatter(content) {
     return canonical || null;
 }
 
+function canonicalizeLinkedTarget(raw) {
+    const target = String(raw || '').trim().split('|')[0].trim().split('#')[0].trim().split('^')[0].trim();
+    return target ? canonicalizeId(target) : '';
+}
+
+// Resolves a raw wikilink target to a canonical ID that actually exists
+// in idIndex. Checks direct ID first, then alias index. Returns the
+// resolved canonical ID, or null if not found.
+function resolveLinkedTarget(raw, idIndex, aliasIndex) {
+    const canonical = canonicalizeLinkedTarget(raw);
+    if (!canonical) return null;
+    if (idIndex.has(canonical)) return canonical;
+    if (aliasIndex) {
+        const resolved = aliasIndex.get(canonical);
+        if (resolved && idIndex.has(resolved)) return resolved;
+    }
+    return null;
+}
+
 module.exports = {
     canonicalizeId,
-    extractCanonicalIdFromFrontmatter
+    extractCanonicalIdFromFrontmatter,
+    canonicalizeLinkedTarget,
+    resolveLinkedTarget
 };

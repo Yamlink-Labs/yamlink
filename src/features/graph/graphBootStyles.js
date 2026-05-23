@@ -21,8 +21,9 @@ body{background:var(--bg);color:var(--text);font:13px/1.5 var(--sans)}
 .canvas-wrap{
   flex:1;position:relative;overflow:hidden;min-width:0;
   background:
-    radial-gradient(circle at 18% 18%,color-mix(in srgb,var(--accent2) 7%,transparent),transparent 36%),
-    radial-gradient(circle at 82% 82%,color-mix(in srgb,var(--accent) 5%,transparent),transparent 34%),
+    radial-gradient(circle at 16% 16%,color-mix(in srgb,var(--accent2) 10%,transparent),transparent 40%),
+    radial-gradient(circle at 84% 80%,color-mix(in srgb,var(--accent) 8%,transparent),transparent 38%),
+    radial-gradient(circle at 50% 96%,color-mix(in srgb,var(--accent3) 5%,transparent),transparent 32%),
     var(--bg)
 }
 #graph{position:absolute;inset:0}
@@ -176,6 +177,13 @@ body.vscode-light .btn,body.vscode-light .chip,body.vscode-light .inp{box-shadow
 body.vscode-light .btn.refine-btn{color:color-mix(in srgb,var(--accent) 68%,var(--text))}
 body.vscode-light .chip.active{color:color-mix(in srgb,var(--accent) 80%,var(--text))}
 body.vscode-light .live-bar{background:color-mix(in srgb,var(--surface) 58%,white)}
+/* Narrow sidebar embed: hide internal info panel and advanced toolbar items */
+@media (max-width: 520px) {
+  .sidebar{display:none}
+  .toolbar-advanced{display:none!important}
+  .focus-pill{max-width:160px}
+  .toolbar{gap:5px;padding:6px 8px}
+}
 `;
 
 module.exports = {

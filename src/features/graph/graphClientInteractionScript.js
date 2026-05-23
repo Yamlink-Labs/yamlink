@@ -82,9 +82,11 @@ function applySearch() {
 function applyTypeFilter() {
   const cy = S.cy;
   if (!cy) return;
-  if (!S.typeFilters.size) { cy.elements().removeClass('dim'); applySearch(); return; }
+  const activeTypes = new Set(S.typeFilters);
+  if (S.primaryTypeFilter) activeTypes.add(S.primaryTypeFilter);
+  if (!activeTypes.size) { cy.elements().removeClass('dim'); applySearch(); return; }
   cy.elements().removeClass('dim');
-  cy.nodes().forEach(n => { if (!S.typeFilters.has(n.data('type'))) n.addClass('dim'); });
+  cy.nodes().forEach(n => { if (!activeTypes.has(n.data('type'))) n.addClass('dim'); });
   cy.edges().forEach(e => {
     if (e.source().hasClass('dim') || e.target().hasClass('dim')) e.addClass('dim');
   });
@@ -98,6 +100,7 @@ function applyTypeFilter() {
       selected.addClass('sel');
     }
   }
+  applySearch();
 }
 
 function pulse(node) {

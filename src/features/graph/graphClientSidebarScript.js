@@ -19,6 +19,11 @@ function updateSelCard() {
   const det = S.payload.model.nodeDetails && S.payload.model.nodeDetails[id];
   const out = det ? det.outgoing.length : 0;
   const inc = det ? det.incoming.length  : 0;
+  const tags = det && det.tags ? det.tags : [];
+  const topRelation = det && det.relationSummary && det.relationSummary[0] ? det.relationSummary[0] : null;
+  const topConnectedType = det && det.connectedTypes && det.connectedTypes[0] ? det.connectedTypes[0] : null;
+  const isCurrentFocus = !!(S.payload && S.payload.centerNodeId === id);
+  const canExpand = !!(det && det.hiddenNeighborCount > 0);
   E.selCard.innerHTML =
     '<div class="sel-hdr">' +
       '<div class="sel-dot" style="background:' + h(d.color||'#8b949e') + '"></div>' +
@@ -32,15 +37,27 @@ function updateSelCard() {
       '<div class="sel-stat"><b>' + out + '</b>outgoing</div>' +
       '<div class="sel-stat"><b>' + inc + '</b>incoming</div>' +
       '<div class="sel-stat"><b>' + (d.degree||0) + '</b>total</div>' +
+      '<div class="sel-stat"><b>' + ((det && det.hubScore) || d.hubScore || 0) + '</b>signal</div>' +
     '</div>' +
+    (topRelation || topConnectedType || tags.length
+      ? '<div class="sel-type" style="margin:-2px 0 10px;">' +
+          (topRelation ? ('Strongest relation: ' + h(topRelation.field) + ' · ') : '') +
+          (topConnectedType ? ('Most connected type: ' + h(topConnectedType.type)) : '') +
+        '</div>'
+      : '') +
+    (tags.length
+      ? '<div class="chips" style="margin-bottom:10px;">' + tags.slice(0, 4).map(tag =>
+          '<span class="chip on"><span class="chip-dot" style="background:var(--accent3)"></span>#' + h(tag) + '</span>'
+        ).join('') + '</div>'
+      : '') +
     '<div class="act-row">' +
       '<button class="btn pri" id="aOpen">Open</button>' +
-      '<button class="btn" id="aFocus">Focus</button>' +
-      '<button class="btn" id="aExpd">Expand</button>' +
+      '<button class="btn" id="aFocus"' + (isCurrentFocus ? ' disabled' : '') + '>' + (isCurrentFocus ? 'Centered' : 'Focus') + '</button>' +
+      '<button class="btn" id="aExpd"' + (canExpand ? '' : ' disabled') + '>' + (canExpand ? ('Expand +' + det.hiddenNeighborCount) : 'Expanded') + '</button>' +
     '</div>';
   g('aOpen')  && g('aOpen').addEventListener('click',  () => vsc.postMessage({ type:'openNode',   id }));
-  g('aFocus') && g('aFocus').addEventListener('click', () => vsc.postMessage({ type:'focusNode',  id }));
-  g('aExpd')  && g('aExpd').addEventListener('click',  () => vsc.postMessage({ type:'expandNode', id }));
+  g('aFocus') && !isCurrentFocus && g('aFocus').addEventListener('click', () => vsc.postMessage({ type:'focusNode',  id }));
+  g('aExpd')  && canExpand && g('aExpd').addEventListener('click',  () => vsc.postMessage({ type:'expandNode', id }));
 }
 
 function renderSidebar(payload) {
@@ -53,8 +70,11 @@ function renderSidebar(payload) {
     focusMode.textContent = payload.mode === 'vault' ? 'Explorer' : 'Local';
   }
   if (focusName) {
+    const selectedEl = payload.selectedNodeId
+      ? payload.model.elements.find(e => e.data && e.data.id === payload.selectedNodeId && !e.data.source)
+      : null;
     focusName.textContent = payload.mode === 'vault'
-      ? (payload.selectedNode ? payload.selectedNode.label : 'Top connected notes')
+      ? (selectedEl ? selectedEl.data.label : 'Top connected notes')
       : centerEl
         ? centerEl.data.label
         : 'No active note';
@@ -72,9 +92,9 @@ function renderSidebar(payload) {
   const sbDesc = g('sbDesc');
   if (sbDesc) {
     sbDesc.textContent = payload.mode === 'vault'
-      ? 'Explorer shows the broader vault shape. Start from the strongest hubs, then pick a note to focus or open it.'
+      ? 'Explorer ranks notes by structural signal, not just raw degree. Strong named relations, type diversity, and shared tags matter most.'
       : payload.centerNodeId
-        ? 'Nearby linked notes around this note. Use Depth to show wider link layers. Click Focus on any node to re-centre.'
+        ? 'Nearby linked notes around this note. Stronger named relations stand out more than loose mentions. Use Depth to widen the local view.'
         : 'Open a Markdown note then press Current Note to see its links.';
   }
 
@@ -93,14 +113,22 @@ function renderSidebar(payload) {
     });
   });
 
+  if (E.typeSel) {
+    const previous = S.primaryTypeFilter || '';
+    E.typeSel.innerHTML = '<option value="">All types</option>' + (payload.model.types || []).map(t =>
+      '<option value="' + h(t.type) + '"' + (previous === t.type ? ' selected' : '') + '>' + h(t.type) + ' (' + t.count + ')</option>'
+    ).join('');
+    E.typeSel.value = previous;
+  }
+
   E.topNodes.innerHTML = (payload.model.topNodes || []).map(n =>
     '<button class="nrow' + (n.id === S.selectedId ? ' on' : '') + '" data-id="' + h(n.id) + '">' +
       '<span class="nrow-dot" style="background:' + h(nodeColor(n.id)) + '"></span>' +
       '<span class="nrow-info">' +
         '<span class="nrow-name">' + h(n.label) + '</span>' +
-        '<span class="nrow-sub">'  + h(n.type)  + '</span>' +
+        '<span class="nrow-sub">'  + h(n.type) + ' · signal ' + h(String(n.hubScore)) + (n.tagCount ? ' · #' + h(String(n.tagCount)) + ' tags' : '') + '</span>' +
       '</span>' +
-      '<span class="nrow-deg">' + n.degree + '</span>' +
+      '<span class="nrow-deg">' + n.weightedDegree + '</span>' +
     '</button>'
   ).join('');
   E.topNodes.querySelectorAll('[data-id]').forEach(b => {
@@ -116,9 +144,18 @@ function renderSidebar(payload) {
     '<div class="rrow">' +
       '<span class="rdot" style="background:' + h(r.color) + '"></span>' +
       '<span class="rname">' + h(r.field) + '</span>' +
-      '<span class="rcnt">' + r.count + '</span>' +
+      '<span class="rcnt">' + r.totalWeight + '</span>' +
     '</div>'
   ).join('');
+
+  const tagList = g('tagList');
+  if (tagList) {
+    tagList.innerHTML = (payload.model.topTags || []).length
+      ? payload.model.topTags.map(t =>
+          '<span class="chip"><span class="chip-dot" style="background:var(--accent3)"></span>#' + h(t.tag) + ' <span style="color:var(--mid)">' + t.count + '</span></span>'
+        ).join('')
+      : '<span class="sel-empty">No repeated themes yet.</span>';
+  }
 
   updateSelCard();
 }`;

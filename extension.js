@@ -1,13 +1,12 @@
 const vscode = require('vscode');
 const fs     = require('fs');
 const path   = require('path');
-const { buildIndex, updateSingleFile, removeFileFromIndex, getIndex, getPathIndex, getFieldsCache, getGraphStats, parseFrontmatter } = require('./src/core/index');
-const { isOrphan, getEdges } = require('./src/core/graph');
+const { buildIndex, updateSingleFile, removeFileFromIndex, getIndex, getPathIndex, getFieldsCache, getGraphStats } = require('./src/core/index');
+const { getEdges } = require('./src/core/graph');
 const { getPrimaryWorkspaceRoot } = require('./src/core/workspace');
 const { registerDefinition } = require('./src/features/definition');
 const { registerCompletion } = require('./src/features/completion');
 const { registerViewLightbulb } = require('./src/features/viewLightbulb');
-const { registerHover, registerQueryPreviewHover } = require('./src/features/hover');
 const { registerDiagnostics, validateAll, validateDocument, getBrokenCount, clearAll } = require('./src/diagnostics/diagnostics');
 const { registerCodeActions } = require('./src/actions/codeActions');
 const { registerRename } = require('./src/core/rename');
@@ -18,11 +17,35 @@ const { openHealthPanel, updatePanel } = require('./src/features/healthPanel');
 const { openViewPanel, refreshViewPanel, closeViewPanel, getOpenViewDocumentPath, setViewPanelStateListener } = require('./src/features/viewPanel');
 const { registerViewCodeLens } = require('./src/features/viewCodeLens');
 const { openCalendarPanel, refreshCalendarPanel, registerCalendarView, focusCalendarView } = require('./src/features/calendarPanel');
-const { openGraphPanel, refreshGraphPanel } = require('./src/features/graphPanel');
+const { openGraph2Panel, refreshGraph2Panel, registerGraphView, refreshGraphSidebarView } = require('./src/features/graphPanel');
+const { buildRunGraphOptions, buildRunVaultGraphOptions } = require('./src/features/graph2/graph2LaunchOptions');
 const { syncEntityHub, refreshEntityHub, registerEntityHubView, focusEntityHub } = require('./src/features/entityHub');
+const { importObsidianVault } = require('./src/features/importObsidian');
 const { registerActiveViewRuntime } = require('./src/runtime/activeViewRuntime');
 const { createRefreshRouter } = require('./src/runtime/refreshRouter');
 const { createStatusRuntime } = require('./src/runtime/statusRuntime');
+const { perfTracker } = require('./src/runtime/performanceTracker');
+const { createPreviewPanelController } = require('./src/features/preview/previewPanelController');
+
+// ─────────────────────────────────────────────────────────────────
+// What's new — shown once per version upgrade, never on first install
+// ─────────────────────────────────────────────────────────────────
+async function showWhatsNew(context) {
+    const lastSeen = context.globalState.get('yamlink.lastSeenVersion', '');
+    const current  = context.extension.packageJSON.version;
+    if (lastSeen === current) return;
+
+    context.globalState.update('yamlink.lastSeenVersion', current);
+
+    // First install already shows welcome.md — skip the release notes there.
+    const isFirstInstall = !context.globalState.get('yamlink.welcomeShown', false);
+    if (isFirstInstall) return;
+
+    const notesPath = path.join(context.extensionPath, 'WHATS_NEW.md');
+    if (!fs.existsSync(notesPath)) return;
+
+    await vscode.commands.executeCommand('markdown.showPreview', vscode.Uri.file(notesPath));
+}
 
 // ─────────────────────────────────────────────────────────────────
 // First-run setup
@@ -93,8 +116,12 @@ function copySampleFiles(src, dest) {
 async function activate(context) {
     console.log("Yamlink activated");
 
+    // ── Public API event emitter ─────────────────────────────────────────────
+    const _onVaultChange = new vscode.EventEmitter();
+    context.subscriptions.push(_onVaultChange);
+
     // ── Build index ──────────────────────────────────────────────────────────
-    buildIndex(vscode.workspace.workspaceFolders);
+    perfTracker.measureSync('index.buildIndex.activate', null, () => buildIndex(vscode.workspace.workspaceFolders));
 
     const { updateStatusBar, refreshSuggestionBar, resetSuggestionCache } = createStatusRuntime(context, {
         getIndex,
@@ -108,15 +135,17 @@ async function activate(context) {
     registerDefinition(context, getIndex);
     registerCompletion(context, getIndex);
     registerViewLightbulb(context);
-    registerHover(context, getIndex);
-    registerQueryPreviewHover(context, getIndex);
+    // registerHover(context, getIndex);
+    // registerQueryPreviewHover(context, getIndex);
     registerDiagnostics(context, getIndex);
     registerCodeActions(context, getIndex);
     registerRename(context, getIndex, getPathIndex, buildIndex, validateAll);
     registerEntityHubView(context);
     registerCalendarView(context);
+    registerGraphView(context);
     const decorationsProvider = registerDecorations(context, getIndex);
     const codeLensProvider = registerViewCodeLens(context, getOpenViewDocumentPath);
+    const { openPreviewPanel, refreshPreviewPanel } = createPreviewPanelController();
     setViewPanelStateListener(() => codeLensProvider.refresh());
 
     validateAll(getIndex);
@@ -136,7 +165,8 @@ async function activate(context) {
         refreshStatusBar:  updateStatusBar,
         refreshHealthPanel:updatePanel,
         refreshViews:      refreshViewPanel,
-        refreshGraph:      refreshGraphPanel,
+        refreshGraph2:     refreshGraph2Panel,
+        refreshGraphSidebar: refreshGraphSidebarView,
         refreshEntityHub:  refreshEntityHub,
         refreshCalendar:   refreshCalendarPanel,
         refreshSuggestions:refreshSuggestionBar
@@ -151,6 +181,10 @@ async function activate(context) {
     // Non-blocking — errors are caught so they never crash activation.
     runFirstTimeSetup(context).catch(e => {
         console.error('Yamlink — First-run setup error:', e.message);
+    });
+
+    showWhatsNew(context).catch(e => {
+        console.error('Yamlink — What\'s new error:', e.message);
     });
 
     // ── Dirty flag + background full-rebuild fallback ────────────────────────
@@ -176,7 +210,7 @@ async function activate(context) {
             // yield to the event loop so the status bar update paints first
             setImmediate(() => {
                 try {
-                    buildIndex(vscode.workspace.workspaceFolders);
+                    perfTracker.measureSync('index.buildIndex.background', null, () => buildIndex(vscode.workspace.workspaceFolders));
                     needsFullRebuild = false;
                     updateStatusBar();
                     const s = getGraphStats();
@@ -197,8 +231,9 @@ async function activate(context) {
     // ── Full rebuild cycle (for renames, deletes, create-single) ────────────
     function rebuildAll() {
         if (!vscode.workspace.workspaceFolders) return;
-        buildIndex(vscode.workspace.workspaceFolders);
+        perfTracker.measureSync('index.buildIndex.rebuildAll', null, () => buildIndex(vscode.workspace.workspaceFolders));
         router.refreshForPassiveIndexSweep();
+        _onVaultChange.fire({ changedId: null, full: true });
     }
 
     function refreshAfterViewEdit() {
@@ -206,6 +241,15 @@ async function activate(context) {
     }
 
     context.subscriptions.push(vscode.workspace.onDidRenameFiles(() => rebuildAll()));
+
+    // .yamlinkignore changes — rebuild immediately so new rules take effect without a restart.
+    const ignoreFileWatcher = vscode.workspace.createFileSystemWatcher('**/.yamlinkignore');
+    context.subscriptions.push(
+        ignoreFileWatcher,
+        ignoreFileWatcher.onDidCreate(() => rebuildAll()),
+        ignoreFileWatcher.onDidChange(() => rebuildAll()),
+        ignoreFileWatcher.onDidDelete(() => rebuildAll())
+    );
 
     // Delete — single file: incremental removal. Batch: defer to background timer.
     context.subscriptions.push(vscode.workspace.onDidDeleteFiles(e => {
@@ -219,6 +263,7 @@ async function activate(context) {
         const wasKnown = removeFileFromIndex(filePath);
         if (wasKnown) {
             router.refreshForPassiveIndexSweep();
+            _onVaultChange.fire({ changedId: null, full: true });
         }
     }));
 
@@ -234,7 +279,7 @@ async function activate(context) {
         }
         const filePath = e.files[0].fsPath;
         if (!filePath.endsWith('.md')) return;
-        const result = updateSingleFile(filePath);
+        const result = updateSingleFile(filePath, { workspaceFolders: vscode.workspace.workspaceFolders });
         if (result.needsFull) {
             rebuildAll();
         } else if (result.changed) {
@@ -249,9 +294,9 @@ async function activate(context) {
             let result = { changed: false, needsFull: false };
 
             if (filePath.endsWith('.md')) {
-                result = updateSingleFile(filePath);
+                result = updateSingleFile(filePath, { workspaceFolders: vscode.workspace.workspaceFolders });
                 if (result.needsFull && vscode.workspace.workspaceFolders) {
-                    buildIndex(vscode.workspace.workspaceFolders);
+                    perfTracker.measureSync('index.buildIndex.saveFallback', null, () => buildIndex(vscode.workspace.workspaceFolders));
                 }
                 if (!result.needsFull) {
                     clearTimeout(inactivityTimer);
@@ -284,6 +329,7 @@ async function activate(context) {
 
             router.refreshForIndexMutation(result, { forceHeavy: !filePath.endsWith('.md') });
             if (result.changed || result.needsFull) {
+                _onVaultChange.fire({ changedId: result.changedId ?? null, full: !!result.needsFull });
                 if (doc === vscode.window.activeTextEditor?.document && activeViewRuntime) activeViewRuntime.schedule('save');
             }
         })
@@ -294,11 +340,11 @@ async function activate(context) {
             validateDocument(editor.document, getIndex);
             syncEntityHub(context);
             refreshCalendarPanel();
-            refreshGraphPanel();
         } else {
             syncEntityHub(context);
-            refreshGraphPanel();
         }
+        refreshGraph2Panel();
+        refreshPreviewPanel();
         resetSuggestionCache();
         refreshSuggestionBar();
     }));
@@ -309,6 +355,28 @@ async function activate(context) {
     });
 
     // ── Commands ─────────────────────────────────────────────────────────────
+    context.subscriptions.push(
+        vscode.commands.registerCommand('yamlink.showPerformanceReport', () => {
+            perfTracker.showReport();
+        })
+    );
+
+    context.subscriptions.push(
+        vscode.commands.registerCommand('yamlink.resetPerformanceReport', () => {
+            perfTracker.reset();
+            vscode.window.showInformationMessage('Yamlink: Performance metrics reset.');
+        })
+    );
+
+    context.subscriptions.push(
+        vscode.commands.registerCommand('yamlink.importObsidianVault', async () => {
+            await importObsidianVault(context, {
+                buildIndex,
+                getWorkspaceRoot: getPrimaryWorkspaceRoot
+            });
+        })
+    );
+
     context.subscriptions.push(
         vscode.commands.registerCommand('yamlink.openHealthPanel', () => {
             openHealthPanel(context);
@@ -370,20 +438,13 @@ async function activate(context) {
 
     context.subscriptions.push(
         vscode.commands.registerCommand('yamlink.runGraph', () => {
-            console.log('Yamlink — runGraph invoked');
-            const editor = vscode.window.activeTextEditor;
-            if (!editor || editor.document.languageId !== 'markdown') {
-                vscode.window.showErrorMessage('Yamlink: Open a Markdown note before running the graph.');
-                return;
-            }
+            console.log('Yamlink — runGraph invoked (Graph 2.0)');
             try {
-                openGraphPanel(context, {
-                    mode: 'local',
-                    centerNodeId: getPathIndex().get(editor.document.uri.fsPath) || null,
-                    depth: 1
-                });
+                const activeEditor = vscode.window.activeTextEditor;
+                const hasNote = activeEditor && activeEditor.document.languageId === 'markdown';
+                openGraph2Panel(context, buildRunGraphOptions(hasNote));
             } catch (error) {
-                const message = error && error.message ? error.message : String(error || 'Unknown graph error');
+                const message = error && error.message ? error.message : String(error || 'Unknown graph 2.0 error');
                 console.error('Yamlink — runGraph failed:', error);
                 vscode.window.showErrorMessage(`Yamlink graph failed: ${message}`);
             }
@@ -392,22 +453,45 @@ async function activate(context) {
 
     context.subscriptions.push(
         vscode.commands.registerCommand('yamlink.runVaultGraph', () => {
-            console.log('Yamlink — runVaultGraph invoked');
-            const editor = vscode.window.activeTextEditor;
+            console.log('Yamlink — runVaultGraph invoked (Graph 2.0)');
             try {
-                openGraphPanel(context, {
-                    mode: 'vault',
-                    centerNodeId: editor && editor.document.languageId === 'markdown'
-                        ? (getPathIndex().get(editor.document.uri.fsPath) || null)
-                        : null,
-                    depth: 2,
-                    maxNodes: 80
-                });
+                openGraph2Panel(context, buildRunVaultGraphOptions());
             } catch (error) {
-                const message = error && error.message ? error.message : String(error || 'Unknown graph error');
+                const message = error && error.message ? error.message : String(error || 'Unknown graph 2.0 error');
                 console.error('Yamlink — runVaultGraph failed:', error);
                 vscode.window.showErrorMessage(`Yamlink vault graph failed: ${message}`);
             }
+        })
+    );
+
+    context.subscriptions.push(
+        vscode.commands.registerCommand('yamlink.runGraph2Preview', () => {
+            console.log('Yamlink — runGraph2Preview invoked');
+            try {
+                openGraph2Panel(context, {
+                    source: 'current',
+                    scope: 'neighborhood',
+                    depth: 2,
+                    nodeCap: 128
+                });
+            } catch (error) {
+                const message = error && error.message ? error.message : String(error || 'Unknown graph 2.0 error');
+                console.error('Yamlink — runGraph2Preview failed:', error);
+                vscode.window.showErrorMessage(`Yamlink graph 2.0 failed: ${message}`);
+            }
+        })
+    );
+
+    context.subscriptions.push(
+        vscode.commands.registerCommand('yamlink.openNotePreview', () => {
+            openPreviewPanel(context);
+        })
+    );
+
+    context.subscriptions.push(
+        vscode.commands.registerCommand('yamlink.openGraphSidebar', async () => {
+            await vscode.commands.executeCommand('workbench.view.extension.yamlinkSidebar');
+            try { await vscode.commands.executeCommand('yamlink.graph.focus'); } catch (_) {}
         })
     );
 
@@ -460,6 +544,18 @@ async function activate(context) {
     );
 
     context.subscriptions.push(
+        vscode.commands.registerCommand('yamlink.openHoverNote', async (filePath) => {
+            if (!filePath || typeof filePath !== 'string') return;
+            try {
+                const doc = await vscode.workspace.openTextDocument(filePath);
+                await vscode.window.showTextDocument(doc, { viewColumn: vscode.ViewColumn.One, preview: false });
+            } catch (error) {
+                console.error('Yamlink — openHoverNote failed:', error?.message || error);
+            }
+        })
+    );
+
+    context.subscriptions.push(
         vscode.commands.registerCommand('yamlink.showQuerySuggestionsQuickPick', async () => {
             const editor = vscode.window.activeTextEditor;
             if (!editor || editor.document.languageId !== 'markdown') return;
@@ -494,6 +590,22 @@ async function activate(context) {
             }
         })
     );
+
+    // ── Public API ───────────────────────────────────────────────────────────
+    return {
+        getIndex:        () => getIndex(),
+        getFieldsCache:  () => getFieldsCache(),
+        getPathIndex:    () => getPathIndex(),
+        getSchema:       (type) => require('./src/registries/schemaRegistry').getSchema(type),
+        getSchemaTargets:() => require('./src/registries/schemaRegistry').getSchemaTargets(),
+        query: (queryText, opts = {}) => {
+            const { parseViewQuery, runQuery } = require('./src/engine/query');
+            const parsed = parseViewQuery(queryText);
+            if (!parsed) return { success: false, rows: [], columns: [], warnings: [], error: 'Could not parse query' };
+            return runQuery(parsed, opts.contextNodeId ?? null);
+        },
+        onVaultChange: _onVaultChange.event
+    };
 }
 
 function deactivate() {}

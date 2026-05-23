@@ -1,21 +1,22 @@
 {
   "name": "yamlink",
   "displayName": "Yamlink",
-  "description": "Turn Markdown into a structured knowledge system. Canonical IDs, vault-wide linking, backlinks, and real-time diagnostics for YAML-based knowledge graphs.",
-  "version": "0.4.0",
+  "description": "Local-first structured Markdown for VS Code with stable IDs, wikilinks, live queries, editable tables, note reports, calendars, and graph views.",
+  "version": "0.5.0",
   "publisher": "yamlink",
   "author": {
-    "name": "Javier Ramirez"
+    "name": "Yamlink Labs",
+    "url": "https://github.com/Yamlink-Labs"
   },
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://github.com/javierigaciorm/yamlink"
+    "url": "https://github.com/Yamlink-Labs/yamlink"
   },
   "bugs": {
-    "url": "https://github.com/javierigaciorm/yamlink/issues"
+    "url": "https://github.com/Yamlink-Labs/yamlink/issues"
   },
-  "homepage": "https://github.com/javierigaciorm/yamlink#readme",
+  "homepage": "https://github.com/Yamlink-Labs/yamlink#readme",
   "keywords": [
     "markdown",
     "notes",
@@ -31,16 +32,26 @@
     "logseq",
     "developer-tools",
     "data-modeling",
-    "graph"
+    "graph",
+    "local-first",
+    "query",
+    "tables",
+    "calendar",
+    "productivity"
   ],
   "engines": {
     "vscode": "^1.85.0"
   },
   "categories": [
     "Other",
+    "Visualization",
     "Data Science"
   ],
-  "icon": "media/icon-1.png",
+  "galleryBanner": {
+    "color": "#111827",
+    "theme": "dark"
+  },
+  "icon": "media/icon.png",
   "activationEvents": [
     "onLanguage:markdown",
     "onStartupFinished"
@@ -52,18 +63,26 @@
         {
           "id": "yamlinkSidebar",
           "title": "Yamlink",
-            "icon": "media/icon-1.png"
+          "icon": "media/icon-1.png"
         }
       ]
     },
     "commands": [
       {
         "command": "yamlink.createNote",
-        "title": "Yamlink: Create Node"
+        "title": "Yamlink: Create Note"
       },
       {
         "command": "yamlink.newNodeFromTemplate",
-        "title": "Yamlink: New Node from Template"
+        "title": "Yamlink: New Note from Template"
+      },
+      {
+        "command": "yamlink.newNoteFromSchema",
+        "title": "Yamlink: New Note from Schema"
+      },
+      {
+        "command": "yamlink.importObsidianVault",
+        "title": "Yamlink: Import Obsidian Vault"
       },
       {
         "command": "yamlink.openHealthPanel",
@@ -75,7 +94,7 @@
       },
       {
         "command": "yamlink.linkOrphan",
-        "title": "Yamlink: Link this node to another…"
+        "title": "Yamlink: Link this note to another…"
       },
       {
         "command": "yamlink.openView",
@@ -117,15 +136,23 @@
       },
       {
         "command": "yamlink.runGraph",
-        "title": "Yamlink: Run Graph"
-      },
-      {
-        "command": "yamlink.runVaultGraph",
-        "title": "Yamlink: Vault Graph",
+        "title": "Yamlink: Open Graph Workspace",
         "icon": {
           "light": "media/graph-light.svg",
           "dark": "media/graph-dark.svg"
         }
+      },
+      {
+        "command": "yamlink.runVaultGraph",
+        "title": "Yamlink: Open Vault Graph",
+        "icon": {
+          "light": "media/graph-light.svg",
+          "dark": "media/graph-dark.svg"
+        }
+      },
+      {
+        "command": "yamlink.runGraph2Preview",
+        "title": "Yamlink: Graph Preview (Internal)"
       },
       {
         "command": "yamlink.exportActiveNotePdf",
@@ -133,11 +160,35 @@
       },
       {
         "command": "yamlink.copyId",
-        "title": "Yamlink: Copy Node ID"
+        "title": "Yamlink: Copy Note ID"
+      },
+      {
+        "command": "yamlink.showPerformanceReport",
+        "title": "Yamlink: Show Performance Report"
+      },
+      {
+        "command": "yamlink.resetPerformanceReport",
+        "title": "Yamlink: Reset Performance Report"
       },
       {
         "command": "yamlink.closeViewPanel",
         "title": "Yamlink: Close View Panel"
+      },
+      {
+        "command": "yamlink.openNotePreview",
+        "title": "Yamlink: Note Preview",
+        "icon": {
+          "light": "media/preview-light.svg",
+          "dark": "media/preview-dark.svg"
+        }
+      },
+      {
+        "command": "yamlink.openGraphSidebar",
+        "title": "Yamlink: Open Graph",
+        "icon": {
+          "light": "media/graph-light.svg",
+          "dark": "media/graph-dark.svg"
+        }
       }
     ],
     "menus": {
@@ -156,6 +207,10 @@
         },
         {
           "command": "yamlink.refineViewBlock",
+          "when": "false"
+        },
+        {
+          "command": "yamlink.runGraph2Preview",
           "when": "false"
         }
       ],
@@ -178,14 +233,24 @@
           "group": "navigation@2"
         },
         {
-          "command": "yamlink.runVaultGraph",
+          "command": "yamlink.runGraph",
           "when": "editorLangId == markdown",
           "group": "navigation@3"
+        },
+        {
+          "command": "yamlink.openNotePreview",
+          "when": "editorLangId == markdown",
+          "group": "navigation@4"
         }
       ]
     },
     "views": {
       "yamlinkSidebar": [
+        {
+          "id": "yamlink.graph",
+          "name": "Graph",
+          "type": "webview"
+        },
         {
           "id": "yamlink.noteReport",
           "name": "Note Report",
@@ -197,23 +262,55 @@
           "type": "webview"
         }
       ]
+    },
+    "configurationDefaults": {
+      "[markdown]": {
+        "editor.links": false,
+        "foam.links.hover.enable": false
+      }
     }
   },
   "dependencies": {
     "cytoscape": "^3.28.1",
+    "d3-force": "^3.0.0",
+    "elkjs": "^0.11.1",
+    "esbuild": "^0.28.0",
     "js-yaml": "4.1.0",
-    "pdfkit": "^0.18.0"
+    "markdown-it": "^14.0.0",
+    "pdfkit": "^0.18.0",
+    "pixi.js": "^7.4.3",
+    "react": "^19.2.6",
+    "react-dom": "^19.2.6",
+    "reactflow": "^11.11.4"
   },
   "scripts": {
-    "test": "node --test test/query.test.js test/date.test.js test/calendar.test.js test/rename.test.js test/completion.test.js test/fieldRoles.test.js test/viewPanel.test.js test/viewCodeLens.test.js test/viewLightbulb.test.js test/pdfExport.test.js test/suggestions.test.js test/refreshRouter.test.js test/queryBuilder.test.js test/entityHubRecipes.test.js test/id.test.js test/graphPanel.test.js test/hover.test.js test/codeActions.integration.test.js",
+    "build:graph": "node graph/build.mjs",
+    "build:graph:watch": "node graph/build.mjs --watch",
+    "build:graph2-renderer": "node scripts/build-graph2-reactflow.mjs",
+    "lint": "eslint extension.js src test scripts eslint.config.js",
+    "coverage": "c8 --reporter=text --reporter=lcov --reporter=json-summary npm test",
+    "coverage:check": "c8 --check-coverage --lines 67 --functions 75 --branches 70 --statements 67 npm test",
+    "test": "node --test test/activeViewRuntime.test.js test/bodySignals.test.js test/calendar.test.js test/codeActions.integration.test.js test/completion.test.js test/confidence.test.js test/date.test.js test/decorations.test.js test/definition.test.js test/diagnostics.test.js test/driftDetector.test.js test/entityHubController.test.js test/entityHubRecipes.test.js test/fieldCategory.test.js test/fieldPlanner.test.js test/fieldRoles.test.js test/frontmatter.test.js test/frontmatterIntelligence.test.js test/graph.test.js test/graph2CanvasModel.test.js test/graph2LaunchOptions.test.js test/graph2Payload.test.js test/graphPanel.test.js test/hover.test.js test/id.test.js test/ignore.test.js test/importObsidian.test.js test/index.test.js test/intelligenceCache.test.js test/lifecycleState.test.js test/mutationEventLog.test.js test/nodeCreationCommands.test.js test/noteRoles.test.js test/pdfExport.test.js test/performanceTracker.test.js test/query.test.js test/queryBuilder.test.js test/queryCache.test.js test/queryDiagnostics.test.js test/refreshRouter.test.js test/rename.test.js test/schemaRegistry.test.js test/statusRuntime.test.js test/suggestionCore.test.js test/suggestions.test.js test/surface.completion.test.js test/surface.graph.test.js test/surface.health.test.js test/surface.ignore.test.js test/surface.intelligence.test.js test/surface.mutation.test.js test/surface.noteReport.test.js test/surface.schema.test.js test/tagSignals.test.js test/taskCache.test.js test/tasks.test.js test/typeRegistry.test.js test/vaultPriors.test.js test/viewBuilder.test.js test/viewCodeLens.test.js test/viewLightbulb.test.js test/viewPanel.test.js test/viewPanelController.test.js test/writeField.test.js",
     "test:index": "node --test test/index.test.js",
     "test:date": "node --test test/date.test.js",
     "test:calendar": "node --test test/calendar.test.js",
     "test:rename": "node --test test/rename.test.js",
-    "test:runtime": "node --test test/activeViewRuntime.test.js",
+    "test:runtime": "node --test test/activeViewRuntime.test.js test/performanceTracker.test.js",
     "test:pdf": "node --test test/pdfExport.test.js",
-    "test:all": "node --test test/query.test.js test/date.test.js test/calendar.test.js test/rename.test.js test/completion.test.js test/fieldRoles.test.js test/viewPanel.test.js test/viewCodeLens.test.js test/viewLightbulb.test.js test/pdfExport.test.js test/suggestions.test.js test/refreshRouter.test.js test/queryBuilder.test.js test/entityHubRecipes.test.js test/id.test.js test/graphPanel.test.js test/hover.test.js test/codeActions.integration.test.js test/index.test.js test/activeViewRuntime.test.js",
-    "test:watch": "node --test --watch test/query.test.js test/date.test.js test/calendar.test.js test/rename.test.js test/completion.test.js test/fieldRoles.test.js test/viewPanel.test.js test/viewCodeLens.test.js test/viewLightbulb.test.js test/pdfExport.test.js test/suggestions.test.js test/refreshRouter.test.js test/queryBuilder.test.js test/entityHubRecipes.test.js test/id.test.js test/graphPanel.test.js test/hover.test.js test/codeActions.integration.test.js",
-    "test:ace": "node test/ace.local.js"
+    "test:extension": "node test/runExtensionTests.js",
+    "test:smoke": "node test/smoke-carmen.js",
+    "test:all": "node --test test/activeViewRuntime.test.js test/bodySignals.test.js test/calendar.test.js test/codeActions.integration.test.js test/completion.test.js test/confidence.test.js test/date.test.js test/decorations.test.js test/definition.test.js test/diagnostics.test.js test/driftDetector.test.js test/entityHubController.test.js test/entityHubRecipes.test.js test/fieldCategory.test.js test/fieldPlanner.test.js test/fieldRoles.test.js test/frontmatter.test.js test/frontmatterIntelligence.test.js test/graph.test.js test/graph2CanvasModel.test.js test/graph2LaunchOptions.test.js test/graph2Payload.test.js test/graphPanel.test.js test/hover.test.js test/id.test.js test/ignore.test.js test/importObsidian.test.js test/index.test.js test/intelligenceCache.test.js test/lifecycleState.test.js test/mutationEventLog.test.js test/nodeCreationCommands.test.js test/noteRoles.test.js test/pdfExport.test.js test/performanceTracker.test.js test/query.test.js test/queryBuilder.test.js test/queryCache.test.js test/queryDiagnostics.test.js test/refreshRouter.test.js test/rename.test.js test/schemaRegistry.test.js test/statusRuntime.test.js test/suggestionCore.test.js test/suggestions.test.js test/surface.completion.test.js test/surface.graph.test.js test/surface.health.test.js test/surface.ignore.test.js test/surface.intelligence.test.js test/surface.mutation.test.js test/surface.noteReport.test.js test/surface.schema.test.js test/tagSignals.test.js test/taskCache.test.js test/tasks.test.js test/typeRegistry.test.js test/vaultPriors.test.js test/viewBuilder.test.js test/viewCodeLens.test.js test/viewLightbulb.test.js test/viewPanel.test.js test/viewPanelController.test.js test/writeField.test.js",
+    "test:watch": "node --test --watch test/query.test.js test/date.test.js test/calendar.test.js test/rename.test.js test/completion.test.js test/fieldRoles.test.js test/viewPanel.test.js test/viewCodeLens.test.js test/viewLightbulb.test.js test/pdfExport.test.js test/suggestions.test.js test/refreshRouter.test.js test/queryBuilder.test.js test/entityHubRecipes.test.js test/id.test.js test/graphPanel.test.js test/hover.test.js test/codeActions.integration.test.js test/performanceTracker.test.js",
+    "test:ace": "node test/ace.local.js",
+    "test:count": "node scripts/check-test-count.js",
+    "test:count:update": "node scripts/check-test-count.js --update",
+    "site:build": "node site/build.mjs && npx pagefind --site site/dist --output-path site/dist/_pagefind"
+  },
+  "devDependencies": {
+    "@vscode/test-electron": "^2.5.2",
+    "c8": "^11.0.0",
+    "eslint": "^10.4.0",
+    "highlight.js": "^11.11.1",
+    "mocha": "^11.7.5"
   }
 }

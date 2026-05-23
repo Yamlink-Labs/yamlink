@@ -2,7 +2,7 @@
 id: johnny-rico
 type: character
 name: Juan "Johnny" Rico
-rank: Lieutenant
+rank: private
 unit: [[roughnecks]]
 homeworld: Buenos Aires
 species: human
@@ -18,3 +18,14 @@ By the end of the Bug War he was commanding the Roughnecks — the same unit he'
 ## Notes
 
 First rule of Mobile Infantry: everyone fights, nobody quits.
+
+- [ ] Let's see how this looks in the report
+- [ ] Test
+
+
+## Missions
+
+!view mission
+where commander = [[johnny-rico]]
+sort date desc
+select name, date, unit, commander, outcome

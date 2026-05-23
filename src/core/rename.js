@@ -1,15 +1,49 @@
 const vscode = require('vscode');
 const fs = require('fs');
 const path = require('path');
-const { validateAll } = require('../diagnostics/diagnostics');
 const { getWorkspaceRoots } = require('./workspace');
 const { extractCanonicalIdFromFrontmatter } = require('./id');
+const { loadIgnoreRules, isIgnoredPath } = require('./ignore');
 
 const PREVIEW_THRESHOLD = 5;
 
 let isPropagating = false;
+const pendingIdentityMutations = new Map();
 
 function registerRename(context, getIndex, getPathIndex, buildIndex, validateAll, onComplete) {
+    context.subscriptions.push(
+        vscode.workspace.onDidChangeTextDocument((event) => {
+            const document = event && event.document;
+            if (!document || document.languageId !== 'markdown' || isPropagating) return;
+
+            const filePath = document.uri.fsPath;
+            const indexedId = getPathIndex().get(filePath) ?? null;
+            const currentId = extractIdFromDocument(document);
+
+            if (indexedId === currentId) {
+                pendingIdentityMutations.delete(filePath);
+                return;
+            }
+
+            if (!indexedId && !currentId) {
+                pendingIdentityMutations.delete(filePath);
+                return;
+            }
+
+            pendingIdentityMutations.set(filePath, {
+                oldId: indexedId,
+                newId: currentId
+            });
+        })
+    );
+
+    context.subscriptions.push(
+        vscode.workspace.onDidCloseTextDocument((document) => {
+            if (!document) return;
+            pendingIdentityMutations.delete(document.uri.fsPath);
+        })
+    );
+
     context.subscriptions.push(
         vscode.workspace.onDidSaveTextDocument(async (document) => {
             if (document.languageId !== 'markdown') return;
@@ -21,9 +55,11 @@ function registerRename(context, getIndex, getPathIndex, buildIndex, validateAll
 
             const filePath  = document.uri.fsPath;
             const pathIndex = getPathIndex();
+            const pending = pendingIdentityMutations.get(filePath) || null;
+            pendingIdentityMutations.delete(filePath);
 
-            const oldId = pathIndex.get(filePath) ?? null;
-            const newId = extractIdFromDocument(document);
+            const oldId = pending ? pending.oldId : (pathIndex.get(filePath) ?? null);
+            const newId = pending ? pending.newId : extractIdFromDocument(document);
 
             // Fast path: no id change — extension.js handles incremental refresh.
             // Avoids a full buildIndex on every markdown save (common case).
@@ -145,15 +181,15 @@ async function findAffectedFilesAsync(workspaceFolders, oldId) {
     const affected = [];
     const pattern  = buildRenameRegex(oldId);
     for (const dir of getWorkspaceRoots(workspaceFolders)) {
-        await scanAsync(dir, pattern, affected);
+        await scanAsync(dir, dir, loadIgnoreRules(dir), pattern, affected);
     }
     return affected;
 }
 
-async function scanAsync(dir, pattern, results) {
+async function scanAsync(dir, workspaceRoot, ignoreRules, pattern, results) {
     let files;
     try {
-        files = fs.readdirSync(dir);
+        files = await fs.promises.readdir(dir);
     } catch (e) {
         return;
     }
@@ -162,20 +198,19 @@ async function scanAsync(dir, pattern, results) {
         if (file.startsWith('.')) continue;
 
         const fullPath = path.join(dir, file);
+        if (isIgnoredPath(fullPath, workspaceRoot, ignoreRules)) continue;
         let stat;
-        try { stat = fs.statSync(fullPath); } catch (e) { continue; }
+        try { stat = await fs.promises.stat(fullPath); } catch (e) { continue; }
 
         if (stat.isDirectory()) {
-            await scanAsync(fullPath, pattern, results);
+            await scanAsync(fullPath, workspaceRoot, ignoreRules, pattern, results);
         } else if (file.endsWith('.md')) {
             let content;
-            try { content = fs.readFileSync(fullPath, 'utf8'); } catch (e) { continue; }
+            try { content = await fs.promises.readFile(fullPath, 'utf8'); } catch (e) { continue; }
             if (pattern.test(content)) {
                 results.push({ filePath: fullPath, content });
             }
         }
-
-        await new Promise(resolve => setImmediate(resolve));
     }
 }
 
@@ -258,7 +293,7 @@ function extractIdFromDocument(document) {
 
 function buildRenameRegex(oldId) {
     const escaped = escapeRegex(oldId);
-    return new RegExp(`!?\\[\\[${escaped}(?=\\||\\]\\])`, 'g');
+    return new RegExp(`!?\\[\\[${escaped}(?=\\||#|\\^|\\]\\])`, 'g');
 }
 
 function findRenameMatchesInText(text, oldId) {

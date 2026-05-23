@@ -11,14 +11,10 @@ function buildGraphModel(nodeIds, centerNodeId = null) {
     const relationColors = new Map();
     const palette = ['#58a6ff', '#3fb950', '#ffa657', '#f778ba', '#a371f7', '#39d3f2', '#c4e449', '#db61a2'];
     const relationPalette = ['#79c0ff', '#56d364', '#ffc680', '#ffa198', '#c9aeff', '#76e3ea'];
-    const shapes = ['ellipse', 'round-rectangle', 'diamond', 'hexagon', 'tag', 'vee'];
-    const typeShapes = new Map();
-
     for (const id of ids) {
         const type = getNodeType(id, fieldsCache);
         if (!typeColors.has(type)) {
             typeColors.set(type, palette[typeColors.size % palette.length]);
-            typeShapes.set(type, shapes[typeShapes.size % shapes.length]);
         }
     }
 
@@ -42,54 +38,109 @@ function buildGraphModel(nodeIds, centerNodeId = null) {
             if (!relationColors.has(label)) {
                 relationColors.set(label, relationPalette[relationColors.size % relationPalette.length]);
             }
+            const reciprocalKey = `${pair.tgt}\x00${pair.src}`;
+            const reciprocal = pairMap.get(reciprocalKey);
+            const weight = computeEdgeWeight(label, {
+                reciprocal: !!reciprocal,
+                targetType: getNodeType(pair.tgt, fieldsCache),
+                sourceType: getNodeType(pair.src, fieldsCache)
+            });
             edges.push({
                 id: edgeId,
                 source: pair.src,
                 target: pair.tgt,
                 label,
-                color: relationColors.get(label)
+                color: relationColors.get(label),
+                weight,
+                strength: classifyEdgeStrength(label, weight)
             });
         }
     }
 
     const degreeMap = new Map();
+    const weightedDegreeMap = new Map();
     const incomingByNode = new Map();
     const outgoingByNode = new Map();
     for (const edge of edges) {
         degreeMap.set(edge.source, (degreeMap.get(edge.source) || 0) + 1);
         degreeMap.set(edge.target, (degreeMap.get(edge.target) || 0) + 1);
+        weightedDegreeMap.set(edge.source, round2((weightedDegreeMap.get(edge.source) || 0) + edge.weight));
+        weightedDegreeMap.set(edge.target, round2((weightedDegreeMap.get(edge.target) || 0) + edge.weight));
         if (!incomingByNode.has(edge.target)) incomingByNode.set(edge.target, []);
         if (!outgoingByNode.has(edge.source)) outgoingByNode.set(edge.source, []);
         incomingByNode.get(edge.target).push(edge);
         outgoingByNode.get(edge.source).push(edge);
     }
 
+    const typeCounts = new Map();
+    const tagCounts = new Map();
+    for (const id of ids) {
+        const type = getNodeType(id, fieldsCache);
+        typeCounts.set(type, (typeCounts.get(type) || 0) + 1);
+        for (const tag of getNodeTags(fieldsCache.get(id) || {})) {
+            tagCounts.set(tag, (tagCounts.get(tag) || 0) + 1);
+        }
+    }
+
     const nodes = ids.map((id) => {
         const fields = fieldsCache.get(id) || {};
         const type = getNodeType(id, fieldsCache);
+        const tags = getNodeTags(fields);
+        const relationKinds = new Set([
+            ...(outgoingByNode.get(id) || []).map((edge) => edge.label),
+            ...(incomingByNode.get(id) || []).map((edge) => edge.label)
+        ]);
+        const connectedTypes = new Set([
+            ...(outgoingByNode.get(id) || []).map((edge) => getNodeType(edge.target, fieldsCache)),
+            ...(incomingByNode.get(id) || []).map((edge) => getNodeType(edge.source, fieldsCache))
+        ].filter(Boolean));
+        const strongEdges = [
+            ...(outgoingByNode.get(id) || []),
+            ...(incomingByNode.get(id) || [])
+        ].filter((edge) => edge.strength !== 'weak').length;
+        const weightedDegree = weightedDegreeMap.get(id) || 0;
+        const hubScore = computeHubScore({
+            weightedDegree,
+            relationKinds: relationKinds.size,
+            connectedTypes: connectedTypes.size,
+            strongEdges,
+            tagCount: tags.length
+        });
         return {
             id,
             label: getNodeLabel(id, fields),
             type,
             color: typeColors.get(type),
-            shape: typeShapes.get(type) || 'ellipse',
+            shape: 'ellipse',
             degree: degreeMap.get(id) || 0,
+            weightedDegree,
+            hubScore,
+            tagCount: tags.length,
+            tags,
             isContext: id === centerNodeId,
             filePath: idIndex.get(id) || ''
         };
     });
 
     const topNodes = nodes
-        .map((node) => ({ id: node.id, label: node.label, type: node.type, degree: node.degree }))
-        .sort((a, b) => b.degree - a.degree || a.label.localeCompare(b.label))
+        .map((node) => ({
+            id: node.id,
+            label: node.label,
+            type: node.type,
+            degree: node.degree,
+            weightedDegree: node.weightedDegree,
+            hubScore: node.hubScore,
+            tagCount: node.tagCount
+        }))
+        .sort((a, b) => b.hubScore - a.hubScore || b.weightedDegree - a.weightedDegree || a.label.localeCompare(b.label))
         .slice(0, 8);
 
     const types = Array.from(typeColors.entries())
         .map(([type, color]) => ({
             type,
             color,
-            shape: typeShapes.get(type) || 'ellipse',
-            count: nodes.filter((node) => node.type === type).length
+            shape: 'ellipse',
+            count: typeCounts.get(type) || 0
         }))
         .sort((a, b) => b.count - a.count || a.type.localeCompare(b.type));
 
@@ -97,19 +148,29 @@ function buildGraphModel(nodeIds, centerNodeId = null) {
         .map(([field, color]) => ({
             field,
             color,
-            count: edges.filter((edge) => edge.label === field).length
+            count: edges.filter((edge) => edge.label === field).length,
+            totalWeight: round2(edges.filter((edge) => edge.label === field).reduce((sum, edge) => sum + edge.weight, 0))
         }))
-        .sort((a, b) => b.count - a.count || a.field.localeCompare(b.field));
+        .sort((a, b) => b.totalWeight - a.totalWeight || b.count - a.count || a.field.localeCompare(b.field));
+
+    const topTags = Array.from(tagCounts.entries())
+        .map(([tag, count]) => ({ tag, count }))
+        .sort((a, b) => b.count - a.count || a.tag.localeCompare(b.tag))
+        .slice(0, 8);
 
     const nodeDetails = {};
     for (const node of nodes) {
         const outgoing = (outgoingByNode.get(node.id) || []).map((edge) => ({
             targetId: edge.target,
-            label: edge.label
+            label: edge.label,
+            weight: edge.weight,
+            strength: edge.strength
         }));
         const incoming = (incomingByNode.get(node.id) || []).map((edge) => ({
             sourceId: edge.source,
-            label: edge.label
+            label: edge.label,
+            weight: edge.weight,
+            strength: edge.strength
         }));
 
         const connectedTypes = new Map();
@@ -124,18 +185,38 @@ function buildGraphModel(nodeIds, centerNodeId = null) {
 
         const relationSummary = new Map();
         for (const edge of [...(outgoingByNode.get(node.id) || []), ...(incomingByNode.get(node.id) || [])]) {
-            relationSummary.set(edge.label, (relationSummary.get(edge.label) || 0) + 1);
+            const current = relationSummary.get(edge.label) || { count: 0, weight: 0 };
+            current.count += 1;
+            current.weight += edge.weight;
+            relationSummary.set(edge.label, current);
         }
+
+        const visibleNeighborIds = new Set([
+            ...outgoing.map((edge) => edge.targetId),
+            ...incoming.map((edge) => edge.sourceId)
+        ]);
+        const allNeighborIds = new Set([
+            ...(getEdges(node.id) || []).map((edge) => edge.targetId),
+            ...(getBacklinks(node.id) || []).map((edge) => edge.sourceId)
+        ]);
+        const hiddenNeighborCount = [...allNeighborIds].filter((neighborId) => !visibleNeighborIds.has(neighborId)).length;
 
         nodeDetails[node.id] = {
             outgoing,
             incoming,
+            tags: node.tags,
+            weightedDegree: node.weightedDegree,
+            hubScore: node.hubScore,
+            hiddenNeighborCount,
             connectedTypes: Array.from(connectedTypes.entries())
                 .map(([type, count]) => ({ type, count }))
                 .sort((a, b) => b.count - a.count || a.type.localeCompare(b.type)),
             relationSummary: Array.from(relationSummary.entries())
-                .map(([field, count]) => ({ field, count }))
-                .sort((a, b) => b.count - a.count || a.field.localeCompare(b.field))
+                .map(([field, stats]) => ({ field, count: stats.count, weight: round2(stats.weight) }))
+                .sort((a, b) => b.weight - a.weight || b.count - a.count || a.field.localeCompare(b.field)),
+            strongestLinks: [...outgoing, ...incoming]
+                .sort((a, b) => b.weight - a.weight || a.label.localeCompare(b.label))
+                .slice(0, 4)
         };
     }
 
@@ -150,12 +231,16 @@ function buildGraphModel(nodeIds, centerNodeId = null) {
             nodeCount: nodes.length,
             edgeCount: edges.length,
             typeCount: types.length,
+            topTagCount: topTags.length,
             contextId: centerNodeId || null,
             primaryFocusId: centerNodeId || (topNodes[0]?.id || null),
-            largestClusterSize
+            largestClusterSize,
+            strongestRelation: relations[0]?.field || null,
+            dominantType: types[0]?.type || null
         },
         types,
         relations,
+        topTags,
         topNodes,
         nodeDetails
     };
@@ -193,13 +278,15 @@ function collectNeighborhood(seedIds, depth, limit) {
 
 function getTopVaultNodes(limit) {
     const ids = Array.from(getIndex().keys());
+    const fieldsCache = getFieldsCache();
     return ids
         .map((id) => ({
             id,
-            degree: (getEdges(id) || []).length + (getBacklinks(id) || []).length,
-            label: getNodeLabel(id, getFieldsCache().get(id) || {})
+            weightedDegree: computeNodeWeightedDegree(id),
+            hubScore: computeNodeExplorerScore(id, fieldsCache),
+            label: getNodeLabel(id, fieldsCache.get(id) || {})
         }))
-        .sort((a, b) => b.degree - a.degree || a.label.localeCompare(b.label))
+        .sort((a, b) => b.hubScore - a.hubScore || b.weightedDegree - a.weightedDegree || a.label.localeCompare(b.label))
         .slice(0, Math.max(20, limit))
         .map((entry) => entry.id);
 }
@@ -230,6 +317,78 @@ function getNodeLabel(id, fields) {
 function getNodeType(id, fieldsCache) {
     const fields = fieldsCache.get(id) || {};
     return String(fields.type || 'unknown');
+}
+
+function getNodeTags(fields = {}) {
+    const raw = String(fields.__yamlink_tags || '').trim();
+    if (!raw) return [];
+    return [...new Set(raw.split(',').map((tag) => String(tag || '').trim()).filter(Boolean))];
+}
+
+function classifyEdgeStrength(label, weight) {
+    if (label === 'mention') return 'weak';
+    if (weight >= 3.2) return 'strong';
+    return 'medium';
+}
+
+function computeEdgeWeight(label, options = {}) {
+    const isMention = label === 'mention';
+    const reciprocalBonus = options.reciprocal ? 0.65 : 0;
+    const semanticBonus = options.sourceType && options.targetType && options.sourceType !== options.targetType ? 0.2 : 0;
+    const base = isMention ? 0.85 : 2.55;
+    return round2(base + reciprocalBonus + semanticBonus);
+}
+
+function computeHubScore({ weightedDegree, relationKinds, connectedTypes, strongEdges, tagCount }) {
+    return round2(
+        (weightedDegree * 2.2) +
+        (relationKinds * 1.4) +
+        (connectedTypes * 1.1) +
+        (strongEdges * 0.75) +
+        (Math.min(tagCount, 4) * 0.25)
+    );
+}
+
+function computeNodeWeightedDegree(id) {
+    const outgoing = (getEdges(id) || []).map((edge) => computeEdgeWeight(edge.field === 'body' ? 'mention' : edge.field, {
+        reciprocal: (getEdges(edge.targetId) || []).some((candidate) => candidate && candidate.targetId === id)
+    }));
+    const incoming = (getBacklinks(id) || []).map((edge) => computeEdgeWeight(edge.field === 'body' ? 'mention' : edge.field, {
+        reciprocal: (getEdges(edge.sourceId) || []).some((candidate) => candidate && candidate.targetId === id)
+    }));
+    return round2([...outgoing, ...incoming].reduce((sum, weight) => sum + weight, 0));
+}
+
+function computeNodeExplorerScore(id, fieldsCache) {
+    const relatedTypes = new Set();
+    const relationFields = new Set();
+    const tags = getNodeTags(fieldsCache.get(id) || {});
+    let strongEdges = 0;
+
+    for (const edge of getEdges(id) || []) {
+        const label = edge.field === 'body' ? 'mention' : edge.field;
+        relationFields.add(label);
+        relatedTypes.add(getNodeType(edge.targetId, fieldsCache));
+        if (classifyEdgeStrength(label, computeEdgeWeight(label)) !== 'weak') strongEdges += 1;
+    }
+    for (const edge of getBacklinks(id) || []) {
+        const label = edge.field === 'body' ? 'mention' : edge.field;
+        relationFields.add(label);
+        relatedTypes.add(getNodeType(edge.sourceId, fieldsCache));
+        if (classifyEdgeStrength(label, computeEdgeWeight(label)) !== 'weak') strongEdges += 1;
+    }
+
+    return computeHubScore({
+        weightedDegree: computeNodeWeightedDegree(id),
+        relationKinds: relationFields.size,
+        connectedTypes: [...relatedTypes].filter(Boolean).length,
+        strongEdges,
+        tagCount: tags.length
+    });
+}
+
+function round2(value) {
+    return Math.round(Number(value || 0) * 100) / 100;
 }
 
 function computeLargestCluster(ids) {
@@ -268,5 +427,6 @@ module.exports = {
     getNodeSnapshot,
     getNodeLabel,
     getNodeType,
-    computeLargestCluster
+    computeLargestCluster,
+    getNodeTags
 };

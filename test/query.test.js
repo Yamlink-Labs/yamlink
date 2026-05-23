@@ -46,14 +46,20 @@ const MOCK_INDEX = new Map([
     ['mission-klendathu',     '/vault/mission-klendathu.md'],
     ['mission-klendathu-ii',  '/vault/mission-klendathu-ii.md'],
     ['roughnecks',            '/vault/roughnecks.md'],
+    ['deal-alpha',            '/vault/deal-alpha.md'],
+    ['deal-beta',             '/vault/deal-beta.md'],
+    ['deal-gamma',            '/vault/deal-gamma.md'],
 ]);
 
 const MOCK_FIELDS = new Map([
-    ['carl-jenkins',         { type: 'character', name: 'Carl Jenkins', rank: 'Private' }],
+    ['carl-jenkins',         { type: 'character', name: 'Carl Jenkins', rank: 'Private', __yamlink_tags: 'psychic, intelligence' }],
     ['johnny-rico',          { type: 'character', name: 'Johnny Rico',  rank: 'Lieutenant' }],
-    ['mission-klendathu',    { type: 'mission', intelligence: '[[carl-jenkins]]', commander: '[[johnny-rico]]', unit: '[[roughnecks]]', date: '2297-08-01', outcome: 'defeat' }],
+    ['mission-klendathu',    { type: 'mission', intelligence: '[[carl-jenkins]]', commander: '[[johnny-rico]]', unit: '[[roughnecks]]', date: '2297-08-01', outcome: 'defeat', __yamlink_tags: 'combat, klendathu' }],
     ['mission-klendathu-ii', { type: 'mission', intelligence: '[[carl-jenkins]]', unit: '[[roughnecks]]', date: '2297-09-15', outcome: 'victory' }],
     ['roughnecks',           { type: 'unit', name: 'Roughnecks' }],
+    ['deal-alpha',           { type: 'deal', value: '2', stage: 'open', date: '2026-05-03' }],
+    ['deal-beta',            { type: 'deal', value: '10', stage: 'won', date: '2026-05-12' }],
+    ['deal-gamma',           { type: 'deal', value: '100', stage: 'open', date: '2026-05-20' }],
 ]);
 
 const MOCK_BACKLINKS = new Map([
@@ -370,11 +376,13 @@ describe('parseSingleViewBlock — where', () => {
         assert.equal(q.wheres[0].values.length, 3);
     });
 
-    test('cross-field OR falls back to plain eq (no junk values)', () => {
-        // "or type = ..." looks like a condition — should not activate OR parsing
+    test('cross-field OR parses into a grouped disjunction', () => {
         const q = parseSingleViewLine('!view mission where outcome = victory or type = mission');
-        // Falls back to single eq treating everything after = as the value (safe degradation)
-        assert.equal(q.wheres[0].op, 'eq');
+        assert.equal(q.whereGroups.length, 1);
+        assert.equal(q.whereGroups[0].length, 2);
+        assert.equal(q.whereGroups[0][0].field, 'outcome');
+        assert.equal(q.whereGroups[0][1].field, 'type');
+        assert.equal(q.parseWarnings.length, 0);
     });
 
     test('date-range >= parses as gte', () => {
@@ -393,6 +401,22 @@ describe('parseSingleViewBlock — where', () => {
         const q = parseSingleViewLine('!view mission where date <= 2297-09-15');
         assert.equal(q.wheres[0].op, 'lte');
         assert.equal(q.wheres[0].value, '2297-09-15');
+    });
+
+    test('today() parses as a date query function', () => {
+        const q = parseSingleViewLine('!view tasks where date >= today()');
+        assert.equal(q.wheres[0].op, 'gte');
+        assert.equal(q.wheres[0].valueKind, 'date');
+        assert.equal(q.wheres[0].valueSource, 'today()');
+        assert.equal(q.wheres[0].value, todayIso);
+    });
+
+    test('days-from-now() parses as a relative date query function', () => {
+        const q = parseSingleViewLine('!view tasks where date <= days-from-now(5)');
+        assert.equal(q.wheres[0].op, 'lte');
+        assert.equal(q.wheres[0].valueKind, 'date');
+        assert.equal(q.wheres[0].valueSource, 'days-from-now(5)');
+        assert.equal(q.wheres[0].value, addDaysIso(todayIso, 5));
     });
 
     test('date-range > parses as gt', () => {
@@ -522,6 +546,26 @@ describe('runQuery — forward — OR and date-range', () => {
     test('date-range on field with no values returns empty', () => {
         const r = runQuery(parseSingleViewLine('!view character where date >= 2297-01-01'));
         assert.equal(r.rows.length, 0);
+    });
+
+    test('today() works in task queries', () => {
+        const r = runQuery(parseSingleViewLine('!view tasks where date >= today()'));
+        assert.equal(r.success, true);
+        assert.deepEqual(ids(r), [
+            'mission-klendathu#t1-alpha',
+            'mission-klendathu-ii#t2-beta',
+            'roughnecks#t3-gamma'
+        ]);
+    });
+
+    test('days-from-now() limits upcoming tasks by relative date', () => {
+        const r = runQuery(parseSingleViewLine('!view tasks where date <= days-from-now(5)'));
+        assert.equal(r.success, true);
+        assert.deepEqual(ids(r), [
+            'carl-jenkins#t0-overdue',
+            'mission-klendathu#t1-alpha',
+            'mission-klendathu-ii#t2-beta'
+        ]);
     });
 
 });
@@ -676,6 +720,13 @@ describe('runQuery — forward — sort and limit', () => {
         assert.equal(r.rows[0].id, 'mission-klendathu-ii');
     });
 
+    test('sorts numeric values numerically instead of lexicographically', () => {
+        const r = runQuery(parseSingleViewBlock(['!view deal', 'sort value desc']));
+        assert.equal(r.rows[0].id, 'deal-gamma');
+        assert.equal(r.rows[1].id, 'deal-beta');
+        assert.equal(r.rows[2].id, 'deal-alpha');
+    });
+
 });
 
 describe('runQuery — forward — columns', () => {
@@ -742,6 +793,22 @@ describe('runQuery — forward — structured error return', () => {
         assert.equal(r.success, true);
         assert.equal(r.rows.length, 2);
         assert.ok(r.warnings.some(w => w.includes('Sort field "dat" is uncommon')));
+    });
+
+    test('cross-field OR runs as a grouped disjunction', () => {
+        const r = runQuery(parseSingleViewLine('!view mission where outcome = victory or type = mission'));
+        assert.equal(r.success, true);
+        assert.deepEqual(ids(r), ['mission-klendathu', 'mission-klendathu-ii']);
+    });
+
+    test('cross-field OR combines with AND across where lines', () => {
+        const r = runQuery(parseSingleViewBlock([
+            '!view mission',
+            'where outcome = victory or commander = [[carl-jenkins]]',
+            'where date exists'
+        ]));
+        assert.equal(r.success, true);
+        assert.deepEqual(ids(r), ['mission-klendathu-ii']);
     });
 
 });
@@ -906,6 +973,12 @@ describe('buildQueryString', () => {
         assert.ok(s.includes('where outcome = victory or defeat'));
     });
 
+    test('cross-field OR roundtrip', () => {
+        const q = parseSingleViewLine('!view mission where outcome = victory or commander = [[carl-jenkins]]');
+        const s = buildQueryString(q);
+        assert.ok(s.includes('where outcome = victory or commander = [[carl-jenkins]]'));
+    });
+
     test('date-range >= roundtrip', () => {
         const q = parseSingleViewLine('!view mission where date >= 2297-09-01');
         const s = buildQueryString(q);
@@ -916,6 +989,332 @@ describe('buildQueryString', () => {
         const q = parseSingleViewLine('!view mission where date < 2297-09-01');
         const s = buildQueryString(q);
         assert.ok(s.includes('where date < 2297-09-01'));
+    });
+
+    test('today() roundtrip', () => {
+        const q = parseSingleViewLine('!view tasks where date >= today()');
+        assert.equal(buildQueryString(q), '!view tasks\nwhere date >= today()');
+    });
+
+    test('days-from-now() roundtrip', () => {
+        const q = parseSingleViewLine('!view tasks where date <= days-from-now(5)');
+        assert.equal(buildQueryString(q), '!view tasks\nwhere date <= days-from-now(5)');
+    });
+
+    test('neq scalar roundtrip', () => {
+        const q = parseSingleViewLine('!view mission where outcome != victory');
+        assert.equal(buildQueryString(q), '!view mission\nwhere outcome != victory');
+    });
+
+    test('neq relation roundtrip', () => {
+        const q = parseSingleViewLine('!view mission where commander != [[johnny-rico]]');
+        assert.equal(buildQueryString(q), '!view mission\nwhere commander != [[johnny-rico]]');
+    });
+
+    test('is empty roundtrip', () => {
+        const q = parseSingleViewLine('!view deal where close-date is empty');
+        assert.equal(buildQueryString(q), '!view deal\nwhere close-date is empty');
+    });
+
+    test('exists roundtrip', () => {
+        const q = parseSingleViewLine('!view mission where date exists');
+        assert.equal(buildQueryString(q), '!view mission\nwhere date exists');
+    });
+
+    test('#tag shorthand roundtrip', () => {
+        const q = parseSingleViewLine('!view * where #combat');
+        assert.equal(buildQueryString(q), '!view *\nwhere #combat');
+    });
+
+});
+
+// ─────────────────────────────────────────────────────────────────
+// neq operator
+// ─────────────────────────────────────────────────────────────────
+
+describe('parseSingleViewBlock — neq operator', () => {
+
+    test('!= parses to neq op', () => {
+        const q = parseSingleViewLine('!view mission where outcome != victory');
+        assert.equal(q.wheres[0].op, 'neq');
+        assert.equal(q.wheres[0].field, 'outcome');
+        assert.equal(q.wheres[0].value, 'victory');
+    });
+
+    test('!= with [[relation]] value parses valueKind as relation', () => {
+        const q = parseSingleViewLine('!view mission where commander != [[johnny-rico]]');
+        assert.equal(q.wheres[0].op, 'neq');
+        assert.equal(q.wheres[0].value, 'johnny-rico');
+        assert.equal(q.wheres[0].valueKind, 'relation');
+    });
+
+});
+
+describe('runQuery — forward — neq operator', () => {
+
+    test('where outcome != victory excludes missions with that outcome', () => {
+        const r = runQuery(parseSingleViewLine('!view mission where outcome != victory'));
+        assert.deepEqual(ids(r), ['mission-klendathu']);
+    });
+
+    test('where outcome != defeat excludes missions with that outcome', () => {
+        const r = runQuery(parseSingleViewLine('!view mission where outcome != defeat'));
+        assert.deepEqual(ids(r), ['mission-klendathu-ii']);
+    });
+
+    test('where commander != [[johnny-rico]] returns missions without that commander', () => {
+        const r = runQuery(parseSingleViewLine('!view mission where commander != [[johnny-rico]]'));
+        // mission-klendathu-ii has no commander field (empty → not equal to johnny-rico)
+        assert.deepEqual(ids(r), ['mission-klendathu-ii']);
+    });
+
+    test('neq on a missing field treats it as empty string (not equal to any non-empty value)', () => {
+        const r = runQuery(parseSingleViewLine('!view unit where outcome != something'));
+        // roughnecks has no outcome field — '' !== 'something' → matches
+        assert.deepEqual(ids(r), ['roughnecks']);
+    });
+
+});
+
+// ─────────────────────────────────────────────────────────────────
+// empty / exists predicates
+// ─────────────────────────────────────────────────────────────────
+
+describe('parseSingleViewBlock — empty/exists predicates', () => {
+
+    test('"is empty" parses to empty op', () => {
+        const q = parseSingleViewLine('!view deal where close-date is empty');
+        assert.equal(q.wheres[0].op, 'empty');
+        assert.equal(q.wheres[0].field, 'close-date');
+    });
+
+    test('"is not empty" parses to exists op', () => {
+        const q = parseSingleViewLine('!view mission where date is not empty');
+        assert.equal(q.wheres[0].op, 'exists');
+        assert.equal(q.wheres[0].field, 'date');
+    });
+
+    test('"exists" keyword parses to exists op', () => {
+        const q = parseSingleViewLine('!view mission where outcome exists');
+        assert.equal(q.wheres[0].op, 'exists');
+        assert.equal(q.wheres[0].field, 'outcome');
+    });
+
+    test('empty/exists conditions are not filtered out by validWheres check', () => {
+        const r = runQuery(parseSingleViewLine('!view mission where date is empty'));
+        assert.equal(r.success, true);
+    });
+
+});
+
+describe('runQuery — forward — empty/exists predicates', () => {
+
+    test('where date exists returns only nodes that have a date field', () => {
+        const r = runQuery(parseSingleViewLine('!view mission where date exists'));
+        assert.deepEqual(ids(r), ['mission-klendathu', 'mission-klendathu-ii']);
+    });
+
+    test('where date is empty returns nodes with no date field', () => {
+        const r = runQuery(parseSingleViewLine('!view character where date is empty'));
+        assert.deepEqual(ids(r), ['carl-jenkins', 'johnny-rico']);
+    });
+
+    test('where outcome is empty returns only nodes with no outcome field', () => {
+        const r = runQuery(parseSingleViewLine('!view unit where outcome is empty'));
+        assert.deepEqual(ids(r), ['roughnecks']);
+    });
+
+    test('where commander is not empty matches only missions with a commander', () => {
+        const r = runQuery(parseSingleViewLine('!view mission where commander is not empty'));
+        assert.deepEqual(ids(r), ['mission-klendathu']);
+    });
+
+    test('exists and neq can be composed with AND', () => {
+        const r = runQuery(parseSingleViewBlock([
+            '!view mission',
+            'where date exists',
+            'where outcome != defeat',
+        ]));
+        assert.deepEqual(ids(r), ['mission-klendathu-ii']);
+    });
+
+});
+
+// ─────────────────────────────────────────────────────────────────
+// tag queries
+// ─────────────────────────────────────────────────────────────────
+
+describe('parseSingleViewBlock — tag queries', () => {
+
+    test('#tag shorthand parses to __yamlink_tags contains', () => {
+        const q = parseSingleViewLine('!view * where #combat');
+        assert.equal(q.wheres[0].field, '__yamlink_tags');
+        assert.equal(q.wheres[0].op, 'contains');
+        assert.equal(q.wheres[0].value, 'combat');
+        assert.equal(q.wheres[0].tagShorthand, true);
+    });
+
+    test('#tag is case-insensitive at parse time', () => {
+        const q = parseSingleViewLine('!view * where #Psychic');
+        assert.equal(q.wheres[0].value, 'psychic');
+    });
+
+});
+
+describe('runQuery — forward — tag queries', () => {
+
+    test('where #tag returns nodes tagged with that value', () => {
+        const r = runQuery(parseSingleViewLine('!view * where #psychic'));
+        assert.deepEqual(ids(r), ['carl-jenkins']);
+    });
+
+    test('where #tag matching multiple nodes', () => {
+        // only mission-klendathu has 'combat' tag; carl-jenkins has 'psychic, intelligence'
+        const r = runQuery(parseSingleViewLine('!view * where #combat'));
+        assert.deepEqual(ids(r), ['mission-klendathu']);
+    });
+
+    test('__yamlink_tags not present in auto-columns', () => {
+        const r = runQuery(parseSingleViewLine('!view *'));
+        assert.ok(!r.columns.includes('__yamlink_tags'));
+    });
+
+    test('tag query AND neq compose correctly', () => {
+        const r = runQuery(parseSingleViewBlock([
+            '!view *',
+            'where #combat',
+            'where outcome != victory',
+        ]));
+        assert.deepEqual(ids(r), ['mission-klendathu']);
+    });
+
+});
+
+// ─────────────────────────────────────────────────────────────────
+// GROUP BY
+// ─────────────────────────────────────────────────────────────────
+
+describe('parseSingleViewBlock — group by', () => {
+
+    test('group by <field> parses to groupBy property', () => {
+        const q = parseSingleViewLine('!view * group by type');
+        assert.equal(q.groupBy, 'type');
+    });
+
+    test('group by with where clause', () => {
+        const q = parseSingleViewLine('!view mission where outcome = victory group by date');
+        assert.equal(q.groupBy, 'date');
+        assert.equal(q.wheres[0].field, 'outcome');
+    });
+
+    test('group by with sort count desc', () => {
+        const q = parseSingleViewLine('!view * group by type sort count desc');
+        assert.equal(q.groupBy, 'type');
+        assert.deepStrictEqual(q.sort, { field: 'count', desc: true });
+    });
+
+    test('group by with limit', () => {
+        const q = parseSingleViewLine('!view * group by type limit 3');
+        assert.equal(q.groupBy, 'type');
+        assert.equal(q.limit, 3);
+    });
+
+    test('multi-line group by is a continuation keyword', () => {
+        const qs = parseAllViewQueries('!view deal\nwhere stage = open\ngroup by stage\nsort count desc');
+        assert.ok(qs && qs.length === 1);
+        assert.equal(qs[0].groupBy, 'stage');
+        assert.deepStrictEqual(qs[0].sort, { field: 'count', desc: true });
+        assert.equal(qs[0].wheres[0].field, 'stage');
+    });
+
+    test('no group by returns null groupBy', () => {
+        const q = parseSingleViewLine('!view mission');
+        assert.equal(q.groupBy, null);
+    });
+
+});
+
+describe('runQuery — forward — group by', () => {
+
+    test('group by type returns grouped result shape', () => {
+        const r = runQuery(parseSingleViewLine('!view * group by type'), null);
+        assert.ok(r.success);
+        assert.ok(Array.isArray(r.groups));
+        assert.equal(r.groupBy, 'type');
+        assert.deepStrictEqual(r.columns, ['type', 'count']);
+    });
+
+    test('group by type has correct per-type counts', () => {
+        const r = runQuery(parseSingleViewLine('!view * group by type'), null);
+        const byType = Object.fromEntries(r.groups.map(g => [g.key, g.count]));
+        assert.equal(byType['character'], 2);
+        assert.equal(byType['mission'], 2);
+        assert.equal(byType['deal'], 3);
+        assert.equal(byType['unit'], 1);
+    });
+
+    test('groups sorted by count desc by default', () => {
+        const r = runQuery(parseSingleViewLine('!view * group by type'), null);
+        for (let i = 1; i < r.groups.length; i++) {
+            assert.ok(r.groups[i - 1].count >= r.groups[i].count,
+                `expected count[${i-1}]=${r.groups[i-1].count} >= count[${i}]=${r.groups[i].count}`);
+        }
+    });
+
+    test('sort count (asc) reverses group order', () => {
+        const r = runQuery(parseSingleViewLine('!view * group by type sort count'), null);
+        for (let i = 1; i < r.groups.length; i++) {
+            assert.ok(r.groups[i - 1].count <= r.groups[i].count,
+                `expected count[${i-1}]=${r.groups[i-1].count} <= count[${i}]=${r.groups[i].count}`);
+        }
+    });
+
+    test('group by deal stage gives correct bucket counts', () => {
+        const r = runQuery(parseSingleViewLine('!view deal group by stage'), null);
+        assert.ok(r.success);
+        const byStage = Object.fromEntries(r.groups.map(g => [g.key, g.count]));
+        assert.equal(byStage['open'], 2);
+        assert.equal(byStage['won'], 1);
+    });
+
+    test('group by with limit caps number of groups', () => {
+        const r = runQuery(parseSingleViewLine('!view * group by type limit 2'), null);
+        assert.equal(r.groups.length, 2);
+    });
+
+    test('flat rows still present for export', () => {
+        const r = runQuery(parseSingleViewLine('!view * group by type'), null);
+        assert.ok(r.rows.length > 0);
+        assert.equal(r.rows.length, MOCK_INDEX.size);
+    });
+
+    test('group by with where filter narrows before grouping', () => {
+        const r = runQuery(parseSingleViewBlock([
+            '!view mission',
+            'where outcome = defeat',
+            'group by outcome',
+        ]), null);
+        assert.ok(r.success);
+        assert.equal(r.groups.length, 1);
+        assert.equal(r.groups[0].key, 'defeat');
+        assert.equal(r.groups[0].count, 1);
+    });
+
+});
+
+describe('buildQueryString — group by', () => {
+
+    test('group by serialises to "group by <field>"', () => {
+        const q = parseSingleViewLine('!view deal group by stage');
+        const s = buildQueryString(q);
+        assert.ok(s.includes('group by stage'), `Expected "group by stage" in: ${s}`);
+    });
+
+    test('group by with sort count desc roundtrip', () => {
+        const q = parseSingleViewLine('!view * group by type sort count desc');
+        const s = buildQueryString(q);
+        assert.ok(s.includes('group by type'));
+        assert.ok(s.includes('sort count desc'));
     });
 
 });

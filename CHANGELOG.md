@@ -1,5 +1,92 @@
 # Changelog
 
+## [0.5.0] - "Zim"
+
+Zim turns Yamlink into a more complete workspace release.
+
+It makes the product easier to trust and easier to use:
+
+- a rebuilt graph with both an ambient sidebar constellation and a deliberate Graph Workspace
+- a stronger query language with more real-world filtering and date support
+- smarter frontmatter and relation help that is more readable and more context-aware
+- clearer Note Report and Vault Health surfaces
+- better longform/body awareness through tags, quotes, footnotes, embeds, and callouts
+- stronger release discipline through better caching, testing, linting, and CI
+
+### Added
+
+- **Graph 2.0** with two distinct surfaces:
+  - **Sidebar graph** for ambient vault awareness
+  - **Graph Workspace** for focused exploration around the current note, a query result, or a custom note set
+- **Stronger query language**:
+  - `!=`
+  - `is empty`
+  - `exists`
+  - `is not empty`
+  - cross-field `or`
+  - `#tag` shorthand
+  - date functions such as `today()`, `tomorrow()`, `days-ago(n)`, and `days-from-now(n)`
+- **Smarter relation completion**:
+  - human-readable labels instead of raw IDs
+  - type-filtered candidates when Yamlink can infer the target note type
+  - faster `New [type]` creation from relation fields
+  - better body `[[` completion labels
+- **Lifecycle and type-consistency signals** in Vault Health and Note Report
+- **Date shortcuts** with `@today`, `@tomorrow`, `@yesterday`, `@thisweek`, `@nextweek`, `@startofmonth`, and `@endofmonth`
+- **Body-aware signals**:
+  - body tags
+  - callouts
+  - embeds
+  - footnotes
+  - repeated body links as supporting evidence
+- **Vault-wide aliases** through `aliases:` in frontmatter
+- **Schema-first note creation improvements**:
+  - `Yamlink: New Note from Schema`
+  - schema fallback in normal note creation
+  - template `date:` auto-fill
+- **Public extension API** for reading the live index and running Yamlink queries
+- **Developer tooling baseline**:
+  - ESLint
+  - GitHub Actions CI
+
+### Changed
+
+- **Graph became a clearer product surface**:
+  - the old graph path is no longer the active user-facing experience
+  - the workspace graph opens with a stronger focus model around the current note
+  - the vault-wide graph now has its own broader constellation mode
+  - graph controls and iconography were simplified and cleaned up
+- **Completion and lightbulbs are more disciplined**:
+  - weaker signals stay quieter
+  - stronger signals surface more clearly
+  - field actions behave more locally and avoid duplicate noise
+- **Field and relation suggestions now learn more from the vault** instead of leaning so heavily on hardcoded fallbacks
+- **Note Report** now leads with clearer factual signals before inference
+- **Tables** now feel more operational:
+  - cleaner shell
+  - stronger sorting behavior
+  - column value filters
+  - corrected task status language
+- **Aliases, embeds, and callouts** now behave more like first-class Yamlink signals instead of edge cases
+
+### Fixed
+
+- relation completion now behaves more like a real guided workflow instead of a raw ID picker
+- ambiguous fields no longer get overconfident relation treatment
+- body links no longer overpower stronger vault signals
+- graph and Note Report suggestions stay better aligned with the actual visible context
+- date shortcuts and date parsing are broader and safer
+- templates and schema creation are more consistent
+- `.yamlinkignore` now behaves like a true vault-control surface and rebuilds immediately when changed
+
+### Reliability
+
+- stronger caching across tasks, queries, intelligence, lifecycle, and drift
+- more targeted surface refreshes when unrelated files change
+- broader automated testing and safer release discipline
+
+---
+
 ## [0.4.0] - "Carmen"
 
 Carmen is the hardening and intelligence release.
@@ -17,7 +104,7 @@ It turns the post-Ace+ adaptive work into a cleaner, stronger baseline:
 
 - **Query OR logic** — `where status = open or done` matches any value in the list
 - **Query date-range operators** — `where date >= 2026-01-01`, `where deadline < 2026-05-01`; comparison uses ISO date ordering so `YYYY-MM-DD` sorts correctly
-- **Body wikilink → frontmatter suggestion** — if `[[x]]` appears 2+ times in the note body and is not already a frontmatter field, Yamlink surfaces "Add as field" in the lightbulb and a hint in the hover card
+- **Body wikilink → frontmatter suggestion** — if `[[x]]` appears 2+ times in the note body and is not already a frontmatter field, Yamlink surfaces "Add as field" in the lightbulb
 - **Note-context-aware query builder** — smart starters now lead the insert flow when Yamlink already understands the active note's surrounding structure
 - **Scroll preservation in Note Report** — scroll position now survives file saves and re-renders when the same note stays active
 - **Template system** — `_templates/`-based note creation with `yamlink.newNodeFromTemplate` and smart frontmatter generation
@@ -64,7 +151,6 @@ It turns the post-Ace+ adaptive work into a cleaner, stronger baseline:
 - Repeated body links can now influence:
   - adaptive frontmatter suggestions
   - Note Report hints
-  - hover guidance
 
 ### Fixed
 

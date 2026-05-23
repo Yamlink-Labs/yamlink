@@ -5,15 +5,21 @@
 .claude/**
 backup/**
 docs/**
+website content/**
+site/**
 sample/**
 internal/**
 test/**
+coverage/**
+dist/**
 media/legacy/**
 **/*.map
 **/*.ts
 README-draft.md
 PROJECT_LOG.md
 ROADMAP.md
+TODO.md
+RELEASE_NOTES_0.5.0_ZIM.md
 INTELLIGENCE_CORE_CONTRACTS.md
 CLAUDE.md
 CODEX.md

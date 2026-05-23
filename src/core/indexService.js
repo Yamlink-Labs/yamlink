@@ -9,6 +9,7 @@ const {
     getIndex,
     getPathIndex,
     getFieldsCache,
+    getAliasIndex,
     getDuplicateIds,
     getVaultGeneration,
     parseFrontmatter
@@ -18,6 +19,7 @@ module.exports = {
     getIndex,
     getPathIndex,
     getFieldsCache,
+    getAliasIndex,
     getDuplicateIds,
     getVaultGeneration,
     parseFrontmatter

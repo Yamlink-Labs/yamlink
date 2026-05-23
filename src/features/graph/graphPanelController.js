@@ -5,12 +5,12 @@ const { getIndex, getPathIndex } = require('../../core/indexService');
 const { normaliseState, getPanelTitle, clampDepth } = require('./graphState');
 const { buildBootHtml } = require('./graphBootHtml');
 const { buildPanelPayload } = require('./graphPayload');
+const { perfTracker } = require('../../runtime/performanceTracker');
 
 const PANEL_VIEW_TYPE = 'yamlink.graphPanel.v2';
 
 function createGraphPanelController() {
     let panel = null;
-    let panelContext = null;
     let panelState = null;
     let panelReady = false;
     let pendingPayload = null;
@@ -67,17 +67,19 @@ function createGraphPanelController() {
 
     function syncLocalGraphToNode(nodeId) {
         if (!panelState || !nodeId) return;
+        const changed = panelState.centerNodeId !== nodeId || panelState.selectedNodeId !== nodeId;
         panelState.centerNodeId = nodeId;
         panelState.selectedNodeId = nodeId;
         panelState.expandedNodeIds = new Set([nodeId]);
-        panelState.forceLayout = true;
+        panelState.forceLayout = changed;
         if (panel) panel.title = getPanelTitle(panelState);
     }
 
     function syncExplorerGraphToNode(nodeId) {
         if (!panelState || !nodeId) return;
+        const changed = panelState.selectedNodeId !== nodeId;
         panelState.selectedNodeId = nodeId;
-        panelState.forceLayout = true;
+        panelState.forceLayout = changed;
         if (panel) panel.title = getPanelTitle(panelState);
     }
 
@@ -86,7 +88,6 @@ function createGraphPanelController() {
         panelReady = false;
         pendingPayload = null;
         if (clearContext) {
-            panelContext = null;
             panelState = null;
         }
     }
@@ -94,14 +95,22 @@ function createGraphPanelController() {
     function pushGraphUpdate() {
         if (!panel || !panelState) return;
 
-        const payload = buildPanelPayload(panelState, getPreferredActiveNodeId);
+        const payload = perfTracker.measureSync('graph.buildPanelPayload', {
+            mode: panelState.mode,
+            depth: panelState.depth
+        }, () => buildPanelPayload(panelState, getPreferredActiveNodeId));
         pendingPayload = payload;
 
         if (!panelReady) return;
 
-        panel.webview.postMessage({
-            type: 'updateGraph',
-            payload
+        perfTracker.measureSync('graph.postMessage', {
+            mode: panelState.mode,
+            nodeCount: payload?.model?.nodes?.length || 0
+        }, () => {
+            panel.webview.postMessage({
+                type: 'updateGraph',
+                payload
+            });
         });
     }
 
@@ -140,19 +149,24 @@ function createGraphPanelController() {
             break;
         case 'focusNode':
             if (message.id) {
+                const changed = panelState.centerNodeId !== message.id || panelState.mode !== 'local';
                 panelState.centerNodeId = message.id;
                 panelState.selectedNodeId = message.id;
                 panelState.expandedNodeIds.add(message.id);
                 panelState.mode = 'local';
-                panelState.forceLayout = true;
+                panelState.forceLayout = changed;
                 if (panel) panel.title = getPanelTitle(panelState);
                 pushGraphUpdate();
             }
             break;
         case 'expandNode':
             if (message.id) {
+                const before = panelState.expandedNodeIds.size;
                 panelState.expandedNodeIds.add(message.id);
                 panelState.selectedNodeId = message.id;
+                if (panelState.expandedNodeIds.size !== before) {
+                    panelState.forceLayout = true;
+                }
                 pushGraphUpdate();
             }
             break;
@@ -173,10 +187,12 @@ function createGraphPanelController() {
             break;
         case 'revealActive': {
             const activeId = getPreferredActiveNodeId();
+            const changed = panelState.mode !== 'local' || (activeId && panelState.centerNodeId !== activeId);
             panelState.mode = 'local';
             if (activeId) {
                 syncLocalGraphToNode(activeId);
             }
+            panelState.forceLayout = changed;
             if (panel) panel.title = getPanelTitle(panelState);
             pushGraphUpdate();
             break;
@@ -187,7 +203,6 @@ function createGraphPanelController() {
     }
 
     function openGraphPanel(context, options = {}) {
-        panelContext = context;
         const activeNodeId = getPreferredActiveNodeId();
         const newState = normaliseState(options, activeNodeId, panelState);
 
@@ -221,7 +236,7 @@ function createGraphPanelController() {
             resetPanelRuntime(true);
         }, null, context.subscriptions);
 
-        panel.webview.html = buildBootHtml(panel.webview, context.extensionUri);
+        panel.webview.html = perfTracker.measureSync('graph.buildBootHtml', null, () => buildBootHtml(panel.webview, context.extensionUri));
 
         panel.title = getPanelTitle(panelState);
         panel.reveal(vscode.ViewColumn.Beside, false);

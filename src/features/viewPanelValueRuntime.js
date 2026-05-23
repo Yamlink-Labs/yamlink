@@ -26,6 +26,9 @@
         const raw = String(value ?? '').trim();
         if (!raw) return null;
 
+        const shortcut = resolveDateShortcutToken(raw);
+        if (shortcut) return shortcut;
+
         let match = raw.match(/^(\d{4})[-/.](\d{1,2})[-/.](\d{1,2})$/);
         if (match) return toIsoDate(match[1], match[2], match[3]);
 
@@ -38,19 +41,81 @@
             return toIsoDate(match[3], b, a);
         }
 
-        match = raw.match(/^([A-Za-z]+)\s+(\d{1,2}),?\s+(\d{4})$/);
+        match = raw.match(/^([A-Za-z]+)\s+(\d{1,2}(?:st|nd|rd|th)?),?\s+(\d{4})$/);
         if (match) {
             const month = new Date(`${match[1]} 1, 2000`).getMonth() + 1;
-            return Number.isInteger(month) && month > 0 ? toIsoDate(match[3], month, match[2]) : null;
+            const day = String(match[2]).replace(/(?:st|nd|rd|th)$/i, '');
+            return Number.isInteger(month) && month > 0 ? toIsoDate(match[3], month, day) : null;
         }
 
-        match = raw.match(/^(\d{1,2})\s+([A-Za-z]+),?\s+(\d{4})$/);
+        match = raw.match(/^(\d{1,2}(?:st|nd|rd|th)?)\s+([A-Za-z]+),?\s+(\d{4})$/);
         if (match) {
             const month = new Date(`${match[2]} 1, 2000`).getMonth() + 1;
-            return Number.isInteger(month) && month > 0 ? toIsoDate(match[3], month, match[1]) : null;
+            const day = String(match[1]).replace(/(?:st|nd|rd|th)$/i, '');
+            return Number.isInteger(month) && month > 0 ? toIsoDate(match[3], month, day) : null;
         }
 
         return null;
+    }
+
+    function resolveDateShortcutToken(value) {
+        const token = String(value ?? '').trim().toLowerCase().replace(/^@+/, '');
+        if (!token) return null;
+        const base = new Date();
+
+        function fromDate(date) {
+            return toIsoDate(date.getFullYear(), date.getMonth() + 1, date.getDate());
+        }
+
+        function addDays(days) {
+            const next = new Date(base.getFullYear(), base.getMonth(), base.getDate());
+            next.setDate(next.getDate() + days);
+            return fromDate(next);
+        }
+
+        function addMonths(months) {
+            const next = new Date(base.getFullYear(), base.getMonth(), base.getDate());
+            next.setMonth(next.getMonth() + months);
+            return fromDate(next);
+        }
+
+        function weekend(weeksAhead) {
+            const next = new Date(base.getFullYear(), base.getMonth(), base.getDate());
+            const saturdayOffset = (6 - next.getDay() + 7) % 7;
+            next.setDate(next.getDate() + saturdayOffset + (weeksAhead * 7));
+            return fromDate(next);
+        }
+
+        const weekdays = new Map([
+            ['monday', 1], ['tuesday', 2], ['wednesday', 3], ['thursday', 4], ['friday', 5], ['saturday', 6], ['sunday', 0]
+        ]);
+
+        switch (token) {
+        case 'today':
+            return fromDate(base);
+        case 'tomorrow':
+            return addDays(1);
+        case 'yesterday':
+            return addDays(-1);
+        case 'next-week':
+            return addDays(7);
+        case 'next-month':
+            return addMonths(1);
+        case 'this-weekend':
+            return weekend(0);
+        case 'next-weekend':
+            return weekend(1);
+        case 'eom':
+        case 'end-of-month':
+            return fromDate(new Date(base.getFullYear(), base.getMonth() + 1, 0));
+        default:
+            if (!weekdays.has(token)) return null;
+            const targetDay = weekdays.get(token);
+            const next = new Date(base.getFullYear(), base.getMonth(), base.getDate());
+            const offset = (targetDay - next.getDay() + 7) % 7;
+            next.setDate(next.getDate() + offset);
+            return fromDate(next);
+        }
     }
 
     function normaliseForDisplay(mode, value) {

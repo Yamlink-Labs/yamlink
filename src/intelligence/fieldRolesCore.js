@@ -47,12 +47,41 @@ function normalizeLinkTarget(value) {
     return beforeBlock ? beforeBlock.toLowerCase() : null;
 }
 
-function extractLinkTargets(value) {
+function normalizeBareRelationToken(value) {
+    const raw = String(value || '').trim();
+    if (!raw) return null;
+    const beforeAlias = raw.split('|')[0]?.trim() ?? raw;
+    const beforeAnchor = beforeAlias.split('#')[0]?.trim() ?? beforeAlias;
+    const beforeBlock = beforeAnchor.split('^')[0]?.trim() ?? beforeAnchor;
+    return beforeBlock ? beforeBlock.toLowerCase() : null;
+}
+
+function extractBareRelationTargets(value, knownIds = []) {
+    const knownIdSet = knownIds instanceof Set ? knownIds : new Set(Array.from(knownIds || []).map((id) => String(id || '').trim().toLowerCase()).filter(Boolean));
+    if (!knownIdSet.size) return [];
+    const targets = new Set();
+    const raw = String(value || '').trim();
+    if (!raw) return [];
+
+    const candidates = raw
+        .split(/[,\n;]/)
+        .map((entry) => normalizeBareRelationToken(entry))
+        .filter(Boolean);
+    for (const candidate of candidates) {
+        if (knownIdSet.has(candidate)) targets.add(candidate);
+    }
+    return [...targets];
+}
+
+function extractLinkTargets(value, options = {}) {
     const targets = new Set();
     const matches = String(value || '').matchAll(/\[\[([^\]]+)\]\]/g);
     for (const match of matches) {
         const target = normalizeLinkTarget(`[[${match[1]}]]`);
         if (target) targets.add(target);
+    }
+    for (const target of extractBareRelationTargets(value, options.knownIds || [])) {
+        targets.add(target);
     }
     return [...targets];
 }
@@ -80,7 +109,7 @@ function inferTargetTypeFromObservedValues(fieldName, observedFields = [], optio
         if (!rawEntry) continue;
         const raw = String(rawEntry[1] || '').trim();
         if (!raw) continue;
-        const targets = extractLinkTargets(raw);
+        const targets = extractLinkTargets(raw, { knownIds: options.idToType ? options.idToType.keys() : [] });
         if (!targets.length) continue;
 
         const sourceWeight = documentType && recordType === documentType ? 3 : 1;
@@ -139,7 +168,7 @@ function collectFieldEvidence(fieldName, observedFields = [], options = {}) {
         if (!raw) continue;
         evidence.samples++;
         if (evidence.exampleValues.length < 3) evidence.exampleValues.push(raw);
-        if (extractLinkTargets(raw).length > 0) evidence.wikilinkValues++;
+        if (extractLinkTargets(raw, { knownIds: options.idToType ? options.idToType.keys() : [] }).length > 0) evidence.wikilinkValues++;
         if (dateParser(raw)) evidence.dateValues++;
         if (statusLikeValues.has(raw.toLowerCase())) evidence.statusValues++;
     }
@@ -201,7 +230,11 @@ function inferFieldRole(fieldName, options = {}) {
     if (schemaField?.type === 'relation') {
         relational = true;
         relationConfidence = 1;
-        targetType = schemaField.target ? normalizeFieldName(schemaField.target) : null;
+        targetType = schemaField.target
+            ? normalizeFieldName(schemaField.target)
+            : Array.isArray(schemaField.targetTypes) && schemaField.targetTypes.length
+                ? normalizeFieldName(schemaField.targetTypes[0])
+                : null;
         reasons.push(`schema marks "${normalizedField}" as a relation${targetType ? ` to ${targetType}` : ''}`);
     }
 
@@ -216,12 +249,15 @@ function inferFieldRole(fieldName, options = {}) {
     const evidence = collectFieldEvidence(normalizedField, options.observedFields || [], {
         documentType: options.documentType,
         dateParser: options.dateParser,
-        statusLikeValues: options.statusLikeValues
+        statusLikeValues: options.statusLikeValues,
+        idToType: options.idToType
     });
 
-    if (!relational && evidence.wikilinkValues > 0) {
-        relational = true;
-        relationConfidence = Math.max(relationConfidence, 0.7);
+    if (evidence.wikilinkValues > 0) {
+        if (!relational) {
+            relational = true;
+            relationConfidence = Math.max(relationConfidence, 0.7);
+        }
         reasons.push(`observed ${evidence.wikilinkValues} wikilink value${evidence.wikilinkValues === 1 ? '' : 's'} for "${normalizedField}"`);
     }
 
@@ -290,6 +326,8 @@ module.exports = {
     normalizeFieldName,
     getFieldNameVariants,
     normalizeLinkTarget,
+    normalizeBareRelationToken,
+    extractBareRelationTargets,
     extractLinkTargets,
     inferTargetTypeFromFieldName,
     inferTargetTypeFromObservedValues,

@@ -16,6 +16,18 @@ function capitalize(str) {
     return str.charAt(0).toUpperCase() + str.slice(1);
 }
 
+function positionAfterInsertedText(start, text) {
+    const raw = String(text || '');
+    const lines = raw.split('\n');
+    if (lines.length === 1) {
+        return new vscode.Position(start.line, start.character + lines[0].length);
+    }
+    return new vscode.Position(
+        start.line + lines.length - 1,
+        lines[lines.length - 1].length
+    );
+}
+
 function buildSmartStarterItems(activeDocument, noteId) {
     if (!activeDocument || !noteId) return [];
 
@@ -75,7 +87,6 @@ async function buildStarterViewQuery(activeDocument, getTypes) {
     const noteId = activeDocument ? (getPathIndex().get(activeDocument.uri.fsPath) ?? null) : null;
     const typeProvider = typeof getTypes === 'function' ? getTypes : getRegisteredTypes;
     const knownTypes = Array.from(typeProvider()).sort();
-    const noteFields = noteId ? (getFieldsCache().get(noteId) || {}) : {};
     const smartItems = buildSmartStarterItems(activeDocument, noteId);
 
     function makeItem(label, query, detail) {
@@ -156,13 +167,15 @@ function registerViewCommands(context, getTypes) {
                 ? `${capitalize(sourceType)}s`
                 : queryText.replace(/^!view\s+/i, '').split('\n')[0].trim() || 'View';
             const insertion = `${prefix}## ${headingLabel}\n\n${queryText}${selectClause}\n`;
+            const insertionStart = new vscode.Position(lastLine, lastChar);
+            const insertionEnd = positionAfterInsertedText(insertionStart, insertion);
 
             const edit = new vscode.WorkspaceEdit();
-            edit.insert(document.uri, new vscode.Position(lastLine, lastChar), insertion);
+            edit.insert(document.uri, insertionStart, insertion);
 
             await vscode.workspace.applyEdit(edit);
             await document.save();
-            await revealDocumentAndRunViews(document);
+            await revealDocumentAndRunViews(document, { selection: insertionEnd });
 
             vscode.window.showInformationMessage(
                 sourceType

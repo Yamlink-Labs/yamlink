@@ -1,6 +1,6 @@
 'use strict';
 
-const { getFieldsCache } = require('../core/indexService');
+const { getFieldsCache, getVaultGeneration } = require('../core/indexService');
 const { normaliseDateInput } = require('../core/date');
 const {
     DEFAULT_STATUS_LIKE_VALUES,
@@ -8,12 +8,13 @@ const {
 } = require('../intelligence/fieldRolesCore');
 const { inferNoteRole } = require('../intelligence/noteRolesCore');
 const { filterItemsForSurface } = require('../intelligence/confidence');
-const {
-    buildObservedFields
-} = require('../intelligence/suggestionCore');
+const { getVaultPatterns } = require('../intelligence/intelligenceCache');
+const { getCachedPriors, getCommonFieldsForType } = require('../intelligence/vaultPriors');
+const { computeNoteDrift } = require('../intelligence/driftDetector');
 const {
     buildFrontmatterOpportunityModel,
-    buildFrontmatterGuidanceSummary
+    buildFrontmatterGuidanceSummary,
+    summarizeGuidanceExplanation
 } = require('../intelligence/frontmatterIntelligence');
 const {
     FRONTMATTER_ARCHETYPES,
@@ -24,11 +25,58 @@ const {
 } = require('./completionContextHelpers');
 const { inferFieldRole } = require('../intelligence/fieldRoles');
 
+function buildBundleFieldSuggestions(noteType, fieldsCache, opts = {}) {
+    if (!noteType) return [];
+    const priors = getCachedPriors(fieldsCache, getVaultGeneration());
+    return getCommonFieldsForType(noteType, priors.typeFieldBundles, fieldsCache, {
+        limit: opts.limit || 8,
+        minRatio: opts.minRatio ?? 0.30
+    }).map((entry, index) => ({
+        key: entry.field,
+        count: entry.count,
+        ratio: entry.ratio,
+        score: Math.round((entry.ratio * 160) + Math.max(0, 120 - (index * 6))),
+        source: noteType,
+        bundleDerived: true
+    }));
+}
+
 function buildStarterActionLabel(action) {
     if (action.kind === 'bundle') return 'add smart setup';
     if (action.kind === 'context') return 'add likely context';
     if (action.kind === 'connection') return 'link nearby note';
+    if (action.kind === 'body-mention') return 'link body context';
     return 'add next step';
+}
+
+function buildAdaptiveFrontmatterContext(document, docType, idIndex, getSchema) {
+    const fieldsCache = getFieldsCache();
+    const intelligence = buildDocumentIntelligence(document, docType, idIndex);
+    const { observedFields, observedIndex } = getVaultPatterns(fieldsCache, getVaultGeneration());
+    const opportunities = buildFrontmatterOpportunityModel(intelligence.nodeFields, {
+        nodeId: String(intelligence.nodeFields.id || '').trim(),
+        nodeType: docType,
+        content: document.getText(),
+        fieldsCache,
+        observedFields,
+        observedIndex,
+        noteContext: intelligence,
+        getSchemaForType: getSchema,
+        dateParser: normaliseDateInput,
+        statusLikeValues: DEFAULT_STATUS_LIKE_VALUES,
+        semanticRolePriors: DEFAULT_SEMANTIC_ROLE_PRIORS,
+        getDefaultSortField: () => '',
+        limit: 4
+    });
+    const guidance = buildFrontmatterGuidanceSummary(opportunities);
+    return {
+        fieldsCache,
+        intelligence,
+        observedFields,
+        opportunities,
+        guidance,
+        bodyEvidence: guidance.bodyEvidence || ''
+    };
 }
 
 function filterAdaptiveHints(items = [], options = {}) {
@@ -44,25 +92,9 @@ function filterAdaptiveHints(items = [], options = {}) {
         .slice(0, options.limit || 4);
 }
 
-function collectAdaptiveFrontmatterStarterSuggestions(document, docType, idIndex, getSchema) {
-    const fieldsCache = getFieldsCache();
-    const intelligence = buildDocumentIntelligence(document, docType, idIndex);
-    const observedFields = buildObservedFields(fieldsCache);
-    const opportunities = buildFrontmatterOpportunityModel(intelligence.nodeFields, {
-        nodeId: String(intelligence.nodeFields.id || '').trim(),
-        nodeType: docType,
-        content: document.getText(),
-        fieldsCache,
-        observedFields,
-        noteContext: intelligence,
-        getSchemaForType: getSchema,
-        dateParser: normaliseDateInput,
-        statusLikeValues: DEFAULT_STATUS_LIKE_VALUES,
-        semanticRolePriors: DEFAULT_SEMANTIC_ROLE_PRIORS,
-        getDefaultSortField: () => '',
-        limit: 4
-    });
-    const guidance = buildFrontmatterGuidanceSummary(opportunities);
+function collectAdaptiveFrontmatterStarterSuggestions(document, docType, idIndex, getSchema, adaptiveContext) {
+    const context = adaptiveContext || buildAdaptiveFrontmatterContext(document, docType, idIndex, getSchema);
+    const { guidance, opportunities } = context;
     const seen = new Set();
     const raw = (guidance.starterActions || [])
         .filter((action) => {
@@ -76,9 +108,13 @@ function collectAdaptiveFrontmatterStarterSuggestions(document, docType, idIndex
         label: `Yamlink: ${buildStarterActionLabel(action)} (${action.label})`,
         insertText: action.insertText,
         detail: action.detail,
+        reason: summarizeGuidanceExplanation(guidance),
         headline: guidance.headline,
         why: guidance.why,
         workflowSummary: guidance.workflowSummary,
+        setupSummary: guidance.setupSummary,
+        bodyEvidence: guidance.bodyEvidence,
+        bodyMentions: opportunities.bodyMentionHints || [],
         score: 920 - (index * 110)
     }));
     return filterItemsForSurface(raw, 'frontmatter-actions', {
@@ -107,14 +143,20 @@ function collectObservedFrontmatterFields(docType) {
 }
 
 function collectRoleAlignedObservedFrontmatterFields(document, docType, idIndex) {
+    const fieldsCache = getFieldsCache();
     const intelligence = buildDocumentIntelligence(document, docType, idIndex);
     const noteRole = intelligence.noteRole;
     const observed = collectObservedFrontmatterFields();
-    const noteRolePriors = new Set(NOTE_ROLE_FIELD_PRIORS[noteRole.noteRole] || []);
+    const priors = getCachedPriors(fieldsCache, getVaultGeneration());
+    const proxyType = noteRole?.noteRole
+        ? priors.noteRoleTypePriors.get(noteRole.noteRole)?.dominantType || ''
+        : '';
+    const vaultBundle = proxyType ? priors.typeFieldBundles.get(proxyType) : null;
+    const hardcodedPriors = new Set(NOTE_ROLE_FIELD_PRIORS[noteRole.noteRole] || []);
     return observed.map((entry) => ({
         ...entry,
         noteRole,
-        roleAligned: noteRolePriors.has(entry.key)
+        roleAligned: vaultBundle ? vaultBundle.has(entry.key) : hardcodedPriors.has(entry.key)
     }));
 }
 
@@ -174,39 +216,25 @@ function collectContextualObservedFrontmatterFields(document, docType, idIndex) 
         }));
 }
 
-function collectAdaptiveFrontmatterFieldSuggestions(document, docType, idIndex) {
-    const intelligence = buildDocumentIntelligence(document, docType, idIndex);
-    const model = buildFrontmatterOpportunityModel(intelligence.nodeFields, {
-        nodeType: docType,
-        content: document.getText(),
-        fieldsCache: getFieldsCache(),
-        observedFields: buildObservedFields(getFieldsCache()),
-        noteContext: intelligence.noteRole ? intelligence : {
-            noteRole: intelligence.noteRole,
-            fieldRoleResults: intelligence.fieldRoleResults
-        }
-    });
+function collectAdaptiveFrontmatterFieldSuggestions(document, docType, idIndex, adaptiveContext) {
+    const context = adaptiveContext || buildAdaptiveFrontmatterContext(document, docType, idIndex);
+    const { opportunities, guidance } = context;
+    const model = opportunities;
     return filterAdaptiveHints(model.likelyFields, { scoreScale: 700, limit: 4 }).map((hint) => ({
         key: hint.key,
         score: hint.score,
         relational: hint.relational,
         sampleTargets: hint.sampleTargets,
-        summary: hint.summary
+        summary: hint.summary,
+        bodyEvidence: guidance.bodyEvidence || '',
+        reason: summarizeGuidanceExplanation(guidance)
     }));
 }
 
-function collectSchemaAdaptiveGapSuggestions(document, docType, idIndex) {
-    const intelligence = buildDocumentIntelligence(document, docType, idIndex);
-    const model = buildFrontmatterOpportunityModel(intelligence.nodeFields, {
-        nodeType: docType,
-        content: document.getText(),
-        fieldsCache: getFieldsCache(),
-        observedFields: buildObservedFields(getFieldsCache()),
-        noteContext: intelligence.noteRole ? intelligence : {
-            noteRole: intelligence.noteRole,
-            fieldRoleResults: intelligence.fieldRoleResults
-        }
-    });
+function collectSchemaAdaptiveGapSuggestions(document, docType, idIndex, adaptiveContext) {
+    const context = adaptiveContext || buildAdaptiveFrontmatterContext(document, docType, idIndex);
+    const { opportunities, guidance } = context;
+    const model = opportunities;
     return filterAdaptiveHints(model.likelyGaps || [], { scoreScale: 700, limit: 4 }).map((hint) => ({
         key: hint.field,
         family: hint.family,
@@ -215,47 +243,102 @@ function collectSchemaAdaptiveGapSuggestions(document, docType, idIndex) {
         sampleTargets: hint.sampleTargets,
         alternatives: hint.alternatives,
         summary: hint.summary,
-        missingSummary: hint.missingSummary
+        missingSummary: hint.missingSummary,
+        bodyEvidence: guidance.bodyEvidence || '',
+        reason: summarizeGuidanceExplanation(guidance)
     }));
 }
 
 function collectArchetypeFieldSuggestions(document, docType) {
+    const fieldsCache = getFieldsCache();
+    const bundleSuggestions = buildBundleFieldSuggestions(docType, fieldsCache, { limit: 8, minRatio: 0.30 });
+    if (bundleSuggestions.length) {
+        return bundleSuggestions;
+    }
+
     const archetypes = extractDocumentArchetype(document, docType);
     const fields = new Map();
     for (const archetype of archetypes) {
         const suggestions = FRONTMATTER_ARCHETYPES[archetype] || [];
         suggestions.forEach((field, index) => {
             const current = fields.get(field);
-            const score = 100 - index;
+            const score = Math.max(0, 40 - index);
             if (!current || score > current.score) {
-                fields.set(field, { key: field, score, source: archetype });
+                fields.set(field, { key: field, score, source: archetype, hardcodedFallback: true });
             }
         });
     }
     return Array.from(fields.values()).sort((a, b) => b.score - a.score || a.key.localeCompare(b.key));
 }
 
+function collectDriftMissingFieldSuggestions(document, docType, idIndex) {
+    const fieldsCache = getFieldsCache();
+    const intelligence = buildDocumentIntelligence(document, docType, idIndex);
+    const noteFields = intelligence.nodeFields;
+    const noteId = String(noteFields.id || '').trim().toLowerCase();
+    if (!noteId) return [];
+    const priors = getCachedPriors(fieldsCache, getVaultGeneration());
+    const drift = computeNoteDrift(noteId, noteFields, fieldsCache, priors);
+    if (!drift || drift.insufficientData || !drift.missingExpected.length) return [];
+    return drift.missingExpected.map((entry) => ({
+        key: entry.field,
+        ratio: entry.ratio,
+        score: Math.round(entry.ratio * 200) + 120,
+        source: drift.noteType,
+        driftMissing: true,
+        driftNote: `${Math.round(entry.ratio * 100)}% of ${drift.noteType} notes have this field`
+    }));
+}
+
 function collectNoteRoleFieldSuggestions(document, docType, idIndex) {
+    const fieldsCache = getFieldsCache();
     const intelligence = buildDocumentIntelligence(document, docType, idIndex);
     const noteRole = intelligence.noteRole;
+    const priors = getCachedPriors(fieldsCache, getVaultGeneration());
+    const proxyType = noteRole?.noteRole
+        ? priors.noteRoleTypePriors.get(noteRole.noteRole)?.dominantType || ''
+        : '';
+    const bundleSuggestions = buildBundleFieldSuggestions(proxyType, fieldsCache, { limit: 8, minRatio: 0.30 });
+    if (bundleSuggestions.length) {
+        const raw = bundleSuggestions.map((entry, index) => ({
+            key: entry.key,
+            score: entry.score,
+            source: proxyType,
+            roleSummary: proxyType ? `${proxyType} notes often use this field` : `${noteRole.noteRole} note`,
+            confidence: noteRole.confidence,
+            reasons: [
+                ...(noteRole.supportingSignals || noteRole.reasons || []),
+                `vault bundle: ${proxyType} notes commonly include ${entry.key}`
+            ],
+            conflictingSignals: noteRole.conflictingSignals || [],
+            noteRole
+        }));
+        return filterItemsForSurface(raw, 'frontmatter-note-role', {
+            confidenceKey: 'confidence',
+            scoreScale: 180
+        });
+    }
+
     const suggestions = NOTE_ROLE_FIELD_PRIORS[noteRole.noteRole] || [];
     const raw = suggestions.map((key, index) => ({
         key,
-        score: Math.max(0, 100 - index),
+        score: Math.max(0, 40 - index),
         source: noteRole.noteRole,
+        hardcodedFallback: true,
         roleSummary: `${noteRole.noteRole} note`,
-        confidence: noteRole.confidence,
+        confidence: Math.min(noteRole.confidence, 0.40),
         reasons: noteRole.supportingSignals || noteRole.reasons || [],
         conflictingSignals: noteRole.conflictingSignals || [],
         noteRole
     }));
     return filterItemsForSurface(raw, 'frontmatter-note-role', {
         confidenceKey: 'confidence',
-        scoreScale: 120
+        scoreScale: 60
     });
 }
 
 module.exports = {
+    buildAdaptiveFrontmatterContext,
     collectAdaptiveFrontmatterStarterSuggestions,
     collectObservedFrontmatterFields,
     collectRoleAlignedObservedFrontmatterFields,
@@ -263,5 +346,6 @@ module.exports = {
     collectAdaptiveFrontmatterFieldSuggestions,
     collectSchemaAdaptiveGapSuggestions,
     collectArchetypeFieldSuggestions,
-    collectNoteRoleFieldSuggestions
+    collectNoteRoleFieldSuggestions,
+    collectDriftMissingFieldSuggestions
 };

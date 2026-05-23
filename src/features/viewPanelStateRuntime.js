@@ -1,6 +1,117 @@
 'use strict';
 
 (function () {
+    function normaliseColumnFilters(filters) {
+        var source = filters && typeof filters === 'object' ? filters : {};
+        var normalised = {};
+        Object.entries(source).forEach(function (entry) {
+            var col = entry[0];
+            var raw = entry[1];
+            if (!col || raw == null) return;
+
+            if (Array.isArray(raw)) {
+                var valuesFromArray = raw.map(function (value) {
+                    return String(value || '').trim();
+                }).filter(Boolean);
+                if (valuesFromArray.length) {
+                    normalised[col] = { mode: 'include', values: valuesFromArray };
+                }
+                return;
+            }
+
+            if (typeof raw !== 'object') return;
+
+            if (Array.isArray(raw.values)) {
+                var values = raw.values.map(function (value) {
+                    return String(value || '').trim();
+                }).filter(Boolean);
+                if (values.length) {
+                    normalised[col] = {
+                        mode: raw.mode === 'exclude' ? 'exclude' : 'include',
+                        values: values
+                    };
+                }
+                return;
+            }
+
+            if (typeof raw.value === 'string' && raw.value.trim()) {
+                normalised[col] = {
+                    mode: raw.mode === 'exclude' ? 'exclude' : 'include',
+                    values: [raw.value.trim()]
+                };
+            }
+        });
+        return normalised;
+    }
+
+    function serialiseColumnFilters(filters) {
+        var normalised = normaliseColumnFilters(filters);
+        var serialised = {};
+        Object.entries(normalised).forEach(function (entry) {
+            serialised[entry[0]] = {
+                mode: entry[1].mode,
+                values: entry[1].values.slice()
+            };
+        });
+        return serialised;
+    }
+
+    function setColumnFilterValues(filters, fieldName, values, options) {
+        var next = normaliseColumnFilters(filters);
+        var cleanValues = (Array.isArray(values) ? values : [])
+            .map(function (value) { return String(value || '').trim(); })
+            .filter(Boolean);
+        if (!fieldName) return next;
+        if (!cleanValues.length) {
+            delete next[fieldName];
+            return next;
+        }
+        next[fieldName] = {
+            mode: options && options.mode === 'exclude' ? 'exclude' : 'include',
+            values: Array.from(new Set(cleanValues))
+        };
+        return next;
+    }
+
+    function computeNextSortState(currentSort, fieldName) {
+        var activeField = currentSort && (currentSort.field || currentSort.col);
+        var activeDirection = currentSort && (currentSort.direction || (currentSort.asc === false ? 'desc' : 'asc'));
+        if (activeField === fieldName) {
+            return {
+                field: fieldName,
+                direction: activeDirection === 'desc' ? 'asc' : 'desc'
+            };
+        }
+        return {
+            field: fieldName,
+            direction: 'asc'
+        };
+    }
+
+    function getCellFilterValue(cell) {
+        return String((cell && cell.dataset && cell.dataset.filterValue) || (cell && cell.dataset && cell.dataset.value) || (cell && cell.textContent) || '')
+            .trim()
+            .toLowerCase();
+    }
+
+    function rowMatchesColumnFilters(row, columnFilters, getColumnIndex) {
+        return Object.entries(normaliseColumnFilters(columnFilters)).every(function (entry) {
+            var col = entry[0];
+            var filterRule = entry[1] || {};
+            var index = getColumnIndex(col);
+            if (index < 0) return true;
+            var cell = row.children[index];
+            var cellValue = getCellFilterValue(cell);
+            var selected = new Set((filterRule.values || []).map(function (value) {
+                return String(value || '').trim().toLowerCase();
+            }).filter(Boolean));
+            if (!selected.size) return true;
+            return filterRule.mode === 'exclude'
+                ? !selected.has(cellValue)
+                : selected.has(cellValue);
+        });
+    }
+
     function createViewPanelStateRuntime(options) {
         const {
             vscode,
@@ -35,12 +146,17 @@
                         return activeChip ? activeChip.dataset.filter : 'all';
                     })(),
                     columnFilters: (() => {
-                        try { return JSON.parse(panel.dataset.columnFilters || '{}'); } catch (_) { return {}; }
+                        try { return serialiseColumnFilters(JSON.parse(panel.dataset.columnFilters || '{}')); } catch (_) { return {}; }
                     })(),
+                    page: Math.max(1, Number(panel.dataset.currentPage || 1)),
+                    pageSize: Math.max(0, Number(panel.dataset.pageSize || 50)),
                     hiddenCols,
                     columnOrder,
                     columnWidths,
-                    sort: sorted ? { col: sorted.dataset.col, asc: sorted.dataset.asc === 'true' } : null
+                    sort: sorted ? {
+                        field: sorted.dataset.col,
+                        direction: sorted.dataset.asc === 'false' ? 'desc' : 'asc'
+                    } : null
                 });
             });
             const activeBtn = document.querySelector('.tab-btn.active');
@@ -75,11 +191,11 @@
         }
 
         function getColumnFilters(panel) {
-            try { return JSON.parse(panel.dataset.columnFilters || '{}'); } catch (_) { return {}; }
+            try { return normaliseColumnFilters(JSON.parse(panel.dataset.columnFilters || '{}')); } catch (_) { return {}; }
         }
 
         function setColumnFilters(panel, filters) {
-            panel.dataset.columnFilters = JSON.stringify(filters || {});
+            panel.dataset.columnFilters = JSON.stringify(serialiseColumnFilters(filters || {}));
         }
 
         function renderColumnFilters(panel) {
@@ -95,10 +211,11 @@
             host.innerHTML = entries.map(function (entry) {
                 var col = entry[0];
                 var filter = entry[1] || {};
-                var label = filter.mode === 'exclude' ? 'not' : 'is';
+                var label = filter.mode === 'exclude' ? 'not' : 'in';
+                var values = Array.isArray(filter.values) ? filter.values : [];
                 return '<span class="filter-pill">' +
                     '<span class="filter-pill-label">' + col + '</span>' +
-                    '<span>' + label + ' "' + String(filter.value || '') + '"</span>' +
+                    '<span>' + label + ' ' + values.map(function (value) { return '"' + String(value || '') + '"'; }).join(', ') + '</span>' +
                     '<button type="button" data-remove-filter="' + col + '" aria-label="Remove filter">×</button>' +
                     '</span>';
             }).join('');
@@ -112,11 +229,16 @@
             var visible = Array.from(panel.querySelectorAll('tbody tr')).filter(function (row) {
                 return row.children.length > 1 && row.style.display !== 'none';
             }).length;
-            count.innerHTML = visible === total
-                ? `<strong>${total}</strong> rows`
-                : `<strong>${visible}</strong> of ${total} rows`;
+            var filtered = Number(panel.dataset.filteredRows || visible);
+            if (filtered === total && visible === total) {
+                count.innerHTML = `<strong>${total}</strong> rows`;
+            } else if (filtered === total) {
+                count.innerHTML = `<strong>${visible}</strong> of ${total} rows`;
+            } else {
+                count.innerHTML = `<strong>${visible}</strong> of ${filtered} matching rows`;
+            }
             var empty = panel.querySelector('.no-visible-state');
-            if (empty) empty.style.display = total > 0 && visible === 0 ? 'block' : 'none';
+            if (empty) empty.style.display = total > 0 && filtered === 0 ? 'block' : 'none';
         }
 
         function updateTableSummary(panel) {
@@ -137,38 +259,111 @@
             if (filterEntries.length) {
                 parts.push(filterEntries.map(function (entry) {
                     var filter = entry[1] || {};
-                    return entry[0] + ' ' + (filter.mode === 'exclude' ? 'is not' : 'is') + ' "' + String(filter.value || '') + '"';
+                    var values = Array.isArray(filter.values) ? filter.values : [];
+                    return entry[0] + ' ' + (filter.mode === 'exclude' ? 'is not' : 'in') + ' ' + values.map(function (value) {
+                        return '"' + String(value || '') + '"';
+                    }).join(', ');
                 }).join(' | '));
             }
             if (sorted) {
                 parts.push('Sorted by ' + sorted.dataset.col + ' ' + (sorted.dataset.asc === 'true' ? 'asc' : 'desc'));
             }
+            var pageSize = Math.max(0, Number(panel.dataset.pageSize || 50));
+            var currentPage = Math.max(1, Number(panel.dataset.currentPage || 1));
+            var filtered = Number(panel.dataset.filteredRows || 0);
+            if (pageSize > 0 && filtered > pageSize) {
+                var totalPages = Math.max(1, Math.ceil(filtered / pageSize));
+                parts.push('Page ' + currentPage + ' of ' + totalPages);
+            }
             summary.textContent = parts.join(' | ');
             summary.style.display = parts.length ? 'block' : 'none';
+        }
+
+        function renderPagination(panel, filteredRows) {
+            var host = panel.querySelector('.table-pagination');
+            if (!host) return;
+            var pageSize = Math.max(0, Number(panel.dataset.pageSize || 50));
+            var currentPage = Math.max(1, Number(panel.dataset.currentPage || 1));
+            var filtered = Math.max(0, Number(filteredRows || 0));
+            var totalPages = pageSize === 0 ? 1 : Math.max(1, Math.ceil(filtered / pageSize));
+            if (currentPage > totalPages) {
+                currentPage = totalPages;
+                panel.dataset.currentPage = String(currentPage);
+            }
+            var status = host.querySelector('.table-pagination-status');
+            if (status) {
+                status.textContent = pageSize === 0
+                    ? 'Showing all matching rows'
+                    : 'Page ' + currentPage + ' of ' + totalPages;
+            }
+            var prev = host.querySelector('[data-page-nav="prev"]');
+            var next = host.querySelector('[data-page-nav="next"]');
+            if (prev) prev.disabled = currentPage <= 1 || pageSize === 0 || filtered === 0;
+            if (next) next.disabled = currentPage >= totalPages || pageSize === 0 || filtered === 0;
+            var select = host.querySelector('[data-page-size]');
+            if (select) select.value = String(pageSize);
+            host.hidden = pageSize === 0 ? filtered === 0 : filtered <= pageSize;
+        }
+
+        function setCurrentPage(panel, nextPage) {
+            var pageSize = Math.max(0, Number(panel.dataset.pageSize || 25));
+            var filtered = Math.max(0, Number(panel.dataset.filteredRows || 0));
+            var totalPages = pageSize === 0 ? 1 : Math.max(1, Math.ceil(filtered / pageSize));
+            var safePage = Math.max(1, Math.min(Number(nextPage || 1), totalPages));
+            panel.dataset.currentPage = String(safePage);
+        }
+
+        function setPageSize(panel, nextSize) {
+            var safeSize = Math.max(0, Number(nextSize || 50));
+            panel.dataset.pageSize = String(safeSize);
+            panel.dataset.currentPage = '1';
         }
 
         function applyPanelView(panel) {
             var term = ((panel.querySelector('.fsearch') || {}).value || '').toLowerCase();
             var filter = getActiveFilter(panel);
             var columnFilters = getColumnFilters(panel);
+            panel.querySelectorAll('[data-col-filter-toggle]').forEach(function (button) {
+                var field = button.dataset.colFilterToggle;
+                var filterRule = columnFilters[field];
+                var active = !!(filterRule && Array.isArray(filterRule.values) && filterRule.values.length);
+                button.classList.toggle('has-filter', active);
+            });
+            panel.querySelectorAll('[data-col-filter-value]').forEach(function (input) {
+                var field = input.dataset.colFilterValue;
+                var filterRule = columnFilters[field];
+                var values = filterRule && Array.isArray(filterRule.values) ? filterRule.values : [];
+                input.checked = values.includes(input.value);
+            });
+            var matchedRows = [];
             panel.querySelectorAll('tbody tr').forEach(function (row) {
                 if (row.children.length <= 1) return;
                 var matchesSearch = !term || row.textContent.toLowerCase().includes(term);
                 var matchesFilter = filter === 'all' || row.dataset.type === filter.slice(5);
-                var matchesColumns = Object.entries(columnFilters).every(function (entry) {
-                    var col = entry[0];
-                    var filterRule = entry[1] || {};
-                    var index = getColumnIndex(panel, col);
-                    if (index < 0) return true;
-                    var cell = row.children[index];
-                    var cellValue = String((cell && cell.dataset && cell.dataset.value) || (cell && cell.textContent) || '').trim().toLowerCase();
-                    var expected = String(filterRule.value || '').trim().toLowerCase();
-                    if (!expected) return true;
-                    return filterRule.mode === 'exclude' ? cellValue !== expected : cellValue === expected;
+                var matchesColumns = rowMatchesColumnFilters(row, columnFilters, function (col) {
+                    return getColumnIndex(panel, col);
                 });
-                row.style.display = matchesSearch && matchesFilter && matchesColumns ? '' : 'none';
+                if (matchesSearch && matchesFilter && matchesColumns) {
+                    matchedRows.push(row);
+                } else {
+                    row.style.display = 'none';
+                }
+            });
+            panel.dataset.filteredRows = String(matchedRows.length);
+            var pageSize = Math.max(0, Number(panel.dataset.pageSize || 50));
+            var currentPage = Math.max(1, Number(panel.dataset.currentPage || 1));
+            var totalPages = pageSize === 0 ? 1 : Math.max(1, Math.ceil(matchedRows.length / pageSize));
+            if (currentPage > totalPages) {
+                currentPage = totalPages;
+                panel.dataset.currentPage = String(currentPage);
+            }
+            var pageStart = pageSize === 0 ? 0 : (currentPage - 1) * pageSize;
+            var pageEnd = pageSize === 0 ? matchedRows.length : pageStart + pageSize;
+            matchedRows.forEach(function (row, index) {
+                row.style.display = index >= pageStart && index < pageEnd ? '' : 'none';
             });
             renderColumnFilters(panel);
+            renderPagination(panel, matchedRows.length);
             updateVisibleCount(panel);
             updateTableSummary(panel);
         }
@@ -187,6 +382,7 @@
                 th.classList.remove('sorted');
                 delete th.dataset.asc;
             });
+            delete panel.dataset.sortState;
             panel.querySelectorAll('[data-col-toggle]').forEach(function (input) {
                 input.checked = true;
                 var col = input.dataset.colToggle;
@@ -214,6 +410,8 @@
             panel.querySelectorAll('thead th[data-col]').forEach(function (th) {
                 th.style.width = '';
             });
+            panel.dataset.currentPage = '1';
+            panel.dataset.pageSize = '50';
             setColumnFilters(panel, {});
             applyPanelView(panel);
             saveState();
@@ -371,16 +569,31 @@
             setColumnFilters,
             selectCell,
             setStatus,
+            setCurrentPage,
+            setPageSize,
             switchTab,
             syncColumnToggleOrder,
             updateTableSummary,
             updateVisibleCount,
             getColumnFilters,
-            renderColumnFilters
+            renderColumnFilters,
+            renderPagination
         };
     }
 
-    window.YamlinkViewPanelStateRuntime = {
-        createViewPanelStateRuntime
-    };
+    if (typeof module !== 'undefined' && module.exports) {
+        module.exports = {
+            normaliseColumnFilters,
+            serialiseColumnFilters,
+            setColumnFilterValues,
+            computeNextSortState,
+            rowMatchesColumnFilters
+        };
+    }
+
+    if (typeof window !== 'undefined') {
+        window.YamlinkViewPanelStateRuntime = {
+            createViewPanelStateRuntime
+        };
+    }
 }());

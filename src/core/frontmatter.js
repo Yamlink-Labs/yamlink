@@ -101,7 +101,7 @@ function serializeFrontmatterDocument(doc) {
         seen.add(key);
     }
 
-    const fm = yaml.dump(ordered, {
+    let fm = yaml.dump(ordered, {
         lineWidth: -1,
         noRefs: true,
         sortKeys: false,
@@ -109,6 +109,13 @@ function serializeFrontmatterDocument(doc) {
         forceQuotes: false,
         flowLevel: 1
     }).trimEnd();
+
+    // Keep plain wikilink scalars readable in frontmatter instead of letting
+    // js-yaml wrap them in quotes like "[[target-id]]".
+    fm = fm.replace(/^([A-Za-z0-9_-]+:\s+)"(\[\[[^\]]+\]\])"$/gm, '$1$2');
+    fm = fm.replace(/^([A-Za-z0-9_-]+:\s+)'(\[\[[^\]]+\]\])'$/gm, '$1$2');
+    fm = fm.replace(/^(\s*-\s+)"(\[\[[^\]]+\]\])"$/gm, '$1$2');
+    fm = fm.replace(/^(\s*-\s+)'(\[\[[^\]]+\]\])'$/gm, '$1$2');
 
     const body = normalizeText(doc?.body || '');
     return `---\n${fm}\n---${body ? `\n${body}` : '\n'}`;
@@ -176,11 +183,63 @@ function coerceScalar(value, existingValue) {
 
     if (/^\[\[[^\]]+\]\]$/.test(raw)) return raw;
     if (/^(true|false)$/i.test(raw)) return raw.toLowerCase() === 'true';
-    if (/^-?\d+(?:\.\d+)?$/.test(raw)) return Number(raw);
+    if (/^-?\d+(?:\.\d+)?$/.test(raw) && !/^0\d/.test(raw)) return Number(raw);
     if ((raw.startsWith('"') && raw.endsWith('"')) || (raw.startsWith("'") && raw.endsWith("'"))) {
         return raw.slice(1, -1);
     }
     return raw;
+}
+
+function serializeScalarForYaml(value) {
+    if (value === null || value === undefined || value === '') return null;
+    if (typeof value === 'boolean') return String(value);
+    if (typeof value === 'number') return String(value);
+    const s = String(value).trim();
+    if (!s) return null;
+    if (/^\[\[[^\]]+\]\]$/.test(s)) return s;
+    if (/^\d{4}-\d{2}-\d{2}$/.test(s)) return s;
+    if (/^[A-Za-z0-9_\-. ]+$/.test(s) && !/^(true|false|null|yes|no|on|off)$/i.test(s)) return s;
+    return JSON.stringify(s);
+}
+
+function writeFrontmatterFieldSurgically(content, key, value) {
+    const normalized = normalizeText(content);
+    if (!normalized.startsWith('---\n')) return null;
+    const closeIdx = normalized.indexOf('\n---', 4);
+    if (closeIdx === -1) return null;
+
+    if (Array.isArray(value)) return null;
+
+    const fmText = normalized.slice(4, closeIdx);
+    const after = normalized.slice(closeIdx + 4);
+    const lines = fmText.split('\n');
+
+    const escapedKey = key.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const keyPattern = new RegExp(`^[ \\t]*${escapedKey}[ \\t]*:`);
+
+    let foundIndex = -1;
+    for (let i = 0; i < lines.length; i++) {
+        if (keyPattern.test(lines[i])) { foundIndex = i; break; }
+    }
+
+    if (foundIndex !== -1 && foundIndex + 1 < lines.length && /^[ \t]/.test(lines[foundIndex + 1])) {
+        return null; // multi-line value — fall back to full serialize
+    }
+
+    const serialized = serializeScalarForYaml(value);
+    let newLines;
+
+    if (serialized === null) {
+        if (foundIndex === -1) return normalized;
+        newLines = lines.filter((_, i) => i !== foundIndex);
+    } else if (foundIndex !== -1) {
+        newLines = [...lines];
+        newLines[foundIndex] = `${key}: ${serialized}`;
+    } else {
+        newLines = [...lines, `${key}: ${serialized}`];
+    }
+
+    return `---\n${newLines.join('\n')}\n---${after}`;
 }
 
 module.exports = {
@@ -188,5 +247,6 @@ module.exports = {
     parseFrontmatterDocument,
     setField,
     deleteField,
-    serializeFrontmatterDocument
+    serializeFrontmatterDocument,
+    writeFrontmatterFieldSurgically
 };

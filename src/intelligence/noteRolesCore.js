@@ -74,18 +74,6 @@ function collectRoleMatches(candidates = [], priors = {}) {
     return matches;
 }
 
-function getTopRole(matches = new Map()) {
-    let topRole = null;
-    let topCount = 0;
-    for (const [role, count] of matches.entries()) {
-        if (count > topCount) {
-            topRole = role;
-            topCount = count;
-        }
-    }
-    return topRole ? { role: topRole, count: topCount } : null;
-}
-
 function pickSpecificRoleLabel(nodeFields = {}, broadRole, titleHints = []) {
     const type = normalizeFieldName(nodeFields.type || '');
     const candidates = [
@@ -126,9 +114,15 @@ function pickSpecificRoleLabel(nodeFields = {}, broadRole, titleHints = []) {
 function withHumanizedRole(result, nodeFields = {}, titleHints = []) {
     if (!result || !result.noteRole) return result;
     const roleLabel = pickSpecificRoleLabel(nodeFields, result.noteRole, titleHints);
+    const secondaryRoles = Array.isArray(result.secondaryRoles)
+        ? result.secondaryRoles.filter((role) => role && role !== result.noteRole)
+        : [];
+    const secondaryRoleLabels = secondaryRoles.map((role) => pickSpecificRoleLabel(nodeFields, role, titleHints));
     return {
         ...result,
         roleLabel,
+        secondaryRoles,
+        secondaryRoleLabels,
         displayLabel: `${roleLabel} note`,
         roleSummary: result.noteRole === 'record'
             ? 'general note'
@@ -187,6 +181,16 @@ function inferNoteRole(nodeFields = {}, options = {}) {
 
     const titleMatches = collectRoleMatches(titleHints, priors);
     const fieldMatches = collectRoleMatches(fieldNames, NOTE_ROLE_FIELD_HINTS);
+    const projectFieldMatches = fieldNames.filter((field) => [
+        'project',
+        'projects',
+        'repo',
+        'repository',
+        'milestone',
+        'sprint',
+        'roadmap',
+        'release'
+    ].includes(field));
 
     for (const [role, count] of titleMatches.entries()) {
         addRoleSignal(
@@ -208,6 +212,17 @@ function inferNoteRole(nodeFields = {}, options = {}) {
             count >= 2
                 ? `multiple structured fields resemble the ${role} role`
                 : `structured fields resemble the ${role} role`
+        );
+    }
+    if (projectFieldMatches.length) {
+        addRoleSignal(
+            signals,
+            weights,
+            'project',
+            0.95 + (projectFieldMatches.length * 0.3),
+            projectFieldMatches.length >= 2
+                ? 'multiple project-oriented fields suggest a project context'
+                : 'a project-oriented field suggests project context'
         );
     }
 
@@ -262,21 +277,32 @@ function inferNoteRole(nodeFields = {}, options = {}) {
     const secondWeight = ranked[1]?.[1] ?? 0;
     const totalWeight = ranked.reduce((sum, [, weight]) => sum + weight, 0);
     const confidence = Math.max(0.28, Math.min(0.94, 0.34 + ((topWeight - secondWeight) / Math.max(1, totalWeight))));
+    const secondaryRoles = ranked
+        .slice(1)
+        .filter(([, weight]) => weight >= 0.95 && weight >= (topWeight * 0.34))
+        .slice(0, 2)
+        .map(([role]) => role);
     const supportingSignals = signals
         .filter((signal) => signal.role === topRole)
         .sort((a, b) => b.weight - a.weight)
         .map((signal) => signal.reason);
     const conflictingSignals = signals
-        .filter((signal) => signal.role !== topRole)
+        .filter((signal) => signal.role !== topRole && !secondaryRoles.includes(signal.role))
         .sort((a, b) => b.weight - a.weight)
         .slice(0, 3)
+        .map((signal) => `${signal.role}: ${signal.reason}`);
+    const secondarySignals = signals
+        .filter((signal) => secondaryRoles.includes(signal.role))
+        .sort((a, b) => b.weight - a.weight)
         .map((signal) => `${signal.role}: ${signal.reason}`);
 
     return finalize({
         noteRole: topRole,
+        secondaryRoles,
         confidence,
         reasons: supportingSignals.slice(0, 4),
         supportingSignals,
+        secondarySignals,
         conflictingSignals
     });
 }

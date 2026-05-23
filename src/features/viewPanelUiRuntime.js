@@ -1,4 +1,13 @@
 (function () {
+    function computeNextSortState(currentSort, fieldName) {
+        var activeField = currentSort && (currentSort.field || currentSort.col);
+        var activeDirection = currentSort && (currentSort.direction || (currentSort.asc === false ? 'desc' : 'asc'));
+        if (activeField === fieldName) {
+            return { field: fieldName, direction: activeDirection === 'desc' ? 'asc' : 'desc' };
+        }
+        return { field: fieldName, direction: 'asc' };
+    }
+
     function createViewPanelUiRuntime(options) {
         const {
             vscode,
@@ -18,17 +27,21 @@
             saveState,
             selectCell,
             setColumnFilters,
+            setCurrentPage,
+            setPageSize,
             setStatus,
             startEdit,
             updateTableSummary,
             updateVisibleCount,
             getColumnFilters,
+            renderPagination,
             applySelectionFilter,
             clearQuickFilters,
             revertRow,
             handleEditResult,
             handleBulkEditResult,
-            applyBulkPaste
+            applyBulkPaste,
+            setColumnFilterValues
         } = options;
 
         let draggingHeader = null;
@@ -117,17 +130,71 @@
 
             const columnsBtn = event.target.closest('.columns-btn');
             if (columnsBtn) {
-                const menu = columnsBtn.closest('.filterbar')?.querySelector('.toolbar-menu');
+                const menu = columnsBtn.closest('.toolbar-group, .filterbar')?.querySelector('.toolbar-menu');
                 if (menu) menu.style.display = menu.style.display === 'block' ? 'none' : 'block';
+                return;
+            }
+
+            const columnsFocusBtn = event.target.closest('[data-columns-focus]');
+            if (columnsFocusBtn) {
+                const group = columnsFocusBtn.closest('.toolbar-group, .quick-fields-card');
+                const panel = columnsFocusBtn.closest('.tab-panel');
+                const menu = (group && group.querySelector('.toolbar-menu')) || (panel && panel.querySelector('.toolbar-menu'));
+                if (menu) menu.style.display = 'block';
+                return;
+            }
+
+            const quickFieldBtn = event.target.closest('[data-quick-field]');
+            if (quickFieldBtn) {
+                event.stopPropagation();
+                const panel = quickFieldBtn.closest('.tab-panel');
+                const field = quickFieldBtn.dataset.quickField;
+                if (!panel || !field) return;
+                const filterButton = panel.querySelector('[data-col-filter-toggle="' + CSS.escape(field) + '"]');
+                const headerCell = panel.querySelector('thead th[data-col="' + CSS.escape(field) + '"]');
+                if (headerCell) {
+                    headerCell.scrollIntoView({ behavior: 'smooth', block: 'nearest', inline: 'center' });
+                }
+                if (filterButton) {
+                    filterButton.click();
+                }
                 return;
             }
 
             const removeFilterBtn = event.target.closest('[data-remove-filter]');
             if (removeFilterBtn) {
                 const panel = removeFilterBtn.closest('.tab-panel');
-                const filters = getColumnFilters(panel);
-                delete filters[removeFilterBtn.dataset.removeFilter];
+                const filters = setColumnFilterValues(getColumnFilters(panel), removeFilterBtn.dataset.removeFilter, []);
                 setColumnFilters(panel, filters);
+                applyPanelView(panel);
+                saveState();
+                return;
+            }
+
+            const filterToggleBtn = event.target.closest('[data-col-filter-toggle]');
+            if (filterToggleBtn) {
+                event.stopPropagation();
+                const col = filterToggleBtn.dataset.colFilterToggle;
+                const th = filterToggleBtn.closest('th[data-col]');
+                if (!th) return;
+                const menu = th.querySelector('[data-col-filter-menu="' + CSS.escape(col) + '"]');
+                document.querySelectorAll('.th-filter-menu.open').forEach(function (entry) {
+                    if (entry !== menu) entry.classList.remove('open');
+                });
+                document.querySelectorAll('.th-filter-btn.active').forEach(function (entry) {
+                    if (entry !== filterToggleBtn) entry.classList.remove('active');
+                });
+                if (menu) menu.classList.toggle('open');
+                filterToggleBtn.classList.toggle('active', !!menu && menu.classList.contains('open'));
+                return;
+            }
+
+            const filterClearBtn = event.target.closest('[data-col-filter-clear]');
+            if (filterClearBtn) {
+                event.stopPropagation();
+                const panel = filterClearBtn.closest('.tab-panel');
+                const nextFilters = setColumnFilterValues(getColumnFilters(panel), filterClearBtn.dataset.colFilterClear, []);
+                setColumnFilters(panel, nextFilters);
                 applyPanelView(panel);
                 saveState();
                 return;
@@ -141,8 +208,22 @@
                 return;
             }
 
-            if (!event.target.closest('.toolbar-menu')) {
+            const pageNavBtn = event.target.closest('[data-page-nav]');
+            if (pageNavBtn) {
+                const panel = pageNavBtn.closest('.tab-panel');
+                const currentPage = Number(panel.dataset.currentPage || 1);
+                setCurrentPage(panel, currentPage + (pageNavBtn.dataset.pageNav === 'next' ? 1 : -1));
+                applyPanelView(panel);
+                saveState();
+                return;
+            }
+
+            if (!event.target.closest('.toolbar-menu') && !event.target.closest('[data-columns-focus]')) {
                 document.querySelectorAll('.toolbar-menu').forEach(menu => { menu.style.display = 'none'; });
+            }
+            if (!event.target.closest('.th-filter-menu') && !event.target.closest('[data-col-filter-toggle]')) {
+                document.querySelectorAll('.th-filter-menu.open').forEach(function (menu) { menu.classList.remove('open'); });
+                document.querySelectorAll('.th-filter-btn.active').forEach(function (button) { button.classList.remove('active'); });
             }
 
             const editableCell = event.target.closest('.cell-editable');
@@ -206,12 +287,34 @@
         }
 
         function handleChange(event) {
+            if (event.target.matches('[data-page-size]')) {
+                const panel = event.target.closest('.tab-panel');
+                setPageSize(panel, event.target.value);
+                applyPanelView(panel);
+                saveState();
+                setStatus('Updated rows per page.', 'success');
+                return;
+            }
+
             if (!event.target.matches('[data-col-toggle]')) return;
             const col = event.target.dataset.colToggle;
             const panel = event.target.closest('.tab-panel');
             const hide = !event.target.checked;
             panel.querySelectorAll(`[data-col="${CSS.escape(col)}"]`).forEach(el => el.classList.toggle('hidden-col', hide));
             panel.querySelectorAll(`tbody td:nth-child(${getColumnIndex(panel, col) + 1})`).forEach(el => el.classList.toggle('hidden-col', hide));
+            saveState();
+        }
+
+        function handleFilterCheckboxChange(event) {
+            if (!event.target.matches('[data-col-filter-value]')) return;
+            const panel = event.target.closest('.tab-panel');
+            const col = event.target.dataset.colFilterValue;
+            const values = Array.from(panel.querySelectorAll('[data-col-filter-value="' + CSS.escape(col) + '"]:checked'))
+                .map(function (input) { return input.value; });
+            const nextFilters = setColumnFilterValues(getColumnFilters(panel), col, values);
+            setColumnFilters(panel, nextFilters);
+            setCurrentPage(panel, 1);
+            applyPanelView(panel);
             saveState();
         }
 
@@ -227,6 +330,7 @@
 
         function handleSearchInput(event) {
             const panel = event.target.closest('.tab-panel');
+            setCurrentPage(panel, 1);
             applyPanelView(panel);
             saveState();
         }
@@ -235,23 +339,30 @@
             if (resizingState) return;
             if (Date.now() < suppressSortClickUntil) return;
             if (event.target.closest('.col-resizer')) return;
+            if (event.target.closest('.th-filter-btn') || event.target.closest('.th-filter-menu')) return;
             const panel = th.closest('.tab-panel');
             const tbody = panel.querySelector('tbody');
             const all = Array.from(panel.querySelectorAll('thead th[data-col]'));
             const index = all.indexOf(th);
             const kind = th.dataset.kind || 'text';
-            const currentlySorted = th.classList.contains('sorted');
-            const asc = !(currentlySorted && th.dataset.asc === 'true');
+            const nextSort = computeNextSortState(
+                th.classList.contains('sorted')
+                    ? { field: th.dataset.col, direction: th.dataset.asc === 'false' ? 'desc' : 'asc' }
+                    : (panel.dataset.sortState ? JSON.parse(panel.dataset.sortState) : null),
+                th.dataset.col
+            );
+            const asc = nextSort.direction === 'asc';
             all.forEach(el => {
                 el.classList.remove('sorted');
                 delete el.dataset.asc;
             });
             th.classList.add('sorted');
             th.dataset.asc = asc ? 'true' : 'false';
+            panel.dataset.sortState = JSON.stringify(nextSort);
             Array.from(tbody.querySelectorAll('tr'))
                 .sort(function (a, b) {
-                    const av = getSortValue(kind, (a.children[index] || {}).textContent || '');
-                    const bv = getSortValue(kind, (b.children[index] || {}).textContent || '');
+                    const av = getSortValue(kind, (a.children[index] && (a.children[index].dataset.sortValue || a.children[index].textContent)) || '');
+                    const bv = getSortValue(kind, (b.children[index] && (b.children[index].dataset.sortValue || b.children[index].textContent)) || '');
                     if (typeof av === 'number' || typeof bv === 'number') {
                         return asc ? av - bv : bv - av;
                     }
@@ -359,6 +470,7 @@
             const panel = chip.closest('.tab-panel');
             panel.querySelectorAll('.chip').forEach(entry => entry.classList.remove('active'));
             chip.classList.add('active');
+            setCurrentPage(panel, 1);
             applyPanelView(panel);
             saveState();
         }
@@ -369,6 +481,7 @@
             document.addEventListener('keydown', handleKeyDown);
             document.addEventListener('paste', handlePaste);
             document.addEventListener('change', handleChange);
+            document.addEventListener('change', handleFilterCheckboxChange);
             document.addEventListener('mousedown', handleMouseDown);
             document.addEventListener('mousemove', handleMouseMove);
             document.addEventListener('mouseup', handleMouseUp);
@@ -397,6 +510,7 @@
 
             document.querySelectorAll('.tab-panel').forEach(function (panel) {
                 applyPanelView(panel);
+                renderPagination(panel, Number(panel.dataset.filteredRows || 0));
             });
         }
 
@@ -405,7 +519,15 @@
         };
     }
 
-    window.YamlinkViewPanelUiRuntime = {
-        createViewPanelUiRuntime
-    };
+    if (typeof module !== 'undefined' && module.exports) {
+        module.exports = {
+            computeNextSortState
+        };
+    }
+
+    if (typeof window !== 'undefined') {
+        window.YamlinkViewPanelUiRuntime = {
+            createViewPanelUiRuntime
+        };
+    }
 }());

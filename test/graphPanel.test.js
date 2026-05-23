@@ -81,15 +81,19 @@ describe('graph panel helpers', () => {
         assert.equal(model.summary.contextId, 'mission-klendathu');
         assert.equal(model.summary.primaryFocusId, 'mission-klendathu');
         assert.equal(model.summary.largestClusterSize, 3);
+        assert.equal(model.summary.strongestRelation, 'unit');
+        assert.equal(model.summary.dominantType, 'character');
         assert.ok(model.types.every((entry) => typeof entry.shape === 'string' && entry.shape.length > 0));
-        assert.ok(model.relations.some((entry) => entry.field === 'commander' && entry.count === 1));
+        assert.ok(model.relations.some((entry) => entry.field === 'commander' && entry.count === 1 && entry.totalWeight > 0));
         assert.ok(model.topNodes.some((node) => node.id === 'mission-klendathu'));
-        assert.ok(model.elements.some((el) => el.data && el.data.isContext === true && typeof el.data.shape === 'string'));
+        assert.ok(model.topTags.some((entry) => entry.tag === 'command'));
+        assert.ok(model.elements.some((el) => el.data && el.data.isContext === true && typeof el.data.shape === 'string' && typeof el.data.hubScore === 'number'));
         assert.ok(model.nodeDetails['mission-klendathu']);
         assert.equal(model.nodeDetails['mission-klendathu'].outgoing.length, 2);
         assert.equal(model.nodeDetails['roughnecks'].incoming.length, 2);
         assert.ok(model.nodeDetails['johnny-rico'].connectedTypes.some((entry) => entry.type === 'mission'));
-        assert.ok(model.nodeDetails['mission-klendathu'].relationSummary.some((entry) => entry.field === 'commander'));
+        assert.ok(model.nodeDetails['mission-klendathu'].relationSummary.some((entry) => entry.field === 'commander' && entry.weight > 0));
+        assert.ok(model.nodeDetails['mission-klendathu'].tags.includes('command'));
     });
 
     test('includes body wikilinks in the graph as mention edges', () => {
@@ -149,9 +153,9 @@ function seedGraphFixture() {
     idIndex.set('johnny-rico', 'c:\\notes\\johnny-rico.md');
     idIndex.set('roughnecks', 'c:\\notes\\roughnecks.md');
 
-    fieldsCache.set('mission-klendathu', { name: 'Battle of Klendathu', type: 'mission' });
-    fieldsCache.set('johnny-rico', { name: 'Johnny Rico', type: 'character' });
-    fieldsCache.set('roughnecks', { name: 'Roughnecks', type: 'unit' });
+    fieldsCache.set('mission-klendathu', { name: 'Battle of Klendathu', type: 'mission', __yamlink_tags: 'command, invasion' });
+    fieldsCache.set('johnny-rico', { name: 'Johnny Rico', type: 'character', __yamlink_tags: 'command, infantry' });
+    fieldsCache.set('roughnecks', { name: 'Roughnecks', type: 'unit', __yamlink_tags: 'infantry, squad' });
 
     edgeMap.set('mission-klendathu', [
         { field: 'commander', targetId: 'johnny-rico' },

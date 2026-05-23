@@ -62,10 +62,20 @@ function getViewBlockByIndex(document, index) {
     return null;
 }
 
-async function revealDocumentAndRunViews(document) {
+async function revealDocumentAndRunViews(document, options = {}) {
     if (!document) return;
-    await vscode.window.showTextDocument(document, { viewColumn: vscode.ViewColumn.One, preview: false });
+    const editor = await vscode.window.showTextDocument(document, { viewColumn: vscode.ViewColumn.One, preview: false });
+    const selection = options.selection || null;
+    if (editor && selection) {
+        const point = selection.active || selection.anchor || selection;
+        const nextSelection = point instanceof vscode.Selection
+            ? point
+            : new vscode.Selection(point, point);
+        editor.selection = nextSelection;
+        editor.revealRange(new vscode.Range(nextSelection.start, nextSelection.end));
+    }
     await vscode.commands.executeCommand('yamlink.runViews');
+    return editor;
 }
 
 function defaultSelectClauseForType(type) {

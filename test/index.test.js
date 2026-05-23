@@ -294,6 +294,25 @@ describe('wikilink edge extraction', () => {
         assert.equal(getIndex().get('call-andreas'), filePath);
         teardownVault();
     });
+
+    test('buildIndex stores combined frontmatter and body tags in fields cache', () => {
+        setupVault();
+        writeNode(
+            'tagged.md',
+            '---\n' +
+            'id: tagged-note\n' +
+            'type: note\n' +
+            'tags: crm, #enterprise\n' +
+            '---\n' +
+            'Body mentions #follow-up and #crm again.\n'
+        );
+        buildIndex([{ uri: { fsPath: tmpDir } }]);
+        assert.equal(
+            getFieldsCache().get('tagged-note').__yamlink_tags,
+            'crm, enterprise, follow-up'
+        );
+        teardownVault();
+    });
 });
 
 describe('updateSingleFile', () => {
@@ -341,7 +360,9 @@ describe('updateSingleFile', () => {
         buildIndex([{ uri: { fsPath: tmpDir } }]);
         fs.writeFileSync(filePath, '---\nid: renamed\ntype: character\n---\n', 'utf8');
         bumpMtime(filePath);
-        assert.equal(updateSingleFile(filePath).needsFull, true);
+        const result = updateSingleFile(filePath);
+        assert.equal(result.needsFull, true);
+        assert.ok(result.mutationEvents.some((event) => event.type === 'note_created' && event.noteId === 'renamed'));
         teardownVault();
     });
 
@@ -365,6 +386,18 @@ describe('updateSingleFile', () => {
         assert.equal(result.changed, true);
         assert.equal(result.needsFull, false);
         assert.equal(getFieldsCache().get('hero').rank, 'general');
+        teardownVault();
+    });
+
+    test('incremental update emits field and relation mutation events', () => {
+        setupVault();
+        const filePath = writeNode('hero.md', '---\nid: hero\ntype: character\nrank: private\n---\n');
+        buildIndex([{ uri: { fsPath: tmpDir } }]);
+        fs.writeFileSync(filePath, '---\nid: hero\ntype: character\nrank: private\nunit: [[roughnecks]]\n---\n', 'utf8');
+        bumpMtime(filePath);
+        const result = updateSingleFile(filePath);
+        assert.ok(result.mutationEvents.some((event) => event.type === 'field_added' && event.field === 'unit'));
+        assert.ok(result.mutationEvents.some((event) => event.type === 'relation_changed' && event.field === 'unit'));
         teardownVault();
     });
 

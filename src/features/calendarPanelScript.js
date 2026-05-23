@@ -14,6 +14,18 @@ let mode = 'month';
 let selectedMonth = model.selectedMonth;
 let selectedDate = model.selectedDate;
 
+function iconGlyph(name) {
+  const icons = {
+    open: '<svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="3.5"/><path d="M8 2.5v2"/><path d="M13.5 8h-2"/><path d="M8 13.5v-2"/><path d="M2.5 8h2"/></svg>',
+    done: '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M3.5 8.5 6.5 11.5 12.5 4.5"/></svg>',
+    dated: '<svg viewBox="0 0 16 16" aria-hidden="true"><rect x="3" y="4" width="10" height="9" rx="2"/><path d="M5 2.5v3"/><path d="M11 2.5v3"/><path d="M3 7h10"/></svg>',
+    created: '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 3v10"/><path d="M3 8h10"/></svg>',
+    tasks: '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M6 4h7"/><path d="M6 8h7"/><path d="M6 12h7"/><path d="M3 4.5h.01"/><path d="M3 8.5h.01"/><path d="M3 12.5h.01"/></svg>',
+    notes: '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4 2.5h6l2.5 2.5v8a1 1 0 0 1-1 1h-7a1 1 0 0 1-1-1v-9a1 1 0 0 1 1-1Z"/><path d="M10 2.5V5h2.5"/></svg>'
+  };
+  return '<span class="yl-icon yl-icon-' + escapeHtml(name) + '">' + (icons[name] || icons.open) + '</span>';
+}
+
 function startOfWeek(iso) {
   const d = new Date(iso + 'T12:00:00');
   const day = d.getDay();
@@ -26,11 +38,6 @@ function addDays(iso, days) {
   const d = new Date(iso + 'T12:00:00');
   d.setDate(d.getDate() + days);
   return d.toISOString().slice(0,10);
-}
-
-function formatRange(start, end) {
-  if (start === end) return start;
-  return start + ' \u2192 ' + end;
 }
 
 function rowsForSummary() {
@@ -52,18 +59,27 @@ function renderSummary() {
   const taskRows = rows.filter(row => row.itemKind === 'task');
   const done = taskRows.filter(row => row.done).length;
   const open = taskRows.length - done;
-  const sources = new Set(rows.map(row => row.fileId)).size;
-  const range = mode === 'day' ? selectedDate : (mode === 'week' ? formatRange(startOfWeek(selectedDate), addDays(startOfWeek(selectedDate), 6)) : selectedMonth);
+  const dateNotes = rows.filter(row => row.itemKind === 'date').length;
+  const createdNotes = rows.filter(row => row.itemKind === 'created').length;
   summary.innerHTML = [
-    stat('Range', range),
-    stat('Items', rows.length),
-    stat('Open', open),
-    stat('Sources', sources)
+    stat('Open Tasks', open, 'var(--accent-3)'),
+    stat('Done Tasks', done, '#7f8a94'),
+    stat('Dated', dateNotes, 'var(--accent)'),
+    stat('Created', createdNotes, 'var(--accent-2)')
   ].join('');
 }
 
-function stat(label, value) {
-  return '<div class="card"><div class="card-label">' + escapeHtml(label) + '</div><div class="card-value">' + escapeHtml(value) + '</div></div>';
+function stat(label, value, color) {
+  const valueStyle = color ? ' style="color:' + color + '"' : '';
+  const iconName = label === 'Open Tasks' ? 'open'
+    : label === 'Done Tasks' ? 'done'
+    : label === 'Dated' ? 'dated'
+    : 'created';
+  return '<div class="card">' +
+    iconGlyph(iconName) +
+    '<div class="card-copy"><div class="card-label">' + escapeHtml(label) + '</div></div>' +
+    '<div class="card-value"' + valueStyle + '>' + escapeHtml(String(value)) + '</div>' +
+  '</div>';
 }
 
 function renderAgenda() {
@@ -73,21 +89,59 @@ function renderAgenda() {
     agendaList.innerHTML = '<div class="empty">No activity for this selection.</div>';
     return;
   }
-  agendaList.innerHTML = rows.map(row => {
-    return '<article class="task' + (row.done ? ' done' : '') + '">' +
-      '<div class="task-dot"></div>' +
-      '<div class="task-main">' +
-        '<div class="task-title">' + escapeHtml(row.text) + '</div>' +
-        '<div class="task-meta">' +
-          '<span class="pill">' + (row.itemKind === 'task' ? (row.done ? 'done' : 'open') : (row.itemKind === 'created' ? 'created' : 'note')) + '</span>' +
-          '<span>' + escapeHtml(row.date || '') + '</span>' +
-          '<span class="link" data-open-node="' + escapeHtml(row.fileId) + '">' + escapeHtml(row.sourceLabel) + '</span>' +
-          '<span>' + escapeHtml(row.id) + '</span>' +
-        '</div>' +
+  const taskRows = rows.filter(r => r.itemKind === 'task');
+  const noteRows = rows.filter(r => r.itemKind !== 'task');
+  const sections = [];
+  if (taskRows.length > 0) {
+    sections.push(
+      '<div class="agenda-section">' +
+      '<div class="agenda-section-label">' + iconGlyph('tasks') + '<span>Tasks</span></div>' +
+      taskRows.map(renderTaskItem).join('') +
+      '</div>'
+    );
+  }
+  if (noteRows.length > 0) {
+    sections.push(
+      '<div class="agenda-section">' +
+      '<div class="agenda-section-label">' + iconGlyph('notes') + '<span>Notes</span></div>' +
+      noteRows.map(renderNoteItem).join('') +
+      '</div>'
+    );
+  }
+  agendaList.innerHTML = sections.join('');
+}
+
+function renderTaskItem(row) {
+  const pillClass = row.done ? 'pill pill-done' : 'pill pill-task';
+  const pillText = row.done ? 'done' : 'open';
+  return '<article class="task' + (row.done ? ' done' : '') + '">' +
+    '<div class="task-dot"></div>' +
+    '<div class="task-main">' +
+      '<div class="task-title">' + escapeHtml(row.text) + '</div>' +
+      (row.body ? '<div class="task-body">' + escapeHtml(row.body) + '</div>' : '') +
+      '<div class="task-meta">' +
+        '<span class="' + pillClass + '">' + pillText + '</span>' +
+        '<span class="link" data-open-node="' + escapeHtml(row.fileId) + '">' + escapeHtml(row.sourceLabel) + '</span>' +
       '</div>' +
-      '<div>' + escapeHtml(row.fileType || 'node') + '</div>' +
-    '</article>';
-  }).join('');
+    '</div>' +
+    '<div class="item-type">' + escapeHtml(row.fileType || '') + '</div>' +
+  '</article>';
+}
+
+function renderNoteItem(row) {
+  const pillClass = row.itemKind === 'date' ? 'pill pill-date' : 'pill pill-created';
+  const pillText = row.itemKind === 'date' ? 'dated' : 'created';
+  return '<article class="task">' +
+    '<div class="task-dot task-dot-note"></div>' +
+    '<div class="task-main">' +
+      '<div class="task-title">' + escapeHtml(row.text) + '</div>' +
+      '<div class="task-meta">' +
+        '<span class="' + pillClass + '">' + pillText + '</span>' +
+        '<span class="link" data-open-node="' + escapeHtml(row.fileId) + '">' + escapeHtml(row.sourceLabel) + '</span>' +
+        (row.fileType ? '<span>' + escapeHtml(row.fileType) + '</span>' : '') +
+      '</div>' +
+    '</div>' +
+  '</article>';
 }
 
 function renderMonth() {
@@ -109,10 +163,21 @@ function renderMonth() {
   for (let day = 1; day <= daysInMonth; day++) {
     const iso = year + '-' + String(month).padStart(2,'0') + '-' + String(day).padStart(2,'0');
     const rows = rowsByDate.get(iso) || [];
+    const taskCount = rows.filter(row => row.itemKind === 'task').length;
+    const noteCount = rows.length - taskCount;
+    const visible = rows.slice(0, 5);
+    const overflow = rows.length - visible.length;
+    const dots = visible.map(row => '<span class="dot dot-' + row.itemKind + (row.done ? ' done' : '') + '"></span>').join('') +
+      (overflow > 0 ? '<span class="dot-overflow">+' + overflow + '</span>' : '');
+    const badges = [
+      taskCount > 0 ? '<span class="day-badge task">T' + taskCount + '</span>' : '',
+      noteCount > 0 ? '<span class="day-badge note">N' + noteCount + '</span>' : ''
+    ].filter(Boolean).join('');
     cells.push(
-      '<button class="day' + (iso === selectedDate ? ' selected' : '') + '" data-date="' + iso + '">' +
-        '<div class="day-head"><span class="day-num">' + day + '</span><span class="day-count">' + rows.length + '</span></div>' +
-        '<div class="dots">' + rows.slice(0,6).map(row => '<span class="dot' + (row.done ? ' done' : '') + '"></span>').join('') + '</div>' +
+      '<button class="day' + (iso === selectedDate ? ' selected' : '') + (iso === model.todayIso ? ' today' : '') + '" data-date="' + iso + '">' +
+        '<div class="day-head"><span class="day-num">' + day + '</span><span class="day-count">' + (rows.length || '') + '</span></div>' +
+        '<div class="dots">' + dots + '</div>' +
+        '<div class="day-meta"><span>' + (rows.length ? rows.length + ' item' + (rows.length === 1 ? '' : 's') : '') + '</span><span class="day-badges">' + badges + '</span></div>' +
       '</button>'
     );
   }
@@ -189,7 +254,12 @@ function shiftMonth(delta) {
   selectedMonth = next.getFullYear() + '-' + String(next.getMonth() + 1).padStart(2, '0');
   monthSelect.value = selectedMonth;
   const monthRows = model.months[selectedMonth] || [];
-  selectedDate = monthRows[0] ? monthRows[0].date : (selectedMonth + '-01');
+  if (monthRows.length > 0) {
+    // Going back: land on the most recent day; going forward: land on the first
+    selectedDate = delta < 0 ? monthRows[monthRows.length - 1].date : monthRows[0].date;
+  } else {
+    selectedDate = selectedMonth + '-01';
+  }
   dateInput.value = selectedDate;
   applySelection();
 }
@@ -226,9 +296,15 @@ document.addEventListener('click', (event) => {
 });
 
 monthSelect.addEventListener('change', () => {
+  const prevMonth = selectedDate.slice(0, 7);
   selectedMonth = monthSelect.value;
   const monthRows = model.months[selectedMonth] || [];
-  selectedDate = monthRows[0] ? monthRows[0].date : (selectedMonth + '-01');
+  if (monthRows.length > 0) {
+    const goingBack = selectedMonth < prevMonth;
+    selectedDate = goingBack ? monthRows[monthRows.length - 1].date : monthRows[0].date;
+  } else {
+    selectedDate = selectedMonth + '-01';
+  }
   dateInput.value = selectedDate;
   applySelection();
 });

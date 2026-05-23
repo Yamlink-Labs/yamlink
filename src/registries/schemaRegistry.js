@@ -105,7 +105,7 @@ function registerSchemaNode(sourceId, frontmatterText) {
 // Unknown field types are preserved as-is and flagged in logs.
 // Enforcement / diagnostics will surface them later.
 // ─────────────────────────────────────────────────────────────────
-const VALID_FIELD_TYPES = new Set(['string', 'number', 'relation']);
+const VALID_FIELD_TYPES = new Set(['string', 'number', 'relation', 'date', 'status', 'workflow', 'identity', 'text', 'scalar']);
 
 function normalizeFields(rawFields, sourceId) {
     if (!rawFields || typeof rawFields !== 'object') return {};

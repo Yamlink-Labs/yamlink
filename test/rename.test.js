@@ -65,6 +65,30 @@ describe('rename propagation matching', () => {
         assert.equal(matches.length, 1);
     });
 
+    test('matches heading anchor wikilinks', () => {
+        const text = 'commander: [[johnny-rico#service-record]]';
+        const matches = findRenameMatchesInText(text, 'johnny-rico');
+        assert.deepEqual(matches, [{ start: 13, end: 24 }]);
+    });
+
+    test('matches block reference wikilinks', () => {
+        const text = 'commander: [[johnny-rico^record-a1]]';
+        const matches = findRenameMatchesInText(text, 'johnny-rico');
+        assert.deepEqual(matches, [{ start: 13, end: 24 }]);
+    });
+
+    test('matches embed heading anchors', () => {
+        const text = 'See ![[johnny-rico#service-record]] later.';
+        const matches = findRenameMatchesInText(text, 'johnny-rico');
+        assert.deepEqual(matches, [{ start: 7, end: 18 }]);
+    });
+
+    test('matches embed block references', () => {
+        const text = 'See ![[johnny-rico^record-a1]] later.';
+        const matches = findRenameMatchesInText(text, 'johnny-rico');
+        assert.deepEqual(matches, [{ start: 7, end: 18 }]);
+    });
+
     test('does not match plain prose mentions', () => {
         const matches = findRenameMatchesInText('johnny-rico survived.', 'johnny-rico');
         assert.equal(matches.length, 0);

@@ -2,7 +2,6 @@
 
 const { getBacklinks } = require('../core/graph');
 const {
-    appendQueryOptions,
     buildIncomingViewQuery,
     buildTypeViewQuery,
     capitalize,

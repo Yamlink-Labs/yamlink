@@ -142,6 +142,12 @@ function explainSuggestionState(nodeId) {
                 .map((hint) => `"${hint.field}"`)
                 .join(' and ')}`
         );
+        reasons.push(
+            `Other notes also use ${adaptiveFieldHints
+                .slice(0, 2)
+                .map((hint) => `"${hint.field}"`)
+                .join(' and ')}`
+        );
         const relationFieldHint = adaptiveFieldHints.find((hint) => hint.relational && hint.sampleTargets.length);
         if (relationFieldHint) {
             reasons.push(
@@ -170,6 +176,22 @@ function explainSuggestionState(nodeId) {
         reasons.push(`Context: "${topContext.field}" -> ${topContext.targetId}`);
         if (topContext.variants?.length > 1) {
             reasons.push(`Other notes also use ${topContext.variants.slice(0, 2).join(' and ')}`);
+        } else {
+            const structuralHint = adaptiveFieldHints.find((hint) => (hint.sharedFields?.length || hint.sharedFields?.size || 0) > 0);
+            if (structuralHint) {
+                const shared = Array.from(structuralHint.sharedFields || []).slice(0, 2);
+                if (shared.length) {
+                    reasons.push(`Other notes also use ${shared.join(' and ')}`);
+                }
+            }
+        }
+    } else {
+        const structuralHint = adaptiveFieldHints.find((hint) => (hint.sharedFields?.length || hint.sharedFields?.size || 0) > 0);
+        if (structuralHint) {
+            const shared = Array.from(structuralHint.sharedFields || []).slice(0, 2);
+            if (shared.length) {
+                reasons.push(`Other notes also use ${shared.join(' and ')}`);
+            }
         }
     }
     if (frontmatterOpportunities.contextBundle?.summary) {

@@ -1,0 +1,14 @@
+{
+  "exclude": [
+    "test/**",
+    "sample/**",
+    "media/**",
+    "scripts/**",
+    "src/features/vendor/**"
+  ],
+  "reporter": [
+    "text",
+    "lcov",
+    "json-summary"
+  ]
+}

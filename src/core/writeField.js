@@ -6,7 +6,8 @@ const {
     parseFrontmatterDocument,
     setField,
     deleteField,
-    serializeFrontmatterDocument
+    serializeFrontmatterDocument,
+    writeFrontmatterFieldSurgically
 } = require('./frontmatter');
 
 async function writeFieldValue(filePath, field, newValue) {
@@ -27,7 +28,10 @@ async function writeFieldValue(filePath, field, newValue) {
     const nextDoc = normalisedValue === ''
         ? deleteField(parsed, field)
         : setField(parsed, field, normalisedValue);
-    const nextContent = serializeFrontmatterDocument(nextDoc);
+
+    const canonicalValue = normalisedValue === '' ? null : nextDoc.data[field];
+    const surgical = writeFrontmatterFieldSurgically(content, field, canonicalValue);
+    const nextContent = surgical !== null ? surgical : serializeFrontmatterDocument(nextDoc);
 
     try {
         const targetUri = vscode.Uri.file(filePath);

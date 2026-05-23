@@ -1,6 +1,7 @@
 'use strict';
 
 const vscode = require('vscode');
+const { perfTracker } = require('../../runtime/performanceTracker');
 
 function createViewPanelController(services) {
     let panel = null;
@@ -23,13 +24,18 @@ function createViewPanelController(services) {
 
     function renderCurrent(preferredTab = null) {
         if (!panel || !lastQuery || !extensionUri) return;
-        services.renderPanel({
-            panel,
-            queries: lastQuery,
-            extensionUri,
-            panelState,
-            preferredTab,
-            contextNodeId
+        perfTracker.measureSync('view.renderPanel', {
+            queryCount: Array.isArray(lastQuery) ? lastQuery.length : 1,
+            preferredTab: preferredTab ?? 'state'
+        }, () => {
+            services.renderPanel({
+                panel,
+                queries: lastQuery,
+                extensionUri,
+                panelState,
+                preferredTab,
+                contextNodeId
+            });
         });
     }
 
@@ -131,7 +137,9 @@ function createViewPanelController(services) {
     }
 
     function openViewPanel(context, documentText, onComplete, nextSourceDocumentPath = null, preferredTab = null) {
-        const queries = services.parseAllViewQueries(documentText);
+        const queries = perfTracker.measureSync('view.parseQueries', {
+            source: nextSourceDocumentPath ? 'note' : 'ad-hoc'
+        }, () => services.parseAllViewQueries(documentText));
         if (!queries) return;
 
         lastQuery = queries;
@@ -140,7 +148,7 @@ function createViewPanelController(services) {
         sourceDocumentPath = nextSourceDocumentPath || null;
         if (onComplete) onCompleteCallback = onComplete;
 
-        services.ensureIndexBuilt();
+        perfTracker.measureSync('view.ensureIndexBuilt', null, () => services.ensureIndexBuilt());
         ensurePanel(context);
         renderCurrent(typeof preferredTab === 'number' ? preferredTab : null);
         notifyViewPanelStateChange();

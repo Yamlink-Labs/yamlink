@@ -106,6 +106,13 @@ describe('field-role intelligence', () => {
         );
     });
 
+    test('extracts bare relation ids when they match known vault ids', () => {
+        assert.deepEqual(
+            extractLinkTargets('wayne-inc, bruce-wayne, missing-id', { knownIds: ['wayne-inc', 'bruce-wayne'] }),
+            ['wayne-inc', 'bruce-wayne']
+        );
+    });
+
     test('schema relation fields get full-confidence relation inference', () => {
         const role = inferFieldRole('account', { documentType: 'contact', idIndex: INDEX });
         assert.equal(role.relational, true);
@@ -138,6 +145,24 @@ describe('field-role intelligence', () => {
         assert.equal(role.relational, true);
         assert.equal(role.semanticRole, 'topic');
         assert.ok(role.reasons.some(reason => reason.includes('wikilink value')));
+    });
+
+    test('bare-id relation usage becomes relational when ids exist in the vault', () => {
+        const role = inferFieldRole('account', {
+            documentType: 'contact',
+            observedFields: [
+                { type: 'contact', fields: { id: 'bruce-wayne', account: 'wayne-inc' } },
+                { type: 'contact', fields: { id: 'alfred', account: 'wayne-inc' } }
+            ],
+            idToType: new Map([
+                ['wayne-inc', 'account'],
+                ['bruce-wayne', 'contact'],
+                ['alfred', 'contact']
+            ])
+        });
+        assert.equal(role.relational, true);
+        assert.equal(role.targetType, 'account');
+        assert.ok(role.reasons.some(reason => reason.includes('account notes') || reason.includes('wikilink value') || reason.includes('vault usage often links')));
     });
 
     test('field-name variants still seed target-type inference softly', () => {

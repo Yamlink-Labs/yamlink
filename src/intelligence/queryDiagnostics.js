@@ -1,5 +1,7 @@
 'use strict';
 
+const INTERNAL_FIELDS = new Set(['__yamlink_tags']);
+
 function levenshtein(a, b) {
     const left = String(a ?? '');
     const right = String(b ?? '');
@@ -54,7 +56,8 @@ function collectFieldCandidates(type, fieldCache) {
         const nodeType = String(fields.type || '').trim().toLowerCase();
         if (type && type !== '*' && nodeType !== type) continue;
         for (const key of Object.keys(fields || {})) {
-            if (key !== 'id') fieldSet.add(String(key).trim().toLowerCase());
+            const normalizedKey = String(key).trim().toLowerCase();
+            if (normalizedKey !== 'id' && !INTERNAL_FIELDS.has(normalizedKey)) fieldSet.add(normalizedKey);
         }
     }
     return [...fieldSet].sort();
@@ -88,7 +91,7 @@ function collectRelationFieldCandidates(type, fieldCache) {
         if (type && type !== '*' && nodeType !== type) continue;
         for (const [key, value] of Object.entries(fields || {})) {
             const normalizedKey = String(key || '').trim().toLowerCase();
-            if (!normalizedKey || normalizedKey === 'id' || normalizedKey === 'type') continue;
+            if (!normalizedKey || normalizedKey === 'id' || normalizedKey === 'type' || INTERNAL_FIELDS.has(normalizedKey)) continue;
             if (valueLooksLikeRelation(value, knownIds)) fieldSet.add(normalizedKey);
         }
     }
