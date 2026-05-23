@@ -17,7 +17,7 @@ let lastRevealOptions = null;
 const VAULT_ROOT = 'C:\\vault';
 
 function vaultPath(...parts) {
-    return path.join(VAULT_ROOT, ...parts);
+    return path.join(VAULT_ROOT, ...parts).replace(/\//g, '\\');
 }
 
 function normalizeFsPath(value) {
