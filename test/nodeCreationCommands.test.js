@@ -3,6 +3,7 @@
 const { test, describe, beforeEach, after } = require('node:test');
 const assert = require('node:assert/strict');
 const Module = require('module');
+const path = require('path');
 
 const originalResolve = Module._resolveFilename.bind(Module);
 
@@ -24,6 +25,15 @@ let templateDirExists = false;
 let templateFiles = [];
 let createdDirectories = [];
 let schemaTargets = new Set(['contact', 'mission']);
+const VAULT_ROOT = 'C:\\vault';
+
+function vaultPath(...parts) {
+    return path.join(VAULT_ROOT, ...parts);
+}
+
+function normalizeFsPath(value) {
+    return String(value || '').replace(/\//g, '\\');
+}
 
 class Position {
     constructor(line, character) {
@@ -96,21 +106,34 @@ const mockWindow = {
 };
 
 const mockWorkspace = {
-    workspaceFolders: [{ uri: { fsPath: 'C:\\vault' } }],
+    workspaceFolders: [{ uri: { fsPath: VAULT_ROOT } }],
     async openTextDocument(arg) {
         if (typeof arg === 'string') {
-            const content = writeFiles.get(arg) || '';
-            const doc = createDocument(content, arg);
-            openDocs.set(arg, doc);
+            const key = normalizeFsPath(arg);
+            const content = writeFiles.get(key) || '';
+            const doc = createDocument(content, key);
+            openDocs.set(key, doc);
             return doc;
         }
         if (arg && arg.fsPath) {
-            const content = writeFiles.get(arg.fsPath) || '';
-            const doc = createDocument(content, arg.fsPath);
-            openDocs.set(arg.fsPath, doc);
+            const key = normalizeFsPath(arg.fsPath);
+            const content = writeFiles.get(key) || '';
+            const doc = createDocument(content, key);
+            openDocs.set(key, doc);
             return doc;
         }
-        return createDocument('', 'C:\\vault\\untitled.md');
+        return createDocument('', vaultPath('untitled.md'));
+    },
+    async applyEdit(edit) {
+        for (const op of edit.ops) {
+            const fsPath = normalizeFsPath(op.uri?.fsPath || op.uri);
+            const doc = openDocs.get(fsPath);
+            if (!doc || op.type !== 'insert') continue;
+            const lines = doc._text.split('\n');
+            lines.splice(op.position.line, 0, op.text);
+            doc._text = lines.join('\n');
+        }
+        return true;
     }
 };
 
@@ -262,29 +285,30 @@ const realWriteFileSync = realFs.writeFileSync;
 const realMkdirSync = realFs.mkdirSync;
 
 realFs.existsSync = function (targetPath) {
-    const key = String(targetPath);
+    const key = normalizeFsPath(targetPath);
     if (writeFiles.has(key)) return true;
     if (key.endsWith('\\_templates')) return templateDirExists;
     return false;
 };
 realFs.readdirSync = function (targetPath) {
-    if (String(targetPath).includes('\\_templates')) return templateFiles.slice();
+    if (normalizeFsPath(targetPath).includes('\\_templates')) return templateFiles.slice();
     return [];
 };
 realFs.readFileSync = function (targetPath) {
-    const key = String(targetPath);
-    if (!key.startsWith('C:\\vault\\')) {
+    const key = normalizeFsPath(targetPath);
+    if (!key.startsWith(`${VAULT_ROOT}\\`)) {
         return realReadFileSync.apply(this, arguments);
     }
     if (writeFiles.has(key)) return writeFiles.get(key);
     throw new Error(`ENOENT: ${key}`);
 };
 realFs.writeFileSync = function (targetPath, content) {
-    writeFiles.set(String(targetPath), String(content));
+    writeFiles.set(normalizeFsPath(targetPath), String(content));
 };
 realFs.mkdirSync = function (targetPath) {
-    createdDirectories.push(String(targetPath));
-    if (String(targetPath).includes('\\_templates')) templateDirExists = true;
+    const key = normalizeFsPath(targetPath);
+    createdDirectories.push(key);
+    if (key.includes('\\_templates')) templateDirExists = true;
 };
 
 Module._resolveFilename = function (request, parent, ...rest) {
@@ -337,7 +361,7 @@ describe('node creation commands', () => {
         const context = { subscriptions: [] };
         registerNodeCreationCommands(context, () => new Map(), () => new Set(['contact']));
 
-        writeFiles.set('C:\\vault\\existing-note.md', '---\nid: existing-note\n---\n');
+        writeFiles.set(vaultPath('existing-note.md'), '---\nid: existing-note\n---\n');
 
         const result = await commandMap.get('yamlink.createNote')('existing-note', 'contact');
 
@@ -351,7 +375,7 @@ describe('node creation commands', () => {
 
         await commandMap.get('yamlink.createNote')('carmen-ibanez', 'contact');
 
-        const created = writeFiles.get('C:\\vault\\carmen-ibanez.md');
+        const created = writeFiles.get(vaultPath('carmen-ibanez.md'));
         assert.match(created, /type: contact/);
         assert.match(created, /name:/);
         assert.match(created, /account: \[\[\]\]/);
@@ -364,7 +388,7 @@ describe('node creation commands', () => {
 
         await commandMap.get('yamlink.createNote')('new-briefing', 'briefing');
 
-        const created = writeFiles.get('C:\\vault\\new-briefing.md');
+        const created = writeFiles.get(vaultPath('new-briefing.md'));
         assert.match(created, /id: new-briefing/);
         assert.match(created, /type: briefing/);
         assert.match(created, /created: \d{4}-\d{2}-\d{2}/);
@@ -374,7 +398,7 @@ describe('node creation commands', () => {
         const context = { subscriptions: [] };
         registerNodeCreationCommands(context, () => new Map(), () => new Set(['contact', 'account']));
 
-        writeFiles.set('C:\\vault\\source-note.md', [
+        writeFiles.set(vaultPath('source-note.md'), [
             '---',
             'id: source-note',
             'type: contact',
@@ -388,13 +412,13 @@ describe('node creation commands', () => {
             targetType: 'account',
             fieldName: 'account',
             sourceId: 'source-note',
-            sourceFilePath: 'C:\\vault\\source-note.md',
+            sourceFilePath: vaultPath('source-note.md'),
             sourceType: 'contact'
         });
 
-        assert.ok(writeFiles.has('C:\\vault\\target-account.md'));
+        assert.ok(writeFiles.has(vaultPath('target-account.md')));
         assert.ok(writeFieldCalls.some((call) =>
-            call.filePath === 'C:\\vault\\source-note.md' &&
+            normalizeFsPath(call.filePath) === vaultPath('source-note.md') &&
             call.field === 'account' &&
             call.value.includes('[[existing-account]]') &&
             call.value.includes('[[target-account]]')
@@ -411,12 +435,12 @@ describe('node creation commands', () => {
             targetType: 'account',
             fieldName: 'account',
             sourceId: 'source-note',
-            sourceFilePath: 'C:\\vault\\source-note.md',
+            sourceFilePath: vaultPath('source-note.md'),
             sourceType: 'contact'
         });
 
         assert.equal(writeFieldCalls.length, 0);
-        assert.equal(writeFiles.has('C:\\vault\\target-account.md'), false);
+        assert.equal(writeFiles.has(vaultPath('target-account.md')), false);
     });
 
     test('newNodeFromTemplate scaffolds _templates with a starter template when empty', async () => {
@@ -425,9 +449,9 @@ describe('node creation commands', () => {
 
         await commandMap.get('yamlink.newNodeFromTemplate')();
 
-        assert.ok(createdDirectories.includes('C:\\vault\\_templates'));
-        assert.ok(writeFiles.has('C:\\vault\\_templates\\contact.md'));
-        assert.ok(shownDocs.includes('C:\\vault\\_templates\\contact.md'));
+        assert.ok(createdDirectories.includes(vaultPath('_templates')));
+        assert.ok(writeFiles.has(vaultPath('_templates', 'contact.md')));
+        assert.ok(shownDocs.includes(vaultPath('_templates', 'contact.md')));
         assert.ok(infoMessages.some((message) => message.includes('_templates/ created')));
     });
 
@@ -437,7 +461,7 @@ describe('node creation commands', () => {
 
         templateDirExists = true;
         templateFiles = ['contact.md'];
-        writeFiles.set('C:\\vault\\_templates\\contact.md', [
+        writeFiles.set(vaultPath('_templates', 'contact.md'), [
             '---',
             'id:',
             'type: contact',
@@ -450,10 +474,10 @@ describe('node creation commands', () => {
 
         await commandMap.get('yamlink.newNodeFromTemplate')();
 
-        const created = writeFiles.get('C:\\vault\\ace-levy.md');
+        const created = writeFiles.get(vaultPath('ace-levy.md'));
         assert.match(created, /id: ace-levy/);
         assert.match(created, /type: contact/);
-        assert.ok(shownDocs.includes('C:\\vault\\ace-levy.md'));
+        assert.ok(shownDocs.includes(vaultPath('ace-levy.md')));
     });
 
     test('newNodeFromTemplate warns when the generated file already exists', async () => {
@@ -462,7 +486,7 @@ describe('node creation commands', () => {
 
         templateDirExists = true;
         templateFiles = ['contact.md'];
-        writeFiles.set('C:\\vault\\_templates\\contact.md', [
+        writeFiles.set(vaultPath('_templates', 'contact.md'), [
             '---',
             'id:',
             'type: contact',
@@ -471,7 +495,7 @@ describe('node creation commands', () => {
             '---',
             ''
         ].join('\n'));
-        writeFiles.set('C:\\vault\\ace-levy.md', '---\nid: ace-levy\n---\n');
+        writeFiles.set(vaultPath('ace-levy.md'), '---\nid: ace-levy\n---\n');
         inputQueue.push('ace-levy');
 
         await commandMap.get('yamlink.newNodeFromTemplate')();
@@ -487,7 +511,7 @@ describe('node creation commands', () => {
 
         await commandMap.get('yamlink.newNoteFromSchema')();
 
-        const created = writeFiles.get('C:\\vault\\carmen-ibanez.md');
+        const created = writeFiles.get(vaultPath('carmen-ibanez.md'));
         assert.match(created, /id: carmen-ibanez/);
         assert.match(created, /type: contact/);
         assert.match(created, /name:/);
@@ -510,7 +534,7 @@ describe('node creation commands', () => {
         const context = { subscriptions: [] };
         registerNodeCreationCommands(context, () => new Map(), () => new Set(['contact', 'mission']));
 
-        const document = createDocument('# Draft note\n', 'C:\\vault\\draft.md');
+        const document = createDocument('# Draft note\n', vaultPath('draft.md'));
         document.save = async function save() { return true; };
         const edits = [];
         mockWorkspace.applyEdit = async function applyEdit(edit) {

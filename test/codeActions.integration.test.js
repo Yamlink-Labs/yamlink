@@ -3,6 +3,7 @@
 const { test, describe, afterEach } = require('node:test');
 const assert = require('node:assert/strict');
 const Module = require('module');
+const path = require('path');
 
 const originalResolve = Module._resolveFilename.bind(Module);
 
@@ -13,6 +14,15 @@ let buildIndexCalls = 0;
 let invalidateFileCacheCalls = [];
 let updateSingleFileResult = { changed: true, needsFull: false };
 let lastRevealOptions = null;
+const VAULT_ROOT = 'C:\\vault';
+
+function vaultPath(...parts) {
+    return path.join(VAULT_ROOT, ...parts);
+}
+
+function normalizeFsPath(value) {
+    return String(value || '').replace(/\//g, '\\');
+}
 
 class Position {
     constructor(line, character) {
@@ -422,7 +432,7 @@ describe('code actions integration', () => {
         const realExistsSync = require('fs').existsSync;
         const realWriteFileSync = require('fs').writeFileSync;
         updateSingleFileResult = { changed: true, needsFull: true };
-        mockWorkspace.openTextDocument = async (filePath) => createDocument('---\nid: lex-luthor\n---\n', filePath);
+        mockWorkspace.openTextDocument = async (filePath) => createDocument('---\nid: lex-luthor\n---\n', normalizeFsPath(filePath));
 
         let writtenPath = null;
         let writtenContent = null;
@@ -433,15 +443,15 @@ describe('code actions integration', () => {
         };
 
         try {
-            await commandMap.get('yamlink.createNote')('lex-luthor', 'contact', 'C:\\vault\\lexcorp.md', 'lexcorp', 'account');
+            await commandMap.get('yamlink.createNote')('lex-luthor', 'contact', vaultPath('lexcorp.md'), 'lexcorp', 'account');
         } finally {
             require('fs').existsSync = realExistsSync;
             require('fs').writeFileSync = realWriteFileSync;
         }
 
-        assert.equal(writtenPath, 'C:\\vault\\lex-luthor.md');
+        assert.equal(normalizeFsPath(writtenPath), vaultPath('lex-luthor.md'));
         assert.match(writtenContent, /id: lex-luthor/);
-        assert.deepEqual(invalidateFileCacheCalls, ['C:\\vault\\lex-luthor.md']);
+        assert.deepEqual(invalidateFileCacheCalls.map(normalizeFsPath), [vaultPath('lex-luthor.md')]);
         assert.equal(buildIndexCalls, 1);
     });
 });
