@@ -1,5 +1,6 @@
 .git
 .gitignore
+.github/**
 .vscode/**
 .vscode-test/**
 .claude/**
@@ -12,7 +13,12 @@ internal/**
 test/**
 coverage/**
 dist/**
+.c8rc.json
+eslint.config.js
+scripts/**
 media/legacy/**
+media/yamlink-labs*.png
+media/yamlink-labs*.jpg
 **/*.map
 **/*.ts
 README-draft.md
