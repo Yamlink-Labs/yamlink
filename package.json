@@ -265,7 +265,6 @@
     },
     "configurationDefaults": {
       "[markdown]": {
-        "editor.links": false,
         "foam.links.hover.enable": false
       }
     }
