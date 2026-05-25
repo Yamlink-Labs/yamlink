@@ -1,5 +1,15 @@
 # Changelog
 
+
+## [0.5.2] - "Zim"
+
+Patch release for the Zim line.
+
+### Fixed
+
+- Restored consistent wikilink resolution across diagnostics and ctrl-click navigation, including canonicalized targets, aliases, heading refs, and block refs.
+- Fixed vault-wide rename propagation so wikilink updates do not skip affected files during bulk ID changes.
+
 ## [0.5.1] - "Zim"
 
 Patch release for the Zim line.
