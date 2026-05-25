@@ -1,10 +1,10 @@
 const vscode = require('vscode');
 const { isKnownType } = require('../registries/typeRegistry');
 const { hasSchema, getSchema, getDuplicateSchemas } = require('../registries/schemaRegistry');
-const { getDuplicateIds, getFieldsCache } = require('../core/indexService');
+const { getDuplicateIds, getFieldsCache, getAliasIndex } = require('../core/indexService');
 const { getBacklinks } = require('../core/graph');
 const { computeSuggestionsForNode, QUERY_SUGGESTION_THRESHOLD } = require('../engine/suggestions');
-const { extractCanonicalIdFromFrontmatter } = require('../core/id');
+const { extractCanonicalIdFromFrontmatter, resolveLinkedTarget } = require('../core/id');
 
 
 const MIN_VAULT_SIZE_FOR_TYPE_ADVISORY = 10;
@@ -142,13 +142,15 @@ function validateDocument(document, getIndex) {
     }
 
     const linkRegex = /\[\[([^\]]+)\]\]/g;
+    const aliasIndex = getAliasIndex();
     let match;
 
     while ((match = linkRegex.exec(text)) !== null) {
-        const id              = match[1].trim().split('|')[0].trim();
+        const rawTarget       = match[1].trim();
+        const id              = rawTarget.split('|')[0].trim();
         const isInFrontmatter = frontmatterEnd > 0 && match.index < frontmatterEnd;
 
-        if (!idIndex.has(id)) {
+        if (!resolveLinkedTarget(rawTarget, idIndex, aliasIndex)) {
             const range = new vscode.Range(
                 document.positionAt(match.index),
                 document.positionAt(match.index + match[0].length)

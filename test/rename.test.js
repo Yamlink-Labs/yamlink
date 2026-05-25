@@ -31,7 +31,7 @@ Module._resolveFilename = function (request, parent, ...rest) {
     return originalResolve(request, parent, ...rest);
 };
 
-const { findRenameMatchesInText, extractIdFromDocument } = require('../src/core/rename');
+const { findRenameMatchesInText, extractIdFromDocument, contentHasRenameMatch } = require('../src/core/rename');
 
 describe('rename propagation matching', () => {
     test('extracts and canonicalizes accented ids from frontmatter', () => {
@@ -119,6 +119,12 @@ describe('rename propagation matching', () => {
 
     test('returns empty array for empty text', () => {
         assert.deepEqual(findRenameMatchesInText('', 'alpha'), []);
+    });
+
+    test('contentHasRenameMatch resets regex state across multiple files', () => {
+        const pattern = /!?\[\[alpha(?=\||#|\^|\]\])/g;
+        assert.equal(contentHasRenameMatch(pattern, 'see [[alpha]]'), true);
+        assert.equal(contentHasRenameMatch(pattern, 'x [[alpha]]'), true);
     });
 
     test('extractIdFromDocument returns null when no id field present', () => {

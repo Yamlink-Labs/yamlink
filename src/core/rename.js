@@ -207,11 +207,16 @@ async function scanAsync(dir, workspaceRoot, ignoreRules, pattern, results) {
         } else if (file.endsWith('.md')) {
             let content;
             try { content = await fs.promises.readFile(fullPath, 'utf8'); } catch (e) { continue; }
-            if (pattern.test(content)) {
+            if (contentHasRenameMatch(pattern, content)) {
                 results.push({ filePath: fullPath, content });
             }
         }
     }
+}
+
+function contentHasRenameMatch(pattern, content) {
+    pattern.lastIndex = 0;
+    return pattern.test(content);
 }
 
 function buildWorkspaceEdit(affected, oldId, newId) {
@@ -311,4 +316,4 @@ function escapeRegex(value) {
     return String(value).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
-module.exports = { registerRename, findRenameMatchesInText, extractIdFromDocument };
+module.exports = { registerRename, findRenameMatchesInText, extractIdFromDocument, contentHasRenameMatch };

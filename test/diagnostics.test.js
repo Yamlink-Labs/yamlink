@@ -74,7 +74,8 @@ require.cache['__diag_schemaReg__'] = { id: '__diag_schemaReg__', filename: '__d
 }};
 require.cache['__diag_index__'] = { id: '__diag_index__', filename: '__diag_index__', loaded: true, exports: {
     getDuplicateIds: () => _duplicateIds,
-    getFieldsCache:  () => _fieldsCache
+    getFieldsCache:  () => _fieldsCache,
+    getAliasIndex:   () => new Map([['johnny-rico', 'juan-rico']])
 }};
 require.cache['__diag_graph__'] = { id: '__diag_graph__', filename: '__diag_graph__', loaded: true, exports: {
     getBacklinks: () => _backlinks
@@ -87,6 +88,13 @@ require.cache['__diag_id__'] = { id: '__diag_id__', filename: '__diag_id__', loa
     extractCanonicalIdFromFrontmatter: (text) => {
         const m = text.match(/^\s*id:\s*(.+)/m);
         return m ? m[1].trim() : null;
+    },
+    resolveLinkedTarget: (raw, idIndex, aliasIndex) => {
+        const canonical = String(raw || '').trim().split('|')[0].trim().split('#')[0].trim().split('^')[0].trim().toLowerCase().replace(/[^a-z0-9_-]+/g, '-').replace(/-{2,}/g, '-').replace(/^[-_]+|[-_]+$/g, '');
+        if (!canonical) return null;
+        if (idIndex.has(canonical)) return canonical;
+        const resolved = aliasIndex?.get(canonical);
+        return resolved && idIndex.has(resolved) ? resolved : null;
     }
 }};
 
@@ -204,6 +212,14 @@ describe('validateDocument', () => {
         resetState();
         const idIndex = new Map([['alpha', {}], ['beta', {}]]);
         const doc = makeDoc('---\nid: alpha\n---\n\nSee [[beta]].\n');
+        const diags = runValidate(doc, idIndex);
+        assert.ok(!diags.some(d => d.code === 'yamlink.brokenLink'));
+    });
+
+    test('no brokenLink when wikilink resolves via canonicalization or alias', () => {
+        resetState();
+        const idIndex = new Map([['alpha', {}], ['what-is-yamlink', {}], ['juan-rico', {}]]);
+        const doc = makeDoc('---\nid: alpha\n---\n\nSee [[What is Yamlink?]] and [[johnny-rico]] and [[what is yamlink#intro]].\n');
         const diags = runValidate(doc, idIndex);
         assert.ok(!diags.some(d => d.code === 'yamlink.brokenLink'));
     });
