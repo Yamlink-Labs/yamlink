@@ -1,5 +1,15 @@
 # Changelog
 
+## [0.5.1] - "Zim"
+
+Patch release for the Zim line.
+
+### Fixed
+
+- Restored clickable markdown wikilinks in VS Code by no longer disabling native markdown link behavior through Yamlink's markdown configuration defaults.
+
+---
+
 ## [0.5.0] - "Zim"
 
 Zim turns Yamlink into a more complete workspace release.

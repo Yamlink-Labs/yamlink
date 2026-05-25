@@ -2,7 +2,7 @@
   "name": "yamlink",
   "displayName": "Yamlink",
   "description": "Local-first structured Markdown for VS Code with stable IDs, wikilinks, live queries, editable tables, note reports, calendars, and graph views.",
-  "version": "0.5.0",
+  "version": "0.5.1",
   "publisher": "yamlink",
   "author": {
     "name": "Yamlink Labs",
