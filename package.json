@@ -395,6 +395,7 @@
         "@types/vscode": "^1.120.0",
         "@vitejs/plugin-react": "^5.1.0",
         "@vscode/test-electron": "^2.5.2",
+        "mocha": "^10.8.2",
         "c8": "^11.0.0",
         "d3-force": "^3.0.0",
         "esbuild": "^0.28.0",
