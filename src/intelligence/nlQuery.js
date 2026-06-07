@@ -104,7 +104,7 @@ const PATTERNS = [
         build([, tok], v) {
             const type = matchVocab(tok, v.types);
             if (!type) return null;
-            return { query: `!view where type = ${type} and file.modified < days-ago(30)`, explanation: `${type} notes not modified in 30 days`, confidence: 'high' };
+            return { query: `!view ${type}\nwhere file.modified < days-ago(30)`, explanation: `${type} notes not modified in 30 days`, confidence: 'high' };
         }
     },
 
@@ -114,7 +114,7 @@ const PATTERNS = [
         build([, tok], v) {
             const type = matchVocab(tok, v.types);
             if (!type) return null;
-            return { query: `!view where type = ${type} and due < today()`, explanation: `${type} notes that are overdue`, confidence: 'high' };
+            return { query: `!view ${type}\nwhere due < today()`, explanation: `${type} notes that are overdue`, confidence: 'high' };
         }
     },
 
@@ -124,9 +124,9 @@ const PATTERNS = [
         build([, tok, when], v) {
             const type = matchVocab(tok, v.types);
             if (!type) return null;
-            if (when === 'today')          return { query: `!view where type = ${type} and due = today()`,              explanation: `${type} notes due today`,          confidence: 'high' };
-            if (when.includes('month'))    return { query: `!view where type = ${type} and due < days-from-now(30)`,   explanation: `${type} notes due this month`,      confidence: 'high' };
-            return                                { query: `!view where type = ${type} and due < days-from-now(7)`,    explanation: `${type} notes due this week`,       confidence: 'high' };
+            if (when === 'today')          return { query: `!view ${type}\nwhere due = today()`,              explanation: `${type} notes due today`,          confidence: 'high' };
+            if (when.includes('month'))    return { query: `!view ${type}\nwhere due < days-from-now(30)`,   explanation: `${type} notes due this month`,      confidence: 'high' };
+            return                                { query: `!view ${type}\nwhere due < days-from-now(7)`,    explanation: `${type} notes due this week`,       confidence: 'high' };
         }
     },
 
@@ -136,7 +136,7 @@ const PATTERNS = [
         build([, tok, days], v) {
             const type = matchVocab(tok, v.types);
             if (!type) return null;
-            return { query: `!view where type = ${type} and file.modified < days-ago(${days})`, explanation: `${type} notes not modified in ${days} days`, confidence: 'high' };
+            return { query: `!view ${type}\nwhere file.modified < days-ago(${days})`, explanation: `${type} notes not modified in ${days} days`, confidence: 'high' };
         }
     },
 
@@ -147,7 +147,7 @@ const PATTERNS = [
             const type   = matchVocab(typeTok, v.types);
             const noteId = matchNoteId(idTok, v.noteIds);
             if (!type || !noteId) return null;
-            return { query: `!view via ${noteId} where type = ${type}`, explanation: `${type} notes linked to "${noteId}"`, confidence: 'high' };
+            return { query: `!view ${type}\nvia ${noteId}`, explanation: `${type} notes linked to "${noteId}"`, confidence: 'high' };
         }
     },
 
@@ -158,7 +158,7 @@ const PATTERNS = [
             const type  = matchVocab(typeTok, v.types);
             const field = matchVocab(fieldTok, v.fields);
             if (!type || !field) return null;
-            return { query: `!view where type = ${type} and ${field} is empty`, explanation: `${type} notes missing "${field}"`, confidence: 'high' };
+            return { query: `!view ${type}\nwhere ${field} is empty`, explanation: `${type} notes missing "${field}"`, confidence: 'high' };
         }
     },
 
@@ -169,7 +169,7 @@ const PATTERNS = [
             const type  = matchVocab(typeTok, v.types);
             const field = matchVocab(fieldTok, v.fields);
             if (!type || !field) return null;
-            return { query: `!view where type = ${type} and ${field} exists`, explanation: `${type} notes with "${field}" set`, confidence: 'high' };
+            return { query: `!view ${type}\nwhere ${field} exists`, explanation: `${type} notes with "${field}" set`, confidence: 'high' };
         }
     },
 
@@ -180,7 +180,7 @@ const PATTERNS = [
             const type  = matchVocab(typeTok, v.types);
             const field = matchVocab(fieldTok, v.fields);
             if (!type || !field) return null;
-            return { query: `!view where type = ${type} group by ${field}`, explanation: `${type} notes grouped by "${field}"`, confidence: 'high' };
+            return { query: `!view ${type}\ngroup by ${field}`, explanation: `${type} notes grouped by "${field}"`, confidence: 'high' };
         }
     },
 
@@ -190,7 +190,7 @@ const PATTERNS = [
         build([, tok1, tok2], v) {
             const type = matchVocab(tok1 || tok2, v.types);
             if (!type) return null;
-            return { query: `!view where type = ${type} and file.modified > days-ago(7) sort file.modified desc`, explanation: `${type} notes from the last 7 days`, confidence: 'high' };
+            return { query: `!view ${type}\nwhere file.modified > days-ago(7)\nsort file.modified desc`, explanation: `${type} notes from the last 7 days`, confidence: 'high' };
         }
     },
 
@@ -210,9 +210,9 @@ const PATTERNS = [
             const type = matchVocab(typeTok, v.types);
             if (!type) return null;
             const status = matchStatus(sv, v.workflowFields);
-            if (status) return { query: `!view where type = ${type} and status = ${status}`, explanation: `${type} notes with status "${status}"`, confidence: 'high' };
+            if (status) return { query: `!view ${type}\nwhere status = ${status}`, explanation: `${type} notes with status "${status}"`, confidence: 'high' };
             const field = matchVocab(sv, v.fields);
-            if (field) return { query: `!view where type = ${type} and ${field} exists`, explanation: `${type} notes with "${field}" set`, confidence: 'medium' };
+            if (field) return { query: `!view ${type}\nwhere ${field} exists`, explanation: `${type} notes with "${field}" set`, confidence: 'medium' };
             return null;
         }
     },
@@ -224,9 +224,9 @@ const PATTERNS = [
             const type    = matchVocab(tok2, v.types);
             if (!type) return null;
             const status  = matchStatus(tok1, v.workflowFields);
-            if (status)   return { query: `!view where type = ${type} and status = ${status}`, explanation: `${type} notes with status "${status}"`, confidence: 'high' };
+            if (status)   return { query: `!view ${type}\nwhere status = ${status}`, explanation: `${type} notes with status "${status}"`, confidence: 'high' };
             const field   = matchVocab(tok1, v.fields);
-            if (field)    return { query: `!view where type = ${type} and ${field} exists`, explanation: `${type} notes with "${field}" set`, confidence: 'medium' };
+            if (field)    return { query: `!view ${type}\nwhere ${field} exists`, explanation: `${type} notes with "${field}" set`, confidence: 'medium' };
             return null;
         }
     },
@@ -237,7 +237,7 @@ const PATTERNS = [
         build([, tok], v) {
             const type = matchVocab(tok, v.types);
             if (!type) return null;
-            return { query: `!view where type = ${type}`, explanation: `All ${type} notes`, confidence: 'medium' };
+            return { query: `!view ${type}`, explanation: `All ${type} notes`, confidence: 'medium' };
         }
     },
 ];
@@ -279,7 +279,7 @@ function parseNaturalQuery(input, vocab) {
         for (const tok of tokens) {
             const type = matchVocab(tok, vocab.types);
             if (type) {
-                return { query: `!view where type = ${type} and file.modified = today()`, explanation: `${type} notes modified today`, confidence: 'medium' };
+                return { query: `!view ${type}\nwhere file.modified = today()`, explanation: `${type} notes modified today`, confidence: 'medium' };
             }
         }
     }

@@ -30,15 +30,15 @@ describe('parseNaturalQuery — bare type', () => {
     it('plain type', () => {
         const r = parseNaturalQuery('contacts', VOCAB);
         assert.ok(r);
-        assert.ok(r.query.includes('type = contact'));
+        assert.ok(r.query.startsWith('!view contact'));
     });
     it('"all X"', () => {
         const r = parseNaturalQuery('all projects', VOCAB);
-        assert.ok(r && r.query.includes('type = project'));
+        assert.ok(r && r.query.startsWith('!view project'));
     });
     it('"show me all X"', () => {
         const r = parseNaturalQuery('show me all missions', VOCAB);
-        assert.ok(r && r.query.includes('type = mission'));
+        assert.ok(r && r.query.startsWith('!view mission'));
     });
     it('unknown type returns null', () => {
         assert.equal(parseNaturalQuery('unicorns', VOCAB), null);
@@ -49,7 +49,7 @@ describe('parseNaturalQuery — status filter', () => {
     it('"active X"', () => {
         const r = parseNaturalQuery('active projects', VOCAB);
         assert.ok(r);
-        assert.ok(r.query.includes('type = project'));
+        assert.ok(r.query.startsWith('!view project'));
         assert.ok(r.query.includes('status = active'));
     });
     it('"X that are active"', () => {
@@ -100,8 +100,8 @@ describe('parseNaturalQuery — relation filter', () => {
     it('"X linked to Y"', () => {
         const r = parseNaturalQuery('missions linked to johnny-rico', VOCAB);
         assert.ok(r);
+        assert.ok(r.query.startsWith('!view mission'));
         assert.ok(r.query.includes('via johnny-rico'));
-        assert.ok(r.query.includes('type = mission'));
     });
     it('"X about Y"', () => {
         const r = parseNaturalQuery('projects about acme-corp', VOCAB);

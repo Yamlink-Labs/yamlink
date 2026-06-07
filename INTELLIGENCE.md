@@ -2,7 +2,7 @@
 
 Yamlink observes your vault — the notes you write, the fields you define, the links you create — and surfaces useful actions and completions without requiring any configuration. The system gets smarter the longer you use it, and it earns that intelligence from your vault, not from assumptions about what your notes mean.
 
-This document explains every surface the intelligence system touches: what it does, what it says, and what happens when you act on it.
+This document explains every surface the intelligence system touches: what it does, what it says, and what happens when you act on it. It is important to note that our "intelligence system" is still being worked on and developed. It has not yet reached its true potential.
 
 ---
 
