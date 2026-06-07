@@ -26,12 +26,18 @@
 
 const yaml = require('js-yaml');
 
-// targetType → { sourceId, fields: { fieldName → { type, required, target? } } }
+/**
+ * @typedef {{ type: string, required: boolean, target?: string, options?: string[] }} SchemaField
+ * @typedef {{ sourceId: string, fields: Record<string, SchemaField> }} SchemaEntry
+ */
+
+// targetType → SchemaEntry
 let schemaMap = new Map();
 
 // targetType → [sourceId, ...] — only populated when size > 1
 let duplicateMap = new Map();
 
+/** @returns {void} */
 function clearSchemaRegistry() {
     schemaMap.clear();
     duplicateMap.clear();
@@ -49,6 +55,11 @@ function clearSchemaRegistry() {
 // Silently skips nodes that are missing `target:` — they are
 // malformed schema nodes. Diagnostics will surface these.
 // ─────────────────────────────────────────────────────────────────
+/**
+ * @param {string} sourceId
+ * @param {string} frontmatterText Raw YAML text between `---` delimiters.
+ * @returns {void}
+ */
 function registerSchemaNode(sourceId, frontmatterText) {
     if (!sourceId || !frontmatterText) return;
 
@@ -166,30 +177,35 @@ function normalizeFields(rawFields, sourceId) {
 // Public read API
 // ─────────────────────────────────────────────────────────────────
 
-// Does a canonical schema exist for this target type?
+/**
+ * @param {string} targetType
+ * @returns {boolean}
+ */
 function hasSchema(targetType) {
     if (!targetType) return false;
     return schemaMap.has(targetType.trim().toLowerCase());
 }
 
-// Get the canonical schema for a target type, or null
-// Returns: { sourceId, fields } | null
+/**
+ * @param {string} targetType
+ * @returns {SchemaEntry | null}
+ */
 function getSchema(targetType) {
     if (!targetType) return null;
     return schemaMap.get(targetType.trim().toLowerCase()) ?? null;
 }
 
-// All target types that have a schema
+/** @returns {Set<string>} */
 function getSchemaTargets() {
     return new Set(schemaMap.keys());
 }
 
-// Duplicate schemas: targetType → [sourceId, ...]
-// Only populated for targets with 2+ schemas
+/** @returns {Map<string, string[]>} targetType → [sourceId, ...] (only populated for types with 2+ schemas) */
 function getDuplicateSchemas() {
     return duplicateMap;
 }
 
+/** @returns {{ schemas: number, duplicates: number, targets: string[] }} */
 function getSchemaStats() {
     return {
         schemas:    schemaMap.size,

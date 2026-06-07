@@ -1,21 +1,22 @@
 const vscode = require('vscode');
 const fs = require('fs');
-const { getIndex } = require('../core/indexService');
+const { getIndex, getPathIndex } = require('../core/indexService');
 const { buildIndex, updateSingleFile, invalidateFileCache } = require('../core/index');
 const { parseAllViewQueries, parseViewQuery, runQuery } = require('../engine/query');
 const { writeFieldValue } = require('../core/writeField');
 const { extractCanonicalIdFromFrontmatter } = require('../core/id');
 const { buildViewExportModel, exportViewPdf } = require('../export/pdf');
 const { createViewPanelController } = require('./view/viewPanelController');
+const { appendMutationEvents } = require('../runtime/mutationEventLog');
+const { renderPanel, buildWarningBanner } = require('./view/viewPanelHtml');
 const {
-    renderPanel,
     normaliseTableDisplayValue,
     buildTableEmptyStateTitle,
     buildEmptyStateHint,
-    classifyQueryWarnings,
-    buildWarningBanner
-} = require('./view/viewPanelHtml');
+    classifyQueryWarnings
+} = require('./view/viewTableLogic');
 
+/** @param {string} filePath @returns {void} */
 function syncIndexAfterWrite(filePath) {
     if (!filePath) return;
     invalidateFileCache(filePath);
@@ -25,6 +26,7 @@ function syncIndexAfterWrite(filePath) {
     }
 }
 
+/** @param {string} filePath @param {number|string} lineNumber @param {boolean} newDone @returns {Promise<boolean>} */
 async function toggleTaskCheckbox(filePath, lineNumber, newDone) {
     if (!filePath || !lineNumber) return false;
     let content;
@@ -56,11 +58,26 @@ async function toggleTaskCheckbox(filePath, lineNumber, newDone) {
             const applied = await vscode.workspace.applyEdit(edit);
             if (!applied) return false;
             if (openDoc.isDirty) await openDoc.save();
+            appendTaskStatusMutationEvent(filePath, lineNumber, newDone);
             return true;
         }
         fs.writeFileSync(filePath, newContent, 'utf8');
+        appendTaskStatusMutationEvent(filePath, lineNumber, newDone);
         return true;
     } catch (e) { return false; }
+}
+
+function appendTaskStatusMutationEvent(filePath, lineNumber, newDone) {
+    if (!filePath || !lineNumber) return;
+    const noteId = getPathIndex().get(filePath);
+    if (!noteId) return;
+    appendMutationEvents([{
+        type: 'task_status_changed',
+        noteId,
+        field: `task:${lineNumber}`,
+        oldValue: newDone ? 'open' : 'done',
+        newValue: newDone ? 'done' : 'open'
+    }]);
 }
 
 function ensureIndexBuilt() {
@@ -148,6 +165,7 @@ async function exportQueryResult(format, queryList, queryIndex, visibleColumns, 
     vscode.window.showInformationMessage(`Yamlink: Exported ${rows.length} row${rows.length === 1 ? '' : 's'} to ${format.toUpperCase()}`);
 }
 
+/** @param {string[]} columns @param {Array<Record<string,any>>} rows @returns {string} */
 function toCsv(columns, rows) {
     const esc = (v) => {
         const s = String(v ?? '');
@@ -158,6 +176,7 @@ function toCsv(columns, rows) {
     return header + '\n' + body;
 }
 
+/** @param {string} text @returns {string|null} */
 function extractIdFromText(text) {
     return extractCanonicalIdFromFrontmatter(text);
 }
@@ -186,6 +205,7 @@ module.exports = {
     parseAllViewQueries,
     parseViewQuery,
     writeFieldValue,
+    toggleTaskCheckbox,
     normaliseTableDisplayValue,
     extractIdFromText,
     buildTableEmptyStateTitle,

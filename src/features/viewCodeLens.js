@@ -3,6 +3,7 @@
 
 const vscode = require('vscode');
 
+/** @param {import('vscode').ExtensionContext} context @param {(() => string|null)|null} getOpenViewDocumentPath @returns {import('vscode').CodeLensProvider & { refresh: () => void }} */
 function registerViewCodeLens(context, getOpenViewDocumentPath) {
     const emitter = new vscode.EventEmitter();
 

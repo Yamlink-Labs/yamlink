@@ -10,7 +10,11 @@ const {
     buildFieldAmbiguity,
     buildNoteRoleTypePriors,
     inferLikelyTypesForNote,
-    getCachedPriors
+    getCachedPriors,
+    getVaultMaturity,
+    buildValuePatterns,
+    buildWorkflowFields,
+    buildTypeRoleMap
 } = require('../src/intelligence/vaultPriors');
 
 // ─── buildFieldTargetTypes ────────────────────────────────────────────────
@@ -31,7 +35,9 @@ describe('vaultPriors — buildFieldTargetTypes', () => {
         assert.equal(tm.get('character'), 3);
     });
 
-    it('ignores fields with fewer than 3 link observations', () => {
+    it('includes fields with fewer than 3 observations — cold-start vault', () => {
+        // One typed link is real evidence. The classifier applies a confidence penalty
+        // for sparse samples; vaultPriors must not throw them away.
         const cache = new Map([
             ['note-a', { type: 'dossier', rare: '[[char-a]]' }],
             ['char-a', { type: 'character' }],
@@ -39,7 +45,18 @@ describe('vaultPriors — buildFieldTargetTypes', () => {
             ['char-b', { type: 'character' }],
         ]);
         const result = buildFieldTargetTypes(cache);
-        assert.ok(!result.has('rare'));
+        assert.ok(result.has('rare'));
+        assert.equal(result.get('rare').get('character'), 2);
+    });
+
+    it('includes single-observation fields', () => {
+        const cache = new Map([
+            ['note-a', { type: 'mission', commander: '[[rico]]' }],
+            ['rico', { type: 'character' }],
+        ]);
+        const result = buildFieldTargetTypes(cache);
+        assert.ok(result.has('commander'));
+        assert.equal(result.get('commander').get('character'), 1);
     });
 
     it('skips id and type fields', () => {
@@ -319,5 +336,204 @@ describe('vaultPriors — inferLikelyTypesForNote', () => {
         );
 
         assert.equal(inferred.length, 0);
+    });
+});
+
+// ─── getVaultMaturity ──────────────────────────────────────────────────────
+
+describe('vaultPriors — getVaultMaturity', () => {
+    it('returns 0 for an empty vault', () => {
+        assert.equal(getVaultMaturity(new Map()), 0);
+    });
+
+    it('returns a low score for a brand-new vault with no links', () => {
+        const cache = new Map([
+            ['note-a', { type: 'character', name: 'Alice' }],
+            ['note-b', { type: 'character', name: 'Bob' }],
+        ]);
+        const m = getVaultMaturity(cache);
+        assert.ok(m > 0, 'should be above 0');
+        assert.ok(m < 0.4, 'should be well below mature');
+    });
+
+    it('returns a higher score when notes have wikilinks', () => {
+        const sparse = new Map([
+            ['note-a', { type: 'mission', name: 'Op Rico' }],
+            ['note-b', { type: 'character', name: 'Rico' }],
+        ]);
+        const withLinks = new Map([
+            ['note-a', { type: 'mission', name: 'Op Rico', commander: '[[note-b]]' }],
+            ['note-b', { type: 'character', name: 'Rico' }],
+        ]);
+        assert.ok(getVaultMaturity(withLinks) > getVaultMaturity(sparse));
+    });
+
+    it('returns a value between 0 and 1', () => {
+        const cache = new Map(
+            Array.from({ length: 100 }, (_, i) => [
+                `note-${i}`, { type: 'character', rel: `[[note-${(i + 1) % 100}]]` }
+            ])
+        );
+        const m = getVaultMaturity(cache);
+        assert.ok(m >= 0 && m <= 1);
+    });
+
+    it('getCachedPriors includes vaultMaturity', () => {
+        const cache = new Map([
+            ['note-a', { type: 'mission', commander: '[[rico]]' }],
+            ['rico', { type: 'character' }],
+        ]);
+        const priors = getCachedPriors(cache, 999);
+        assert.ok(typeof priors.vaultMaturity === 'number');
+        assert.ok(priors.vaultMaturity >= 0 && priors.vaultMaturity <= 1);
+    });
+});
+
+// ─── buildValuePatterns ───────────────────────────────────────────────────
+
+describe('vaultPriors — buildValuePatterns', () => {
+    it('detects date-valued fields', () => {
+        const cache = new Map([
+            ['n1', { type: 'event', date: '2026-01-01' }],
+            ['n2', { type: 'event', date: '2026-02-15' }],
+        ]);
+        const vp = buildValuePatterns(cache);
+        assert.ok(vp.get('date').dateCount >= 2);
+        assert.equal(vp.get('date').wikilinkCount, 0);
+    });
+
+    it('detects wikilink-dominated fields', () => {
+        const cache = new Map([
+            ['n1', { type: 'mission', commander: '[[rico]]' }],
+            ['n2', { type: 'mission', commander: '[[carmen]]' }],
+        ]);
+        const vp = buildValuePatterns(cache);
+        assert.ok(vp.get('commander').wikilinkCount >= 2);
+    });
+
+    it('detects short scalar values and tracks distinct set', () => {
+        const cache = new Map([
+            ['n1', { type: 'deal', status: 'active' }],
+            ['n2', { type: 'deal', status: 'closed' }],
+            ['n3', { type: 'deal', status: 'active' }],
+        ]);
+        const vp = buildValuePatterns(cache);
+        const p = vp.get('status');
+        assert.ok(p.shortScalarCount >= 3);
+        assert.ok(p.distinctScalars.has('active'));
+        assert.ok(p.distinctScalars.has('closed'));
+    });
+});
+
+// ─── buildWorkflowFields ─────────────────────────────────────────────────
+
+describe('vaultPriors — buildWorkflowFields', () => {
+    it('detects a status field with finite scalar values', () => {
+        const cache = new Map([
+            ['n1', { type: 'deal', status: 'active' }],
+            ['n2', { type: 'deal', status: 'closed' }],
+            ['n3', { type: 'deal', status: 'pending' }],
+            ['n4', { type: 'deal', status: 'active' }],
+        ]);
+        const vp = buildValuePatterns(cache);
+        const wf = buildWorkflowFields(vp);
+        assert.ok(wf.has('status'));
+        assert.ok(wf.get('status').values.includes('active'));
+    });
+
+    it('excludes wikilink-dominated fields', () => {
+        const cache = new Map([
+            ['n1', { commander: '[[rico]]' }],
+            ['n2', { commander: '[[carmen]]' }],
+            ['n3', { commander: '[[zim]]' }],
+        ]);
+        const vp = buildValuePatterns(cache);
+        const wf = buildWorkflowFields(vp);
+        assert.ok(!wf.has('commander'));
+    });
+
+    it('excludes date-dominated fields', () => {
+        const cache = new Map([
+            ['n1', { due: '2026-01-01' }],
+            ['n2', { due: '2026-02-01' }],
+        ]);
+        const vp = buildValuePatterns(cache);
+        const wf = buildWorkflowFields(vp);
+        assert.ok(!wf.has('due'));
+    });
+});
+
+// ─── buildTypeRoleMap ─────────────────────────────────────────────────────
+
+describe('vaultPriors — buildTypeRoleMap', () => {
+    function makeVault(notes) {
+        return new Map(notes.map(([id, fields]) => [id, fields]));
+    }
+
+    it('infers container role for heavily-referenced type', () => {
+        // 2 company notes, 8 contacts all link to them → high inbound
+        const cache = makeVault([
+            ['co1', { type: 'company', name: 'Acme' }],
+            ['co2', { type: 'company', name: 'Initech' }],
+            ...Array.from({ length: 8 }, (_, i) => [`c${i}`, { type: 'contact', account: `[[co${i % 2 === 0 ? 1 : 2}]]` }]),
+        ]);
+        const ftt = buildFieldTargetTypes(cache);
+        const tfb = buildTypeFieldBundles(cache);
+        const fa = buildFieldAmbiguity(cache);
+        const vp = buildValuePatterns(cache);
+        const map = buildTypeRoleMap(tfb, vp, ftt, fa, cache);
+        const companyRole = map.get('company');
+        assert.ok(companyRole, 'company should have a role');
+        assert.equal(companyRole.role, 'container');
+    });
+
+    it('infers person role for notes with relations and low inbound', () => {
+        const cache = makeVault([
+            ['rico', { type: 'trooper', unit: '[[roughnecks]]', commander: '[[rasczak]]' }],
+            ['carmen', { type: 'trooper', unit: '[[roughnecks]]', commander: '[[rasczak]]' }],
+            ['dizzy', { type: 'trooper', unit: '[[roughnecks]]', commander: '[[rasczak]]' }],
+            ['roughnecks', { type: 'unit', name: 'Roughnecks' }],
+            ['rasczak', { type: 'officer', name: 'Rasczak' }],
+        ]);
+        const ftt = buildFieldTargetTypes(cache);
+        const tfb = buildTypeFieldBundles(cache);
+        const fa = buildFieldAmbiguity(cache);
+        const vp = buildValuePatterns(cache);
+        const map = buildTypeRoleMap(tfb, vp, ftt, fa, cache);
+        const trooperRole = map.get('trooper');
+        assert.ok(trooperRole, 'trooper should have a role');
+        assert.equal(trooperRole.role, 'person');
+    });
+
+    it('infers task role for types with workflow + date + relation', () => {
+        const cache = makeVault([
+            ['t1', { type: 'task', status: 'open', due: '2026-06-01', assignee: '[[rico]]' }],
+            ['t2', { type: 'task', status: 'done', due: '2026-05-01', assignee: '[[carmen]]' }],
+            ['t3', { type: 'task', status: 'open', due: '2026-07-01', assignee: '[[dizzy]]' }],
+            ['rico', { type: 'trooper' }],
+            ['carmen', { type: 'trooper' }],
+            ['dizzy', { type: 'trooper' }],
+        ]);
+        const ftt = buildFieldTargetTypes(cache);
+        const tfb = buildTypeFieldBundles(cache);
+        const fa = buildFieldAmbiguity(cache);
+        const vp = buildValuePatterns(cache);
+        const map = buildTypeRoleMap(tfb, vp, ftt, fa, cache);
+        const taskRole = map.get('task');
+        assert.ok(taskRole, 'task should have a role');
+        assert.equal(taskRole.role, 'task');
+    });
+
+    it('getCachedPriors includes typeRoleMap', () => {
+        const cache = makeVault([
+            ['c1', { type: 'contact', company: '[[a1]]' }],
+            ['c2', { type: 'contact', company: '[[a2]]' }],
+            ['a1', { type: 'account', name: 'Acme' }],
+            ['a2', { type: 'account', name: 'Beta' }],
+        ]);
+        const priors = getCachedPriors(cache, 888);
+        assert.ok(priors.typeRoleMap instanceof Map);
+        assert.ok(priors.workflowFields instanceof Map);
+        assert.ok(priors.valuePatterns instanceof Map);
     });
 });

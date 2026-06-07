@@ -18,14 +18,11 @@ const MAX_ENTRIES = 20;
 const _cache      = new Map();
 
 /**
- * getCachedContext(nodeId, builder)
- *
  * Returns the cached value for (nodeId, currentVaultGeneration).
- * If no entry exists, calls builder() — a zero-argument function
- * that returns the value to cache — stores the result, then returns it.
- *
- * builder() is only called on a cache miss, so callers pay the full
- * computation cost at most once per (node, generation) pair.
+ * Calls builder() on a miss; caches and returns the result.
+ * @param {string} nodeId
+ * @param {() => *} builder Zero-argument builder called on cache miss.
+ * @returns {*}
  */
 function getCachedContext(nodeId, builder) {
     const gen = getVaultGeneration();
@@ -48,7 +45,7 @@ function getCachedContext(nodeId, builder) {
     return value;
 }
 
-/** Clear the cache entirely. Useful in tests. */
+/** @returns {void} */
 function clearActivationCache() {
     _cache.clear();
 }

@@ -1,3 +1,32 @@
+// ---------------------------------------------------------------------------
+// Types
+// ---------------------------------------------------------------------------
+
+/**
+ * @typedef {{
+ *   samples: number,
+ *   wikilinkValues: number,
+ *   dateValues: number,
+ *   statusValues: number,
+ *   exampleValues: string[]
+ * }} FieldEvidence
+ */
+
+/**
+ * @typedef {{
+ *   fieldName: string,
+ *   relational: boolean,
+ *   relationConfidence: number,
+ *   targetType: string|null,
+ *   semanticRole: string|null,
+ *   semanticConfidence: number,
+ *   evidence: FieldEvidence,
+ *   reasons: string[]
+ * }} FieldRoleResult
+ */
+
+// ---------------------------------------------------------------------------
+
 const DEFAULT_INFERENCE_CONFIDENCE = 0.6;
 const DEFAULT_STATUS_LIKE_VALUES = new Set([
     'open', 'closed', 'active', 'inactive', 'todo', 'done', 'pending', 'blocked',
@@ -13,6 +42,10 @@ const DEFAULT_SEMANTIC_ROLE_PRIORS = {
     topic: ['concept', 'concepts', 'topic', 'topics', 'product', 'products', 'component', 'components', 'feature', 'features', 'tag', 'tags', 'chapter', 'chapters', 'scene', 'scenes']
 };
 
+/**
+ * @param {string} fieldName
+ * @returns {string}
+ */
 function normalizeFieldName(fieldName) {
     return String(fieldName || '')
         .trim()
@@ -23,6 +56,10 @@ function normalizeFieldName(fieldName) {
         .replace(/^-|-$/g, '');
 }
 
+/**
+ * @param {string} fieldName
+ * @returns {string[]}
+ */
 function getFieldNameVariants(fieldName) {
     const normalized = normalizeFieldName(fieldName);
     const variants = new Set([normalized]);
@@ -36,6 +73,10 @@ function getFieldNameVariants(fieldName) {
     return [...variants].filter(Boolean);
 }
 
+/**
+ * @param {any} value
+ * @returns {string|null}
+ */
 function normalizeLinkTarget(value) {
     const inner = String(value || '').trim();
     const match = inner.match(/^\[\[([^\]]+)\]\]$/);
@@ -47,6 +88,10 @@ function normalizeLinkTarget(value) {
     return beforeBlock ? beforeBlock.toLowerCase() : null;
 }
 
+/**
+ * @param {any} value
+ * @returns {string|null}
+ */
 function normalizeBareRelationToken(value) {
     const raw = String(value || '').trim();
     if (!raw) return null;
@@ -56,6 +101,11 @@ function normalizeBareRelationToken(value) {
     return beforeBlock ? beforeBlock.toLowerCase() : null;
 }
 
+/**
+ * @param {any} value
+ * @param {Iterable<string>|string[]} [knownIds]
+ * @returns {string[]}
+ */
 function extractBareRelationTargets(value, knownIds = []) {
     const knownIdSet = knownIds instanceof Set ? knownIds : new Set(Array.from(knownIds || []).map((id) => String(id || '').trim().toLowerCase()).filter(Boolean));
     if (!knownIdSet.size) return [];
@@ -73,6 +123,11 @@ function extractBareRelationTargets(value, knownIds = []) {
     return [...targets];
 }
 
+/**
+ * @param {any} value
+ * @param {{ knownIds?: Iterable<string>|string[] }} [options]
+ * @returns {string[]}
+ */
 function extractLinkTargets(value, options = {}) {
     const targets = new Set();
     const matches = String(value || '').matchAll(/\[\[([^\]]+)\]\]/g);
@@ -86,6 +141,11 @@ function extractLinkTargets(value, options = {}) {
     return [...targets];
 }
 
+/**
+ * @param {string} fieldName
+ * @param {string[]|Iterable<string>} [knownTypes]
+ * @returns {string|null}
+ */
 function inferTargetTypeFromFieldName(fieldName, knownTypes = []) {
     const types = Array.from(knownTypes).map(type => normalizeFieldName(type)).filter(Boolean);
     if (!types.length) return null;
@@ -95,6 +155,12 @@ function inferTargetTypeFromFieldName(fieldName, knownTypes = []) {
     return null;
 }
 
+/**
+ * @param {string} fieldName
+ * @param {Array<{type?: string, fields?: Record<string, any>}>} [observedFields]
+ * @param {{ documentType?: string, idToType?: Map<string, string>, dateParser?: Function }} [options]
+ * @returns {{ targetType: string, confidence: number, ratio: number, total: number }|null}
+ */
 function inferTargetTypeFromObservedValues(fieldName, observedFields = [], options = {}) {
     const normalizedField = normalizeFieldName(fieldName);
     const documentType = normalizeFieldName(options.documentType || '');
@@ -143,6 +209,12 @@ function inferTargetTypeFromObservedValues(fieldName, observedFields = [], optio
     };
 }
 
+/**
+ * @param {string} fieldName
+ * @param {Array<{type?: string, fields?: Record<string, any>}>} [observedFields]
+ * @param {{ documentType?: string, dateParser?: Function, statusLikeValues?: Set<string>, idToType?: Map<string, string> }} [options]
+ * @returns {FieldEvidence}
+ */
 function collectFieldEvidence(fieldName, observedFields = [], options = {}) {
     const documentType = normalizeFieldName(options.documentType || '');
     const dateParser = options.dateParser || (() => null);
@@ -176,6 +248,11 @@ function collectFieldEvidence(fieldName, observedFields = [], options = {}) {
     return evidence;
 }
 
+/**
+ * @param {string} fieldName
+ * @param {Record<string, string[]>} [semanticRolePriors]
+ * @returns {{ role: string, confidence: number, reason: string }|null}
+ */
 function inferSemanticRoleFromName(fieldName, semanticRolePriors = DEFAULT_SEMANTIC_ROLE_PRIORS) {
     const variants = getFieldNameVariants(fieldName);
     for (const [role, names] of Object.entries(semanticRolePriors)) {
@@ -186,6 +263,12 @@ function inferSemanticRoleFromName(fieldName, semanticRolePriors = DEFAULT_SEMAN
     return null;
 }
 
+/**
+ * @param {string} fieldName
+ * @param {Array<{field?: string, targetType?: string, sourceType?: string}>} [graphObservations]
+ * @param {{ inferenceConfidence?: number, documentType?: string }} [options]
+ * @returns {string|null}
+ */
 function inferTargetTypeFromGraph(fieldName, graphObservations = [], options = {}) {
     const inferenceConfidence = options.inferenceConfidence ?? DEFAULT_INFERENCE_CONFIDENCE;
     const documentType = normalizeFieldName(options.documentType || '');
@@ -215,6 +298,22 @@ function inferTargetTypeFromGraph(fieldName, graphObservations = [], options = {
     return (topCount / total) >= inferenceConfidence ? topType : null;
 }
 
+/**
+ * @param {string} fieldName
+ * @param {{
+ *   documentType?: string,
+ *   schemaField?: Record<string, any>|null,
+ *   observedFields?: Array<{type?: string, fields?: Record<string, any>}>,
+ *   graphObservations?: Array<{field?: string, targetType?: string, sourceType?: string}>,
+ *   knownTypes?: string[]|Set<string>,
+ *   dateParser?: Function,
+ *   statusLikeValues?: Set<string>,
+ *   semanticRolePriors?: Record<string, string[]>,
+ *   idToType?: Map<string, string>,
+ *   inferenceConfidence?: number
+ * }} [options]
+ * @returns {FieldRoleResult}
+ */
 function inferFieldRole(fieldName, options = {}) {
     const normalizedField = normalizeFieldName(fieldName);
     const reasons = [];

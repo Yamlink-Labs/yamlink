@@ -3,6 +3,11 @@
 const { getIndex, getFieldsCache } = require('../../core/indexService');
 const { getEdges, getBacklinks } = require('../../core/graph');
 
+/**
+ * @param {string[]} nodeIds
+ * @param {string|null} [centerNodeId]
+ * @returns {object}
+ */
 function buildGraphModel(nodeIds, centerNodeId = null) {
     const ids = Array.from(new Set((Array.isArray(nodeIds) ? nodeIds : []).filter(Boolean)));
     const idIndex = getIndex();

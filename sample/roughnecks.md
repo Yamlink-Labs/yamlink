@@ -6,22 +6,28 @@ branch: Mobile Infantry
 commanding-officer: [[johnny-rico]]
 homebase: Tango Urilla
 founded: 2297-04-01
+status: active
 created: 2297-04-01
 ---
 
-The Roughnecks started as Rasczak's unit — [[lt-rasczak]] handpicked the roster from Klendathu survivors. After Planet P, Rico took command and the unit kept the name.
+The Roughnecks started as Rasczak's unit — [[lt-rasczak]] handpicked the roster from Klendathu survivors. After [[mission-planet-p]], Rico took command and the unit kept the name.
 
-One of the few Mobile Infantry units with a confirmed Brain Bug capture. Fought at Klendathu, Planet P, and the final assault on Tango Urilla.
+One of the few Mobile Infantry units with a confirmed Brain Bug capture. Fought at [[mission-klendathu]], [[mission-planet-p]], and the final assault on [[mission-tango-urilla]].
 
 By the end of the war, the original roster was almost entirely gone. The Roughnecks that took Tango Urilla were a different squad in the same uniform.
 
 ## Views
 
 !view character | Members
-select rank, homeworld, species
+select rank, homeworld, species, status
 where unit = [[roughnecks]]
 sort rank
 
 !view mission | Missions
 select date, outcome, casualties
+sort date desc
+
+!view incoming mission | Missions commanded by Rico
+via commander
+select date, outcome
 sort date desc

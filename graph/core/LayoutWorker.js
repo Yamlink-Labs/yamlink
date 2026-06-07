@@ -74,6 +74,21 @@ export class LayoutWorker {
     return this;
   }
 
+  dragStart(nodeId) {
+    this._worker.postMessage({ type: 'DRAG_START', nodeId });
+    return this;
+  }
+
+  drag(nodeId, x, y) {
+    this._worker.postMessage({ type: 'PIN', nodeId, x, y });
+    return this;
+  }
+
+  dragEnd(nodeId) {
+    this._worker.postMessage({ type: 'UNPIN', nodeId });
+    return this;
+  }
+
   /**
    * Incremental update — add/remove nodes/edges without full restart.
    * @param {{ nodes?: GraphNode[], edges?: GraphEdge[] }} added

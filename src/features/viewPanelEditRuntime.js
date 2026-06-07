@@ -8,7 +8,7 @@
             getVisibleHeaders,
             getVisibleColumnIndex,
             getEditableVisibleCells,
-            applyPanelView,
+            requestViewUpdate,
             saveState,
             setColumnFilters,
             getColumnFilters,
@@ -76,7 +76,7 @@
             var filters = getColumnFilters(panel);
             filters[selection.field] = { mode: mode, value: selection.value };
             setColumnFilters(panel, filters);
-            applyPanelView(panel);
+            requestViewUpdate(panel);
             saveState();
             setStatus((mode === 'exclude' ? 'Excluding' : 'Filtering by') + ' ' + selection.field + '.', 'success');
         }
@@ -84,7 +84,7 @@
         function clearQuickFilters(panel) {
             if (!panel) return;
             setColumnFilters(panel, {});
-            applyPanelView(panel);
+            requestViewUpdate(panel);
             saveState();
             setStatus('Cleared quick filters.', 'success');
         }

@@ -49,6 +49,7 @@ const FRONTMATTER_PRIORITY_FIELDS = [
     'summary'
 ];
 
+/** @param {import('vscode').ExtensionContext} context @param {() => Map<string,string>} getIndex @returns {void} */
 function registerHover(context, getIndex) {
     context.subscriptions.push(
         vscode.languages.registerHoverProvider('markdown', {
@@ -98,6 +99,7 @@ function registerHover(context, getIndex) {
     );
 }
 
+/** @param {string} lineText @param {number} character @returns {boolean} */
 function isPositionInsideWikilink(lineText, character) {
     const regex = /\[\[([^\]]+)\]\]/g;
     let match;
@@ -109,6 +111,7 @@ function isPositionInsideWikilink(lineText, character) {
     return false;
 }
 
+/** @param {string} id @param {string} content @param {string} [filePath] @param {Map<string,string>|null} [idIndex] @returns {import('vscode').MarkdownString} */
 function buildHoverContent(id, content, filePath = '', idIndex = null) {
     const md = new vscode.MarkdownString();
     md.isTrusted = false;
@@ -238,6 +241,7 @@ function buildHoverActivationContext(nodeId, nodeFields, nodeType, fieldsCache) 
     return { observedFields, noteContext, frontmatterOpportunities };
 }
 
+/** @param {string} id @param {string} content @param {Record<string,any>|null} [frontmatter] @returns {string} */
 function buildHoverIntelligenceSummary(id, content, frontmatter) {
     return perfTracker.measureSync('hover.intelligenceSummary', {
         nodeId: id, budgetMs: 5
@@ -277,7 +281,7 @@ function buildHoverContextLine(id, content, frontmatter) {
     const bodyMentions = buildBodyMentionHints(content, frontmatter, fieldsCache, { threshold: 2 });
     if (bodyMentions.length) {
         const top = bodyMentions[0];
-        const target = normalizeDisplayValue(top.alias || top.id || '');
+        const target = normalizeDisplayValue(/** @type {any} */ (top).alias || top.id || '');
         if (target) {
             return `Mentions ${target} in the note body.`;
         }
@@ -336,6 +340,7 @@ function readFile(filePath) {
     }
 }
 
+/** @param {import('vscode').ExtensionContext} context @param {() => Map<string,string>} getIndex @returns {void} */
 function registerQueryPreviewHover(context, getIndex) {
     context.subscriptions.push(
         vscode.languages.registerHoverProvider('markdown', {
@@ -374,7 +379,7 @@ function registerQueryPreviewHover(context, getIndex) {
                     if (suggestion.description) {
                         md.appendMarkdown(`${escapeMarkdown(suggestion.description)}\n\n`);
                     }
-                    const preview = buildQueryPreview(suggestion.queryText, nodeId, getIndex);
+                    const preview = buildQueryPreview(suggestion.queryText, nodeId);
                     if (preview) {
                         md.appendMarkdown(`${preview}\n`);
                     }
@@ -410,6 +415,7 @@ function buildCompoundQueryPreview(queries) {
     return `${lines.join('\n')}\n`;
 }
 
+/** @param {string} queryText @param {string|null} [contextNodeId] @returns {string|null} */
 function buildQueryPreview(queryText, contextNodeId) {
     return perfTracker.measureSync('hover.queryPreview', { budgetMs: 5 }, () => {
         const parsedQueries = parseAllViewQueries(queryText) || [];

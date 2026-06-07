@@ -1,5 +1,11 @@
 const fs   = require('fs');
 const path = require('path');
+
+/**
+ * @typedef {{ timestamp: string, type: string, noteId: string, field: string|null, oldValue: any, newValue: any }} MutationEvent
+ * @typedef {{ changed: boolean, needsFull: boolean, changedId: string|null, mutationEvents: MutationEvent[] }} UpdateResult
+ * @typedef {{ removed: boolean, mutationEvents: MutationEvent[] }} RemoveResult
+ */
 const yaml = require('js-yaml');
 const { clearGraph, registerEdges, getGraphStats, removeEdgesForSource } = require('./graph');
 const { getWorkspaceRoots, getWorkspaceRootForFile } = require('./workspace');
@@ -59,22 +65,29 @@ function buildMutationEvents(oldFields, newFields, noteId) {
     const fieldNames = new Set([...Object.keys(normalizedOld), ...Object.keys(normalizedNew)]);
     for (const fieldName of fieldNames) {
         const fn = String(fieldName || '').trim().toLowerCase();
-        if (!fn || fn === 'id' || fn === 'type') continue;
+        if (!fn || fn === 'id' || fn === 'type' || fn.startsWith('__')) continue;
         const oldValue = normalizedOld[fieldName];
         const newValue = normalizedNew[fieldName];
-        if (!isNonEmptyFieldValue(oldValue) && isNonEmptyFieldValue(newValue)) {
-            events.push({
-                timestamp,
-                type: 'field_added',
-                noteId,
-                field: fieldName,
-                oldValue: oldValue ?? null,
-                newValue
-            });
-        }
+        const hadValue = isNonEmptyFieldValue(oldValue);
+        const hasValue = isNonEmptyFieldValue(newValue);
         const oldTargets = extractRelationTargets(oldValue);
         const newTargets = extractRelationTargets(newValue);
-        if (oldTargets.join('|') !== newTargets.join('|') && (oldTargets.length > 0 || newTargets.length > 0)) {
+        const hasRelations = oldTargets.length > 0 || newTargets.length > 0;
+        const targetsChanged = oldTargets.join('|') !== newTargets.join('|') && hasRelations;
+
+        if (!hadValue && hasValue) {
+            events.push({ timestamp, type: 'field_added', noteId, field: fieldName, oldValue: oldValue ?? null, newValue });
+        } else if (hadValue && !hasValue) {
+            events.push({ timestamp, type: 'field_removed', noteId, field: fieldName, oldValue, newValue: null });
+        } else if (hadValue && hasValue && !hasRelations) {
+            const oldStr = String(oldValue ?? '').trim();
+            const newStr = String(newValue ?? '').trim();
+            if (oldStr !== newStr) {
+                events.push({ timestamp, type: 'field_changed', noteId, field: fieldName, oldValue, newValue });
+            }
+        }
+
+        if (targetsChanged) {
             events.push({
                 timestamp,
                 type: 'relation_changed',
@@ -96,6 +109,7 @@ function extractAliasesFromFields(fields) {
     return raw.split(/,\s*/).map(a => canonicalizeId(String(a || '').trim())).filter(Boolean);
 }
 
+/** @param {ReadonlyArray<import('./workspace').WorkspaceFolderLike>|null|undefined} workspaceFolders @returns {void} */
 function buildIndex(workspaceFolders) {
     vaultGeneration++;
     idIndex.clear();
@@ -234,6 +248,7 @@ function extractId(content) {
     return extractCanonicalIdFromFrontmatter(content);
 }
 
+/** @param {string} filePath @returns {string|null} */
 function extractIdFromFrontmatter(filePath) {
     let content;
     try { content = fs.readFileSync(filePath, 'utf8'); } catch (e) { return null; }
@@ -241,6 +256,7 @@ function extractIdFromFrontmatter(filePath) {
     return extractId(content);
 }
 
+/** @param {string} content @returns {import('./graph').OutboundEdge[]} */
 function extractEdgesFromFrontmatter(content) {
     const edges = [];
     if (!/^\s*---/.test(content)) return edges;
@@ -291,6 +307,7 @@ function extractEdgesFromFrontmatter(content) {
     return edges;
 }
 
+/** @param {string} content @returns {import('./graph').OutboundEdge[]} */
 function extractBodyLinks(content) {
     const edges = [];
 
@@ -328,6 +345,7 @@ function extractBodyLinks(content) {
 //   - null/undefined values become empty string
 //   - numbers and booleans converted to string
 // ─────────────────────────────────────────────────────────────────
+/** @param {string} content @returns {Record<string,any>|null} */
 function parseFrontmatter(content) {
     if (content.charCodeAt(0) === 0xFEFF) content = content.slice(1); // strip BOM
 
@@ -428,6 +446,7 @@ function parseFrontmatterCached(content) {
 //   changed   — false: nothing changed, callers can skip UI refresh
 //   needsFull — true: caller must run buildIndex() (ID change, schema)
 // ─────────────────────────────────────────────────────────────────
+/** @param {string} filePath @param {{ force?: boolean, workspaceFolders?: ReadonlyArray<import('./workspace').WorkspaceFolderLike> }} [options] @returns {UpdateResult} */
 function updateSingleFile(filePath, options = {}) {
     const NO_CHANGE   = { changed: false, needsFull: false, changedId: null, mutationEvents: [] };
     const NEEDS_FULL  = { changed: true,  needsFull: true,  changedId: null, mutationEvents: [] };
@@ -521,9 +540,10 @@ function updateSingleFile(filePath, options = {}) {
 // indexes without a full rebuild. Returns true if the file was
 // known to the index, false if it was never indexed (no-op).
 // ─────────────────────────────────────────────────────────────────
+/** @param {string} filePath @returns {RemoveResult} */
 function removeFileFromIndex(filePath) {
     const id = pathIndex.get(filePath);
-    if (!id) return false;
+    if (!id) return { removed: false, mutationEvents: [] };
 
     idIndex.delete(id);
     pathIndex.delete(filePath);
@@ -539,15 +559,25 @@ function removeFileFromIndex(filePath) {
     fieldsCache.delete(id);
 
     vaultGeneration++;
-    return true;
+    return {
+        removed: true,
+        mutationEvents: [{ timestamp: new Date().toISOString(), type: 'note_deleted', noteId: id, field: null, oldValue: null, newValue: null }]
+    };
 }
 
+/** @returns {Map<string,string>} */
 function getIndex()           { return idIndex; }
+/** @returns {Map<string,string>} */
 function getPathIndex()       { return pathIndex; }
+/** @returns {Map<string,string[]>} */
 function getDuplicateIds()    { return duplicateIds; }
+/** @returns {Map<string,Record<string,any>>} */
 function getFieldsCache()     { return fieldsCache; }
+/** @returns {Map<string,string>} */
 function getAliasIndex()      { return aliasIndex; }
+/** @returns {number} */
 function getVaultGeneration() { return vaultGeneration; }
+/** @param {string|null} [filePath] @returns {void} */
 function invalidateFileCache(filePath) {
     if (!filePath) return;
     mtimeCache.delete(filePath);

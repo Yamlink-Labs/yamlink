@@ -3,6 +3,11 @@
 const vscode = require('vscode');
 const { isOrphan } = require('../core/graph');
 
+/**
+ * @param {import('vscode').ExtensionContext} context
+ * @param {{ getIndex: () => Map<string,object>, getPathIndex: () => Map<string,string>, getBrokenCount: () => number, computeSuggestionsForNode: (id: string, text: string) => object[] }} services
+ * @returns {{ updateStatusBar: () => void, refreshSuggestionBar: () => void, resetSuggestionCache: () => void }}
+ */
 function createStatusRuntime(context, services) {
     const {
         getIndex,
@@ -15,6 +20,14 @@ function createStatusRuntime(context, services) {
     vaultBar.name = 'Yamlink Vault';
     vaultBar.command = 'yamlink.openHealthPanel';
     context.subscriptions.push(vaultBar);
+
+    const homeBar = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 99);
+    homeBar.name = 'Yamlink Home';
+    homeBar.command = 'yamlink.openHome';
+    homeBar.text = '$(home)';
+    homeBar.color = '#4fc4a0';
+    homeBar.tooltip = 'Yamlink — Open Home';
+    context.subscriptions.push(homeBar);
 
     const actionBar = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 98);
     actionBar.name = 'Yamlink Action';
@@ -65,17 +78,18 @@ function createStatusRuntime(context, services) {
         const editor = vscode.window.activeTextEditor;
 
         if (broken > 0) {
-            vaultBar.text = '$(graph) Yamlink  $(warning) ' + nodeCount + ' nodes · ' + broken + ' broken';
+            vaultBar.text = '$(graph) ' + nodeCount + '  $(warning) ' + broken;
             vaultBar.color = palette.rose;
             vaultBar.backgroundColor = undefined;
-            vaultBar.tooltip = 'Yamlink — ' + broken + ' broken link' + (broken !== 1 ? 's' : '') + ' · Click to open Vault Health';
+            vaultBar.tooltip = 'Yamlink — ' + nodeCount + ' notes · ' + broken + ' broken link' + (broken !== 1 ? 's' : '') + ' · Click to open Vault Health';
         } else {
-            vaultBar.text = '$(graph) Yamlink  ' + nodeCount + ' nodes';
+            vaultBar.text = '$(graph) ' + nodeCount;
             vaultBar.color = palette.mint;
             vaultBar.backgroundColor = undefined;
-            vaultBar.tooltip = 'Yamlink — Click to open Vault Health';
+            vaultBar.tooltip = 'Yamlink — ' + nodeCount + ' notes · Click to open Vault Health';
         }
         vaultBar.show();
+        homeBar.show();
 
         const isMarkdown = editor && editor.document.languageId === 'markdown';
         const filePath = isMarkdown ? editor.document.uri.fsPath : null;

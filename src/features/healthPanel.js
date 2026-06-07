@@ -1,11 +1,17 @@
 const vscode = require('vscode');
+const crypto = require('crypto');
 const { getIndex } = require('../core/indexService');
 const { collectHealthStats } = require('./health/healthStats');
 const { buildHealthHtml } = require('./health/healthHtml');
+const { getPrimaryWorkspaceRoot } = require('../core/workspace');
 
 let panel = null;
+let _extensionUri = null;
 
+/** @param {import('vscode').ExtensionContext} context @returns {void} */
 function openHealthPanel(context) {
+    _extensionUri = context.extensionUri;
+
     if (panel) {
         panel.reveal(vscode.ViewColumn.One);
         updatePanel();
@@ -16,7 +22,10 @@ function openHealthPanel(context) {
         'yamlink.healthPanel',
         'Vault Health',
         vscode.ViewColumn.One,
-        { enableScripts: true }
+        {
+            enableScripts: true,
+            localResourceRoots: [vscode.Uri.joinPath(context.extensionUri, 'src', 'features')]
+        }
     );
 
     panel.webview.onDidReceiveMessage(message => {
@@ -32,9 +41,10 @@ function openHealthPanel(context) {
             }
         }
 
+        const { openViewPanel } = require('./viewPanel');
+
         // Open !view panel for a type
         if (message.command === 'openView') {
-            const { openViewPanel } = require('./viewPanel');
             openViewPanel(context, `# ${message.label}\n\n${message.query}\n`);
         }
 
@@ -45,7 +55,6 @@ function openHealthPanel(context) {
 
         // Open !view * for all nodes
         if (message.command === 'openAllNodes') {
-            const { openViewPanel } = require('./viewPanel');
             openViewPanel(context, '# All Nodes\n\n!view *\n');
         }
 
@@ -56,9 +65,16 @@ function openHealthPanel(context) {
     updatePanel();
 }
 
+/** @returns {void} */
 function updatePanel() {
     if (!panel) return;
-    panel.webview.html = buildHealthHtml(collectHealthStats());
+    const workspaceRoot = getPrimaryWorkspaceRoot(vscode.workspace.workspaceFolders);
+    const nonce = crypto.randomBytes(16).toString('hex');
+    const csp = panel.webview.cspSource;
+    const scriptUri = panel.webview.asWebviewUri(
+        vscode.Uri.joinPath(_extensionUri, 'src', 'features', 'health', 'healthScript.js')
+    );
+    panel.webview.html = buildHealthHtml(collectHealthStats({ workspaceRoot }), { scriptUri, nonce, csp });
 }
 
 module.exports = { openHealthPanel, updatePanel };

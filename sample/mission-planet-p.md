@@ -2,16 +2,13 @@
 id: mission-planet-p
 type: mission
 name: Planet P Assault
-date: 2297-10-14
-unit: [[roughnecks]]
+date: "2297-10-14"
+unit: [fleet]
 commander: [[lt-rasczak]]
 outcome: objective-captured
 casualties: very-high
-bugs-encountered:
-  - warrior
-  - tanker
-  - hopper
-created: 2297-10-15
+bugs-encountered: [warrior, tanker, hopper]
+created: "2297-10-15"
 ---
 
 The Roughnecks were deployed to Planet P in response to a distress signal from a Federation research outpost. The signal turned out to be a trap — or at least, the Arachnids had been waiting.

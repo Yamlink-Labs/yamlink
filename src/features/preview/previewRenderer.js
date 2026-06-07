@@ -8,7 +8,9 @@ let _md = null;
 function getMd() {
     if (!_md) {
         const MarkdownIt = require('markdown-it');
+        const { calloutPlugin } = require('../../export/markdownItCallouts');
         _md = new MarkdownIt({ html: true, linkify: false });
+        calloutPlugin(_md);
     }
     return _md;
 }

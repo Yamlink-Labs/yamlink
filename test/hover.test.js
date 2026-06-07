@@ -75,7 +75,8 @@ require.cache.__hover_date__ = {
     exports: {
         normaliseDateInput(value) {
             return String(value || '').trim() || null;
-        }
+        },
+        getTodayIsoLocal() { return '2026-05-30'; }
     }
 };
 

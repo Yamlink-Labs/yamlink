@@ -6,6 +6,8 @@ rank: Lieutenant Commander
 unit: [[federations-fleet]]
 species: human
 created: 2297-01-15
+homeworld:
+gender:
 ---
 
 Had the grades for Fleet. Became a pilot while [[johnny-rico]] went to Mobile Infantry. At first it seemed like she got the better deal.

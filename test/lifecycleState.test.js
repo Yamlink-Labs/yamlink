@@ -128,4 +128,53 @@ describe('lifecycle state', () => {
 
         assert.equal(lifecycle.isStale, false);
     });
+
+    test('lastMutationMs overrides mtime for stale detection when more recent', () => {
+        // Note has no date fields and no idIndex (no mtime lookup).
+        // mtimeMs says 90 days ago → stale. lastMutationMs says yesterday → not stale.
+        const nowMs = Date.UTC(2026, 4, 17);
+        const fieldsCache = new Map([
+            ['active-project', { type: 'project', name: 'Active project', status: 'active' }]
+        ]);
+        const lifecycle = inferLifecycleState('active-project', {
+            type: 'project', name: 'Active project', status: 'active'
+        }, {
+            fieldsCache,
+            typeFieldBundles: buildTypeFieldBundles(fieldsCache),
+            noteRoleTypePriors: buildNoteRoleTypePriors(fieldsCache),
+            noteRole: inferNoteRole({ type: 'project', name: 'Active project', status: 'active' }, {}),
+            inboundCount: 0,
+            avgInbound: 0,
+            nowMs,
+            mtimeMs: nowMs - 90 * 24 * 60 * 60 * 1000,  // 90 days ago → would be stale
+            lastMutationMs: nowMs - 1 * 24 * 60 * 60 * 1000  // yesterday → not stale
+        });
+
+        assert.equal(lifecycle.isStale, false);
+        assert.notEqual(lifecycle.state, 'stale');
+    });
+
+    test('lastMutationMs contributes to stale when it is the most recent signal', () => {
+        const nowMs = Date.UTC(2026, 4, 17);
+        const fieldsCache = new Map([
+            ['old-note', { type: 'project', name: 'Old note', status: 'active' }]
+        ]);
+        const lifecycle = inferLifecycleState('old-note', {
+            type: 'project', name: 'Old note', status: 'active'
+        }, {
+            fieldsCache,
+            typeFieldBundles: buildTypeFieldBundles(fieldsCache),
+            noteRoleTypePriors: buildNoteRoleTypePriors(fieldsCache),
+            noteRole: inferNoteRole({ type: 'project', name: 'Old note', status: 'active' }, {}),
+            inboundCount: 0,
+            avgInbound: 0,
+            nowMs,
+            mtimeMs: null,  // no file mtime
+            lastMutationMs: nowMs - 60 * 24 * 60 * 60 * 1000  // 60 days ago → stale
+        });
+
+        assert.equal(lifecycle.isStale, true);
+        assert.equal(lifecycle.state, 'stale');
+        assert.ok(lifecycle.reasons[0].includes('60 day'));
+    });
 });

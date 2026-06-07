@@ -8,6 +8,14 @@ function touch(key, entry) {
     _cache.set(key, entry);
 }
 
+/**
+ * Executes a query or returns the cached result for the same (query, vault generation, date).
+ * @param {string} queryText
+ * @param {number} vaultGeneration
+ * @param {string} todayIso  ISO date string `YYYY-MM-DD`
+ * @param {() => *} executeFn Called on cache miss.
+ * @returns {*}
+ */
 function getCachedQueryResult(queryText, vaultGeneration, todayIso, executeFn) {
     const key = `${String(queryText || '').trim()}::${vaultGeneration}::${todayIso}`;
     const existing = _cache.get(key);
@@ -27,6 +35,7 @@ function getCachedQueryResult(queryText, vaultGeneration, todayIso, executeFn) {
     return result;
 }
 
+/** @returns {void} */
 function clearQueryCache() {
     _cache.clear();
 }

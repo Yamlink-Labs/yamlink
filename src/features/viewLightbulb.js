@@ -29,9 +29,9 @@ function classifyCurrentField(fieldName, nodeType, fieldsCache, noteFields, body
         ? (schema.fields[fieldName] || schema.fields[fieldName.replace(/-/g, '_')] || null)
         : null;
     const priors = (!fieldsCache || !fieldsCache.size)
-        ? { fieldTargetTypes: null, typeFieldBundles: null, fieldAmbiguity: null, noteRoleTypePriors: null }
+        ? { fieldTargetTypes: null, typeFieldBundles: null, fieldAmbiguity: null, noteRoleTypePriors: null, typeRoleMap: null }
         : getCachedPriors(fieldsCache, getVaultGeneration());
-    const noteRole = inferNoteRole(noteFields || {}, {});
+    const noteRole = inferNoteRole(noteFields || {}, { typeRoleMap: priors.typeRoleMap || null });
     return classifyField(fieldName, {
         schemaFieldDef,
         fieldsCache,
@@ -129,7 +129,7 @@ function buildLikelyShapeActions(document, lineIndex = null, options = {}) {
     if (!frontmatter) return [];
     const fieldsCache = getFieldsCache();
     const priors = getCachedPriors(fieldsCache, getVaultGeneration());
-    const noteRole = inferNoteRole(frontmatter || {}, {});
+    const noteRole = inferNoteRole(frontmatter || {}, { typeRoleMap: priors.typeRoleMap || null });
     const shape = inferLikelyTypesForNote(
         frontmatter,
         fieldsCache,
@@ -209,7 +209,7 @@ function buildLikelyShapeActions(document, lineIndex = null, options = {}) {
                 command: 'yamlink.openHub',
                 title: 'Open Yamlink Note Report'
             };
-            action.diagnostics = topCandidate.reasons;
+            action.diagnostics = /** @type {any} */ (topCandidate.reasons);
             pushIf(action);
         }
     }
@@ -242,9 +242,9 @@ function buildLikelyShapeActions(document, lineIndex = null, options = {}) {
                     command: 'yamlink.openHub',
                     title: 'Open Yamlink Note Report'
                 };
-                bundleAction.diagnostics = [
+                bundleAction.diagnostics = /** @type {any} */ ([
                     `${topCandidate.matchedFields.length}/${currentFields.size || 1} current fields commonly appear on ${inferredType} notes`
-                ];
+                ]);
                 pushIf(bundleAction);
             }
         }
@@ -257,6 +257,12 @@ function buildTypeInferenceActions(document, lineIndex) {
     return buildLikelyShapeActions(document, lineIndex, { minScore: 0.46 });
 }
 
+/**
+ * @param {import('vscode').TextDocument} document
+ * @param {string|null} [activeField]
+ * @param {object|null} [plan]
+ * @returns {import('vscode').CodeAction[]}
+ */
 function buildAdaptiveFrontmatterActions(document, activeField = null, plan = null) {
     const fmRange = getFrontmatterRange(document);
     if (!fmRange) return [];
@@ -632,6 +638,10 @@ function buildAdaptiveFrontmatterActions(document, activeField = null, plan = nu
     return actions.slice(0, 8);
 }
 
+/**
+ * @param {import('vscode').ExtensionContext} context
+ * @returns {void}
+ */
 function registerViewLightbulb(context) {
     const provider = {
         provideCodeActions(document, range) {
@@ -650,7 +660,10 @@ function registerViewLightbulb(context) {
                         const typeActions = buildTypeInferenceActions(document, range.start.line);
                         return typeActions.length ? typeActions : undefined;
                     }
-                    if (parsedLine.value) return undefined;
+                    // [[]] is an empty wikilink placeholder — treat it as empty,
+                    // not as a real value, so relation fields get lightbulb suggestions.
+                    const isEmptyPlaceholder = /^\[\[\s*\]\]$/.test(String(parsedLine.value || '').trim());
+                    if (parsedLine.value && !isEmptyPlaceholder) return undefined;
                     const fmDoc = parseFrontmatter(document.getText());
                     const nodeType = fmDoc ? String(fmDoc.type || '').trim().toLowerCase() : '';
                     const fieldsCache = getFieldsCache();

@@ -7,6 +7,13 @@ const {
     getFieldRoleResult
 } = require('./frontmatterFieldFamilies');
 
+/**
+ * @param {object} [nodeFields]
+ * @param {object} [noteContext]
+ * @param {Map<string,object>} [fieldsCache]
+ * @param {object} [options]
+ * @returns {object[]}
+ */
 function buildLikelyContexts(nodeFields = {}, noteContext = {}, fieldsCache = new Map(), options = {}) {
     const seeds = [];
     const seenSeed = new Set();
@@ -74,6 +81,11 @@ function buildLikelyContexts(nodeFields = {}, noteContext = {}, fieldsCache = ne
         .slice(0, options.contextLimit || 4);
 }
 
+/**
+ * @param {object[]} [likelyContexts]
+ * @param {{ bundleContextLimit?: number }} [options]
+ * @returns {{ contexts: object[], summary: string, description: string, insertText: string } | null}
+ */
 function buildContextBundles(likelyContexts = [], options = {}) {
     const familiesSeen = new Set();
     const picked = [];
@@ -103,6 +115,11 @@ function buildContextBundles(likelyContexts = [], options = {}) {
     };
 }
 
+/**
+ * @param {object[]} [likelyContexts]
+ * @param {{ getDefaultSortField?: (type: string) => string, threadViewLimit?: number }} [options]
+ * @returns {object[]}
+ */
 function buildContextThreadViews(likelyContexts = [], options = {}) {
     const sortResolver = options.getDefaultSortField || (() => '');
     const hints = [];

@@ -15,6 +15,21 @@ const {
     getDominantTargetType,
     getCommonFieldsForType
 } = require('./vaultPriors');
+const { getImplicitBoost } = require('./implicitWeights');
+const { getFieldCalibrationBoost } = require('./outcomeCalibration');
+
+/**
+ * @typedef {{
+ *   category: string,
+ *   confidence: number,
+ *   source: string,
+ *   reasons: string[],
+ *   relationStrength: string|null,
+ *   targetType?: string|null,
+ *   observedLinkRatio?: number,
+ *   vaultMaturity?: number
+ * }} ClassificationResult
+ */
 
 const CATEGORY = Object.freeze({
     IDENTITY:    'IDENTITY',    // id, uid — validation only
@@ -154,7 +169,7 @@ function _sameNoteContextSignal(fieldName, noteFields, options = {}) {
             siblingReasons.push(kn);
         }
     }
-    if (weightedEligible < 2 || weightedLinks < 1) return { confidence: 0, reasons: [] };
+    if (weightedEligible < 1 || weightedLinks < 1) return { confidence: 0, reasons: [] };
     const ratio = weightedLinks / weightedEligible;
     if (ratio < 0.50) return { confidence: 0, reasons: [] };
     return {
@@ -182,7 +197,7 @@ function _observedRelationStats(fieldName, fieldsCache) {
             if (s.startsWith('[[')) links++;
         }
     }
-    if (total < 3) return null; // insufficient data
+    if (total === 0) return null;
     return { ratio: links / total, total, links };
 }
 
@@ -190,20 +205,31 @@ function _observedRelationStats(fieldName, fieldsCache) {
  * Classify a single frontmatter field.
  *
  * @param {string} fieldName
- * @param {object} options
- * @param {object|null} options.schemaFieldDef      - schema field definition {type, required, ...}
- * @param {Map|null}    options.fieldsCache          - live vault fields cache
- * @param {object|null} options.noteFields           - current note's frontmatter (same-note context)
- * @param {string|null} options.noteType             - current note type, if known
- * @param {Map|null}    options.fieldTargetTypes     - vault prior target-type map
- * @param {Map|null}    options.typeFieldBundles     - vault prior field-bundle map
- * @param {Map|null}    options.fieldAmbiguity       - vault prior link/scalar ambiguity map
- * @param {Map|null}    options.bodyWikilinkCounts   - wikilink ID → mention count from note body prose
- * @param {{noteRole:string,confidence:number}|null} options.noteRole - inferred note role
- * @param {Map|null}    options.noteRoleTypePriors   - vault prior role → dominant vault type map
+ * @param {{ schemaFieldDef?: object|null, fieldsCache?: Map<any,any>|null, noteFields?: object|null, noteType?: string|null, fieldTargetTypes?: Map<any,any>|null, typeFieldBundles?: Map<any,any>|null, fieldAmbiguity?: Map<any,any>|null, bodyWikilinkCounts?: Map<any,any>|null, noteRole?: {noteRole:string,confidence:number}|null, noteRoleTypePriors?: Map<any,any>|null }} [options]
  * @returns {{ category: string, confidence: number, source: string, reasons: string[], relationStrength: string|null }}
  */
-function classifyField(fieldName, options = {}) {
+/**
+ * @param {string} fieldName
+ * @param {{
+ *   schemaFieldDef?: Record<string, any>|null,
+ *   fieldsCache?: Map<string, Record<string, any>>,
+ *   noteFields?: Record<string, any>|null,
+ *   noteType?: string,
+ *   fieldTargetTypes?: Map<string, any>,
+ *   typeFieldBundles?: Map<string, any>,
+ *   fieldAmbiguity?: Map<string, any>,
+ *   bodyWikilinkCounts?: Map<string, number>,
+ *   noteRole?: Record<string, any>|null,
+ *   noteRoleTypePriors?: Map<string, any>,
+ *   implicitFieldWeights?: Map<string, any>,
+ *   workflowFields?: Map<string, any>,
+ *   valuePatterns?: Map<string, any>,
+ *   outcomeCalibration?: import('./outcomeCalibration').OutcomeCalibration,
+ *   vaultMaturity?: number
+ * }} [options]
+ * @returns {ClassificationResult}
+ */
+function _doClassifyField(fieldName, options = {}) {
     const {
         schemaFieldDef,
         fieldsCache,
@@ -214,7 +240,11 @@ function classifyField(fieldName, options = {}) {
         fieldAmbiguity,
         bodyWikilinkCounts,
         noteRole,
-        noteRoleTypePriors
+        noteRoleTypePriors,
+        implicitFieldWeights,
+        workflowFields,
+        valuePatterns,
+        outcomeCalibration
     } = options;
     const norm = normalizeFieldName(fieldName);
 
@@ -230,11 +260,55 @@ function classifyField(fieldName, options = {}) {
         }
     }
 
-    // 2. Hard name patterns
+    // 2. Hard patterns — ONLY Yamlink's own structural fields.
+    // id and type are Yamlink metadata — their semantics are fixed by the system.
+    // Everything else (date names, status names, descriptive names) CAN be used
+    // differently per vault. Vault evidence must be allowed to override them.
     if (RE_IDENTITY.test(norm))   return _nonRelationResult(CATEGORY.IDENTITY, 0.95, 'prior', [`"${norm}" matches identity name pattern`]);
     if (RE_STRUCTURAL.test(norm)) return _nonRelationResult(CATEGORY.STRUCTURAL, 0.95, 'prior', [`"${norm}" matches structural name pattern`]);
-    if (RE_DATE.test(norm))       return _nonRelationResult(CATEGORY.DATE, 0.90, 'prior', [`"${norm}" matches date name pattern`]);
-    if (RE_WORKFLOW.test(norm))   return _nonRelationResult(CATEGORY.WORKFLOW, 0.90, 'prior', [`"${norm}" matches workflow name pattern`]);
+
+    // 2.5. Direct value evidence — graph-topology-first.
+    //
+    // If the field currently contains a wikilink pointing to a typed note, that IS
+    // a relational field. One observation is enough. We do not wait for 3 vault-wide
+    // examples. The link topology is the evidence — not the field name.
+    //
+    // This fires before vault priors so a brand-new vault with a single typed link
+    // still gets meaningful completion and lightbulb behaviour.
+    if (noteFields && fieldsCache && fieldsCache.size) {
+        const rawVal = noteFields[fieldName] ?? noteFields[norm];
+        if (rawVal !== undefined && rawVal !== null) {
+            const vals = Array.isArray(rawVal) ? rawVal : [rawVal];
+            let typedLinkCount = 0;
+            const targetTypeMap = new Map();
+            for (const v of vals) {
+                const s = String(v || '').trim();
+                const m = s.match(/^\[\[([^\]|#^]+)/);
+                if (!m) continue;
+                const targetId = m[1].trim().toLowerCase();
+                const targetType = String(fieldsCache.get(targetId)?.type || '').trim().toLowerCase();
+                if (targetType) {
+                    typedLinkCount++;
+                    targetTypeMap.set(targetType, (targetTypeMap.get(targetType) || 0) + 1);
+                }
+            }
+            if (typedLinkCount > 0) {
+                let dominantType = null, dominantCount = 0;
+                for (const [type, count] of targetTypeMap) {
+                    if (count > dominantCount) { dominantType = type; dominantCount = count; }
+                }
+                // Confidence scales from 0.55 (1 typed link) up to 0.79 (5+ typed links).
+                // Strong enough to trigger completion and hint-level lightbulb immediately,
+                // even on a brand-new vault. Not strong enough to QUICKFIX without vault history.
+                const confidence = clamp(0.55 + Math.min(typedLinkCount - 1, 4) * 0.06, 0, 0.82);
+                return _relationResult(confidence, 'usage', [
+                    typedLinkCount === 1
+                        ? `current value links to a "${dominantType}" note — direct typed link`
+                        : `${typedLinkCount} current values link to "${dominantType}" notes`
+                ], { targetType: dominantType, observedLinkRatio: 1.0 });
+            }
+        }
+    }
 
     // 3. Vault priors — adapt ambiguous fields to how this vault actually uses them.
     // This is still evidence, not a hard filter: it raises or lowers confidence, and
@@ -336,7 +410,7 @@ function classifyField(fieldName, options = {}) {
         if (observed !== null) {
             const { ratio, total } = observed;
             const pct = Math.round(ratio * 100);
-            const samplePenalty = total <= 4 ? 0.12 : total <= 6 ? 0.06 : 0;
+            const samplePenalty = total === 1 ? 0.20 : total <= 3 ? 0.14 : total <= 6 ? 0.06 : 0;
             if (ratio >= 0.70) return {
                 ..._relationResult(clamp((0.60 + ratio * 0.35) - samplePenalty, 0, 0.92), 'usage', [
                     `${pct}% of vault values for "${norm}" are wikilinks (strong signal)`,
@@ -374,15 +448,70 @@ function classifyField(fieldName, options = {}) {
                     sampleSize: total
                 });
             }
-            if (ratio < 0.20 && RE_DESCRIPTIVE.test(norm)) {
-                return _nonRelationResult(CATEGORY.DESCRIPTIVE, 0.65, 'usage', [`"${norm}" matches descriptive pattern; only ${pct}% wikilink ratio confirms scalar`], {
-                    sampleSize: total
-                });
+            if (ratio < 0.20) {
+                // Vault evidence says this field is almost entirely scalar.
+                // Apply soft semantic patterns as a tiebreaker — vault usage
+                // won if it reached here, so these are fallback classifications.
+                if (workflowFields?.has(norm)) {
+                    return _nonRelationResult(CATEGORY.WORKFLOW, 0.84, 'usage', [`"${norm}" observed as a workflow field in this vault (${workflowFields.get(norm).values.slice(0, 4).join(', ')})`], { sampleSize: total });
+                }
+                if (RE_DATE.test(norm))        return _nonRelationResult(CATEGORY.DATE, 0.78, 'prior', [`"${norm}" has low wikilink ratio and matches date name pattern`], { sampleSize: total });
+                if (RE_WORKFLOW.test(norm))    return _nonRelationResult(CATEGORY.WORKFLOW, 0.78, 'prior', [`"${norm}" has low wikilink ratio and matches workflow name pattern`], { sampleSize: total });
+                if (RE_DESCRIPTIVE.test(norm)) return _nonRelationResult(CATEGORY.DESCRIPTIVE, 0.65, 'usage', [`"${norm}" matches descriptive pattern; only ${pct}% wikilink ratio confirms scalar`], { sampleSize: total });
             }
         }
     }
 
-    // 5. Descriptive name pattern — label fields, not links
+    // 4.5. Implicit interaction history — sticky vault knowledge.
+    //
+    // The field has no current vault evidence (not in fieldTargetTypes, not
+    // observed as a wikilink in fieldsCache right now). But the mutation log
+    // shows this field was set to [[wikilinks]] in the past. The vault has
+    // learned this field is relational — that knowledge doesn't reset just
+    // because the user edited or cleared the values.
+    //
+    // This is the main value of Phase 2: fields the user actively treats as
+    // relations stay relational even when current vault state gives no signal.
+    if (implicitFieldWeights) {
+        const { boost, reason } = getImplicitBoost(norm, implicitFieldWeights);
+        if (boost > 0) {
+            const confidence = clamp(0.38 + boost, 0, 0.75);
+            return _relationResult(confidence, 'implicit', [reason]);
+        }
+    }
+
+    // 4.7. Outcome calibration — user explicitly accepted our relation suggestion for this field.
+    //
+    // This is the strongest form of historical evidence: not just that the field was set to
+    // a wikilink at some point, but that the SYSTEM predicted it and the USER confirmed it.
+    // Sits above soft patterns but below implicit history because calibration data takes time
+    // to accumulate — on day 1 it is zero and the system behaves exactly as before.
+    if (outcomeCalibration) {
+        const { boost, reason } = getFieldCalibrationBoost(norm, outcomeCalibration);
+        if (boost > 0) {
+            const confidence = clamp(0.42 + boost, 0, 0.80);
+            return _relationResult(confidence, 'calibration', [reason]);
+        }
+    }
+
+    // 5. Soft semantic patterns — only reach here when there is ZERO vault
+    // usage data for this field. Vault evidence always wins above this step.
+    // The vault's own learned patterns outrank name conventions.
+    if (workflowFields?.has(norm)) {
+        const wf = workflowFields.get(norm);
+        return _nonRelationResult(CATEGORY.WORKFLOW, 0.84, 'usage', [`"${norm}" observed as a workflow field in this vault (${wf.values.slice(0, 4).join(', ')})`]);
+    }
+    // Date detection from value patterns — no field names inspected, only values
+    const _vp = valuePatterns?.get(norm);
+    if (_vp) {
+        const _total = _vp.dateCount + _vp.wikilinkCount + _vp.shortScalarCount + _vp.longScalarCount;
+        if (_total > 0 && (_vp.dateCount / _total) >= 0.50) {
+            return _nonRelationResult(CATEGORY.DATE, 0.80, 'usage', [`"${norm}" values are predominantly dates in this vault`]);
+        }
+    }
+    // Name-pattern fallbacks — only when vault evidence is absent
+    if (RE_DATE.test(norm))        return _nonRelationResult(CATEGORY.DATE, 0.75, 'prior', [`"${norm}" matches date name pattern (no vault data yet)`]);
+    if (RE_WORKFLOW.test(norm))    return _nonRelationResult(CATEGORY.WORKFLOW, 0.75, 'prior', [`"${norm}" matches workflow name pattern (no vault data yet)`]);
     if (RE_DESCRIPTIVE.test(norm)) return _nonRelationResult(CATEGORY.DESCRIPTIVE, 0.70, 'prior', [`"${norm}" matches descriptive name pattern`]);
 
     // 6. Same-note context — other fields in this note are relational, so this one probably is too
@@ -398,9 +527,40 @@ function classifyField(fieldName, options = {}) {
 }
 
 /**
+ * Public entry point — wraps _doClassifyField and stamps vaultMaturity onto the result.
+ * Downstream consumers (fieldPlanner) read vaultMaturity from the classification object
+ * so they can scale their thresholds without an extra parameter.
+ *
+ * @param {string} fieldName
+ * @param {{
+ *   schemaFieldDef?: Record<string, any>|null,
+ *   fieldsCache?: Map<string, Record<string, any>>,
+ *   noteFields?: Record<string, any>|null,
+ *   noteType?: string,
+ *   fieldTargetTypes?: Map<string, any>,
+ *   typeFieldBundles?: Map<string, any>,
+ *   fieldAmbiguity?: Map<string, any>,
+ *   bodyWikilinkCounts?: Map<string, number>,
+ *   noteRole?: Record<string, any>|null,
+ *   noteRoleTypePriors?: Map<string, any>,
+ *   implicitFieldWeights?: Map<string, {relationCount: number, total: number}>,
+ *   workflowFields?: Map<string, {values: string[], count: number}>,
+ *   valuePatterns?: Map<string, any>,
+ *   vaultMaturity?: number
+ * }} [options]
+ * @returns {ClassificationResult}
+ */
+function classifyField(fieldName, options = {}) {
+    const vaultMaturity = options.vaultMaturity ?? 1;
+    const result = _doClassifyField(fieldName, options);
+    return { ...result, vaultMaturity };
+}
+
+/**
  * Whether a category permits a given action type.
  * @param {string} category  - one of CATEGORY.*
  * @param {string} actionType - 'relationCompletion'|'fieldSetup'|'documentSetup'|'createNote'
+ * @returns {boolean}
  */
 function canPerformAction(category, actionType) {
     const perms = ACTION_PERMISSIONS[category] || ACTION_PERMISSIONS[CATEGORY.UNKNOWN];
@@ -410,6 +570,7 @@ function canPerformAction(category, actionType) {
 /**
  * Minimum confidence required to trigger an action type.
  * @param {string} actionType
+ * @returns {number}
  */
 function getActionThreshold(actionType) {
     return ACTION_THRESHOLDS[actionType] ?? 0.60;

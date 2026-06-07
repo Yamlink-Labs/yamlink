@@ -17,6 +17,7 @@ const writeFiles = new Map();
 const openDocs = new Map();
 let inputQueue = [];
 let pickQueue = [];
+let warningResponseQueue = [];
 let _buildIndexCalls = 0;
 let invalidateCalls = [];
 let updateCalls = [];
@@ -25,6 +26,7 @@ let templateDirExists = false;
 let templateFiles = [];
 let createdDirectories = [];
 let schemaTargets = new Set(['contact', 'mission']);
+let mockStatResult = null;
 const VAULT_ROOT = 'C:\\vault';
 
 function vaultPath(...parts) {
@@ -74,6 +76,7 @@ function createDocument(text, fsPath) {
 }
 
 const mockWindow = {
+    activeTextEditor: null,
     async showInputBox() {
         return inputQueue.shift() ?? '';
     },
@@ -89,7 +92,7 @@ const mockWindow = {
     },
     showWarningMessage(message) {
         warningMessages.push(message);
-        return Promise.resolve(undefined);
+        return Promise.resolve(warningResponseQueue.shift() ?? undefined);
     },
     showErrorMessage(message) {
         errorMessages.push(message);
@@ -102,7 +105,9 @@ const mockWindow = {
             selection: null,
             revealRange() {}
         };
-    }
+    },
+    onDidChangeTextEditorSelection() { return { dispose() {} }; },
+    onDidChangeActiveTextEditor() { return { dispose() {} }; }
 };
 
 const mockWorkspace = {
@@ -283,6 +288,7 @@ const realReaddirSync = realFs.readdirSync;
 const realReadFileSync = realFs.readFileSync;
 const realWriteFileSync = realFs.writeFileSync;
 const realMkdirSync = realFs.mkdirSync;
+const realStatSync = realFs.statSync;
 
 realFs.existsSync = function (targetPath) {
     const key = normalizeFsPath(targetPath);
@@ -309,6 +315,10 @@ realFs.mkdirSync = function (targetPath) {
     const key = normalizeFsPath(targetPath);
     createdDirectories.push(key);
     if (key.includes('\\_templates')) templateDirExists = true;
+};
+realFs.statSync = function () {
+    if (mockStatResult) return mockStatResult;
+    return { birthtimeMs: new Date('2025-01-15').getTime(), mtimeMs: new Date('2025-06-01').getTime() };
 };
 
 Module._resolveFilename = function (request, parent, ...rest) {
@@ -337,6 +347,7 @@ beforeEach(() => {
     openDocs.clear();
     inputQueue = [];
     pickQueue = [];
+    warningResponseQueue = [];
     _buildIndexCalls = 0;
     invalidateCalls = [];
     updateCalls = [];
@@ -345,6 +356,8 @@ beforeEach(() => {
     templateFiles = [];
     createdDirectories = [];
     schemaTargets = new Set(['contact', 'mission']);
+    mockWindow.activeTextEditor = null;
+    mockStatResult = null;
 });
 
 after(() => {
@@ -354,6 +367,7 @@ after(() => {
     realFs.readFileSync = realReadFileSync;
     realFs.writeFileSync = realWriteFileSync;
     realFs.mkdirSync = realMkdirSync;
+    realFs.statSync = realStatSync;
 });
 
 describe('node creation commands', () => {
@@ -547,5 +561,103 @@ describe('node creation commands', () => {
         assert.equal(edits.length, 1);
         assert.match(edits[0].text, /id: draft-note/);
         assert.ok(infoMessages.some((message) => message.includes('is now a Yamlink node')));
+    });
+
+    test('newNote creates a typed note with smart frontmatter', async () => {
+        const context = { subscriptions: [] };
+        registerNodeCreationCommands(context, () => new Map(), () => new Set(['briefing']));
+
+        pickQueue.push(items => items.find(i => i.label === 'briefing') || items[0]);
+        inputQueue.push('mission-report');
+
+        await commandMap.get('yamlink.newNote')();
+
+        const created = writeFiles.get(vaultPath('mission-report.md'));
+        assert.ok(created, 'file should be created');
+        assert.match(created, /id: mission-report/);
+        assert.match(created, /created: \d{4}-\d{2}-\d{2}/);
+        assert.ok(shownDocs.includes(vaultPath('mission-report.md')));
+        assert.ok(infoMessages.some(m => m.includes('mission-report')));
+    });
+
+    test('newNote with L3 adds reverse relation field when user links back', async () => {
+        const context = { subscriptions: [] };
+        registerNodeCreationCommands(context, () => new Map(), () => new Set(['briefing']));
+
+        mockWindow.activeTextEditor = {
+            document: createDocument('---\nid: rico\ntype: contact\n---\n', vaultPath('rico.md'))
+        };
+        mockWindow.activeTextEditor.document.languageId = 'markdown';
+
+        pickQueue.push(items => items.find(i => i.label === 'briefing') || items[0]); // type
+        inputQueue.push('mission-alpha'); // title
+        pickQueue.push(items => items[0]); // link back → first item = "$(link) Link to [[rico]]"
+        inputQueue.push('author'); // field name
+
+        await commandMap.get('yamlink.newNote')();
+
+        const created = writeFiles.get(vaultPath('mission-alpha.md'));
+        assert.ok(created, 'file should be created');
+        assert.match(created, /author: \[\[rico\]\]/);
+    });
+
+    test('newNote with L3 skips reverse field when user cancels link-back prompt', async () => {
+        const context = { subscriptions: [] };
+        registerNodeCreationCommands(context, () => new Map(), () => new Set(['briefing']));
+
+        mockWindow.activeTextEditor = {
+            document: createDocument('---\nid: rico\ntype: contact\n---\n', vaultPath('rico.md'))
+        };
+        mockWindow.activeTextEditor.document.languageId = 'markdown';
+
+        pickQueue.push(items => items.find(i => i.label === 'briefing') || items[0]); // type
+        inputQueue.push('mission-beta'); // title
+        pickQueue.push(items => items.find(i => i.label.startsWith('$(close)')) || items[1]); // skip
+
+        await commandMap.get('yamlink.newNote')();
+
+        const created = writeFiles.get(vaultPath('mission-beta.md'));
+        assert.ok(created, 'file should be created');
+        assert.ok(!created.includes('[[rico]]'), 'no reverse link when skipped');
+    });
+
+    test('backfillCreatedDates shows nothing-to-do when index is empty', async () => {
+        const context = { subscriptions: [] };
+        registerNodeCreationCommands(context, () => new Map(), () => new Set(['contact']));
+
+        await commandMap.get('yamlink.backfillCreatedDates')();
+
+        assert.ok(infoMessages.some(m => m.includes('already have')));
+        assert.equal(writeFieldCalls.length, 0);
+    });
+
+    test('backfillCreatedDates writes birthtime dates when user confirms', async () => {
+        // Use IDs that exist in the fieldCache stub (source-note, existing-account) — neither has created:
+        const idIndex = new Map([
+            ['source-note', vaultPath('source-note.md')],
+            ['existing-account', vaultPath('existing-account.md')]
+        ]);
+        const context = { subscriptions: [] };
+        registerNodeCreationCommands(context, () => idIndex, () => new Set(['contact']));
+
+        mockStatResult = { birthtimeMs: new Date('2025-03-10').getTime(), mtimeMs: new Date('2025-06-01').getTime() };
+        warningResponseQueue.push('Backfill');
+
+        await commandMap.get('yamlink.backfillCreatedDates')();
+
+        assert.equal(writeFieldCalls.filter(c => c.field === 'created').length, 2);
+        assert.ok(writeFieldCalls.every(c => c.value === '2025-03-10'));
+        assert.ok(infoMessages.some(m => m.includes('Backfilled')));
+    });
+
+    test('backfillCreatedDates does nothing when user cancels', async () => {
+        const idIndex = new Map([['source-note', vaultPath('source-note.md')]]);
+        const context = { subscriptions: [] };
+        registerNodeCreationCommands(context, () => idIndex, () => new Set(['contact']));
+
+        // warningResponseQueue is empty → returns undefined → not 'Backfill' → cancels
+        await commandMap.get('yamlink.backfillCreatedDates')();
+
+        assert.equal(writeFieldCalls.length, 0);
     });
 });

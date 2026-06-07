@@ -48,4 +48,28 @@ describe('note-role intelligence', () => {
         assert.equal(result.noteRole, 'person');
         assert.ok(result.secondaryRoles.includes('container'));
     });
+
+    test('vault-derived typeRoleMap overrides hardcoded prior at higher confidence', () => {
+        const typeRoleMap = new Map([
+            ['fighter', { role: 'person', confidence: 0.82, inboundRatio: 0.3, relCount: 2, dateCount: 0, workflowCount: 0 }]
+        ]);
+        const result = inferNoteRole({ type: 'fighter' }, { typeRoleMap });
+        assert.equal(result.noteRole, 'person');
+        assert.ok(result.confidence >= 0.80, `expected vault confidence >= 0.80, got ${result.confidence}`);
+        assert.ok(result.reasons[0].includes('structurally matches'));
+    });
+
+    test('hardcoded prior fires at lower confidence when typeRoleMap has no entry', () => {
+        const result = inferNoteRole({ type: 'contact' }, { typeRoleMap: new Map() });
+        assert.equal(result.noteRole, 'person');
+        assert.ok(result.confidence <= 0.70, `expected weak prior confidence ≤ 0.70, got ${result.confidence}`);
+    });
+
+    test('vault-derived role for type not in DEFAULT_NOTE_ROLE_PRIORS', () => {
+        const typeRoleMap = new Map([
+            ['kommandant', { role: 'person', confidence: 0.75, inboundRatio: 0.5, relCount: 3, dateCount: 0, workflowCount: 0 }]
+        ]);
+        const result = inferNoteRole({ type: 'kommandant' }, { typeRoleMap });
+        assert.equal(result.noteRole, 'person');
+    });
 });

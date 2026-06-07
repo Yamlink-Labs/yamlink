@@ -1,8 +1,99 @@
 'use strict';
 
+const fs = require('fs');
+const path = require('path');
 const { computeHealthScore } = require('./healthStats');
 
-function buildHealthHtml(stats) {
+const HEALTH_CSS = fs.readFileSync(path.join(__dirname, 'healthPanel.css'), 'utf8');
+
+/** @param {object} stats @param {function} escapeFn @returns {string} */
+function buildSchemaSectionHtml(stats, escapeFn) {
+    const e = escapeFn;
+    const si = stats.schemaIntelligence;
+    const hasAnySchema = stats.schemas > 0;
+
+    if (!hasAnySchema) {
+        return `
+    <div class="section" id="section-schema">
+        <div class="section-header">
+            <span class="section-title">Schema Coverage</span>
+            <span class="section-count">0 schemas</span>
+        </div>
+        <div class="empty-section">
+            <div class="empty-title">No schemas defined yet.</div>
+            <div class="empty-copy">Create a note with <code>type: schema</code> and a <code>target:</code> field to define expected structure for a note type. Yamlink will then show conformance analysis for that type here.</div>
+        </div>
+    </div>`;
+    }
+
+    // Coverage rows — one per schema type
+    const coverageRows = (si?.coverage || []).map(({ type, total, conformant, nonConformant, requiredCount, notesWithMissing }) => {
+        const pct = total > 0 && requiredCount > 0 ? Math.round(conformant / total * 100) : null;
+        const pctColor = pct === null ? 'var(--dim)' : pct === 100 ? 'var(--accent)' : pct >= 75 ? 'var(--accent3)' : 'var(--danger)';
+        const conformanceNote = requiredCount === 0
+            ? `<span style="font-size:12px;color:var(--dim)">No required fields — schema defines shape only</span>`
+            : pct === null
+                ? `<span style="font-size:12px;color:var(--dim)">No notes of this type yet</span>`
+                : `<span class="schema-pct" style="color:${pctColor}">${pct}%</span><span style="font-size:11px;color:var(--mid)">${conformant} of ${total} note${total !== 1 ? 's' : ''} have all required fields</span>`;
+        const pills = notesWithMissing.map(n =>
+            `<span class="node-pill drift-pill" data-id="${e(n.noteId)}" title="missing: ${e(n.missingFields.join(', '))}">${e(n.noteId)}</span>`
+        ).join('');
+        return `<div class="schema-coverage-row">
+            <div class="schema-coverage-head">
+                <span class="schema-type-label">${e(type)}</span>
+                <div class="schema-coverage-meta">
+                    ${total > 0 ? `<span class="type-count">${total} note${total !== 1 ? 's' : ''}</span>` : ''}
+                    ${total > 0 ? `<button class="view-btn" data-query="!view ${e(type)}" data-label="${e(type)}">View all →</button>` : ''}
+                </div>
+            </div>
+            <div class="schema-coverage-stats">${conformanceNote}</div>
+            ${pills ? `<div class="node-pills" style="margin-top:8px">${pills}</div>` : ''}
+        </div>`;
+    }).join('');
+
+    // Advisory: unschematized types with notes (only shown when ≥1 schema exists)
+    const advisories = si?.advisories || [];
+    const advisoryHtml = advisories.length > 0
+        ? `<div class="schema-advisories">
+            <div class="schema-advisories-label">Unschematized types</div>
+            ${advisories.map(({ type, count }) =>
+                `<div class="schema-advisory">
+                    <span class="advisory-count">${count}</span>
+                    <span class="advisory-text"><strong>${e(type)}</strong> note${count !== 1 ? 's' : ''} — no schema defined</span>
+                    <button class="view-btn" data-query="!view ${e(type)}" data-label="${e(type)}">View →</button>
+                </div>`
+            ).join('')}
+        </div>`
+        : '';
+
+    // Dangling relations: schema relation fields whose target type has no vault notes
+    const dangling = si?.danglingRelations || [];
+    const danglingHtml = dangling.length > 0
+        ? `<div class="schema-advisories" style="margin-top:10px">
+            <div class="schema-advisories-label" style="color:var(--warn)">Cross-schema warnings</div>
+            ${dangling.map(({ schemaType, field, targetType }) =>
+                `<div class="schema-advisory advisory-warn">
+                    <span class="advisory-text">Schema <strong>${e(schemaType)}</strong> field <code>${e(field)}</code> targets <strong>${e(targetType)}</strong> — no notes of this type exist in the vault</span>
+                </div>`
+            ).join('')}
+        </div>`
+        : '';
+
+    const coverageCount = si?.coverage?.length ?? 0;
+    return `
+    <div class="section" id="section-schema">
+        <div class="section-header">
+            <span class="section-title">Schema Coverage</span>
+            <span class="section-count">${coverageCount} schema${coverageCount !== 1 ? 's' : ''} active</span>
+        </div>
+        ${coverageRows || `<div class="empty-section"><div class="empty-title">Schemas exist but no matching notes found.</div></div>`}
+        ${advisoryHtml}
+        ${danglingHtml}
+    </div>`;
+}
+
+/** @param {object} stats @param {{ scriptUri?: string, nonce?: string, csp?: string }} [webview] */
+function buildHealthHtml(stats, { scriptUri, nonce, csp } = {}) {
     if (stats.nodes === 0) {
         return [
             '<!DOCTYPE html><html><head><meta charset="UTF-8">',
@@ -104,11 +195,64 @@ function buildHealthHtml(stats) {
             <div class="lifecycle-label">${label}</div>
         </div>
     `).join('');
+    const todayActivity = stats.todayActivity || [];
+    const activityHtml = todayActivity.length > 0
+        ? `<div class="activity-list">${todayActivity.map(({ noteId, count }) =>
+            `<div class="activity-row" data-id="${esc(noteId)}"><span class="activity-id">${esc(noteId)}</span><span class="activity-count">${count} change${count === 1 ? '' : 's'}</span></div>`
+        ).join('')}</div>`
+        : `<div class="empty-section"><div class="empty-title">No mutations recorded today.</div><div class="empty-copy">Edit and save notes to start tracking today's vault activity here.</div></div>`;
+
     const lifecycleHighlights = (stats.lifecycle?.notes || [])
         .filter((note) => note.state === 'stale' || note.state === 'hub')
         .slice(0, 6)
         .map((note) => `<span class="node-pill ${note.state === 'stale' ? 'orphan-pill' : ''}" data-id="${note.id}" title="${esc(note.summary)}">${esc(note.id)} · ${esc(note.label)}</span>`)
         .join('');
+
+    const hasTemplates = stats.templateDrift && stats.templateDrift.size > 0;
+    const hasOrphans   = stats.orphans.length > 0;
+
+    const tabNav = [
+        { id: 'activity',    label: 'Activity' },
+        { id: 'lifecycle',   label: 'Lifecycle' },
+        { id: 'consistency', label: 'Consistency' },
+        { id: 'schema',      label: 'Schema' },
+        ...(hasTemplates ? [{ id: 'templates', label: 'Templates' }] : []),
+        { id: 'types',       label: 'Types' },
+        ...(hasOrphans   ? [{ id: 'orphans',   label: 'Orphans'   }] : []),
+    ].map((t, i) =>
+        `<button class="tab-btn${i === 0 ? ' active' : ''}" data-tab="${t.id}">${t.label}</button>`
+    ).join('');
+
+    const templateDriftHtml = hasTemplates ? (() => {
+        const totalDrift = [...stats.templateDrift.values()].reduce((n, b) => n + b.driftCount, 0);
+        const rows = [...stats.templateDrift.entries()]
+            .sort((a, b) => b[1].driftCount - a[1].driftCount)
+            .map(([type, bucket]) => {
+                const pills = bucket.notes.slice(0, 20).map(n =>
+                    `<span class="node-pill drift-pill" data-id="${esc(n.noteId)}" title="missing: ${esc(n.missingFields.join(', '))}">${esc(n.noteId)}</span>`
+                ).join('');
+                const extra = bucket.notes.length > 20
+                    ? `<span style="font-size:11px;color:var(--dim)">+${bucket.notes.length - 20} more</span>` : '';
+                return `<div class="type-block open" style="margin-bottom:7px">
+                    <div class="type-header">
+                        <div class="type-header-left">
+                            <span class="type-chevron"><svg xmlns="http://www.w3.org/2000/svg" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="9 18 15 12 9 6"/></svg></span>
+                            <span class="type-label">${esc(type)}</span>
+                        </div>
+                        <div class="type-header-right">
+                            <span class="type-orphan-note">${bucket.driftCount} note${bucket.driftCount !== 1 ? 's' : ''} missing fields</span>
+                        </div>
+                    </div>
+                    <div class="type-body"><div class="node-pills" style="margin-top:4px">${pills}${extra}</div></div>
+                </div>`;
+            }).join('');
+        return `<div class="section-header">
+                <span class="section-title">Template Drift</span>
+                <span class="section-count" style="color:var(--warn)">${totalDrift} note${totalDrift !== 1 ? 's' : ''} missing template fields</span>
+            </div>
+            <div class="empty-copy" style="margin-bottom:12px;color:var(--mid);font-size:12px">These notes are missing fields defined in their <code>_templates/</code> definition. Click a note to open it, then use <em>Yamlink: Add missing template fields</em> to fix.</div>
+            ${rows}`;
+    })() : '';
 
     return `<!DOCTYPE html>
 <html lang="en">
@@ -116,152 +260,8 @@ function buildHealthHtml(stats) {
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Vault Health</title>
-<style>
-    * { box-sizing: border-box; margin: 0; padding: 0; }
-
-    :root {
-        --bg:       var(--vscode-editor-background, #131313);
-        --surface:  var(--vscode-sideBar-background, #181b20);
-        --surface2: var(--vscode-editorWidget-background, #1f242b);
-        --surface3: var(--vscode-input-background, #13171c);
-        --border:   var(--vscode-panel-border, #2a3038);
-        --border2:  rgba(255,255,255,.08);
-        --text:     var(--vscode-editor-foreground, #dbe2ea);
-        --dim:      var(--vscode-disabledForeground, #69727d);
-        --mid:      var(--vscode-descriptionForeground, #95a1ac);
-        --accent:   #4fc4a0;
-        --accent2:  #6eb3f0;
-        --accent3:  #e5a96a;
-        --warn:     #e5a96a;
-        --danger:   #f47474;
-        --link:     var(--vscode-textLink-foreground, #6eb3f0);
-        --sans:     'Segoe UI', system-ui, sans-serif;
-    }
-
-    body {
-        background:
-            radial-gradient(circle at top left, color-mix(in srgb, var(--link) 7%, transparent), transparent 28%),
-            radial-gradient(circle at bottom right, color-mix(in srgb, var(--accent) 6%, transparent), transparent 30%),
-            var(--bg);
-        color: var(--text);
-        font-family: var(--sans);
-        font-size: 13px;
-        line-height: 1.5;
-        min-height: 100vh;
-    }
-
-    .header {
-        display: grid;
-        grid-template-columns: minmax(0, 1.5fr) minmax(220px, .9fr);
-        gap: 16px;
-        padding: 20px 22px 16px;
-        border-bottom: 1px solid var(--border);
-        background:
-            radial-gradient(circle at top left, rgba(110,179,240,.12), transparent 34%),
-            radial-gradient(circle at top right, rgba(79,196,160,.08), transparent 28%),
-            linear-gradient(180deg, color-mix(in srgb, var(--surface) 98%, transparent), color-mix(in srgb, var(--surface2) 48%, var(--surface)));
-    }
-
-    .header-main { display: flex; flex-direction: column; gap: 12px; }
-    .eyebrow { font-size: 11px; color: var(--accent3); letter-spacing: .12em; text-transform: uppercase; font-weight: 700; }
-    .hero-row { display: flex; align-items: end; gap: 12px; flex-wrap: wrap; }
-    .header-title { font-size: 23px; line-height: 1.08; font-weight: 750; letter-spacing: -0.03em; }
-    .header-sub { font-size: 13px; color: var(--mid); max-width: 720px; }
-    .health-badge { font-size: 11px; padding: 6px 11px; border-radius: 999px; border: 1px solid; letter-spacing: 0.05em; font-weight: 700; align-self: center; }
-    .header-side { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 7px; align-content: start; }
-    .hero-card { border: 1px solid var(--border); border-radius: 14px; background: color-mix(in srgb, var(--surface2) 86%, transparent); padding: 11px 12px; box-shadow: 0 6px 18px rgba(0,0,0,.08); }
-    .hero-card-label { font-size: 10px; color: var(--dim); text-transform: uppercase; letter-spacing: .1em; margin-bottom: 8px; font-weight: 700; }
-    .hero-card-value { font-size: 24px; line-height: 1; font-weight: 760; letter-spacing: -.03em; }
-    .hero-card-note { margin-top: 8px; font-size: 12px; color: var(--mid); }
-
-    .stats-strip { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 7px; padding: 12px 22px 0; }
-    .stat-cell { padding: 11px 12px; border: 1px solid var(--border); border-radius: 14px; background: var(--surface2); position: relative; }
-    .stat-cell.clickable { cursor: pointer; transition: transform .12s, border-color .12s, background .12s; }
-    .stat-cell.clickable:hover { background: color-mix(in srgb, var(--surface2) 86%, var(--accent2) 14%); border-color: rgba(110,179,240,.28); transform: translateY(-1px); }
-    .stat-cell.clickable:hover .stat-lbl { color: var(--mid); }
-    .stat-cell.clickable .stat-num { transition: color 0.12s; }
-    .stat-cell.clickable:not(.has-warning):not(.has-caution):hover .stat-num { color: var(--link); }
-    .stat-cell.has-warning::after { content: ""; position: absolute; inset: auto 12px 0 12px; height: 3px; background: var(--danger); border-radius: 999px; }
-    .stat-cell.has-caution::after { content: ""; position: absolute; inset: auto 12px 0 12px; height: 3px; background: var(--warn); border-radius: 999px; }
-    .stat-num { font-size: 24px; font-weight: 760; color: var(--text); letter-spacing: -0.03em; line-height: 1; margin-bottom: 6px; }
-    .stat-num.danger { color: var(--danger); }
-    .stat-num.warn { color: var(--warn); }
-    .stat-num.good { color: var(--accent); }
-    .stat-lbl { font-size: 10px; text-transform: uppercase; letter-spacing: 0.11em; color: var(--dim); transition: color 0.12s; font-weight: 700; }
-    .stat-hint { font-size: 12px; color: var(--mid); margin-top: 6px; }
-    .stat-action { font-size: 11px; color: var(--accent2); margin-top: 6px; opacity: 0.7; transition: opacity 0.12s; font-weight: 600; }
-    .stat-cell.clickable:hover .stat-action { opacity: 1; }
-
-    .content { padding: 16px 22px 28px; max-width: 1240px; }
-    .section { margin-top: 20px; }
-    .section-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px; padding-bottom: 10px; border-bottom: 1px solid var(--border); }
-    .section-title { font-size: 11px; text-transform: uppercase; letter-spacing: 0.12em; color: var(--mid); font-weight: 700; }
-    .section-count { font-size: 11px; color: var(--dim); letter-spacing: 0.05em; }
-
-    .type-block { border: 1px solid var(--border); border-radius: 14px; margin-bottom: 7px; overflow: hidden; transition: border-color 0.12s, transform .12s; background: var(--surface2); box-shadow: 0 6px 18px rgba(0,0,0,.06); }
-    .type-block:hover { border-color: var(--border2); transform: translateY(-1px); }
-    .type-header { display: flex; align-items: center; justify-content: space-between; padding: 10px 12px; cursor: pointer; background: transparent; user-select: none; transition: background 0.1s; }
-    .type-header:hover { background: rgba(255,255,255,.03); }
-    .type-header-left { display: flex; align-items: center; gap: 10px; }
-    .type-chevron { font-size: 10px; color: var(--dim); transition: transform 0.15s; display: inline-block; }
-    .type-block.open .type-chevron { transform: rotate(90deg); }
-    .type-label { font-size: 14px; color: var(--link); font-weight: 700; }
-    .type-orphan-note { font-size: 11px; color: var(--warn); background: rgba(229,169,106,0.08); border: 1px solid rgba(229,169,106,0.2); border-radius: 999px; padding: 3px 8px; }
-    .type-header-right { display: flex; align-items: center; gap: 10px; }
-    .type-count { font-size: 12px; color: var(--mid); letter-spacing: 0.01em; }
-    .view-btn { font-size: 12px; color: var(--accent2); background: rgba(110,179,240,0.08); border: 1px solid rgba(110,179,240,0.22); border-radius: 999px; padding: 5px 10px; cursor: pointer; transition: background 0.12s; white-space: nowrap; font-weight: 600; }
-    .view-btn:hover { background: rgba(110,179,240,0.18); border-color: rgba(110,179,240,0.34); }
-    .type-body { display: none; padding: 0 12px 12px; border-top: 1px solid var(--border); background: transparent; }
-    .type-block.open .type-body { display: block; }
-
-    .node-pills { display: flex; flex-wrap: wrap; gap: 5px; }
-    .node-pill { font-size: 11px; color: var(--text); background: var(--surface3); border: 1px solid var(--border); border-radius: 999px; padding: 5px 9px; cursor: pointer; transition: all 0.1s; line-height: 1; }
-    .node-pill:hover { border-color: var(--link); color: var(--link); background: rgba(110,179,240,0.08); }
-    .orphan-pill { color: var(--warn); border-color: rgba(229,169,106,0.25); background: rgba(229,169,106,0.05); }
-    .orphan-pill:hover { border-color: var(--warn); background: rgba(229,169,106,0.12); }
-    .lifecycle-grid { display:grid; grid-template-columns:repeat(5,minmax(0,1fr)); gap:7px; }
-    .lifecycle-card { padding: 11px 12px; border: 1px solid var(--border); border-radius: 14px; background: var(--surface2); }
-    .lifecycle-count { font-size: 20px; line-height: 1; font-weight: 760; letter-spacing: -0.03em; margin-bottom: 6px; }
-    .lifecycle-label { font-size: 10px; text-transform: uppercase; letter-spacing: 0.11em; color: var(--dim); font-weight: 700; }
-    .empty-section { display: flex; flex-direction: column; gap: 6px; padding: 12px 0; color: var(--dim); }
-    .empty-title { font-size: 12px; font-weight: 700; color: var(--text); }
-    .empty-copy { font-size: 12px; color: var(--mid); line-height: 1.55; }
-    .empty-copy code { background: color-mix(in srgb, var(--surface2) 86%, transparent); border: 1px solid var(--border2); border-radius: 6px; padding: 1px 5px; font-size: 11px; color: var(--text); }
-    .drift-summary-grid { grid-template-columns: repeat(4, minmax(0, 1fr)); }
-    .lifecycle-count.drift-warn { color: var(--warn); }
-    .lifecycle-count.drift-danger { color: var(--danger); }
-    .drift-pill { color: var(--warn); border-color: rgba(229,169,106,0.25); background: rgba(229,169,106,0.05); }
-    .drift-pill:hover { border-color: var(--warn); background: rgba(229,169,106,0.12); }
-    .outlier-pill { color: var(--danger); border-color: rgba(244,116,116,0.25); background: rgba(244,116,116,0.05); }
-    .outlier-pill:hover { border-color: var(--danger); background: rgba(244,116,116,0.12); }
-
-    @media (max-width: 1080px) {
-        .header { grid-template-columns: 1fr; }
-        .stats-strip { grid-template-columns: repeat(3, minmax(0, 1fr)); }
-        .header-side { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-        .lifecycle-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
-    }
-    @media (max-width: 760px) {
-        .header, .content, .stats-strip { padding-left: 14px; padding-right: 14px; }
-        .stats-strip { grid-template-columns: repeat(2, minmax(0, 1fr)); padding-top: 12px; }
-        .type-header { align-items: start; flex-direction: column; gap: 8px; }
-        .hero-row { flex-direction: column; align-items: flex-start; }
-        .type-header-right { width: 100%; justify-content: space-between; }
-        .section-header { flex-direction: column; align-items: flex-start; gap: 6px; }
-        .lifecycle-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-    }
-    @media (max-width: 520px) {
-        .header, .content, .stats-strip { padding-left: 12px; padding-right: 12px; }
-        .stats-strip { grid-template-columns: 1fr; }
-        .header-side { grid-template-columns: 1fr; }
-        .header-title { font-size: 20px; }
-        .header-sub { font-size: 12px; }
-        .hero-card-value, .stat-num { font-size: 20px; }
-        .type-header-right { flex-direction: column; align-items: flex-start; gap: 7px; }
-        .view-btn { width: 100%; text-align: center; }
-        .lifecycle-grid { grid-template-columns: 1fr; }
-    }
-</style>
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'nonce-${nonce}' ${csp};">
+<style>${HEALTH_CSS}</style>
 </head>
 <body>
 
@@ -308,115 +308,101 @@ function buildHealthHtml(stats) {
         ? '<div class="stat-hint">Open diagnostics to fix</div><div class="stat-action">Open Problems →</div>'
         : '<div class="stat-hint">All links resolve</div>'}
     </div>
-    <div class="stat-cell clickable ${stats.orphans.length > 0 ? 'has-caution' : ''}" data-action="scrollOrphans" title="Indexed notes with no inbound or outbound connections. Click to jump to the list.">
-        <div class="stat-num ${stats.orphans.length > 0 ? 'warn' : 'good'}">${stats.orphans.length}</div>
+    <div class="stat-cell clickable ${hasOrphans ? 'has-caution' : ''}" data-action="switchOrphans" title="Indexed notes with no inbound or outbound connections. Click to jump to the Orphans tab.">
+        <div class="stat-num ${hasOrphans ? 'warn' : 'good'}">${stats.orphans.length}</div>
         <div class="stat-lbl">Orphan Nodes</div>
-        ${stats.orphans.length > 0
-        ? '<div class="stat-hint">Nodes with no connections</div><div class="stat-action">Jump to list →</div>'
+        ${hasOrphans
+        ? '<div class="stat-hint">Nodes with no connections</div><div class="stat-action">View orphans →</div>'
         : '<div class="stat-hint">No isolated nodes</div>'}
     </div>
-    <div class="stat-cell clickable" data-action="scrollTypes" title="How many different note categories (type values) are in the vault. Click to jump to the type list.">
+    <div class="stat-cell clickable" data-action="switchTypes" title="How many different note categories (type values) are in the vault. Click to view the type list.">
         <div class="stat-num">${stats.uniqueTypes}</div>
         <div class="stat-lbl">Types</div>
-        <div class="stat-action">Jump to list →</div>
+        <div class="stat-action">View types →</div>
     </div>
-    <div class="stat-cell" title="Formal type-definition notes that define expected fields for note categories.">
+    <div class="stat-cell clickable" data-action="switchSchema" title="Formal type-definition notes that define expected fields for note categories.">
         <div class="stat-num">${stats.schemas}</div>
         <div class="stat-lbl">Schemas</div>
         <div class="stat-hint">${stats.schemas === 0 ? 'None defined yet' : `${stats.schemas} active`}</div>
+        ${stats.schemas > 0 ? '<div class="stat-action">View schema →</div>' : ''}
     </div>
 </div>
 
+<div class="tab-nav" role="tablist">${tabNav}</div>
+
 <div class="content">
 
-    <div class="section" id="section-lifecycle">
-        <div class="section-header">
-            <span class="section-title">Lifecycle States</span>
-            <span class="section-count">${Object.values(lifecycleCounts).reduce((sum, value) => sum + Number(value || 0), 0)} tracked</span>
+    <div class="tab-panel" data-tab="activity" id="section-activity">
+        <div class="section">
+            <div class="section-header">
+                <span class="section-title">Today's Activity</span>
+                <span class="section-count">${todayActivity.length} note${todayActivity.length !== 1 ? 's' : ''} changed</span>
+            </div>
+            ${activityHtml}
         </div>
-        <div class="lifecycle-grid">${lifecycleCards}</div>
-        ${lifecycleHighlights
-            ? `<div class="node-pills" style="margin-top:12px">${lifecycleHighlights}</div>`
-            : '<div class="empty-section"><div class="empty-title">No standout lifecycle signals yet.</div><div class="empty-copy">As notes accumulate structure, Yamlink will surface which ones are still drafts, which ones are consolidating, and which ones are turning into hubs.</div></div>'}
     </div>
 
-    <div class="section" id="section-drift">
-        <div class="section-header">
-            <span class="section-title">Type Consistency</span>
-            <span class="section-count">${driftTotal} analyzed</span>
+    <div class="tab-panel tab-panel--hidden" data-tab="lifecycle" id="section-lifecycle">
+        <div class="section">
+            <div class="section-header">
+                <span class="section-title">Lifecycle States</span>
+                <span class="section-count">${Object.values(lifecycleCounts).reduce((sum, value) => sum + Number(value || 0), 0)} tracked</span>
+            </div>
+            <div class="lifecycle-grid">${lifecycleCards}</div>
+            ${lifecycleHighlights
+                ? `<div class="node-pills" style="margin-top:12px">${lifecycleHighlights}</div>`
+                : '<div class="empty-section"><div class="empty-title">No standout lifecycle signals yet.</div><div class="empty-copy">As notes accumulate structure, Yamlink will surface which ones are still drafts, which ones are consolidating, and which ones are turning into hubs.</div></div>'}
         </div>
-        ${driftTotal > 0 ? `
-        <div class="lifecycle-grid drift-summary-grid">${driftCards}</div>
-        ${driftPills
-            ? `<div class="node-pills" style="margin-top:12px">${driftPills}</div>`
-            : '<div class="empty-section" style="margin-top:12px"><div class="empty-title">All notes are on track.</div><div class="empty-copy">No notes are diverging from how their type is normally shaped in this vault.</div></div>'}
-        ` : `<div class="empty-section"><div class="empty-title">Not enough data yet.</div><div class="empty-copy">Drift analysis requires at least 3 notes of the same type. Add more notes to start seeing structural patterns.</div></div>`}
     </div>
 
-    <div class="section" id="section-types">
-        <div class="section-header">
-            <span class="section-title">Entity Types</span>
-            <span class="section-count">${stats.types.length} type${stats.types.length !== 1 ? 's' : ''}</span>
+    <div class="tab-panel tab-panel--hidden" data-tab="consistency" id="section-drift">
+        <div class="section">
+            <div class="section-header">
+                <span class="section-title">Type Consistency</span>
+                <span class="section-count">${driftTotal} analyzed</span>
+            </div>
+            ${driftTotal > 0 ? `
+            <div class="lifecycle-grid drift-summary-grid">${driftCards}</div>
+            ${driftPills
+                ? `<div class="node-pills" style="margin-top:12px">${driftPills}</div>`
+                : '<div class="empty-section" style="margin-top:12px"><div class="empty-title">All notes are on track.</div><div class="empty-copy">No notes are diverging from how their type is normally shaped in this vault.</div></div>'}
+            ` : `<div class="empty-section"><div class="empty-title">Not enough data yet.</div><div class="empty-copy">Drift analysis requires at least 3 notes of the same type. Add more notes to start seeing structural patterns.</div></div>`}
         </div>
-        ${typeSections}
     </div>
 
-    ${stats.orphans.length > 0 ? `
-    <div class="section" id="section-orphans">
-        <div class="section-header">
-            <span class="section-title">Orphan Nodes</span>
-            <span class="section-count" style="color:var(--warn)">${stats.orphans.length} unlinked</span>
+    <div class="tab-panel tab-panel--hidden" data-tab="schema">
+        ${buildSchemaSectionHtml(stats, esc)}
+    </div>
+
+    ${hasTemplates ? `
+    <div class="tab-panel tab-panel--hidden" data-tab="templates" id="section-template-drift">
+        <div class="section">${templateDriftHtml}</div>
+    </div>` : ''}
+
+    <div class="tab-panel tab-panel--hidden" data-tab="types" id="section-types">
+        <div class="section">
+            <div class="section-header">
+                <span class="section-title">Entity Types</span>
+                <span class="section-count">${stats.types.length} type${stats.types.length !== 1 ? 's' : ''}</span>
+            </div>
+            ${typeSections}
         </div>
-        <div class="node-pills">${orphanSection}</div>
+    </div>
+
+    ${hasOrphans ? `
+    <div class="tab-panel tab-panel--hidden" data-tab="orphans" id="section-orphans">
+        <div class="section">
+            <div class="section-header">
+                <span class="section-title">Orphan Nodes</span>
+                <span class="section-count" style="color:var(--warn)">${stats.orphans.length} unlinked</span>
+            </div>
+            <div class="node-pills">${orphanSection}</div>
+        </div>
     </div>` : ''}
 
 </div>
 
-<script>
-    const vscode = acquireVsCodeApi();
-
-    document.querySelectorAll('.stat-cell[data-action]').forEach(cell => {
-        cell.addEventListener('click', () => {
-            const action = cell.dataset.action;
-            if (action === 'openAllNodes') {
-                vscode.postMessage({ command: 'openAllNodes' });
-            }
-            if (action === 'openProblems') {
-                vscode.postMessage({ command: 'openProblems' });
-            }
-            if (action === 'scrollOrphans') {
-                const el = document.getElementById('section-orphans');
-                if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' });
-            }
-            if (action === 'scrollTypes') {
-                const el = document.getElementById('section-types');
-                if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' });
-            }
-        });
-    });
-
-    document.addEventListener('click', e => {
-        const pill = e.target.closest('.node-pill');
-        if (pill) {
-            e.stopPropagation();
-            vscode.postMessage({ command: 'openNode', id: pill.dataset.id });
-            return;
-        }
-
-        const btn = e.target.closest('.view-btn');
-        if (btn) {
-            e.stopPropagation();
-            vscode.postMessage({ command: 'openView', query: btn.dataset.query, label: btn.dataset.label });
-            return;
-        }
-
-        const header = e.target.closest('.type-header');
-        if (header) {
-            const block = header.closest('.type-block');
-            block.classList.toggle('open');
-        }
-    });
-</script>
+<script nonce="${nonce}" src="${scriptUri}"></script>
 
 </body>
 </html>`;

@@ -9,6 +9,7 @@ const {
     getNodeType
 } = require('../graph/graphModel');
 const { GRAPH2_SCOPES, GRAPH2_SOURCES } = require('./graph2State');
+const { buildXGraphData } = require('../graph/graphPayload');
 
 function buildGraph2Payload(state, getActiveNodeId = () => null) {
     const activeNodeId = getActiveNodeId();
@@ -37,6 +38,7 @@ function buildGraph2Payload(state, getActiveNodeId = () => null) {
         queryText: state.queryText || '',
         facets,
         model,
+        graphData: buildXGraphData(rawModel),
         hiddenWorkspaceNeighborCount: model.summary.hiddenWorkspaceNeighborCount || 0,
         empty: model.summary.nodeCount === 0
     };

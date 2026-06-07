@@ -9,9 +9,9 @@ const GRAPH_BOOT_STYLES = `:root{
   --text:var(--vscode-editor-foreground,#dbe2ea);
   --dim:var(--vscode-disabledForeground,#69727d);
   --mid:var(--vscode-descriptionForeground,#95a1ac);
-  --accent:#4fc4a0;
-  --accent2:#6eb3f0;
-  --accent3:#e5a96a;
+  --accent:#5ECFBE;
+  --accent2:#C49BF0;
+  --accent3:#E7A85A;
   --sans:'Segoe UI',system-ui,sans-serif;
 }
 *{box-sizing:border-box;margin:0;padding:0}
@@ -26,7 +26,7 @@ body{background:var(--bg);color:var(--text);font:13px/1.5 var(--sans)}
     radial-gradient(circle at 50% 96%,color-mix(in srgb,var(--accent3) 5%,transparent),transparent 32%),
     var(--bg)
 }
-#graph{position:absolute;inset:0}
+#graph-container{position:absolute;inset:0}
 .toolbar{
   position:absolute;top:12px;left:12px;z-index:100;
   display:flex;align-items:center;gap:6px;flex-wrap:wrap;
@@ -42,6 +42,7 @@ body{background:var(--bg);color:var(--text);font:13px/1.5 var(--sans)}
   background:rgba(255,255,255,.04);
   border:1px solid var(--border)
 }
+.sr-only{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0}
 .mode-help{
   position:absolute;top:78px;left:12px;z-index:95;
   max-width:540px;
@@ -55,7 +56,7 @@ body{background:var(--bg);color:var(--text);font:13px/1.5 var(--sans)}
 .focus-mode{
   flex-shrink:0;
   padding:2px 7px;border-radius:999px;
-  background:rgba(110,179,240,.14);
+  background:rgba(196,155,240,.14);
   color:var(--accent2);font-size:10px;font-weight:700;letter-spacing:.05em;text-transform:uppercase
 }
 .focus-name{
@@ -141,12 +142,12 @@ body{background:var(--bg);color:var(--text);font:13px/1.5 var(--sans)}
 .chips{display:flex;flex-wrap:wrap;gap:5px}
 .chip{display:inline-flex;align-items:center;gap:5px;padding:3px 9px 3px 7px;border-radius:999px;border:1px solid var(--border);background:var(--surface3);font-size:11px;cursor:pointer;color:var(--mid);transition:all .14s;user-select:none}
 .chip:hover{border-color:rgba(255,255,255,.2);color:var(--text)}
-.chip.on{border-color:rgba(110,179,240,.4);color:var(--accent2);background:rgba(110,179,240,.1)}
+.chip.on{border-color:rgba(196,155,240,.4);color:var(--accent2);background:rgba(196,155,240,.1)}
 .chip-dot{width:7px;height:7px;border-radius:50%;flex-shrink:0}
 .nlist{display:flex;flex-direction:column;gap:2px}
 .nrow{display:flex;align-items:center;gap:8px;padding:6px 8px;border-radius:8px;cursor:pointer;width:100%;text-align:left;background:transparent;border:none;color:var(--text);font:inherit;transition:background .1s}
 .nrow:hover{background:rgba(255,255,255,.05)}
-.nrow.on{background:rgba(110,179,240,.1);border-left:2px solid var(--accent2);padding-left:6px}
+.nrow.on{background:rgba(196,155,240,.1);border-left:2px solid var(--accent2);padding-left:6px}
 .nrow-dot{width:8px;height:8px;border-radius:50%;flex-shrink:0}
 .nrow-info{flex:1;min-width:0}
 .nrow-name{font-size:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;display:block}
@@ -161,12 +162,16 @@ body{background:var(--bg);color:var(--text);font:13px/1.5 var(--sans)}
 .btn:hover{background:rgba(255,255,255,.07);border-color:rgba(255,255,255,.18)}
 .btn:disabled{opacity:.3;cursor:default;pointer-events:none}
 .btn.seg{font-size:12px;padding:5px 11px}
-.btn.seg.on{background:rgba(110,179,240,.15);border-color:rgba(110,179,240,.45);color:var(--accent2)}
-.btn.pri{background:rgba(79,196,160,.12);border-color:rgba(79,196,160,.35);color:var(--accent)}
-.btn.pri:hover{background:rgba(79,196,160,.22)}
+.btn.seg.on{background:rgba(196,155,240,.15);border-color:rgba(196,155,240,.45);color:var(--accent2)}
+.btn.pri{background:rgba(94,207,190,.12);border-color:rgba(94,207,190,.35);color:var(--accent)}
+.btn.pri:hover{background:rgba(94,207,190,.22)}
 .btn.sq{width:30px;height:30px;padding:0;display:flex;align-items:center;justify-content:center;font-size:15px;font-weight:700}
+.layer-btn{padding:4px 9px;border-radius:7px;border:1px solid var(--border);background:transparent;color:var(--mid);font:inherit;font-size:11px;cursor:pointer;white-space:nowrap;transition:background .1s,color .1s,border-color .1s}
+.layer-btn:hover{color:var(--text)}
+.layer-btn.on{background:rgba(94,207,190,.14);border-color:rgba(94,207,190,.4);color:var(--accent)}
+.btn:focus-visible,.inp:focus-visible,.chip:focus-visible,.nrow:focus-visible,.ctx-item:focus-visible{outline:2px solid var(--accent2);outline-offset:2px}
 .inp{padding:5px 10px;border-radius:7px;outline:none;border:1px solid var(--border);background:var(--surface3);color:var(--text);font:inherit;font-size:12px;transition:border-color .12s}
-.inp:focus{border-color:rgba(110,179,240,.45)}
+.inp:focus{border-color:rgba(196,155,240,.45)}
 .inp::placeholder{color:var(--mid)}
 .inp[type=search]{width:140px}
 select.inp{cursor:pointer}
@@ -175,6 +180,10 @@ body.vscode-light{
 }
 body.vscode-light .btn,body.vscode-light .chip,body.vscode-light .inp{box-shadow:none}
 body.vscode-light .btn.refine-btn{color:color-mix(in srgb,var(--accent) 68%,var(--text))}
+/* In light themes --mid (descriptionForeground) is a muted gray that becomes
+   near-invisible on the light --surface3 (input-background) chip background.
+   Override to use the main text color for readable contrast. */
+body.vscode-light .chip{color:var(--text);background:color-mix(in srgb,var(--surface3) 55%,var(--border))}
 body.vscode-light .chip.active{color:color-mix(in srgb,var(--accent) 80%,var(--text))}
 body.vscode-light .live-bar{background:color-mix(in srgb,var(--surface) 58%,white)}
 /* Narrow sidebar embed: hide internal info panel and advanced toolbar items */

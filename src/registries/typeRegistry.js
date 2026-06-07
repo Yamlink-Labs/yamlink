@@ -10,11 +10,16 @@
 
 let typeMap = new Map(); // type → Set of sourceIds
 
+/** @returns {void} */
 function clearRegistry() {
     typeMap.clear();
 }
 
-// Called once per node during index build — if type: field exists
+/**
+ * @param {string} typeValue
+ * @param {string} sourceId
+ * @returns {void}
+ */
 function registerType(typeValue, sourceId) {
     if (!typeValue || !sourceId) return;
 
@@ -27,8 +32,11 @@ function registerType(typeValue, sourceId) {
     typeMap.get(normalized).add(sourceId);
 }
 
-// Called during incremental update when a node's type: field changes.
-// Removes sourceId from its old type bucket; deletes the bucket if empty.
+/**
+ * @param {string} typeValue
+ * @param {string} sourceId
+ * @returns {void}
+ */
 function unregisterType(typeValue, sourceId) {
     if (!typeValue || !sourceId) return;
     const normalized = typeValue.trim().toLowerCase();
@@ -38,23 +46,29 @@ function unregisterType(typeValue, sourceId) {
     if (entry.size === 0) typeMap.delete(normalized);
 }
 
-// Full registry — type → Set of sourceIds
+/** @returns {Map<string, Set<string>>} type → Set of sourceIds */
 function getRegistry() {
     return typeMap;
 }
 
-// All known type strings
+/** @returns {Set<string>} */
 function getTypes() {
     return new Set(typeMap.keys());
 }
 
-// Is this type present in at least one indexed node?
+/**
+ * @param {string} typeValue
+ * @returns {boolean}
+ */
 function isKnownType(typeValue) {
     if (!typeValue) return false;
     return typeMap.has(typeValue.trim().toLowerCase());
 }
 
-// Only one node has this type — likely a typo
+/**
+ * @param {string} typeValue
+ * @returns {boolean}
+ */
 function isSingleton(typeValue) {
     if (!typeValue) return false;
     const normalized = typeValue.trim().toLowerCase();
@@ -62,6 +76,7 @@ function isSingleton(typeValue) {
     return entry ? entry.size === 1 : false;
 }
 
+/** @returns {{ uniqueTypes: number, totalTyped: number, singletons: string[] }} */
 function getRegistryStats() {
     let totalTyped = 0;
     for (const ids of typeMap.values()) totalTyped += ids.size;

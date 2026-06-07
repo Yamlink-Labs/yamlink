@@ -80,3 +80,35 @@ export const EDGE_COLORS = Object.freeze({
   medium:  0x666b72,   // text-muted
   weak:    0x2b2d31,   // bg-active
 });
+
+/** Semantic layer — edge colour by relation field name */
+export const FIELD_CATEGORY_COLORS = Object.freeze({
+  // person-type fields
+  person:     '#5ecfbe', mentor:    '#5ecfbe', author:    '#5ecfbe',
+  contact:    '#5ecfbe', owner:     '#5ecfbe', manager:   '#5ecfbe',
+  supervisor: '#5ecfbe', colleague: '#5ecfbe', creator:   '#5ecfbe',
+  // container-type fields
+  project: '#e7a85a', team:      '#e7a85a', unit:   '#e7a85a',
+  parent:  '#e7a85a', workspace: '#e7a85a', group:  '#e7a85a',
+  // topic-type fields
+  topic: '#c49bf0', theme:    '#c49bf0', area:     '#c49bf0',
+  tag:   '#c49bf0', category: '#c49bf0', subject:  '#c49bf0',
+  // event-type fields
+  event: '#ff429f', session: '#ff429f', mission: '#ff429f', meeting: '#ff429f',
+});
+
+/** Health layer — node ring colour by lifecycle state */
+export const LIFECYCLE_RING_COLORS = Object.freeze({
+  hub:          '#4fc4a0',   // bright teal  — highly connected anchor
+  consolidated: '#3fb950',   // green        — healthy, stable
+  growing:      '#e7a85a',   // amber        — actively developing
+  draft:        '#8899aa',   // muted        — sparse / new
+  stale:        '#ff6b6b',   // red          — needs attention
+});
+
+/** Health layer — node ring colour by drift state (takes precedence over lifecycle) */
+export const DRIFT_RING_COLORS = Object.freeze({
+  'minor-drift': '#ffd93d',  // yellow  — slight deviation
+  'drifting':    '#ff9a3c',  // orange  — notable structural drift
+  'outlier':     '#ff6b6b',  // red     — significant outlier
+});

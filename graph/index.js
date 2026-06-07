@@ -24,10 +24,13 @@ export { LayoutWorker }     from './core/LayoutWorker.js';
  */
 export function createGraph(opts = {}) {
   const renderer = new Canvas2DRenderer(opts.container, {
-    width:       opts.width,
-    height:      opts.height,
-    onNodeClick: opts.onNodeClick,
-    onNodeHover: opts.onNodeHover,
+    width:            opts.width,
+    height:           opts.height,
+    onNodeClick:      opts.onNodeClick,
+    onNodeHover:      opts.onNodeHover,
+    onNodeDragStart:  (id)       => layout?.dragStart?.(id),
+    onNodeDrag:       (id, x, y) => layout?.drag?.(id, x, y),
+    onNodeDragEnd:    (id)       => layout?.dragEnd?.(id),
   });
 
   let layout;
@@ -62,9 +65,13 @@ export function createGraph(opts = {}) {
       layout.init(graphData.nodes, graphData.edges);
       layout.run();
     },
-    resize:  (w, h) => renderer.resize(w, h),
-    fitView: ()     => renderer.fitView(),
-    destroy: ()     => { layout.destroy?.(); renderer.destroy(); },
+    resize:    (w, h)      => renderer.resize(w, h),
+    fitView:   ()          => renderer.fitView(),
+    setLayer:  (name, on)  => renderer.setLayer(name, on),
+    getLayer:  (name)      => renderer.getLayer(name),
+    setFilter: (kinds)     => renderer.setFilter(kinds),
+    setSearch: (query)     => renderer.setSearch(query),
+    destroy:   ()          => { layout.destroy?.(); renderer.destroy(); },
     renderer,
     layout,
   };

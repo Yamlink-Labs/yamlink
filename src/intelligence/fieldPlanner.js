@@ -24,13 +24,15 @@ const LEVEL = Object.freeze({
 });
 
 // How much to trust each evidence source.
-// Schema is authoritative. Usage is learned but noisy. Prior is heuristic.
+// Schema is authoritative. Usage is learned. Calibration is user feedback. Prior is heuristic.
 const SOURCE_WEIGHT = Object.freeze({
-    schema:  1.00,
-    usage:   0.85,
-    context: 0.75,  // same-note field pattern — supporting evidence, not primary
-    prior:   0.70,
-    default: 0.00
+    schema:      1.00,
+    usage:       0.85,
+    calibration: 0.83,  // user accepted our prediction — high trust, accumulates over time
+    implicit:    0.80,  // mutation log history — strong but not as strong as current vault state
+    context:     0.75,  // same-note field pattern — supporting evidence, not primary
+    prior:       0.70,
+    default:     0.00
 });
 
 // These categories never receive relation UI — no exception, no confidence override.
@@ -41,6 +43,14 @@ const HARD_BLOCKED = new Set([
     CATEGORY.WORKFLOW
 ]);
 
+// Scale a confidence threshold by vault maturity.
+// maturity=0 (brand new vault): bars drop to 65% — the system must speak up.
+// maturity=1 (established vault): full bars — the system can afford to be selective.
+/** @param {number} base @param {number|null|undefined} vaultMaturity @returns {number} */
+function _adjustedThreshold(base, vaultMaturity) {
+    return base * (0.65 + 0.35 * Math.max(0, Math.min(1, vaultMaturity ?? 1)));
+}
+
 /**
  * Decide what UI level and which actions are appropriate for a classified field
  * on a given surface.
@@ -50,28 +60,30 @@ const HARD_BLOCKED = new Set([
  *   completion — reactive. User typed [[ or triggered suggest. Lower bar.
  *   decoration — passive. Lowest bar.
  *
- * @param {{ category: string, confidence: number, source: string, reasons?: string[] }} classification
- * @param {'lightbulb'|'completion'|'decoration'} surface
+ * @param {{ category: string, confidence: number, source: string, reasons?: string[], relationStrength?: string|null, vaultMaturity?: number }} classification
+ * @param {string} surface
  * @returns {{ level: number, allowedActions: Set<string>, reason: string }}
  */
 function planFieldActions(classification, surface) {
     const { category, confidence, source, relationStrength = null } = classification;
+    const vaultMaturity = classification.vaultMaturity ?? 1;
     const weight = SOURCE_WEIGHT[source] ?? 0.70;
     const ec = confidence * weight; // effective confidence
     const isCertainRelation = relationStrength === RELATION_STRENGTH.CERTAIN;
     const isLikelyRelation = relationStrength === RELATION_STRENGTH.LIKELY;
     const isWeakRelation = relationStrength === RELATION_STRENGTH.WEAK;
 
-    if (HARD_BLOCKED.has(category)) {
+    if (HARD_BLOCKED.has(/** @type {any} */ (category))) {
         return _plan(LEVEL.SILENCE, [], `${category} fields never receive relation UI`, classification, ec, weight);
     }
 
     if (surface === 'lightbulb') {
-        // Proactive — only speak when we are fairly sure
+        // Proactive — only speak when we are fairly sure.
+        // On immature vaults the bars lower so the first typed link isn't met with silence.
         if (category !== CATEGORY.RELATION) {
             return _plan(LEVEL.SILENCE, [], `${category} below lightbulb threshold — staying quiet`, classification, ec, weight);
         }
-        if (ec >= 0.72 && !isWeakRelation) {
+        if (ec >= _adjustedThreshold(0.72, vaultMaturity) && !isWeakRelation) {
             return _plan(LEVEL.QUICKFIX,
                 ['relationCompletion', 'fieldQuickfix', 'documentBundle', 'documentView', 'createNote'],
                 `RELATION confirmed (ec=${_pct(ec)} via ${source}${relationStrength ? `, ${relationStrength}` : ''})`,
@@ -79,7 +91,7 @@ function planFieldActions(classification, surface) {
                 ec,
                 weight);
         }
-        if (ec >= 0.38 || (isLikelyRelation && ec >= 0.34)) {
+        if (ec >= _adjustedThreshold(0.38, vaultMaturity) || (isLikelyRelation && ec >= _adjustedThreshold(0.34, vaultMaturity))) {
             return _plan(LEVEL.DOCUMENT,
                 ['documentBundle', 'documentView'],
                 `RELATION likely (ec=${_pct(ec)} via ${source}${relationStrength ? `, ${relationStrength}` : ''}) — document actions only`,
@@ -87,7 +99,7 @@ function planFieldActions(classification, surface) {
                 ec,
                 weight);
         }
-        if (ec >= 0.28 || (isWeakRelation && ec >= 0.24)) {
+        if (ec >= _adjustedThreshold(0.28, vaultMaturity) || (isWeakRelation && ec >= _adjustedThreshold(0.24, vaultMaturity))) {
             return _plan(LEVEL.HINT,
                 ['fieldHint'],
                 `weak RELATION signal (ec=${_pct(ec)}${relationStrength ? `, ${relationStrength}` : ''}) — hint only`,
@@ -130,6 +142,12 @@ function planFieldActions(classification, surface) {
  * @param {{ category: string, confidence: number, source: string }} classification
  * @param {'lightbulb'|'completion'|'decoration'} surface
  * @param {string} actionName
+ */
+/**
+ * @param {{ category: string, confidence: number, source: string, relationStrength?: string|null }} classification
+ * @param {string} surface
+ * @param {string} actionName
+ * @returns {boolean}
  */
 function canAct(classification, surface, actionName) {
     return planFieldActions(classification, surface).allowedActions.has(actionName);

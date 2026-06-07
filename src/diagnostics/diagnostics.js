@@ -1,16 +1,36 @@
 const vscode = require('vscode');
+const fs = require('fs');
+const path = require('path');
 const { isKnownType } = require('../registries/typeRegistry');
 const { hasSchema, getSchema, getDuplicateSchemas } = require('../registries/schemaRegistry');
 const { getDuplicateIds, getFieldsCache, getAliasIndex } = require('../core/indexService');
 const { getBacklinks } = require('../core/graph');
 const { computeSuggestionsForNode, QUERY_SUGGESTION_THRESHOLD } = require('../engine/suggestions');
 const { extractCanonicalIdFromFrontmatter, resolveLinkedTarget } = require('../core/id');
+const { getTemplateForType, extractTemplateFields, extractTemplateType, TEMPLATES_DIR } = require('../core/templateRegistry');
+const { getPrimaryWorkspaceRoot } = require('../core/workspace');
 
 
 const MIN_VAULT_SIZE_FOR_TYPE_ADVISORY = 10;
 
 let diagnosticCollection;
 
+function findFmClosingLine(text) {
+    const lines = text.split('\n');
+    let inFm = false;
+    for (let i = 0; i < lines.length; i++) {
+        const trimmed = lines[i].replace(/\r$/, '').trim();
+        if (!inFm && trimmed === '---') { inFm = true; continue; }
+        if (inFm && trimmed === '---') return i;
+    }
+    return -1;
+}
+
+/**
+ * @param {import('vscode').ExtensionContext} context
+ * @param {() => Map<string, string>} getIndex
+ * @returns {void}
+ */
 function registerDiagnostics(context, getIndex) {
     let debounceTimer;
     diagnosticCollection = vscode.languages.createDiagnosticCollection("yamlink");
@@ -21,7 +41,82 @@ function registerDiagnostics(context, getIndex) {
             clearTimeout(debounceTimer);
             debounceTimer = setTimeout(() => {
                 validateDocument(event.document, getIndex);
+                // Template edited — re-validate all open notes so drift diagnostics
+                // fire immediately. validateDocument reads from the open buffer, so
+                // unsaved template changes are reflected without needing Ctrl+S.
+                if (event.document.uri.fsPath.includes('_templates')) {
+                    validateAll(getIndex);
+                }
             }, 500);
+        })
+    );
+
+    // When a template is saved, find ALL vault notes with that type that are
+    // missing the new fields — open or closed — and offer to fix them all.
+    context.subscriptions.push(
+        vscode.workspace.onDidSaveTextDocument((savedDoc) => {
+            if (savedDoc.languageId !== 'markdown' || !savedDoc.uri.fsPath.includes('_templates')) return;
+            validateAll(getIndex);
+
+            const savedContent = savedDoc.getText();
+            const savedType = extractTemplateType(savedContent);
+            const savedFields = extractTemplateFields(savedContent);
+            if (!savedType || !savedFields.length) return;
+
+            // Use the index to find every note of this type, not just open tabs.
+            const idIndex = getIndex();      // Map<noteId, filePath>
+            const fieldsCache = getFieldsCache(); // Map<noteId, fields>
+            const allDrifted = [];
+            for (const [noteId, fields] of fieldsCache) {
+                const noteType = String(fields?.type || '').trim().toLowerCase();
+                if (noteType !== savedType) continue;
+                const filePath = idIndex.get(noteId);
+                if (!filePath || filePath.includes('_templates')) continue;
+                const existingKeys = new Set(Object.keys(fields || {}).map(k => k.toLowerCase()));
+                const missing = savedFields.filter(f => !existingKeys.has(f.toLowerCase()));
+                if (missing.length > 0) allDrifted.push({ filePath, missing });
+            }
+
+            if (allDrifted.length === 0) return;
+
+            const n = allDrifted.length;
+            vscode.window.showInformationMessage(
+                `Yamlink: Template "${savedType}" has new fields. Apply to ${n} note${n !== 1 ? 's' : ''}?`,
+                'Apply', 'Later'
+            ).then(async choice => {
+                if (choice !== 'Apply') return;
+                let fixed = 0;
+                for (const { filePath, missing } of allDrifted) {
+                    const openDoc = (vscode.workspace.textDocuments || []).find(
+                        d => d.uri.fsPath === filePath
+                    );
+                    if (openDoc) {
+                        const closingDash = findFmClosingLine(openDoc.getText());
+                        if (closingDash === -1) continue;
+                        const insertion = missing.map(f => `${f}:`).join('\n') + '\n';
+                        const edit = new vscode.WorkspaceEdit();
+                        edit.insert(openDoc.uri, new vscode.Position(closingDash, 0), insertion);
+                        await vscode.workspace.applyEdit(edit);
+                        await openDoc.save();
+                    } else {
+                        try {
+                            const content = fs.readFileSync(filePath, 'utf8');
+                            const closingDash = findFmClosingLine(content);
+                            if (closingDash === -1) continue;
+                            const lines = content.split('\n');
+                            lines.splice(closingDash, 0, ...missing.map(f => `${f}:`));
+                            fs.writeFileSync(filePath, lines.join('\n'), 'utf8');
+                        } catch (_) { continue; }
+                    }
+                    fixed++;
+                }
+                if (fixed > 0) {
+                    validateAll(getIndex);
+                    vscode.window.showInformationMessage(
+                        `Yamlink: Added missing fields to ${fixed} note${fixed !== 1 ? 's' : ''}.`
+                    );
+                }
+            });
         })
     );
 
@@ -62,6 +157,10 @@ function registerDiagnostics(context, getIndex) {
     }, 1500);
 }
 
+/**
+ * @param {() => Map<string, string>} getIndex
+ * @returns {void}
+ */
 function validateAll(getIndex) {
     vscode.workspace.textDocuments.forEach((doc) => {
         if (doc.languageId === 'markdown') {
@@ -160,7 +259,7 @@ function validateDocument(document, getIndex) {
                 isInFrontmatter
                     ? `Yamlink: Relation "${id}" does not exist.`
                     : `Yamlink: ID "${id}" does not exist.`,
-                vscode.DiagnosticSeverity.Warning
+                vscode.DiagnosticSeverity.Hint
             );
             diagnostic.source = "yamlink";
             diagnostic.code   = isInFrontmatter
@@ -356,9 +455,63 @@ function validateDocument(document, getIndex) {
         }
     }
 
+    // ─────────────────────────────────────────────
+    // Diagnostic 7: Template drift
+    // Fires when a note's type has a _templates/ file and the note is
+    // missing one or more of its field keys.
+    // Guard: only fire when frontmatter is fully closed (has opening AND
+    // closing ---), so the insert command always has a valid insertion point.
+    // ─────────────────────────────────────────────
+    const firstDashIdx = text.indexOf('---');
+    const closingDashIdx = firstDashIdx !== -1 ? text.indexOf('---', firstDashIdx + 3) : -1;
+    const hasClosedFrontmatter = hasFrontmatter && closingDashIdx !== -1;
+    if (hasClosedFrontmatter && hasId) {
+        const typeMatch = text.match(/^\s*type:\s*(.+?)\s*$/m);
+        if (typeMatch) {
+            const typeValue = typeMatch[1].trim().toLowerCase();
+            const SKIP_TYPES = new Set(['schema', 'dashboard', 'template']);
+            if (!SKIP_TYPES.has(typeValue)) {
+                const root = getPrimaryWorkspaceRoot(vscode.workspace.workspaceFolders);
+                if (root) {
+                    // Prefer the open buffer for the template file so that edits
+                    // to the template tab are reflected before the user saves.
+                    const templateFilePath = path.join(root, TEMPLATES_DIR, typeValue + '.md');
+                    const openTpl = (vscode.workspace.textDocuments || []).find(
+                        d => d.uri.fsPath.toLowerCase() === templateFilePath.toLowerCase()
+                    );
+                    const templateFields = openTpl
+                        ? extractTemplateFields(openTpl.getText())
+                        : (getTemplateForType(root, typeValue)?.fields || null);
+
+                    if (templateFields && templateFields.length > 0) {
+                        const existingKeys = new Set(
+                            [...text.matchAll(/^\s*([\w-]+):/gm)].map(m => m[1].toLowerCase())
+                        );
+                        const missing = templateFields.filter(f => !existingKeys.has(f.toLowerCase()));
+                        if (missing.length > 0) {
+                            const typeLineIndex = text.split('\n').findIndex(l => /^\s*type:\s*.+/.test(l));
+                            const range = typeLineIndex !== -1
+                                ? document.lineAt(typeLineIndex).range
+                                : new vscode.Range(new vscode.Position(0, 0), new vscode.Position(0, 0));
+                            const diagnostic = new vscode.Diagnostic(
+                                range,
+                                `Yamlink: Missing template fields: ${missing.join(', ')}`,
+                                vscode.DiagnosticSeverity.Warning
+                            );
+                            diagnostic.source = 'yamlink';
+                            diagnostic.code = 'yamlink.templateDrift';
+                            diagnostics.push(diagnostic);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     diagnosticCollection.set(document.uri, diagnostics);
 }
 
+/** @returns {number} */
 function getBrokenCount() {
     if (!diagnosticCollection) return 0;
     let count = 0;

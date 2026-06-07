@@ -7,6 +7,7 @@ const { normalizeGraph2State, GRAPH2_SCOPES } = require('./graph2State');
 const { buildGraph2Payload } = require('./graph2Payload');
 const { buildGraph2SidebarBootHtml } = require('./graph2SidebarBootHtml');
 
+/** @returns {Record<string,any>} */
 function createGraph2SidebarController() {
     let sidebarView = null;
     let panelState = null;
@@ -131,7 +132,7 @@ function createGraph2SidebarController() {
                 webviewView.webview.options = {
                     enableScripts: true,
                     localResourceRoots: [
-                        vscode.Uri.joinPath(context.extensionUri, 'src', 'features', 'vendor')
+                        vscode.Uri.joinPath(context.extensionUri, 'graph', 'renderer')
                     ]
                 };
 
@@ -144,9 +145,13 @@ function createGraph2SidebarController() {
                     }, activeId, null);
                 }
 
+                const rendererUri = webviewView.webview.asWebviewUri(
+                    vscode.Uri.joinPath(context.extensionUri, 'graph', 'renderer', 'Canvas2DRenderer.js')
+                ).toString();
+
                 webviewView.webview.html = perfTracker.measureSync(
                     'graph2.sidebar.buildBootHtml', null,
-                    () => buildGraph2SidebarBootHtml(webviewView.webview, context.extensionUri)
+                    () => buildGraph2SidebarBootHtml(webviewView.webview, context.extensionUri, rendererUri)
                 );
 
                 webviewView.webview.onDidReceiveMessage(

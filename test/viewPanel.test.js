@@ -1,15 +1,26 @@
 'use strict';
 
-const { test, describe } = require('node:test');
+const { test, describe, beforeEach } = require('node:test');
 const assert = require('node:assert/strict');
 const Module = require('module');
+const fs = require('fs');
+const os = require('os');
+const path = require('path');
 
 const originalResolve = Module._resolveFilename.bind(Module);
 require.cache.__viewpanel_vscode_stub__ = {
     id: '__viewpanel_vscode_stub__',
     filename: '__viewpanel_vscode_stub__',
     loaded: true,
-    exports: {}
+    exports: {
+        workspace: {
+            textDocuments: [],
+            applyEdit: async function () { return true; }
+        },
+        Uri: {
+            file(filePath) { return { fsPath: filePath }; }
+        }
+    }
 };
 
 Module._resolveFilename = function (request, parent, ...rest) {
@@ -21,21 +32,32 @@ const {
     normaliseTableDisplayValue,
     normalizeSavedSort,
     sortRowsForSavedSort,
-    formatQueryHeroText,
     buildQuickFieldList,
     getTaskStatusPresentation,
     buildTableEmptyStateTitle,
     buildEmptyStateHint,
-    classifyQueryWarnings,
-    buildWarningBanner
-} = require('../src/features/view/viewPanelHtml');
-const { extractIdFromText } = require('../src/features/viewPanel');
+    classifyQueryWarnings
+} = require('../src/features/view/viewTableLogic');
+const { formatQueryHeroText, buildWarningBanner } = require('../src/features/view/viewPanelHtml');
+const { extractIdFromText, toggleTaskCheckbox } = require('../src/features/viewPanel');
 const { computeNextSortState } = require('../src/features/viewPanelUiRuntime');
 const {
     normaliseColumnFilters,
     setColumnFilterValues,
     rowMatchesColumnFilters
 } = require('../src/features/viewPanelStateRuntime');
+const { getPathIndex } = require('../src/core/indexService');
+const {
+    initMutationLog,
+    clearMutationEvents,
+    getMutationEvents
+} = require('../src/runtime/mutationEventLog');
+
+beforeEach(() => {
+    initMutationLog(null);
+    clearMutationEvents();
+    getPathIndex().clear();
+});
 
 describe('view panel display helpers', () => {
     test('keeps canonical dates untouched and normalises parseable datetime strings', () => {
@@ -143,6 +165,26 @@ describe('view panel display helpers', () => {
         );
     });
 
+    test('task status presentation handles due-today and due-soon states', () => {
+        assert.deepEqual(
+            getTaskStatusPresentation({ fields: { done: 'false', date: '2026-05-15' } }, '2026-05-15'),
+            { key: 'due-today', label: 'Due today', sortValue: 'due-today', filterValue: 'due-today', className: 'due-today' }
+        );
+        assert.deepEqual(
+            getTaskStatusPresentation({ fields: { done: 'false', date: '2026-05-17' } }, '2026-05-15'),
+            { key: 'due-soon', label: 'Due soon', sortValue: 'due-soon', filterValue: 'due-soon', className: 'due-soon' }
+        );
+        assert.deepEqual(
+            getTaskStatusPresentation({ fields: { done: 'false', date: '2026-05-18' } }, '2026-05-15'),
+            { key: 'due-soon', label: 'Due soon', sortValue: 'due-soon', filterValue: 'due-soon', className: 'due-soon' }
+        );
+        // 4 days out is not due-soon
+        assert.deepEqual(
+            getTaskStatusPresentation({ fields: { done: 'false', date: '2026-05-19' } }, '2026-05-15'),
+            { key: 'false', label: 'Not done', sortValue: 'not done', filterValue: 'not done', className: 'pending' }
+        );
+    });
+
     test('normalizes saved sort state from either legacy or new shape', () => {
         assert.deepEqual(normalizeSavedSort({ col: 'status', asc: true }), {
             field: 'status',
@@ -238,6 +280,29 @@ describe('view panel display helpers', () => {
         assert.equal(rowMatchesColumnFilters(makeRow(['active', 'Rico']), filters, getColumnIndex), true);
         assert.equal(rowMatchesColumnFilters(makeRow(['done', 'Rico']), filters, getColumnIndex), false);
         assert.equal(rowMatchesColumnFilters(makeRow(['blocked', 'Carmen']), filters, getColumnIndex), false);
+    });
+
+    test('task toggles append a task status history event for the owning note', async () => {
+        const tmpPath = path.join(os.tmpdir(), `yamlink-task-toggle-${Date.now()}.md`);
+        try {
+            fs.writeFileSync(tmpPath, '- [ ] Review drop sequence\n', 'utf8');
+            getPathIndex().set(tmpPath, 'planet-p-assault');
+
+            const ok = await toggleTaskCheckbox(tmpPath, 1, true);
+            assert.equal(ok, true);
+
+            const content = fs.readFileSync(tmpPath, 'utf8');
+            assert.match(content, /^\- \[x\] Review drop sequence/m);
+
+            const events = getMutationEvents({ noteId: 'planet-p-assault', type: 'task_status_changed' });
+            assert.equal(events.length, 1);
+            assert.equal(events[0].field, 'task:1');
+            assert.equal(events[0].oldValue, 'open');
+            assert.equal(events[0].newValue, 'done');
+        } finally {
+            getPathIndex().delete(tmpPath);
+            try { fs.unlinkSync(tmpPath); } catch (_) {}
+        }
     });
 });
 

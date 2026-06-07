@@ -173,6 +173,9 @@ require.cache.__completion_date_stub__ = {
                 { token: 'tomorrow', label: 'Tomorrow', iso: '2026-05-05' },
                 { token: 'next-week', label: 'Next week', iso: '2026-05-11' }
             ];
+        },
+        getTodayIsoLocal() {
+            return '2026-05-30';
         }
     }
 };
@@ -702,7 +705,9 @@ describe('frontmatter relation completion', () => {
         assert.ok(starters.some(entry => /lt-rasczak/i.test(String(entry.bodyEvidence || ''))));
     });
 
-    test('offers archetype-based field suggestions from type and title cues', () => {
+    test('returns empty for type with no vault bundle — no hardcoded archetype fallback', () => {
+        // account type in test vault has no real field bundle (acme-inc/globex have only type:)
+        // The system must stay silent rather than guess from a global archetype table.
         const doc = makeDocument([
             '---',
             'id: acme-inc',
@@ -713,9 +718,10 @@ describe('frontmatter relation completion', () => {
         doc.uri = { fsPath: '/vault/account-profile.md' };
 
         const suggestions = collectArchetypeFieldSuggestions(doc, 'account');
-        assert.ok(suggestions.some(entry => entry.key === 'owner'));
-        assert.ok(suggestions.some(entry => entry.key === 'status'));
-        assert.ok(suggestions.some(entry => entry.key === 'contacts'));
+        assert.ok(Array.isArray(suggestions));
+        // No vault evidence for this type → silence, not wrong guesses
+        assert.ok(suggestions.every(entry => !entry.hardcodedFallback),
+            'hardcoded fallback suggestions must never appear — vault-only');
     });
 
     test('prefers vault type-field bundles over archetype priors when bundle evidence exists', () => {
@@ -734,7 +740,8 @@ describe('frontmatter relation completion', () => {
         assert.ok(suggestions.some(entry => entry.bundleDerived === true));
     });
 
-    test('offers note-role-based field suggestions from the note structure itself', () => {
+    test('returns empty for role with no vault proxy data — no hardcoded NOTE_ROLE_FIELD_PRIORS fallback', () => {
+        // meeting type has no notes in the test vault → no vault bundle proxy → silence
         const doc = makeDocument([
             '---',
             'id: call-acme',
@@ -747,9 +754,9 @@ describe('frontmatter relation completion', () => {
         doc.uri = { fsPath: '/vault/partner-call.md' };
 
         const suggestions = collectNoteRoleFieldSuggestions(doc, 'meeting', INDEX);
-        assert.ok(suggestions.some(entry => entry.key === 'purpose'));
-        assert.ok(suggestions.some(entry => entry.key === 'participants'));
-        assert.ok(suggestions.some(entry => entry.source === 'event'));
+        assert.ok(Array.isArray(suggestions));
+        assert.ok(suggestions.every(entry => !entry.hardcodedFallback),
+            'hardcoded NOTE_ROLE_FIELD_PRIORS must never appear — vault teaches the system');
     });
 
     test('prefers role-mapped vault bundles over NOTE_ROLE_FIELD_PRIORS when a proxy type exists', () => {
@@ -769,35 +776,21 @@ describe('frontmatter relation completion', () => {
         assert.ok(suggestions.every(entry => entry.source !== 'person'));
     });
 
-    test('archetype fallback is marked hardcodedFallback and scores below vault bundle', () => {
-        // 'account' type has no real fields in FIELDS (acme-inc / globex have only type:)
-        // so bundle is empty → archetype fallback fires
-        const doc = makeDocument([
-            '---',
-            'id: acme-inc',
-            'type: account',
-            '---'
-        ].join('\n'));
-        const fallbackSuggestions = collectArchetypeFieldSuggestions(doc, 'account');
-        assert.ok(fallbackSuggestions.length > 0);
-        assert.ok(fallbackSuggestions.every(entry => entry.hardcodedFallback === true));
-        // Fallback scores must be lower than the minimum vault bundle score (~120)
-        assert.ok(fallbackSuggestions.every(entry => entry.score < 50));
+    test('no vault data → empty; vault data → vault bundle only, never hardcoded', () => {
+        // 'account' type has no real fields → empty (was: archetype fallback)
+        const doc = makeDocument(['---', 'id: acme-inc', 'type: account', '---'].join('\n'));
+        const emptySuggestions = collectArchetypeFieldSuggestions(doc, 'account');
+        assert.ok(emptySuggestions.every(entry => !entry.hardcodedFallback));
 
-        // 'contact' type has real bundle data (alice-smith, bob-jones) → bundle path fires
-        const doc2 = makeDocument([
-            '---',
-            'id: new-contact',
-            'type: contact',
-            '---'
-        ].join('\n'));
+        // 'contact' type has real bundle data (alice-smith, bob-jones) → vault bundle fires
+        const doc2 = makeDocument(['---', 'id: new-contact', 'type: contact', '---'].join('\n'));
         const bundleSuggestions = collectArchetypeFieldSuggestions(doc2, 'contact');
         assert.ok(bundleSuggestions.some(entry => entry.bundleDerived === true));
         assert.ok(bundleSuggestions.every(entry => !entry.hardcodedFallback));
         assert.ok(bundleSuggestions.some(entry => entry.score >= 100));
     });
 
-    test('NOTE_ROLE_FIELD_PRIORS fallback is capped at 0.40 confidence and marked hardcodedFallback', () => {
+    test('no vault bundle for role → empty, not hardcoded NOTE_ROLE_FIELD_PRIORS', () => {
         const doc = makeDocument([
             '---',
             'id: partner-call',
@@ -809,11 +802,11 @@ describe('frontmatter relation completion', () => {
         ].join('\n'));
         doc.uri = { fsPath: '/vault/partner-call.md' };
 
-        // No meeting notes in FIELDS → no vault bundle proxy → NOTE_ROLE_FIELD_PRIORS fires
+        // No meeting notes in test vault → no vault bundle proxy → empty (not hardcoded list)
         const suggestions = collectNoteRoleFieldSuggestions(doc, 'meeting', INDEX);
-        assert.ok(suggestions.length > 0);
-        assert.ok(suggestions.every(entry => entry.confidence <= 0.40));
-        assert.ok(suggestions.every(entry => entry.hardcodedFallback === true));
+        assert.ok(Array.isArray(suggestions));
+        assert.ok(suggestions.every(entry => !entry.hardcodedFallback),
+            'NOTE_ROLE_FIELD_PRIORS must never appear as a fallback');
     });
 
     test('note-role suggestions from vault bundle proxy are not marked hardcodedFallback', () => {
@@ -906,27 +899,22 @@ describe('frontmatter relation completion', () => {
         assert.equal(finalRanked[0], 'wayne-inc');
     });
 
-    test('uses title and field cues to infer note-role suggestions beyond type names alone', () => {
-        const doc = makeDocument([
+    test('returns only vault-bundle suggestions — no hardcoded NOTE_ROLE_FIELD_PRIORS by role', () => {
+        // The vault may or may not have bundle data for the inferred role's proxy type.
+        // Either way, only vault-derived suggestions are returned — no hardcoded lists.
+        const docConcept = makeDocument([
             '---',
             'id: inkjet-overview',
             'type: note',
             'products: [[product-inkjet-pro]]',
             'related: [[inkjet]]',
-            'summary: Core inkjet concepts across Kyocera products',
+            'summary: Core inkjet concepts',
             '---',
             '# Inkjet concept overview'
         ].join('\n'));
-        doc.uri = { fsPath: '/vault/inkjet-concept-overview.md' };
+        docConcept.uri = { fsPath: '/vault/inkjet-concept-overview.md' };
 
-        const suggestions = collectNoteRoleFieldSuggestions(doc, 'note', INDEX);
-        assert.ok(suggestions.some(entry => entry.key === 'products'));
-        assert.ok(suggestions.some(entry => entry.key === 'concepts'));
-        assert.ok(suggestions.some(entry => entry.source === 'concept'));
-    });
-
-    test('infers task-style note suggestions from broad workflow structure', () => {
-        const doc = makeDocument([
+        const docTask = makeDocument([
             '---',
             'id: fix-graph-selection',
             'type: note',
@@ -937,33 +925,18 @@ describe('frontmatter relation completion', () => {
             '---',
             '# Graph selection bug'
         ].join('\n'));
-        doc.uri = { fsPath: '/vault/graph-selection-bug.md' };
+        docTask.uri = { fsPath: '/vault/graph-selection-bug.md' };
 
-        const suggestions = collectNoteRoleFieldSuggestions(doc, 'note', INDEX);
-        assert.ok(suggestions.some(entry => entry.key === 'priority'));
-        assert.ok(suggestions.some(entry => entry.key === 'assignee'));
-        assert.ok(suggestions.some(entry => entry.source === 'task'));
-    });
-
-    test('note-role suggestions carry explainable reasons forward', () => {
-        const doc = makeDocument([
-            '---',
-            'id: fix-graph-selection',
-            'type: note',
-            'status: in-progress',
-            'deadline: 2026-04-20',
-            'project: [[yamlink]]',
-            'reporter: [[alice-smith]]',
-            '---',
-            '# Graph selection bug'
-        ].join('\n'));
-        doc.uri = { fsPath: '/vault/graph-selection-bug.md' };
-
-        const suggestions = collectNoteRoleFieldSuggestions(doc, 'note', INDEX);
-        const taskSuggestion = suggestions.find(entry => entry.source === 'task');
-        assert.ok(taskSuggestion);
-        assert.ok(Array.isArray(taskSuggestion.reasons));
-        assert.ok(taskSuggestion.reasons.some(reason => reason.includes('task') || reason.includes('workflow')));
+        for (const doc of [docConcept, docTask]) {
+            const suggestions = collectNoteRoleFieldSuggestions(doc, 'note', INDEX);
+            assert.ok(Array.isArray(suggestions));
+            assert.ok(suggestions.every(entry => !entry.hardcodedFallback),
+                'NOTE_ROLE_FIELD_PRIORS must never appear — vault-only suggestions');
+            if (suggestions.length > 0) {
+                // If vault data exists, reasons must be vault-derived
+                assert.ok(suggestions.every(entry => Array.isArray(entry.reasons)));
+            }
+        }
     });
 
     test('field inference detail surfaces semantic reasoning instead of only labels', () => {

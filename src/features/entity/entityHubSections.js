@@ -6,6 +6,18 @@ const {
     extractRelations
 } = require('../entityHubModel');
 
+/* ── Lucide icon helpers ─────────────────────────────────────── */
+function _svgIcon(paths, size) {
+    return '<svg xmlns="http://www.w3.org/2000/svg" width="' + size + '" height="' + size + '" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" style="display:block;flex-shrink:0">' + paths + '</svg>';
+}
+const _CHEVRON_RIGHT = _svgIcon('<polyline points="9 18 15 12 9 6"/>', 11);
+const _ARC_ICONS = {
+    created:    _svgIcon('<path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="12" y1="18" x2="12" y2="12"/><line x1="9" y1="15" x2="15" y2="15"/>', 10),
+    typed:      _svgIcon('<path d="M20.59 13.41l-7.17 7.17a2 2 0 0 1-2.83 0L2 12V2h10l8.59 8.59a2 2 0 0 1 0 2.82z"/><line x1="7" y1="7" x2="7.01" y2="7"/>', 10),
+    connecting: _svgIcon('<path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/>', 10),
+    last:       _svgIcon('<circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/>', 10),
+};
+
 function getRelationRowDisplayName(row) {
     return String(row?.fields?.name || row?.fields?.title || row?.sourceId || '').trim();
 }
@@ -35,7 +47,7 @@ function buildKeyValueSection(title, fieldName, rows, open = true) {
     return [
         `<div class="hub-section${open ? ' open' : ''}" data-field="${esc(fieldName)}">`,
         '    <div class="hub-section-header">',
-        '        <span class="hub-chevron">&#9658;</span>',
+        '        <span class="hub-chevron">' + _CHEVRON_RIGHT + '</span>',
         `        <span class="hub-field">${esc(title)}</span>`,
         `        <span class="hub-count">${rows.length}</span>`,
         '    </div>',
@@ -83,7 +95,7 @@ function buildSummarySection(primaryRows, secondaryRows = []) {
     const section = [
         '<div class="hub-section open" data-field="summary">',
         '    <div class="hub-section-header">',
-        '        <span class="hub-chevron">&#9658;</span>',
+        '        <span class="hub-chevron">' + _CHEVRON_RIGHT + '</span>',
         '        <span class="hub-field">briefing</span>',
         `        <span class="hub-count">${primaryRows.length}</span>`,
         '    </div>',
@@ -148,7 +160,7 @@ function buildActionSection(nodeId, suggestionRows, recipeRows, explanation) {
         return [
             '<div class="hub-section" data-field="next-views">',
             '    <div class="hub-section-header">',
-            '        <span class="hub-chevron">&#9658;</span>',
+            '        <span class="hub-chevron">' + _CHEVRON_RIGHT + '</span>',
             '        <span class="hub-field">next views</span>',
             '        <span class="hub-count">0</span>',
             '    </div>',
@@ -182,7 +194,7 @@ function buildActionSection(nodeId, suggestionRows, recipeRows, explanation) {
     return [
         '<div class="hub-section open" data-field="next-views">',
         '    <div class="hub-section-header">',
-        '        <span class="hub-chevron">&#9658;</span>',
+        '        <span class="hub-chevron">' + _CHEVRON_RIGHT + '</span>',
         '        <span class="hub-field">views</span>',
         `        <span class="hub-count">${sections.length}</span>`,
         '    </div>',
@@ -218,7 +230,7 @@ function buildRelationSection(field, rows, direction) {
     return [
         `<div class="hub-section open" data-field="${esc(direction + ':' + field)}">`,
         '    <div class="hub-section-header">',
-        '        <span class="hub-chevron">&#9658;</span>',
+        '        <span class="hub-chevron">' + _CHEVRON_RIGHT + '</span>',
         `        <span class="hub-field">${esc(direction === 'outgoing' ? `out → ${field}` : `in ← ${field}`)}</span>`,
         `        <span class="hub-count">${rows.length}</span>`,
         '    </div>',
@@ -251,7 +263,7 @@ function buildCompactRelationTableSection(title, fieldName, groups, open = true)
     return [
         `<div class="hub-section${open ? ' open' : ''}" data-field="${esc(fieldName)}">`,
         '    <div class="hub-section-header">',
-        '        <span class="hub-chevron">&#9658;</span>',
+        '        <span class="hub-chevron">' + _CHEVRON_RIGHT + '</span>',
         `        <span class="hub-field">${esc(title)}</span>`,
         `        <span class="hub-count">${rows.length}</span>`,
         '    </div>',
@@ -288,7 +300,7 @@ function buildTaskSection(label, rows) {
     return [
         `<div class="hub-section open" data-field="${esc('tasks:' + label)}">`,
         '    <div class="hub-section-header">',
-        '        <span class="hub-chevron">&#9658;</span>',
+        '        <span class="hub-chevron">' + _CHEVRON_RIGHT + '</span>',
         `        <span class="hub-field">${esc(label)}</span>`,
         `        <span class="hub-count">${rows.length}</span>`,
         '    </div>',
@@ -307,7 +319,7 @@ function buildTimelineSection(rows) {
         return [
             '<div class="hub-section" data-field="timeline">',
             '    <div class="hub-section-header">',
-            '        <span class="hub-chevron">&#9658;</span>',
+            '        <span class="hub-chevron">' + _CHEVRON_RIGHT + '</span>',
             '        <span class="hub-field">timeline</span>',
             '        <span class="hub-count">0</span>',
             '    </div>',
@@ -332,7 +344,7 @@ function buildTimelineSection(rows) {
     return [
         '<div class="hub-section open" data-field="timeline">',
         '    <div class="hub-section-header">',
-        '        <span class="hub-chevron">&#9658;</span>',
+        '        <span class="hub-chevron">' + _CHEVRON_RIGHT + '</span>',
         '        <span class="hub-field">timeline</span>',
         `        <span class="hub-count">${rows.length}</span>`,
         '    </div>',
@@ -350,7 +362,7 @@ function buildEmptySection(title, emptyTitle, emptyCopy) {
     return [
         `<div class="hub-section" data-field="${esc(title)}">`,
         '    <div class="hub-section-header">',
-        '        <span class="hub-chevron">&#9658;</span>',
+        '        <span class="hub-chevron">' + _CHEVRON_RIGHT + '</span>',
         `        <span class="hub-field">${esc(title)}</span>`,
         '        <span class="hub-count">0</span>',
         '    </div>',
@@ -420,6 +432,248 @@ function esc(str) {
         .replace(/>/g, '&gt;');
 }
 
+function _truncateValue(raw, max) {
+    if (raw == null) return '';
+    const s = String(raw);
+    const limit = max || 32;
+    return s.length > limit ? s.slice(0, limit) + '…' : s;
+}
+
+function _extractRelationIds(rawValue) {
+    if (!rawValue) return [];
+    const matches = [...String(rawValue).matchAll(/\[\[([^\]]+)\]\]/g)];
+    return matches.map(function (m) { return m[1].split('|')[0].split('#')[0].split('^')[0].trim(); });
+}
+
+function _renderHistoryValue(raw) {
+    if (raw == null || raw === '') return '<em class="history-empty">—</em>';
+    const str = String(raw);
+    if (str.includes('[[')) {
+        const ids = _extractRelationIds(str);
+        if (ids.length) return ids.map(function (id) { return '<em>' + esc(id) + '</em>'; }).join(', ');
+    }
+    return '<em>' + esc(_truncateValue(str, 32)) + '</em>';
+}
+
+function _formatArcDate(isoTimestamp) {
+    if (!isoTimestamp) return '';
+    const d = new Date(isoTimestamp);
+    const now = new Date();
+    const diffDays = Math.floor((now.getTime() - d.getTime()) / 86400000);
+    if (diffDays === 0) return 'today';
+    if (diffDays === 1) return 'yesterday';
+    if (diffDays < 7) return diffDays + 'd ago';
+    if (diffDays < 30) return Math.floor(diffDays / 7) + 'w ago';
+    if (diffDays < 365) return Math.floor(diffDays / 30) + 'mo ago';
+    return Math.floor(diffDays / 365) + 'y ago';
+}
+
+// _ARC_ICONS defined at module top with Lucide SVGs
+
+function buildArcSection(arc) {
+    if (!arc || !arc.length) return '';
+    const phasesHtml = arc.map(function (phase, i) {
+        const icon = _ARC_ICONS[phase.kind] || '●';
+        const dateStr = _formatArcDate(phase.timestamp);
+        const detailHtml = phase.detail ? '<span class="arc-detail">' + esc(phase.detail) + '</span>' : '';
+        const isLast = i === arc.length - 1;
+        return [
+            '<div class="arc-phase' + (isLast ? ' arc-phase--last' : '') + '">',
+            '<div class="arc-spine">',
+            '<span class="arc-icon arc-icon--' + esc(phase.kind) + '">' + icon + '</span>',
+            isLast ? '' : '<div class="arc-line"></div>',
+            '</div>',
+            '<div class="arc-content">',
+            '<span class="arc-label">' + esc(phase.label) + '</span>',
+            dateStr ? '<span class="arc-date">' + esc(dateStr) + '</span>' : '',
+            detailHtml,
+            '</div>',
+            '</div>'
+        ].filter(Boolean).join('');
+    }).join('');
+    return '<div class="arc-section"><div class="arc-phases">' + phasesHtml + '</div></div>';
+}
+
+function describeHistoryEvent(event) {
+    switch (event.type) {
+        case 'note_created':
+            return 'Note created';
+        case 'note_deleted':
+            return 'Note deleted';
+        case 'type_set':
+            return event.newValue
+                ? 'Type set to <em>' + esc(String(event.newValue)) + '</em>'
+                : 'Type set';
+        case 'field_added':
+            return event.field
+                ? '<strong>' + esc(event.field) + '</strong> added: ' + _renderHistoryValue(event.newValue)
+                : 'Field added';
+        case 'field_changed': {
+            if (event.field) {
+                const oldPart = event.oldValue != null
+                    ? '<span class="history-old">' + _renderHistoryValue(event.oldValue) + '</span> → '
+                    : '';
+                return '<strong>' + esc(event.field) + '</strong>: ' + oldPart + _renderHistoryValue(event.newValue);
+            }
+            return 'Field changed';
+        }
+        case 'field_removed':
+            return event.field
+                ? '<strong>' + esc(event.field) + '</strong> removed'
+                : 'Field removed';
+        case 'relation_changed': {
+            if (event.field) {
+                const oldPart = event.oldValue != null
+                    ? '<span class="history-old">' + _renderHistoryValue(event.oldValue) + '</span> → '
+                    : '';
+                return 'Relation <strong>' + esc(event.field) + '</strong>: ' + oldPart + _renderHistoryValue(event.newValue);
+            }
+            return 'Relation changed';
+        }
+        case 'task_status_changed':
+            return event.newValue === 'done'
+                ? 'Task marked <em>done</em>'
+                : event.newValue === 'open'
+                    ? 'Task reopened'
+                    : 'Task status changed';
+        default:
+            return esc(event.type || 'event');
+    }
+}
+
+function buildHistorySection(groups, totalCount, arc) {
+    const arcHtml = buildArcSection(arc);
+
+    if (!groups || !groups.length) {
+        return [
+            '<div class="hub-section" data-field="history">',
+            '    <div class="hub-section-header">',
+            '        <span class="hub-chevron">' + _CHEVRON_RIGHT + '</span>',
+            '        <span class="hub-field">history</span>',
+            '        <span class="hub-count">0</span>',
+            '    </div>',
+            '    <div class="hub-section-body">',
+            arcHtml ? '        ' + arcHtml : '',
+            buildSectionEmptyState('No history yet.', 'Field changes, new links, and type assignments appear here as you edit this note.'),
+            '    </div>',
+            '</div>'
+        ].filter(Boolean).join('\n');
+    }
+
+    const groupsHtml = groups.map(function (group) {
+        const eventsHtml = group.events.map(function (event) {
+            return [
+                '<div class="history-event">',
+                '  <span class="history-dot history-dot--' + esc(event.type || '') + '"></span>',
+                '  <span class="history-desc">' + describeHistoryEvent(event) + '</span>',
+                '  <span class="history-time">' + esc(event.timeStr || '') + '</span>',
+                '</div>'
+            ].join('');
+        }).join('');
+        return [
+            '<div class="history-group">',
+            '  <div class="history-group-label">' + esc(group.label) + '</div>',
+            '  <div class="history-timeline">' + eventsHtml + '</div>',
+            '</div>'
+        ].join('');
+    }).join('');
+
+    return [
+        '<div class="hub-section open" data-field="history">',
+        '    <div class="hub-section-header">',
+        '        <span class="hub-chevron">' + _CHEVRON_RIGHT + '</span>',
+        '        <span class="hub-field">history</span>',
+        '        <span class="hub-count">' + totalCount + '</span>',
+        '    </div>',
+        '    <div class="hub-section-body">',
+        arcHtml ? '        ' + arcHtml : '',
+        '        ' + groupsHtml,
+        '    </div>',
+        '</div>'
+    ].filter(Boolean).join('\n');
+}
+
+/**
+ * Render the unlinked mentions section for the Links tab.
+ * Each entry is a note whose body mentions this note's name/id without a wikilink.
+ *
+ * @param {Array<{mentioningId: string, mentioningType: string, term: string, count: number}>} mentions
+ * @returns {string}
+ */
+function buildUnlinkedMentionsSection(mentions) {
+    if (!mentions || !mentions.length) return '';
+    const rows = mentions.map(m => {
+        const countLabel = m.count === 1 ? '1 mention' : `${m.count} mentions`;
+        const typeLabel = m.mentioningType ? ` <span class="node-pill">${esc(m.mentioningType)}</span>` : '';
+        return [
+            '<div class="hub-relation-row" data-opennode="true"',
+            `     data-node-id="${esc(m.mentioningId)}" style="cursor:pointer">`,
+            `  <span class="hub-relation-id">${esc(m.mentioningId)}</span>`,
+            typeLabel,
+            `  <span class="hub-relation-meta">${esc(countLabel)}</span>`,
+            '</div>'
+        ].join('');
+    }).join('\n');
+
+    return [
+        '<div class="hub-section open" data-field="unlinked-mentions">',
+        '  <div class="hub-section-header">',
+        '    <span class="hub-chevron">' + _CHEVRON_RIGHT + '</span>',
+        '    <span class="hub-field">Unlinked mentions</span>',
+        `    <span class="hub-count">${mentions.length}</span>`,
+        '  </div>',
+        '  <div class="hub-section-body">',
+        '    <p class="hub-hint">Notes that mention this note\'s name in body text without a formal wikilink.</p>',
+        rows,
+        '  </div>',
+        '</div>'
+    ].join('\n');
+}
+
+/**
+ * Render the note arc section — fields the current note is likely missing,
+ * ranked by how common they are across same-type notes in the vault and how
+ * often the system's suggestions for those fields have been accepted.
+ *
+ * @param {import('../../intelligence/noteArc').NoteArc} noteArc
+ * @returns {string}
+ */
+function buildNoteArcSection(noteArc) {
+    if (!noteArc || !noteArc.missingFields || !noteArc.missingFields.length) return '';
+    const { inferredType, missingFields } = noteArc;
+
+    const rows = missingFields.map(({ field, ratio, calibrationCount, isRelation }) => {
+        const pct = Math.round(ratio * 100);
+        const relBadge = isRelation ? ' <span class="arc-missing-rel">relation</span>' : '';
+        const calNote = calibrationCount > 0
+            ? ` <span class="arc-missing-cal" title="Accepted ${calibrationCount}× as a suggestion">✓${calibrationCount}</span>`
+            : '';
+        return [
+            '<div class="arc-missing-row">',
+            `  <span class="arc-missing-field">${esc(field)}</span>`,
+            relBadge,
+            calNote,
+            `  <span class="arc-missing-pct">${pct}% of ${esc(inferredType || '')} notes</span>`,
+            `  <button class="arc-add-btn" data-add-field="${esc(field)}" data-is-relation="${isRelation}" aria-label="Add ${esc(field)} field" title="Add field to this note">+</button>`,
+            '</div>'
+        ].join('');
+    }).join('\n');
+
+    return [
+        '<div class="hub-section open" data-field="note-arc">',
+        '  <div class="hub-section-header">',
+        '    <span class="hub-chevron">' + _CHEVRON_RIGHT + '</span>',
+        '    <span class="hub-field">likely missing</span>',
+        `    <span class="hub-count">${missingFields.length}</span>`,
+        '  </div>',
+        '  <div class="hub-section-body">',
+        `    <p class="arc-missing-hint">Fields common on <strong>${esc(inferredType || '')}</strong> notes in your vault that this note doesn't have yet.</p>`,
+        rows,
+        '  </div>',
+        '</div>'
+    ].join('\n');
+}
+
 module.exports = {
     buildKeyValueSection,
     splitSummaryRows,
@@ -433,5 +687,9 @@ module.exports = {
     buildSectionEmptyState,
     buildEntityHubEmptyHtml,
     buildEntityHubErrorHtml,
+    buildHistorySection,
+    buildUnlinkedMentionsSection,
+    buildNoteArcSection,
+    describeHistoryEvent,
     esc
 };

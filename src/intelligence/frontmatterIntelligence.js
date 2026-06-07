@@ -36,6 +36,11 @@ const {
     buildBodyMentionHints
 } = require('./frontmatterBodyHints');
 
+/**
+ * @param {Record<string, any>} nodeFields
+ * @param {Record<string, any>} [options]
+ * @returns {Record<string, any>}
+ */
 function buildFrontmatterOpportunityModel(nodeFields, options = {}) {
     const fieldsCache = options.fieldsCache || new Map();
     const observedFields = options.observedFields || buildObservedFields(fieldsCache);
@@ -262,6 +267,10 @@ function buildFrontmatterOpportunityModel(nodeFields, options = {}) {
     };
 }
 
+/**
+ * @param {Record<string, any>} [model]
+ * @returns {Record<string, any>}
+ */
 function buildFrontmatterGuidanceSummary(model = {}) {
     const nextField = Array.isArray(model.likelyFields) ? model.likelyFields[0] : null;
     const missingPiece = Array.isArray(model.likelyGaps) ? model.likelyGaps[0] : null;
@@ -385,6 +394,10 @@ function buildFrontmatterGuidanceSummary(model = {}) {
     return summary;
 }
 
+/**
+ * @param {Record<string, any>} [summary]
+ * @returns {string}
+ */
 function summarizeGuidanceExplanation(summary = {}) {
     if (!summary || typeof summary !== 'object') return '';
     if (summary.why) return String(summary.why).trim();

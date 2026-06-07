@@ -14,6 +14,7 @@
             state,
             applyColumnWidth,
             applyPanelView,
+            requestViewUpdate,
             clearSelection,
             commitEdit,
             getColumnIndex,
@@ -48,8 +49,24 @@
         let dragAfter = false;
         let resizingState = null;
         let suppressSortClickUntil = 0;
+        let lastMenuTrigger = null;
 
         function handleClick(event) {
+            function toggleMenu(menu, button, open) {
+                if (!menu) return;
+                const nextOpen = typeof open === 'boolean' ? open : menu.style.display !== 'block';
+                menu.style.display = nextOpen ? 'block' : 'none';
+                menu.hidden = !nextOpen;
+                if (button) {
+                    button.setAttribute('aria-expanded', nextOpen ? 'true' : 'false');
+                    if (nextOpen) lastMenuTrigger = button;
+                }
+                if (nextOpen) {
+                    const focusTarget = menu.querySelector('input, button, select, [tabindex]:not([tabindex="-1"])');
+                    if (focusTarget) focusTarget.focus();
+                }
+            }
+
             const revertBtn = event.target.closest('.revert-row-btn');
             if (revertBtn) {
                 revertRow(revertBtn.closest('tr'));
@@ -63,8 +80,8 @@
                 taskDoneCell.dataset.value = newDone ? 'true' : 'false';
                 const span = taskDoneCell.querySelector('.cell-bool');
                 if (span) {
-                    span.className = 'cell-bool ' + (newDone ? 'true' : 'false');
-                    span.textContent = newDone ? 'True' : 'False';
+                    span.className = 'cell-bool ' + (newDone ? 'true' : 'pending');
+                    span.textContent = newDone ? 'Done' : 'Not done';
                 }
                 vscode.postMessage({
                     command: 'toggleTaskDone',
@@ -131,7 +148,7 @@
             const columnsBtn = event.target.closest('.columns-btn');
             if (columnsBtn) {
                 const menu = columnsBtn.closest('.toolbar-group, .filterbar')?.querySelector('.toolbar-menu');
-                if (menu) menu.style.display = menu.style.display === 'block' ? 'none' : 'block';
+                toggleMenu(menu, columnsBtn);
                 return;
             }
 
@@ -140,7 +157,7 @@
                 const group = columnsFocusBtn.closest('.toolbar-group, .quick-fields-card');
                 const panel = columnsFocusBtn.closest('.tab-panel');
                 const menu = (group && group.querySelector('.toolbar-menu')) || (panel && panel.querySelector('.toolbar-menu'));
-                if (menu) menu.style.display = 'block';
+                toggleMenu(menu, null, true);
                 return;
             }
 
@@ -166,7 +183,7 @@
                 const panel = removeFilterBtn.closest('.tab-panel');
                 const filters = setColumnFilterValues(getColumnFilters(panel), removeFilterBtn.dataset.removeFilter, []);
                 setColumnFilters(panel, filters);
-                applyPanelView(panel);
+                requestViewUpdate(panel);
                 saveState();
                 return;
             }
@@ -179,13 +196,28 @@
                 if (!th) return;
                 const menu = th.querySelector('[data-col-filter-menu="' + CSS.escape(col) + '"]');
                 document.querySelectorAll('.th-filter-menu.open').forEach(function (entry) {
-                    if (entry !== menu) entry.classList.remove('open');
+                    if (entry !== menu) {
+                        entry.classList.remove('open');
+                        entry.hidden = true;
+                    }
                 });
                 document.querySelectorAll('.th-filter-btn.active').forEach(function (entry) {
-                    if (entry !== filterToggleBtn) entry.classList.remove('active');
+                    if (entry !== filterToggleBtn) {
+                        entry.classList.remove('active');
+                        entry.setAttribute('aria-expanded', 'false');
+                    }
                 });
-                if (menu) menu.classList.toggle('open');
+                if (menu) {
+                    menu.classList.toggle('open');
+                    menu.hidden = !menu.classList.contains('open');
+                    if (menu.classList.contains('open')) {
+                        const focusTarget = menu.querySelector('input, button, select, [tabindex]:not([tabindex="-1"])');
+                        if (focusTarget) focusTarget.focus();
+                    }
+                }
                 filterToggleBtn.classList.toggle('active', !!menu && menu.classList.contains('open'));
+                filterToggleBtn.setAttribute('aria-expanded', !!menu && menu.classList.contains('open') ? 'true' : 'false');
+                if (menu && menu.classList.contains('open')) lastMenuTrigger = filterToggleBtn;
                 return;
             }
 
@@ -195,7 +227,7 @@
                 const panel = filterClearBtn.closest('.tab-panel');
                 const nextFilters = setColumnFilterValues(getColumnFilters(panel), filterClearBtn.dataset.colFilterClear, []);
                 setColumnFilters(panel, nextFilters);
-                applyPanelView(panel);
+                requestViewUpdate(panel);
                 saveState();
                 return;
             }
@@ -213,17 +245,18 @@
                 const panel = pageNavBtn.closest('.tab-panel');
                 const currentPage = Number(panel.dataset.currentPage || 1);
                 setCurrentPage(panel, currentPage + (pageNavBtn.dataset.pageNav === 'next' ? 1 : -1));
-                applyPanelView(panel);
+                requestViewUpdate(panel);
                 saveState();
                 return;
             }
 
             if (!event.target.closest('.toolbar-menu') && !event.target.closest('[data-columns-focus]')) {
-                document.querySelectorAll('.toolbar-menu').forEach(menu => { menu.style.display = 'none'; });
+                document.querySelectorAll('.toolbar-menu').forEach(menu => { menu.style.display = 'none'; menu.hidden = true; });
+                document.querySelectorAll('.columns-btn').forEach(button => button.setAttribute('aria-expanded', 'false'));
             }
             if (!event.target.closest('.th-filter-menu') && !event.target.closest('[data-col-filter-toggle]')) {
-                document.querySelectorAll('.th-filter-menu.open').forEach(function (menu) { menu.classList.remove('open'); });
-                document.querySelectorAll('.th-filter-btn.active').forEach(function (button) { button.classList.remove('active'); });
+                document.querySelectorAll('.th-filter-menu.open').forEach(function (menu) { menu.classList.remove('open'); menu.hidden = true; });
+                document.querySelectorAll('.th-filter-btn.active').forEach(function (button) { button.classList.remove('active'); button.setAttribute('aria-expanded', 'false'); });
             }
 
             const editableCell = event.target.closest('.cell-editable');
@@ -249,6 +282,22 @@
         }
 
         function handleKeyDown(event) {
+            if (event.key === 'Escape') {
+                document.querySelectorAll('.toolbar-menu').forEach(menu => { menu.style.display = 'none'; menu.hidden = true; });
+                document.querySelectorAll('.columns-btn').forEach(button => button.setAttribute('aria-expanded', 'false'));
+                document.querySelectorAll('.th-filter-menu.open').forEach(function (menu) { menu.classList.remove('open'); menu.hidden = true; });
+                document.querySelectorAll('.th-filter-btn.active').forEach(function (button) { button.classList.remove('active'); button.setAttribute('aria-expanded', 'false'); });
+                if (lastMenuTrigger) {
+                    lastMenuTrigger.focus();
+                    lastMenuTrigger = null;
+                }
+            }
+            const taskDoneCell = event.target.closest('.cell-task-done');
+            if (taskDoneCell && (event.key === 'Enter' || event.key === ' ')) {
+                event.preventDefault();
+                taskDoneCell.click();
+                return;
+            }
             if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'z') {
                 const activeTag = document.activeElement && document.activeElement.tagName;
                 if (!state.editingCell && activeTag !== 'INPUT' && activeTag !== 'SELECT' && activeTag !== 'TEXTAREA') {
@@ -290,7 +339,7 @@
             if (event.target.matches('[data-page-size]')) {
                 const panel = event.target.closest('.tab-panel');
                 setPageSize(panel, event.target.value);
-                applyPanelView(panel);
+                requestViewUpdate(panel);
                 saveState();
                 setStatus('Updated rows per page.', 'success');
                 return;
@@ -314,7 +363,7 @@
             const nextFilters = setColumnFilterValues(getColumnFilters(panel), col, values);
             setColumnFilters(panel, nextFilters);
             setCurrentPage(panel, 1);
-            applyPanelView(panel);
+            requestViewUpdate(panel);
             saveState();
         }
 
@@ -331,7 +380,7 @@
         function handleSearchInput(event) {
             const panel = event.target.closest('.tab-panel');
             setCurrentPage(panel, 1);
-            applyPanelView(panel);
+            requestViewUpdate(panel);
             saveState();
         }
 
@@ -471,7 +520,7 @@
             panel.querySelectorAll('.chip').forEach(entry => entry.classList.remove('active'));
             chip.classList.add('active');
             setCurrentPage(panel, 1);
-            applyPanelView(panel);
+            requestViewUpdate(panel);
             saveState();
         }
 

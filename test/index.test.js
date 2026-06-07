@@ -417,7 +417,7 @@ describe('updateSingleFile', () => {
 
 describe('removeFileFromIndex', () => {
     test('unknown file is a no-op', () => {
-        assert.equal(removeFileFromIndex('/ghost.md'), false);
+        assert.equal(removeFileFromIndex('/ghost.md').removed, false);
     });
 
     test('known file is removed from index and fields cache', () => {
@@ -425,7 +425,7 @@ describe('removeFileFromIndex', () => {
         const filePath = writeNode('dizzy.md', '---\nid: dizzy\ntype: character\n---\n');
         buildIndex([{ uri: { fsPath: tmpDir } }]);
         assert.ok(getIndex().has('dizzy'));
-        assert.equal(removeFileFromIndex(filePath), true);
+        assert.equal(removeFileFromIndex(filePath).removed, true);
         assert.equal(getIndex().has('dizzy'), false);
         assert.equal(getFieldsCache().has('dizzy'), false);
         teardownVault();
@@ -446,7 +446,19 @@ describe('removeFileFromIndex', () => {
         const filePath = writeNode('once.md', '---\nid: once\ntype: character\n---\n');
         buildIndex([{ uri: { fsPath: tmpDir } }]);
         removeFileFromIndex(filePath);
-        assert.equal(removeFileFromIndex(filePath), false);
+        assert.equal(removeFileFromIndex(filePath).removed, false);
+        teardownVault();
+    });
+
+    test('emits note_deleted mutation event with the note id', () => {
+        setupVault();
+        const filePath = writeNode('carl.md', '---\nid: carl-jenkins\ntype: contact\n---\n');
+        buildIndex([{ uri: { fsPath: tmpDir } }]);
+        const { removed, mutationEvents } = removeFileFromIndex(filePath);
+        assert.equal(removed, true);
+        assert.equal(mutationEvents.length, 1);
+        assert.equal(mutationEvents[0].type, 'note_deleted');
+        assert.equal(mutationEvents[0].noteId, 'carl-jenkins');
         teardownVault();
     });
 });

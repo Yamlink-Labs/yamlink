@@ -126,6 +126,14 @@ self.onmessage = ({ data }) => {
       if (simulation) { simulation.tick(); postPositions(false); }
       break;
 
+    case 'DRAG_START': {
+      if (!simulation) break;
+      clearTimeout(tickHandle);
+      simulation.alphaTarget(0.3);
+      tick();
+      break;
+    }
+
     case 'PIN': {
       const n = nodes.find(n => n.id === data.nodeId);
       if (n) { n.fx = data.x; n.fy = data.y; }
@@ -135,7 +143,7 @@ self.onmessage = ({ data }) => {
     case 'UNPIN': {
       const n = nodes.find(n => n.id === data.nodeId);
       if (n) { n.fx = null; n.fy = null; }
-      if (simulation) simulation.alpha(0.25).restart();
+      if (simulation) simulation.alphaTarget(0).alpha(0.25).restart();
       clearTimeout(tickHandle);
       tick();
       break;

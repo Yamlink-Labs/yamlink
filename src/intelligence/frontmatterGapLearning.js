@@ -8,6 +8,13 @@ const {
     collectCurrentFieldFamilies
 } = require('./frontmatterFieldFamilies');
 
+/**
+ * @param {object} nodeFields Current note's frontmatter fields.
+ * @param {object} noteContext Note context from frontmatterIntelligence.
+ * @param {Map<string,object>} fieldsCache
+ * @param {object} [options]
+ * @returns {object[]} Sorted gap suggestions with field, score, insertText, etc.
+ */
 function buildSchemaAdaptiveGaps(nodeFields, noteContext, fieldsCache, options = {}) {
     const nodeType = String(options.nodeType || nodeFields?.type || '').trim().toLowerCase();
     const observedIndex = options.observedIndex || buildObservedNoteIndex(fieldsCache, options);
@@ -109,6 +116,12 @@ function buildSchemaAdaptiveGaps(nodeFields, noteContext, fieldsCache, options =
         .slice(0, options.gapLimit || 4);
 }
 
+/**
+ * @param {object[]} [likelyFields]
+ * @param {object[]} [likelyGaps]
+ * @param {{ bundleLimit?: number }} [options]
+ * @returns {{ fields: object[], insertText: string, summary: string }}
+ */
 function buildRecommendedBundles(likelyFields = [], likelyGaps = [], options = {}) {
     const seen = new Set();
     const hints = [];

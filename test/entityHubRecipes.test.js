@@ -68,7 +68,10 @@ require.cache.__ehr_date__ = {
     id: '__ehr_date__',
     filename: '__ehr_date__',
     loaded: true,
-    exports: { normaliseDateInput(v) { return String(v || '').trim(); } }
+    exports: {
+        normaliseDateInput(v) { return String(v || '').trim(); },
+        getTodayIsoLocal() { return '2026-05-30'; }
+    }
 };
 
 require.cache.__ehr_suggestions__ = {

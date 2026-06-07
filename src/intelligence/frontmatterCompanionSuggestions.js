@@ -6,6 +6,13 @@ const {
     pickConnectionField
 } = require('./frontmatterFieldFamilies');
 
+/**
+ * @param {object} [nodeFields]
+ * @param {object[]} [likelyContexts]
+ * @param {Map<string,object>} [fieldsCache]
+ * @param {{ nodeId?: string, observedIndex?: object, companionLimit?: number }} [options]
+ * @returns {object[]}
+ */
 function buildLikelyCompanions(nodeFields = {}, likelyContexts = [], fieldsCache = new Map(), options = {}) {
     const nodeId = String(options.nodeId || '').trim();
     const observedIndex = options.observedIndex || buildObservedNoteIndex(fieldsCache, options);
@@ -43,6 +50,13 @@ function buildLikelyCompanions(nodeFields = {}, likelyContexts = [], fieldsCache
         .slice(0, options.companionLimit || 3);
 }
 
+/**
+ * @param {object} [nodeFields]
+ * @param {object[]} [likelyContexts]
+ * @param {Map<string,object>} [fieldsCache]
+ * @param {object} [options]
+ * @returns {object[]}
+ */
 function buildSurroundingSetups(nodeFields = {}, likelyContexts = [], fieldsCache = new Map(), options = {}) {
     const nodeId = String(options.nodeId || '').trim();
     const nodeType = String(options.nodeType || nodeFields?.type || '').trim().toLowerCase() || 'note';

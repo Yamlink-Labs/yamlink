@@ -2,6 +2,7 @@
 
 const INTERNAL_FIELDS = new Set(['__yamlink_tags']);
 
+/** @param {string} a @param {string} b @returns {number} */
 function levenshtein(a, b) {
     const left = String(a ?? '');
     const right = String(b ?? '');
@@ -48,6 +49,11 @@ function collectTypeCandidates(fieldCache) {
     )];
 }
 
+/**
+ * @param {string} type
+ * @param {Map<string, Record<string, any>>} fieldCache
+ * @returns {string[]}
+ */
 function collectFieldCandidates(type, fieldCache) {
     if (type === 'tasks') return ['date', 'done', 'file', 'line', 'text'];
 
@@ -76,6 +82,11 @@ function valueLooksLikeRelation(value, knownIds) {
     return Boolean(normalized) && knownIds.has(normalized);
 }
 
+/**
+ * @param {string} type
+ * @param {Map<string, Record<string, any>>} fieldCache
+ * @returns {string[]}
+ */
 function collectRelationFieldCandidates(type, fieldCache) {
     if (!fieldCache || typeof fieldCache.values !== 'function') return [];
 
@@ -98,10 +109,12 @@ function collectRelationFieldCandidates(type, fieldCache) {
     return [...fieldSet].sort();
 }
 
+/** @param {string} type @param {Map<string, Record<string, any>>} fieldCache @returns {string|null} */
 function closestTypeMatch(type, fieldCache) {
     return rankClosest(type, collectTypeCandidates(fieldCache));
 }
 
+/** @param {string} field @param {string} type @param {Map<string, Record<string, any>>} fieldCache @returns {string|null} */
 function closestFieldMatch(field, type, fieldCache) {
     return rankClosest(field, collectFieldCandidates(type, fieldCache));
 }
@@ -112,6 +125,14 @@ function describeTypeScope(type, incoming) {
     return incoming ? `${type} notes` : `${type} notes`;
 }
 
+/**
+ * @param {Record<string, any>} query
+ * @param {Array<Record<string, any>>} rows
+ * @param {string[]} warnings
+ * @param {Map<string, string>} index
+ * @param {Map<string, Record<string, any>>} fieldCache
+ * @returns {void}
+ */
 function addQueryWarnings(query, rows, warnings, index, fieldCache) {
     if (rows.length > 0) return;
 

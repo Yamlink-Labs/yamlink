@@ -3,6 +3,11 @@
 const vscode = require('vscode');
 const { parseAllViewQueries } = require('../engine/query');
 
+/**
+ * @param {import('vscode').ExtensionContext} context
+ * @param {{ updateStatusBar?: () => void, refreshSuggestionBar?: () => void }} handlers
+ * @returns {{ schedule: (reason: string) => void, reset: () => void }}
+ */
 function registerActiveViewRuntime(context, handlers) {
     const { updateStatusBar, refreshSuggestionBar } = handlers;
     let debounceTimer = null;

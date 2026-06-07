@@ -22,6 +22,14 @@ function formatDetails(details) {
     return parts.length ? ` (${parts.join(', ')})` : '';
 }
 
+/**
+ * @typedef {{ label: string, count: number, avgMs: number, totalMs: number, maxMs: number, minMs: number, lastMs: number, slowCount: number }} PerfSummaryRow
+ */
+
+/**
+ * @param {{ slowThresholdMs?: number, recentSampleLimit?: number }} [options]
+ * @returns {{ createTimer: (label: string, details?: object) => { end: (extra?: object) => number }, measureSync: (label: string, details: object|null, fn: () => *) => *, measureAsync: (label: string, details: object|null, fn: () => Promise<*>) => Promise<*>, record: (label: string, durationMs: number, details?: object|null) => number, showReport: () => void, reset: () => void, buildReport: () => string, getSummaryRows: () => PerfSummaryRow[] }}
+ */
 function createPerformanceTracker(options = {}) {
     const slowThresholdMs = Number.isFinite(options.slowThresholdMs)
         ? options.slowThresholdMs

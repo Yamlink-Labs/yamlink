@@ -16,6 +16,7 @@ const {
     summariseInferenceReasons
 } = require('./completionContextHelpers');
 
+/** @param {string} id @returns {string|null} */
 function getHumanLabel(id) {
     const fieldsCache = getFieldsCache();
     const fields = fieldsCache.get(String(id || '').trim().toLowerCase());
@@ -42,6 +43,7 @@ function buildRelationCandidateDetail(id, _idIndex, frontmatterRelation, preferr
     return parts.filter(Boolean).join(' · ') || 'Yamlink note';
 }
 
+/** @param {any[]|null|undefined} candidateIds @param {Map<string,string>|null} [idIndex] @returns {string[]} */
 function canonicalizeCandidateIds(candidateIds, idIndex = null) {
     const seen = new Set();
     const resolved = [];
@@ -67,6 +69,7 @@ function collectIdsForType(candidateIds, targetType) {
     return canonicalizeCandidateIds(candidateIds).filter((id) => String(fieldsCache.get(String(id || '').trim().toLowerCase())?.type || '').trim().toLowerCase() === normalizedType);
 }
 
+/** @param {import('vscode').TextDocument} document @param {Map<string,string>} idIndex @returns {string[]} */
 function collectLocalLinkedIds(document, idIndex) {
     const text = document.getText();
     const ids = [];
@@ -188,6 +191,7 @@ function buildRelationRankingHints(fieldName, targetType, preferredIds = [], obs
     };
 }
 
+/** @param {import('vscode').TextDocument} document @param {import('vscode').Position} position @param {Map<string,string>} idIndex @returns {Record<string,any>|null} */
 function resolveFrontmatterRelationCandidates(document, position, idIndex) {
     if (!isPositionInFrontmatter(document, position.line)) return null;
 
@@ -253,6 +257,7 @@ function resolveFrontmatterRelationCandidatesFromMatch(document, position, idInd
     };
 }
 
+/** @param {string} fieldName @param {string|null} queryType @param {string} partial @param {Map<string,string>} idIndex @param {Record<string,any>} [options] @returns {Record<string,any>|null} */
 function resolveQueryRelationCandidates(fieldName, queryType, partial, idIndex, options = {}) {
     const normalizedType = String(queryType || '').trim().toLowerCase();
     const relationState = inferFieldRole(fieldName, {
@@ -293,6 +298,7 @@ function resolveQueryRelationCandidates(fieldName, queryType, partial, idIndex, 
     };
 }
 
+/** @param {import('vscode').TextDocument} document @param {import('vscode').Position} position @returns {Record<string,any>|null} */
 function getViewBlockContext(document, position) {
     const lines = document.getText().split('\n');
     let start = position.line;
@@ -326,6 +332,7 @@ function getViewBlockContext(document, position) {
     return { start, end, lines: block, queryType, currentLine: lines[position.line] };
 }
 
+/** @param {string} type @returns {string[]} */
 function collectFieldsForType(type) {
     const fieldsCache = getFieldsCache();
     const fields = new Set();
@@ -369,6 +376,7 @@ function collectScalarValues(fieldName, queryType) {
     return Array.from(values.values()).sort();
 }
 
+/** @param {string} value @param {string} partial @returns {number} */
 function scoreCandidateMatch(value, partial) {
     const candidate = String(value || '').toLowerCase();
     const query = String(partial || '').trim().toLowerCase();
@@ -394,6 +402,7 @@ function scoreFieldSuggestion(entry, partialKey) {
     return entry.sortScore + matchScore;
 }
 
+/** @param {string[]} candidateIds @param {string} partial @param {string[]} [preferredIds] @param {string[]} [localLinkedIds] @param {Map<string,number>} [observedIdScores] @param {Record<string,any>|null} [rankingHints] @returns {string[]} */
 function rankCandidateIds(candidateIds, partial, preferredIds = [], localLinkedIds = [], observedIdScores = new Map(), rankingHints = null) {
     const normalizedCandidates = canonicalizeCandidateIds(candidateIds);
     const preferred = new Set(canonicalizeCandidateIds(preferredIds).map((id) => String(id || '').trim().toLowerCase()));

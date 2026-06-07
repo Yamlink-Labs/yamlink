@@ -94,7 +94,7 @@ function createPreviewPanelController() {
 <style>
 *{box-sizing:border-box}
 html,body{margin:0;padding:0;background:#fff;color:#111}
-body{font:15px/1.8 Georgia,'Times New Roman',serif}
+body{font:15px/1.75 'Inter',-apple-system,BlinkMacSystemFont,'Segoe UI',system-ui,sans-serif}
 #printbar{
   position:fixed;top:0;left:0;right:0;
   display:flex;align-items:center;justify-content:space-between;

@@ -1,5 +1,17 @@
 'use strict';
 
+/**
+ * @typedef {{
+ *   headings: string[], headingCount: number,
+ *   blockquoteCount: number,
+ *   footnoteDefinitions: string[], footnoteDefinitionCount: number,
+ *   footnoteReferences: string[], footnoteReferenceCount: number,
+ *   callouts: Array<{type: string, title: string}>, calloutCount: number,
+ *   embeds: string[], embedCount: number
+ * }} BodySignals
+ */
+
+/** @param {string} text @returns {string} */
 function stripFrontmatter(text) {
     const source = String(text || '');
     return source.replace(/^---\s*\n[\s\S]*?\n---\s*\n?/, '');
@@ -73,6 +85,7 @@ function extractEmbeds(text) {
     return [...new Set(embeds)];
 }
 
+/** @param {string} text @returns {BodySignals} */
 function collectBodySignals(text) {
     const headings = extractHeadingsFromText(text);
     const blockquoteCount = countBlockquoteLines(text);
@@ -95,11 +108,13 @@ function collectBodySignals(text) {
     };
 }
 
+/** @param {string} text @returns {string[]} */
 function collectUndefinedFootnoteReferences(text) {
     const definitions = new Set(extractFootnoteDefinitions(text));
     return extractFootnoteReferences(text).filter((id) => !definitions.has(id));
 }
 
+/** @param {Partial<BodySignals>} [bodySignals] @returns {string[]} */
 function buildBodySignalHints(bodySignals = {}) {
     const hints = [];
     for (const heading of bodySignals.headings || []) {

@@ -10,6 +10,7 @@ const {
     writeFrontmatterFieldSurgically
 } = require('./frontmatter');
 
+/** @param {string} filePath @param {string} field @param {any} newValue @returns {Promise<boolean>} */
 async function writeFieldValue(filePath, field, newValue) {
     if (!filePath || !field) return false;
     if (field === 'id') return false;

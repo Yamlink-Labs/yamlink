@@ -126,7 +126,9 @@ const mockWindow = {
     },
     showErrorMessage(message) {
         infoMessages.push(message);
-    }
+    },
+    onDidChangeTextEditorSelection() { return { dispose() {} }; },
+    onDidChangeActiveTextEditor() { return { dispose() {} }; }
 };
 
 const mockWorkspace = {

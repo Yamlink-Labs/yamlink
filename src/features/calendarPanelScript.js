@@ -14,6 +14,14 @@ let mode = 'month';
 let selectedMonth = model.selectedMonth;
 let selectedDate = model.selectedDate;
 
+function applyModeButtonState() {
+  document.querySelectorAll('[data-mode]').forEach(btn => {
+    const isActive = btn.dataset.mode === mode;
+    btn.classList.toggle('active', isActive);
+    btn.setAttribute('aria-pressed', isActive ? 'true' : 'false');
+  });
+}
+
 function iconGlyph(name) {
   const icons = {
     open: '<svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="3.5"/><path d="M8 2.5v2"/><path d="M13.5 8h-2"/><path d="M8 13.5v-2"/><path d="M2.5 8h2"/></svg>',
@@ -121,7 +129,7 @@ function renderTaskItem(row) {
       (row.body ? '<div class="task-body">' + escapeHtml(row.body) + '</div>' : '') +
       '<div class="task-meta">' +
         '<span class="' + pillClass + '">' + pillText + '</span>' +
-        '<span class="link" data-open-node="' + escapeHtml(row.fileId) + '">' + escapeHtml(row.sourceLabel) + '</span>' +
+        '<span class="link" data-open-node="' + escapeHtml(row.fileId) + '" role="button" tabindex="0" aria-label="Open note ' + escapeHtml(row.sourceLabel) + '">' + escapeHtml(row.sourceLabel) + '</span>' +
       '</div>' +
     '</div>' +
     '<div class="item-type">' + escapeHtml(row.fileType || '') + '</div>' +
@@ -137,7 +145,7 @@ function renderNoteItem(row) {
       '<div class="task-title">' + escapeHtml(row.text) + '</div>' +
       '<div class="task-meta">' +
         '<span class="' + pillClass + '">' + pillText + '</span>' +
-        '<span class="link" data-open-node="' + escapeHtml(row.fileId) + '">' + escapeHtml(row.sourceLabel) + '</span>' +
+        '<span class="link" data-open-node="' + escapeHtml(row.fileId) + '" role="button" tabindex="0" aria-label="Open note ' + escapeHtml(row.sourceLabel) + '">' + escapeHtml(row.sourceLabel) + '</span>' +
         (row.fileType ? '<span>' + escapeHtml(row.fileType) + '</span>' : '') +
       '</div>' +
     '</div>' +
@@ -228,7 +236,7 @@ function applySelection() {
   renderRangeView();
   renderSummary();
   renderAgenda();
-  document.querySelectorAll('[data-mode]').forEach(btn => btn.classList.toggle('active', btn.dataset.mode === mode));
+  applyModeButtonState();
 }
 
 function setMode(nextMode) {
@@ -292,6 +300,14 @@ document.addEventListener('click', (event) => {
   const modeBtn = event.target.closest('[data-mode]');
   if (modeBtn) {
     setMode(modeBtn.dataset.mode);
+  }
+});
+
+document.addEventListener('keydown', (event) => {
+  const open = event.target.closest('[data-open-node]');
+  if (open && (event.key === 'Enter' || event.key === ' ')) {
+    event.preventDefault();
+    vscode.postMessage({ command: 'openNode', id: open.dataset.openNode });
   }
 });
 

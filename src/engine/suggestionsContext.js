@@ -14,6 +14,11 @@ const {
 } = require('../intelligence/suggestionCore');
 const { buildFrontmatterOpportunityModel } = require('../intelligence/frontmatterIntelligence');
 
+/**
+ * @param {string} type
+ * @param {{ fieldsCache?: Map<string,object>, observedFields?: object[] }} [options]
+ * @returns {string}
+ */
 function getDefaultSortFieldForType(type, options = {}) {
     const schema = type ? getSchema(type) : null;
     if (schema && schema.fields) {
@@ -64,6 +69,11 @@ function getDefaultSortFieldForType(type, options = {}) {
     return '';
 }
 
+/**
+ * @param {Map<string,object>} fieldsCache
+ * @param {object[]|null} [observedFields]
+ * @returns {(type: string) => string}
+ */
 function createDefaultSortFieldResolver(fieldsCache, observedFields = null) {
     const cache = new Map();
     const resolvedObservedFields = observedFields || buildObservedFields(fieldsCache);
@@ -80,6 +90,13 @@ function createDefaultSortFieldResolver(fieldsCache, observedFields = null) {
     };
 }
 
+/**
+ * @param {string} nodeId
+ * @param {object} nodeFields
+ * @param {string} nodeType
+ * @param {Map<string,object>} fieldsCache
+ * @returns {{ observedFields: object[], observedIndex: object, noteContext: object, frontmatterOpportunities: object, getDefaultSortField: (type: string) => string }}
+ */
 function buildActivationContext(nodeId, nodeFields, nodeType, fieldsCache) {
     const observedFields = buildObservedFields(fieldsCache);
     const observedIndex = buildObservedNoteIndex(fieldsCache, {

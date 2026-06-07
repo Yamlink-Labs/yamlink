@@ -7,6 +7,7 @@ This document is a complete tutorial for Yamlink.
 | Section | What you learn |
 |---|---|
 | [Core Idea](#the-core-idea) | ID, type, links, queries — the whole model in one pass |
+| [Home Panel](#home-panel-activity-stream) | Activity stream, vault pulse, continue working |
 | [Import an Obsidian vault](#import-an-obsidian-vault) | Bring an existing Obsidian vault into Yamlink quickly |
 | [First Steps](#recommended-first-steps) | Create notes, link them, write body content |
 | [Wikilink Aliases](#2a-wikilink-aliases-and-display-names) | Display aliases and vault codenames |
@@ -20,10 +21,11 @@ This document is a complete tutorial for Yamlink.
 | [Schemas](#schemas) | Schema-driven creation and field enforcement |
 | [Query Builder](#query-builder) | Guided query building and refinement |
 | [Tasks](#tasks) | Markdown checkboxes and task queries |
-| [Graph](#using-the-graph) | Sidebar graph and Graph Workspace — what the numbers mean |
+| [Graph](#using-the-graph) | Sidebar graph and Graph Workspace — layers, dragging, node info |
 | [Note Report](#using-the-note-report) | Structured note inspector — tabs, lifecycle, relations |
-| [Vault Health](#using-vault-health) | Every panel section explained: score, lifecycle, drift, types |
+| [Vault Health](#using-vault-health) | Every panel section explained: score, lifecycle, drift, schema conformance |
 | [PDF Export](#pdf-export) | Export notes and live views |
+| [CLI](#using-the-cli) | `build`, `health`, `validate`, `query`, `serve`, `export` — full headless vault access |
 | [CRM setup](#recommended-setup-crm) | CRM vault walkthrough |
 | [Programmer setup](#recommended-setup-programmer--project-tracker) | Engineering project tracker walkthrough |
 
@@ -68,9 +70,8 @@ What the first Zim iteration does:
 
 What it does **not** do yet:
 
-- it does not migrate plugin semantics
-- it does not convert Dataview logic
-- it does not promise a full Obsidian-to-Yamlink transformation
+- it does not translate plugin configuration
+- it does not process Dataview logic
 
 This first pass is a quick bridge: bring the vault in, let Yamlink index it, then use Note Report, Calendar, Vault Health, and Graph Workspace to understand what structure already exists there.
 
@@ -105,11 +106,37 @@ raw-notes/
 
 ---
 
+## Home Panel (Activity Stream)
+
+When you first activate Yamlink, a **Home panel** opens automatically. It shows your vault at a glance:
+
+- **Pulse bar** — note count, type count, and broken link count
+- **Quick actions** — New note, Today's journal, and buttons for your vault's top types
+- **Activity feed** — last 15 mutation events as a human-readable timeline, clickable to open the note
+- **Continue working** — your 5 most recently touched notes
+- **Nudge cards** — broken links and untyped notes
+
+For fresh vaults with fewer than 5 notes, the panel shows an onboarding welcome with 3 quick-start steps instead of the activity feed.
+
+Run the Home panel anytime with `Yamlink: Open Home` from the command palette, or click the `$(home)` button in the status bar — it sits immediately to the right of the vault-health indicator and is always visible regardless of which file is open. This newer panel is still in development but works as your introduction to your daily activities.
+
+---
+
 ## Recommended First Steps
 
 ### 1. Create 3-5 notes with frontmatter
 
-The fastest way is `Yamlink: New Note from Schema` if you have schema notes set up, or `Yamlink: New Note from Template` if you have templates. Otherwise `Yamlink: Create Note` generates a minimal frontmatter stub.
+The fastest way is **`Yamlink: New Note`** (`Ctrl+Alt+N` / `Cmd+Alt+N`). It picks the scaffold automatically: matching `_templates/` file first, then schema node, then vault-pattern inference. The note opens with `id:`, `type:`, and `created:` already filled in.
+
+If you're inside an existing Yamlink note when you trigger it, Yamlink asks if you want to link the new note back to the current one — enter a field name and the reverse relation is written automatically.
+
+You can also use `Yamlink: New Note from Template` to pick a specific template, or `Yamlink: New Note from Schema` to generate frontmatter from a schema definition directly.
+
+**Daily Notes**: press `Ctrl+Alt+J` / `Cmd+Alt+J` to open or create today's journal note (`journal-YYYY-MM-DD`). If `_templates/journal.md` exists, it is used as the template. Otherwise Yamlink creates a minimal stub with `id`, `type: journal`, and `date` pre-filled.
+
+**Creating notes from selected text**: two right-click commands are available in the editor context menu when you have text selected:
+- **Yamlink: New Note from Selection** — selected text becomes the title of a new linked note; the selection is replaced with `[[new-id]]`
+- **Yamlink: Extract Selection to New Note** — selected body text becomes the body of a new note; the selection is replaced with `![[new-id]]` (embed); the new note gets `source: [[original-id]]` written into its frontmatter
 
 Example note:
 
@@ -161,12 +188,18 @@ aliases: [rasczak]
 
 Now anywhere in the vault you can write `[[rasczak]]` and Yamlink treats it exactly like `[[lt-rasczak]]`:
 
-- hover card shows the note content
 - Ctrl+Click navigates to it
 - the decoration appears (resolved link styling, not a broken link)
 
 *Multiple aliases are supported*
 
+**Broken wikilinks and the template quick fix** — if you write `[[a-note-that-doesnt-exist]]`, Yamlink decorates it with amber brackets and faded amber text (a subtle "dead reference" signal that doesn't interrupt reading) and places a lightbulb on the line. The quick fix is *"Create note"*. When you trigger it, Yamlink walks you through the template workflow:
+
+- No `_templates/` folder → Yamlink offers to create it and writes a starter template for the inferred type (pre-filled with the fields most common for that type in your vault). Edit the template, then trigger the quick fix again — the note will be created using it.
+- `_templates/` exists but empty → same offer, same loop.
+- `_templates/` has templates → a QuickPick list shows all available templates. If one matches the type Yamlink inferred from context, it floats to the top labeled "Suggested: contact". Pick one and the note is scaffolded from it immediately.
+
+The note opens with the cursor positioned on the first empty field for immediate editing. This is the intended workflow for growing a vault from links first, structure second.
 
 ### 2b. Use the body as a real signal surface
 
@@ -213,11 +246,12 @@ Then define the footnote later in the same note:
 [^source-1]: Interview notes with the regional product team.
 ```
 
-**What Yamlink does with this right now:**
+**At this point, Yamlink detects:**
 
-- detects the footnote reference
-- detects the footnote definition
-- treats that as a sign that the note may be research-heavy, source-heavy, or reference-heavy
+- footnote reference
+- footnote definition
+
+And then treats that as a sign that the note may be research-heavy, source-heavy, or reference-heavy
 
 
 #### Blockquotes
@@ -341,14 +375,27 @@ And if you already wrote a footnote reference like:
 ```md
 Claim worth checking.[^source-1]
 ```
-
-Yamlink can help you add the missing definition later:
+:
+Yamlink can help you add the missing definition later
 
 ```md
 [^source-1]: Source detail
 ```
 
-### 3. Add a query block to a dashboard note
+### 3. Query in plain English
+
+If you are not sure how to write a `!view` query, run `Yamlink: Query in Plain English` from the command palette. Type what you want to find and Yamlink generates the `!view` syntax for you using your vault's own types, fields, and status values.
+
+Examples:
+- "active contacts" → `!view contact where status = active`
+- "tasks due today" → `!view open-tasks`
+- "projects I haven't updated in 30 days" → `!view project where file.modified < days-ago(30)`
+- "contacts without a company" → `!view contact where company is empty`
+- "missions linked to johnny-rico" → `!view mission where commander = [[johnny-rico]]`
+
+The generated query is shown for your review before it is inserted, and you can choose "Edit before inserting" to adjust it. Standard `!view` syntax is completely unchanged — this command is a learning and discovery tool, not a replacement.
+
+### 4. Add a query block to a dashboard note
 
 Type `!view` in a note and use `Yamlink: Insert View Block` — or write the query directly:
 
@@ -418,6 +465,17 @@ where date <= days-from-now(14)
 where date >= days-ago(30)
 ```
 
+File system dates (no frontmatter needed):
+
+```md
+where file.modified >= today()
+where file.created >= 2026-01-01
+select id, type, file.modified
+sort file.modified desc
+```
+
+`file.created` and `file.modified` are virtual fields — Yamlink reads them from the file system at query time. Useful for finding recently touched notes or notes created in a date range without manually adding a `created:` field.
+
 For the full operator list — `!=`, `>=`, `<=`, tag filters, all date functions, and Boolean rules — see [QUERY_LANGUAGE.md](./QUERY_LANGUAGE.md).
 
 Recommended habit:
@@ -445,8 +503,11 @@ sort created desc
 !view * | CRM research notes
 where #crm
 where status != archived
+select id, type, status, date
 sort date desc
 ```
+
+> **`!view *` tip:** querying all types at once produces a column for every field that exists anywhere in the vault. Always add `select` to keep the table readable.
 
 ```md
 !view mission | Missions linked to Carl or marked as victory
@@ -456,7 +517,7 @@ sort date desc
 ```
 
 
-### 4. Open side surfaces
+### 5. Open side surfaces
 
 Operational readouts for the vault:
 
@@ -522,7 +583,7 @@ When you run `Yamlink: Create Note` and choose a type, Yamlink automatically che
 
 ## Schemas
 
-Yamlink supports `type: schema` notes. A schema defines the expected field shape for a note type: which fields are required, which are relations (and what they point to), and what type each field holds.
+Even though the idea is for users to customize Yamlink to their own mental structure, Yamlink supports `type: schema` notes. A schema defines the expected field shape for a note type: which fields are required, which are relations (and what they point to), and what type each field holds.
 
 ### Writing a schema note
 
@@ -777,7 +838,7 @@ sort date desc
 
 ## PDF Export
 
-Yamlink can export notes and live query results directly to PDF.
+Yamlink can export notes and live query results directly to PDF. 
 
 ### Export options
 
@@ -955,6 +1016,8 @@ Examples of the kinds of hints Yamlink can derive:
 
 ## How Yamlink Learns From Your Vault
 
+For a complete guide to what the lightbulbs mean and how the intelligence system works, see [INTELLIGENCE.md](INTELLIGENCE.md).
+
 Yamlink does not rely only on fixed built-in assumptions.
 
 It also learns from the structure already present in your vault.
@@ -986,7 +1049,7 @@ unit: [[roughnecks]]
 commander: [[johnny-rico]]
 ```
 
-But Yamlink is now more forgiving when it reads existing vault data.
+But in this iteration Yamlink is now more forgiving when it reads existing vault data.
 
 ### Confidence behavior
 
@@ -1002,16 +1065,8 @@ The goal is simple:
 - less random suggestion noise
 - better ranking
 - a clear rule for how Yamlink turns raw evidence scores into surface confidence
+- the more structure your notes have, the "smarter the system will feel"
 
-Under the hood, Yamlink now treats confidence in two distinct but explicit ways:
-
-- some systems emit direct confidence values between `0.0` and `1.0`
-- adaptive suggestion systems emit larger raw evidence scores, which Yamlink normalizes before deciding what should surface
-
-That means newer, repeated, high-structure patterns can surface more confidently than old or weak hints without pretending every internal score is already a probability.
-- more trust when Yamlink acts confidently
-
-This means a vault pattern from recent work can now outrank an older pattern with the same basic shape.
 
 ### Mixed-purpose notes
 
@@ -1265,108 +1320,96 @@ sort date desc
 
 The graph gives you a structural picture of your vault — who links to whom, which notes are hubs, and how clusters form.
 
+Both graph surfaces (the sidebar and the workspace panel) use the **x-graph** Canvas2D renderer: a lightweight physics-based engine with no external graph library dependency. Nodes are sized by hub score; edges connect them with live D3-force physics that settles after a few seconds. X-graph is in its alpha stage, but it is fully operational.
+
 There are two separate graph surfaces.
 
 ### Sidebar graph (always visible)
 
 Open it with `Yamlink: Open Graph`. It lives in the sidebar and stays open as you work.
 
-By default it shows the **vault scope** — every note rendered as a dot. Hub notes appear larger. Type clusters show as colored convex hulls behind the dots.
+Shows the **vault constellation** — every indexed note as a dot. Hub notes appear larger. Nodes are colored by their inferred kind (person/teal, event/amber, artifact/mint, schema/purple, task/pink, container/blue).
 
-**To explore a note:**
+**Interacting with nodes:**
 
-1. Click any dot to open the **selection bar** at the bottom of the panel.
-2. Click **Explore →** to switch to **local scope** centered on that note.
-3. Click **Open** to open the note in the editor.
-4. Click **✕** to dismiss the bar.
+- **Hover** a node → a bottom-center info card appears with the note's label, type, lifecycle state badge, and link count. Connected nodes brighten; non-connected notes dim.
+- **Click** a node → opens that note in the editor.
+- **Click and drag** a node → pins it to a new position. Connected nodes respond through live physics. Release to let it settle naturally.
 
-Local scope shows the direct connections of the selected note (1 hop). Switch back to **Vault** scope using the toolbar buttons.
+**Panning and zooming:**
+
+- **Scroll wheel** — zoom in and out (0.05× to 8×), centered on cursor
+- **Drag the canvas** — pan the view
+- **Double-click the canvas** — fits all nodes into view
 
 **Toolbar buttons:**
 
-- **◎** — re-centers the view on the current active note
-- **⊙** — fits all visible notes into the panel
+- **Fit** — fits all visible nodes into the panel
+- **Semantic** — toggles the Semantic layer (edge colours by relation type, with direction arrowheads and a legend)
+- **Health** — toggles the Health layer (colored rings on each node showing lifecycle state and structural drift, with a legend)
+
+### Visual layers
+
+The Semantic and Health layers stack on top of the base graph and are fully independent — either, both, or neither can be active.
+
+**Semantic layer:**
+- Edges are colored by source node type (person/contact → teal, container/project → amber, topic/tag → purple, event/session → pink)
+- Triangle arrowheads mark edge direction
+- Dashed lines for weak-strength links
+- An inline legend expands when active
+
+**Health layer:**
+- A colored ring around each node encodes lifecycle state: hub (teal), consolidated (green), growing (amber), draft (gray), stale (red)
+- Structural drift overrides lifecycle rings: minor-drift (yellow), drifting (orange), outlier (red)
+- An inline legend expands when active showing separate keys for lifecycle and drift
 
 ### Graph Workspace (full exploration panel)
 
 Two commands open it:
 
-- `Yamlink: Open Graph Workspace` — opens centered on the current note (Focus mode)
-- `Yamlink: Open Vault Graph` — opens in full vault-wide Explore mode
+- `Yamlink: Open Graph Workspace` — opens centered on the current note
+- `Yamlink: Open Vault Graph` — opens in vault-wide constellation mode
 
-**Navigating the workspace:**
+The same x-graph engine powers this surface. All the same interactions apply: hover for node info, click to open, drag to reposition, Semantic/Health layer toggles.
 
-- **Click** a note — selects it, opens the selection card on the right
-- **Double-click** a note — opens the note in the editor
-- **Hover** a note — dims non-neighbors, brightens connected edges
-- **Scroll or pinch** — zooms in/out
-- **Drag the background** — pans the canvas
+**Toolbar:**
 
-**Left panel controls:**
-
-- Search box — filters visible nodes by label, ID, or type
-- Source selector:
-  - **Current note** — start from the note you currently have open
-  - **Query-defined** — build the graph from the result of a `!view` query
-  - **Custom** — build the graph from note IDs you choose manually, then refine it with filters
-- Focus / Explore mode buttons:
-  - **Focus** — shows the current note and its strongest direct connections
-  - **Explore** — opens the wider vault constellation
-- Show more connections in Focus mode
-- Note cap in Explore mode
-- Advanced Filters — type, relation, tag facets
-
-**Right panel (selection card):**
-
-- Shows the selected note's label, type, outgoing count, incoming count, signal score, hidden-neighbor count, strongest link, connected types, and tags
-- **Isolate** — keeps only the selected note and its direct neighbors visible
-- **Hide unrelated** — BFS through the graph; hides everything not reachable from the selected note
-- **Show all** — restores the full view
-
-**Fit canvas / Current note / Reset filters** buttons in the toolbar adjust the canvas view and reset the working state.
+- **Semantic** and **Health** layer toggle buttons — same as sidebar
+- **Fit** — fits all visible nodes into the panel
 
 ### What the numbers mean
 
 **Notes** — every indexed note (a note with an `id:` field). Notes without `id:` are invisible to the graph.
 
-**Edges** — directed links between notes. Each `[[wikilink]]` in a frontmatter field or note body creates one edge from the source note to the target. If `mission-klendathu` has `commander: [[johnny-rico]]`, that is one edge pointing from `mission-klendathu` toward `johnny-rico`.
+**Edges** — directed links between notes. Each `[[wikilink]]` in a frontmatter field or note body creates one edge from the source note to the target. If `mission-klendathu` has `commander: [[johnny-rico]]`, that is one edge from `mission-klendathu` toward `johnny-rico`.
 
-**Types** — the number of distinct `type:` values currently visible in the graph slice.
+**Why the Health panel may show more edges than the graph** — the Health panel counts all graph edges including body text links. Body wikilinks (prose mentions not in frontmatter) are included in the edge total and appear as connections in the graph. If the two numbers differ, this is expected behavior, not a bug.
 
-**Largest cluster** — the size of the biggest connected group in the current graph view.
+**Node size** — encodes hub score: larger nodes have more connections. A large dot means many other notes link to it.
 
-**Why the Health panel may show more edges than the graph sidebar** — the Health panel counts total graph edges including body text links; the graph sidebar may display a filtered or de-duplicated view of the same data. Both numbers come from the same underlying index, but body links (mentioned in prose, not frontmatter) contribute to the Health edge count while not always rendering visibly as graph edges in the sidebar display. This is expected behavior, not a bug.
+**Lifecycle badge** (shown in the node info card on hover) — the note's current lifecycle state: `draft`, `growing`, `consolidated`, `hub`, or `stale`.
 
-**Signal** — a weighted connection score used to show how structurally important a selected note is inside the current graph view. It is not a magic intelligence score; it is a graph-strength summary.
+**Link count** (shown in the node info card) — total inbound + outbound connections from the graph edge layer.
 
-**Hidden neighbors** — notes that are connected to the selected note but are not currently visible because the graph is in a tighter Focus slice.
+### What to expect for `johnny-rico` in the vault graph
 
-### What to expect when opening the Graph Workspace for `johnny-rico`
+Open the sidebar graph. Find the `johnny-rico` node — it should appear slightly larger than most other nodes because several mission notes link to it.
 
-Open `johnny-rico.md`, then run `Yamlink: Open Graph Workspace`.
+Hover it: the info card should show `Hub` lifecycle, `character` type, and a link count of 6 or more.
 
-**You should see something like this:**
+Click it: the note opens in the editor.
 
-- `johnny-rico` as the center node
-- a focused slice made of the note's strongest direct connections first
-- relation labels such as `unit`, `commander`, or `commanding-officer` on the most important visible edges
-- a right-panel selection card that tells you:
-  - what note is selected
-  - how many links go out
-  - how many links come in
-  - what the strongest visible connection is
-  - what kinds of notes it is connected to
+Enable the **Health** layer: a colored ring appears on every node. `johnny-rico` should show a hub-teal ring. Any notes not touched in 45+ days show a red stale ring.
 
-**To verify each edge direction:** edges point from the linking note toward the linked note. An arrow from `mission-klendathu` → `johnny-rico` means klendathu has a frontmatter field that says `[[johnny-rico]]`. An arrow from `johnny-rico` → `roughnecks` means rico's frontmatter says `unit: [[roughnecks]]`.
-
-**Expanding the neighborhood:** use **Show more connections** in the left panel to pull in more of the current note's surrounding structure. This turns Focus mode from a tight readable slice into a broader local map.
+Enable the **Semantic** layer: edges gain colors. The `commander` relation from missions to `johnny-rico` appears in one color family; the `unit` relation from `johnny-rico` to `roughnecks` appears in another.
 
 ### What to use the graph for
 
 - Find orphan notes (no connections at all — no edges in or out)
-- Spot hub notes (many inbound edges — they usually matter most)
+- Spot hub notes (large nodes — they usually matter most)
 - Check whether a new note is properly linked into the vault
-- Visualize clusters: which notes group together naturally?
+- Use the Health layer to quickly see which notes are stale or drifting
+- Use the Semantic layer to understand what kind of relationships exist between clusters
 - Validate structure: does the graph match what you expected?
 
 The graph is a structural inspection tool, not the main working surface. Use it when structure matters, then work from the editor.
@@ -1381,16 +1424,17 @@ It lives in the Yamlink sidebar and follows whichever note is active in the edit
 
 ### What the Note Report shows
 
-The Note Report uses four tabs to keep related information together and reduce scrolling:
+The Note Report uses five tabs to keep related information together and reduce scrolling:
 
 - **Overview** — key fields, simple signals, and optional signal details
 - **Links** — structured relations first, with body mentions separated underneath
 - **Tasks** — only tasks written inside the currently opened note, plus local dated activity
 - **Views** — one suggested next view and one already-in-note view at most
+- **History** — structural arc over time: when fields were added, how links changed, before/after diffs for each mutation
 
 Tab selection persists across note switches.
 
-### Overview tab 
+### Overview tab
 
 The Overview tab follows a simple rule:
 
@@ -1446,13 +1490,17 @@ Important:
 |---|---|
 | **Draft** | Very sparse — 1 or fewer non-system fields and no relation links yet |
 | **Growing** | Structure is forming but not yet matching what similar notes look like |
-| **Established** | Matches ≥74% of the common field pattern for its type, with ≥55% field coverage |
+| **Consolidated** | Matches ≥74% of the common field pattern for its type, with ≥55% field coverage |
 | **Hub** | More inbound links than the vault's hub threshold (average inbound + 1, minimum 3) |
 | **Stale** | File not touched in ≥45 days, or a date/deadline field is ≥30 days in the past with no recent activity |
 
-Lifecycle is determined in priority order: Stale beats Hub; Hub beats Established; Established beats Growing; Growing beats Draft. A note that qualifies as both Stale and Hub shows as Stale.
+Lifecycle is determined in priority order: Stale beats Hub; Hub beats Consolidated; Consolidated beats Growing; Growing beats Draft. A note that qualifies as both Stale and Hub shows as Stale.
 
-### Links tab 
+**Likely missing fields**: the Overview tab shows a "Likely missing" section listing fields that appear on most notes of the same type but are absent from this note. Each row shows the field name, what percentage of same-type notes have it, and a relation badge if the field links to other notes. Click the `+` button next to any field to add a stub for it at the end of the frontmatter instantly — Yamlink positions the cursor there and triggers completion for relation fields.
+
+> **Intelligence learning tip**: Yamlink learns from completions you accept. When you press Enter or Tab to accept a relation completion candidate, that acceptance is recorded. Over time, fields you have confirmed as relations are suggested more confidently and earlier. The system never forgets confirmed field relationships even after vault restructuring.
+
+### Links tab
 
 **Incoming relations** — grouped by the field name used to link here. If three missions all have `commander: [[johnny-rico]]`, you see a `commander` group with all three missions listed.
 
@@ -1532,6 +1580,23 @@ Open `johnny-rico.md`, then run `Yamlink: Open Note Report`.
 
 **Views tab:** suggested queries for `character` type — likely a "missions commanded by this character" view and a "units this character belongs to" view.
 
+### History tab
+
+The History tab surfaces the structural arc of the note — not edit history from git, but Yamlink's mutation log: when fields were added, when links changed, when lifecycle state shifted.
+
+At the top of the tab, a vertical milestone spine traces the note's lifecycle with color-coded Lucide icons:
+- **Note created** (mint) — first appearance in the log or mtime backfill
+- **Type established** (lavender) — when `type:` was first set
+- **First link** (mint) — when the first `[[wikilink]]` was added to frontmatter
+- **Last activity** (amber) — most recent structural change
+
+Each entry in the full log below shows:
+- a timestamp
+- the mutation type (field added, relation changed, type set, etc.)
+- a before/after diff of the frontmatter change
+
+This is most useful for hub notes that evolve over time — you can see how a note was built up across multiple sessions.
+
 ### Note Report gets stronger with structure
 
 The more structured a note is, the better the Report:
@@ -1548,6 +1613,22 @@ A note with just `id: foo` and `type: foo` gets a minimal report. A note with fu
 ## Using Vault Health
 
 Open with `Yamlink: Open Vault Health`. The panel gives you a full structural snapshot of the vault — not just broken links, but lifecycle maturity, type consistency, and type coverage.
+
+### Tab navigation
+
+Vault Health organizes its content into tabs so you jump directly to the section you need rather than scrolling through the full panel:
+
+| Tab | What you see |
+|---|---|
+| **Activity** | Notes mutated today, sorted by change count — click any to open it in Note Report |
+| **Lifecycle** | Distribution cards for Draft / Growing / Consolidated / Hub / Stale |
+| **Consistency** | Type-consistency cards (On Track, Slightly Unusual, Missing Structure, Very Unusual) plus pill list of notes needing attention |
+| **Schema** | Per-type conformance coverage, non-conformant notes, unschematized type advisories, dangling relation warnings |
+| **Templates** | Notes drifted from their `_templates/` file (only visible when template drift exists) |
+| **Types** | Full type catalog with expandable note lists and "View all →" buttons |
+| **Orphans** | Unlinked notes (only visible when orphan nodes exist) |
+
+The stats strip cards for **Types**, **Schema**, and **Orphan Nodes** switch to the matching tab when clicked.
 
 ### Health score
 
@@ -1589,7 +1670,7 @@ Plain-language reading:
 - **Types** = how many different note categories you are using
 - **Schemas** = how many of those categories have formal structure definitions
 
-Clicking **Nodes** opens a view of all notes. Clicking **Broken Links** opens the Problems panel. Clicking **Orphan Nodes** or **Types** scrolls to the relevant section.
+Clicking **Nodes** opens a view of all notes. Clicking **Broken Links** opens the Problems panel. Clicking **Orphan Nodes** switches to the Orphans tab. Clicking **Types** or **Schemas** switches to the matching tab.
 
 Hovering any Vault Health card shows a short tooltip explaining the stat in plain language.
 
@@ -1605,17 +1686,17 @@ Yamlink classifies every non-dashboard, non-schema note into one of five lifecyc
 |---|---|---|
 | **Draft** | Notes that are barely started | ≤1 non-system field and no relation links |
 | **Growing** | Notes with structure forming | Has fields and/or links but doesn't yet match the common pattern for its type |
-| **Established** | Notes that look complete for their type | Matches ≥74% of common fields for the type AND ≥55% field coverage |
+| **Consolidated** | Notes that look complete for their type | Matches ≥74% of common fields for the type AND ≥55% field coverage |
 | **Hub** | Notes everything else links to | Inbound link count ≥ vault hub threshold (avg inbound + 1, minimum 3) |
 | **Stale** | Notes that haven't moved | File not touched in ≥45 days, OR a `date`/`due`/`deadline` field is ≥30 days past with no recent activity |
 
-**Priority:** Stale overrides Hub. Hub overrides Established. Established overrides Growing. Growing overrides Draft.
+**Priority:** Stale overrides Hub. Hub overrides Consolidated. Consolidated overrides Growing. Growing overrides Draft.
 
 Plain-language reading:
 
 - **Draft** = barely started
 - **Growing** = taking shape
-- **Established** = looks complete for its kind
+- **Consolidated** = looks complete for its kind
 - **Hub** = many other notes point to it
 - **Stale** = probably needs review because it has not moved in a while
 
@@ -1667,6 +1748,23 @@ Missing structure and Very unusual notes appear as clickable pills in the sectio
 
 **A note about consistency and completion:** when you open a note that is missing expected structure and trigger frontmatter field-name completion, Yamlink surfaces the missing expected fields at the top of the suggestion list — labeled with the percentage of same-type notes that have that field. Type-consistency detection actively assists your editing workflow, not just the health report.
 
+### Schema Conformance
+
+If you have schema notes (notes with `type: schema` that define field shapes for a target type), Vault Health shows per-type conformance coverage.
+
+| Column | What it means |
+|---|---|
+| **Type** | The `type:` value being analyzed |
+| **Coverage** | Percentage of notes of this type that have all required fields from the schema |
+| **Non-conformant** | Notes missing one or more required fields |
+| **Advisories** | Notes with unexpected extra fields, or fields with wrong value shapes |
+
+The philosophy: schema amplifies, never gates. Schema conformance in Vault Health is diagnostic — it tells you which notes are drifting from the intended structure, but it does not block editing or prevent those notes from appearing in queries. Every Yamlink feature works on zero-schema vaults.
+
+If no schema exists for a type, Vault Health shows an advisory: "no schema defined for this type." This is an invitation, not an error. Define a schema when you want consistent field shapes for that type.
+
+**Dangling relations** are also surfaced here: links from notes of this type to notes that don't exist in the vault. These differ from broken links in that the link target might be a note you intend to create — the conformance panel flags them so you can decide.
+
 ### Entity Types
 
 An accordion list of every `type:` value in the vault, ordered by note count. Expand any type to see all its notes as clickable pills. Notes that are orphans within a type are labeled "N unlinked."
@@ -1683,12 +1781,12 @@ Dashboard notes are excluded (they are intentionally non-relational). Schema not
 
 With the Starship Troopers sample vault loaded, the panel should show approximately:
 
-- **Nodes:** 20
-- **Edges:** 44
+- **Nodes:** ~28
+- **Edges:** 50+
 - **Broken links:** 0
 - **Orphan nodes:** 1 (`blank-test`)
-- **Schemas:** 2 (`schema-character`, `schema-mission`)
-- **Types:** 8 (`character`, `dashboard`, `mission`, `dossier`, `unit`, `schema`, `lab`, `planner`)
+- **Schemas:** 3 (`schema-character`, `schema-mission`, `schema-unit`)
+- **Types:** 10+ (`character`, `dashboard`, `mission`, `dossier`, `unit`, `schema`, `lab`, `journal`, etc.)
 - **Health score:** 98%
 
 Lifecycle in the sample vault is a little more time-sensitive:
@@ -1705,14 +1803,257 @@ Drift in the sample vault should remain calm:
 
 ---
 
+## Using the CLI
+
+Yamlink ships with a `yamlink` command that lets you query, inspect, validate, and serve your vault from a terminal — no VS Code required.
+
+### What is a CLI and why does it matter?
+
+A CLI (command-line interface) lets you run Yamlink from a terminal window — that is, any app like Terminal on macOS, PowerShell or Command Prompt on Windows, or a shell in Linux. You type a command, press Enter, and see the output.
+
+This matters because:
+- you can script and automate vault operations (CI checks, daily exports, build pipelines)
+- you can use Yamlink in contexts that don't have VS Code (servers, other editors, build systems)
+- you can pipe results into other tools like `jq`, spreadsheets, or your own scripts
+
+### Setup
+
+```bash
+# Run once from the yamlink project folder
+npm link
+```
+
+This makes `yamlink` available as a command anywhere in your terminal. After that, point it at any vault with `--vault`, or run it from inside the vault folder and omit the flag.
+
+**Windows note:** Run PowerShell or Command Prompt as normal. If `yamlink` is not recognized after `npm link`, try restarting your terminal.
+
+### All commands at a glance
+
+| Command | What it does |
+|---|---|
+| `yamlink build` | Index the vault, report all broken links and duplicate IDs. Exits with error code 1 if issues are found — use this in CI. |
+| `yamlink health` | Structural overview: note count by type, lifecycle distribution, orphans, drift. |
+| `yamlink validate` | Schema conformance check: which notes are missing required fields, dangling relations, unschematized types. |
+| `yamlink query "<clause>"` | Run a `!view`-compatible query and print results in the terminal. |
+| `yamlink report <id>` | Full note report: lifecycle, drift, all in/out links grouped by field. |
+| `yamlink links <id>` | Outbound and inbound links for a single note. |
+| `yamlink serve` | Start a local HTTP API server so other tools can read your vault. |
+| `yamlink export` | Dump vault data to JSON or CSV. |
+
+### Commands in detail
+
+#### `yamlink build`
+
+```bash
+yamlink build --vault ~/my-vault
+yamlink build --vault ~/my-vault --json
+```
+
+Indexes the entire vault and reports structural issues:
+- broken links (wikilinks pointing to IDs that don't exist)
+- duplicate IDs (two notes with the same `id:` field)
+
+If it finds any issues, it exits with code 1. This is what you want in CI — a broken vault fails the build.
+
+```bash
+# In a CI script (GitHub Actions, etc.)
+yamlink build --vault ./vault  # exits 1 if broken
+```
+
+The `--json` flag gives you machine-readable output for downstream processing.
+
+#### `yamlink health`
+
+```bash
+yamlink health --vault ~/my-vault
+yamlink health --vault ~/my-vault --json
+```
+
+Shows a structural overview: note count by type, broken links, orphan nodes, and lifecycle state distribution. Good for a quick vault sanity check.
+
+#### `yamlink validate`
+
+```bash
+yamlink validate --vault ~/my-vault
+yamlink validate --vault ~/my-vault --json
+```
+
+Checks schema conformance: which notes are missing required fields defined by your schema notes, which types have no schema at all, and which links are dangling (point to notes that don't exist yet).
+
+Exits with code 1 if it finds non-conformant notes or dangling relations, so you can use it as a CI gate.
+
+Schema-free vaults are fine — `yamlink validate` will just report that no schemas are defined and exit cleanly.
+
+#### `yamlink query "<clause>"`
+
+```bash
+yamlink query "where type = character" --vault sample
+yamlink query "where type = mission sort date desc" --vault sample
+yamlink query "!view character select id, rank, status" --vault sample
+yamlink query "where type = character" --vault sample --json
+```
+
+Runs a vault query using the same language as `!view` blocks inside notes.
+
+- Bare clauses like `"where type = contact"` are auto-wrapped — you don't need to write `!view *` yourself
+- Full `!view` format also works: `"!view character where status = active"`
+- Select fields can be comma-separated or space-separated: `"select id, name, status"` and `"select id name status"` are equivalent
+
+#### `yamlink report <id>`
+
+```bash
+yamlink report johnny-rico --vault sample
+yamlink report johnny-rico --vault sample --json
+```
+
+Shows the full note report in the terminal: type, lifecycle state, structural drift, and all outbound/inbound links grouped by relation field — the same data as the Note Report panel.
+
+#### `yamlink links <id>`
+
+```bash
+yamlink links johnny-rico --vault sample
+```
+
+Lists the note's outbound links (with `⚠` markers for broken targets) and inbound links in formatted tables. Faster than opening the Note Report just to check connectivity.
+
+#### `yamlink serve`
+
+```bash
+yamlink serve --vault ~/my-vault
+yamlink serve --vault ~/my-vault --port 4000
+```
+
+Starts a local HTTP server that exposes your vault as a REST API. Default port is 3000. The server watches for `.md` file changes and rebuilds the index automatically — no restart needed.
+
+**Endpoints:**
+
+| Endpoint | What it returns |
+|---|---|
+| `GET /api/nodes` | All indexed notes (id, type, fields) |
+| `GET /api/nodes/:id` | A single note by ID |
+| `GET /api/query?q=<clause>` | Query results — same syntax as `!view` |
+| `GET /api/graph` | Graph edges (from, to, field) |
+| `GET /api/types` | All `type:` values seen in the vault |
+| `GET /api/health` | Structural stats (broken links, lifecycle, etc.) |
+
+**Using `yamlink serve` as a CMS backend:**
+
+This is the main reason to use `serve`. Your vault becomes the data layer for any web framework:
+
+```js
+// In a Next.js or Astro build script
+const res = await fetch('http://localhost:3000/api/query?q=where type = post');
+const { rows } = await res.json();
+// rows is your list of blog posts, from your Markdown vault
+```
+
+Your notes become pages. Frontmatter becomes metadata. Wikilinks resolve to URLs. You write content in your editor, the site reads it from the local API at build time.
+
+#### `yamlink export`
+
+```bash
+yamlink export --vault ~/my-vault --format json
+yamlink export --vault ~/my-vault --format csv
+yamlink export --vault ~/my-vault --format csv --output ~/backup.csv
+yamlink export --vault ~/my-vault --query "where type = contact" --format csv
+```
+
+Dumps vault data to JSON or CSV.
+
+- `--format json` (default) — full structured output including all frontmatter fields
+- `--format csv` — flat CSV with all fields; wikilinks are unwrapped to bare IDs
+- `--output <file>` — write to a file instead of printing to the terminal
+- `--query "<clause>"` — filter results before exporting
+
+### JSON output
+
+Most commands accept `--json` for machine-readable output that you can pipe into other tools:
+
+```bash
+yamlink health --vault ~/my-vault --json
+yamlink build --vault ~/my-vault --json
+yamlink query "where type = character" --vault sample --json
+yamlink report johnny-rico --vault sample --json
+```
+
+### Practical examples
+
+**CI pipeline (GitHub Actions):**
+
+```yaml
+- name: Validate vault
+  run: |
+    yamlink build --vault ./vault       # fails if broken links exist
+    yamlink validate --vault ./vault    # fails if schema violations exist
+```
+
+**CRM workflows:**
+
+```bash
+# Daily check: any contacts missing a follow-up date?
+yamlink query "!view contact where date is empty" --vault ~/crm
+
+# Export contacts to CSV for a spreadsheet
+yamlink export --vault ~/crm --query "where type = contact" --format csv --output contacts.csv
+
+# Vault health check
+yamlink health --vault ~/crm --json
+```
+
+**Engineering project tracker:**
+
+```bash
+# Open bugs for a specific project
+yamlink query "where type = bug and project = [[project-yamlink]] and status != fixed" --vault ~/notes
+
+# Full report on a decision note
+yamlink report decision-graph-right-rail --vault ~/notes
+
+# All inbound links to a project hub
+yamlink links project-yamlink --vault ~/notes
+```
+
+**Publishing use case (vault as CMS):**
+
+```bash
+# Start the API server
+yamlink serve --vault ~/my-site-content --port 3000
+
+# In another terminal, start your web framework
+npm run dev   # Next.js, Astro, etc. fetches from localhost:3000
+```
+
+**Scripting pipelines:**
+
+```bash
+# Export all character notes as JSON
+yamlink export --vault sample --query "where type = character" --format json > characters.json
+
+# Check for broken links before committing
+yamlink build --vault . --json
+```
+
+### What the CLI enables
+
+The CLI calls the same pure engine that powers the VS Code extension — same indexing, same query language, same intelligence layer. This means:
+
+- vault query results from the terminal match what you see in `!view` tables in the editor
+- health and lifecycle data matches what Vault Health shows
+- the `--json` flag feeds the same structured data into any downstream tool
+- `yamlink serve` opens Yamlink to any tool that can make an HTTP request
+
+---
+
 ## Best Commands To Learn First
 
 | Command | What it does |
 |---|---|
+| `Yamlink: Open Home` | Open the Home panel — vault pulse, activity feed, continue working, nudges |
 | `Yamlink: Create Note` | Create a new note with frontmatter (uses template → schema → vault inference) |
 | `Yamlink: New Note from Template` | Pick a template and create a note with its field shape |
 | `Yamlink: New Note from Schema` | Pick a schema type and create a structured note from its field definitions |
 | `Yamlink: Insert View Block` | Insert a `!view` query — shows smart starters for the current note |
+| `Yamlink: Query in Plain English` | Type plain English; Yamlink generates the `!view` syntax and inserts it |
 | `Yamlink: Refine View Block` | Edit an existing view block's label, sort, filter, or limit |
 | `Yamlink: Run Views in Current File` | Execute all `!view` blocks in the current note |
 | `Yamlink: Open Note Report` | See relations, tasks, timeline, and suggestions for the current note |
@@ -1723,6 +2064,14 @@ Drift in the sample vault should remain calm:
 | `Yamlink: Open Graph Workspace` | Graph Workspace centered on the active note |
 | `Yamlink: Open Vault Graph` | Graph Workspace in vault-wide constellation mode |
 | `Yamlink: Export Active Note to PDF` | Export current note or its live views to PDF |
+| `yamlink build` | Terminal: index vault and report broken links / duplicate IDs — exits 1 in CI if issues found |
+| `yamlink health` | Terminal: vault overview (broken links, lifecycle, types) |
+| `yamlink validate` | Terminal: schema conformance check — missing required fields, dangling relations |
+| `yamlink query "<clause>"` | Terminal: run a `!view`-compatible query and see results |
+| `yamlink report <id>` | Terminal: full note report with links, lifecycle, and drift |
+| `yamlink links <id>` | Terminal: outbound and inbound links for a note |
+| `yamlink serve` | Terminal: start a local HTTP API server so websites can read vault data |
+| `yamlink export` | Terminal: dump vault to JSON or CSV |
 
 ---
 
@@ -1730,25 +2079,17 @@ Drift in the sample vault should remain calm:
 
 ### Graph
 
-**Sidebar graph:**
-- Click a dot note to open the selection bar (Explore, Open, Dismiss)
-- **Explore →** switches sidebar to local scope centered on the clicked note
-- **◎** re-centers on the current note
-- **⊙** fits all visible notes
-- Scope buttons (Local / Vault) switch the constellation mode
+Both graph surfaces (sidebar and Graph Workspace) use the same interactions:
 
-**Graph Workspace panel:**
-- Click note — selects it and opens the selection card on the right
-- Double-click note — opens the note in the editor
-- Hover note — highlights the note and its neighbors
-- Scroll / pinch — zoom in and out
-- Drag background — pan the canvas
-- **Fit canvas** — fits all visible notes into view
-- **Current note** — centers the graph on the active note
-- **Isolate** (right panel) — show only the selected note and its direct neighbors
-- **Hide unrelated** (right panel) — show only the selected note and all notes reachable from it
-- **Show all** (right panel) — restore the full view
-- Search box (left panel) — filters visible nodes by label, ID, or type
+- **Hover** a node — info card appears (label, type, lifecycle, link count); connected nodes highlight
+- **Click** a node — opens the note in the editor
+- **Click and drag** a node — repositions it; physics responds in real time; release to settle
+- **Drag the canvas** — pan the view
+- **Scroll wheel** — zoom in / out
+- **Double-click the canvas** — fit all nodes into view
+- **Semantic** button — toggle edge colouring by relation type
+- **Health** button — toggle lifecycle/drift rings on nodes
+- **Fit** button — fit all visible nodes into the panel
 
 ### Calendar
 
@@ -1799,6 +2140,8 @@ This means Calendar is already a lightweight activity + milestone surface, not j
 - `Tab` / `Shift+Tab` move across editable cells
 - paste spreadsheet ranges directly into selected cells
 - `Ctrl/Cmd+Z` undo recent table edits
+
+**Matrix view** — any `!view` table has a layout toggle in the toolbar: **Table** | **Matrix**. Switch to Matrix to turn the results into a two-axis grid: rows are the query results, columns are a vault type you pick, and each cell shows a dot (●) if a connection exists. The query is the same — only the rendering changes. This is useful for seeing, for example, which characters appear in which missions at a glance, without writing a separate query.
 
 ---
 

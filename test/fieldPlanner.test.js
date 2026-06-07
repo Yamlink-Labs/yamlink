@@ -200,3 +200,52 @@ describe('fieldPlanner — debug output', () => {
         assert.equal(typeof p.debug.sourceWeight, 'number');
     });
 });
+
+// ─── Vault-maturity-aware thresholds ──────────────────────────────────────
+
+describe('fieldPlanner — vault maturity scaling', () => {
+    // Step 2.5 produces confidence=0.55, source='usage' (weight=0.85)
+    // ec = 0.55 * 0.85 = 0.4675
+    // On mature vault: DOCUMENT threshold is 0.38 — ec passes (0.4675 >= 0.38)
+    // On new vault (maturity=0): DOCUMENT threshold is 0.38*0.65 = 0.247 — ec still passes
+    // On mature vault: QUICKFIX threshold is 0.72 — ec fails (0.4675 < 0.72) → DOCUMENT
+    function clsSingle(vaultMaturity) {
+        return {
+            category: CATEGORY.RELATION,
+            confidence: 0.55,
+            source: 'usage',
+            relationStrength: RELATION_STRENGTH.WEAK,
+            reasons: [],
+            vaultMaturity
+        };
+    }
+
+    it('one typed link → DOCUMENT or above on a brand-new vault (maturity=0)', () => {
+        const p = planFieldActions(clsSingle(0), 'lightbulb');
+        assert.ok(p.level >= LEVEL.DOCUMENT, `expected >= DOCUMENT, got level=${p.level}`);
+    });
+
+    it('one typed link → DOCUMENT on a mature vault too (ec above DOCUMENT bar)', () => {
+        const p = planFieldActions(clsSingle(1), 'lightbulb');
+        assert.ok(p.level >= LEVEL.DOCUMENT, `expected >= DOCUMENT, got level=${p.level}`);
+    });
+
+    it('one typed link is NOT enough for QUICKFIX on a mature vault', () => {
+        const p = planFieldActions(clsSingle(1), 'lightbulb');
+        assert.ok(p.level < LEVEL.QUICKFIX, 'single link should not reach QUICKFIX without vault history');
+    });
+
+    it('schema always reaches QUICKFIX regardless of maturity', () => {
+        const schema = { category: CATEGORY.RELATION, confidence: 1.0, source: 'schema', relationStrength: RELATION_STRENGTH.CERTAIN, reasons: [], vaultMaturity: 0 };
+        const p = planFieldActions(schema, 'lightbulb');
+        assert.equal(p.level, LEVEL.QUICKFIX);
+    });
+
+    it('missing vaultMaturity on classification defaults to mature (no regression)', () => {
+        // Old classifications without vaultMaturity field must behave like maturity=1
+        const old = cls(CATEGORY.RELATION, 0.82, 'usage', RELATION_STRENGTH.LIKELY);
+        const p = planFieldActions(old, 'lightbulb');
+        // At maturity=1, ec=0.82*0.85=0.697 — above DOCUMENT (0.38) but below QUICKFIX (0.72)
+        assert.ok(p.level >= LEVEL.DOCUMENT);
+    });
+});

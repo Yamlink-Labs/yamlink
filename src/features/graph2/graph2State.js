@@ -61,7 +61,9 @@ function normalizeSource(value) {
 
 function normalizeScope(value) {
     const raw = String(value || '').trim().toLowerCase();
-    if (Object.values(GRAPH2_SCOPES).includes(raw)) return raw;
+    if ((/** @type {string[]} */ (Object.values(GRAPH2_SCOPES))).includes(raw)) {
+        return /** @type {any} */ (raw);
+    }
     return GRAPH2_SCOPES.NEIGHBORHOOD;
 }
 

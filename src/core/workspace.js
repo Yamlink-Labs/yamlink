@@ -2,6 +2,9 @@
 
 const path = require('path');
 
+/** @typedef {{ uri: { fsPath: string } }} WorkspaceFolderLike */
+
+/** @param {ReadonlyArray<WorkspaceFolderLike>|null|undefined} workspaceFolders @returns {string[]} */
 function getWorkspaceRoots(workspaceFolders) {
     if (!Array.isArray(workspaceFolders)) return [];
     return workspaceFolders
@@ -9,10 +12,12 @@ function getWorkspaceRoots(workspaceFolders) {
         .filter(Boolean);
 }
 
+/** @param {ReadonlyArray<WorkspaceFolderLike>|null|undefined} workspaceFolders @returns {string|null} */
 function getPrimaryWorkspaceRoot(workspaceFolders) {
     return getWorkspaceRoots(workspaceFolders)[0] ?? null;
 }
 
+/** @param {ReadonlyArray<WorkspaceFolderLike>|null|undefined} workspaceFolders @param {string|null} [filePath] @returns {string|null} */
 function getWorkspaceRootForFile(workspaceFolders, filePath) {
     if (!filePath) return getPrimaryWorkspaceRoot(workspaceFolders);
 

@@ -2,9 +2,24 @@
 
 const fs = require('fs');
 const path = require('path');
-const PDFDocument = require('pdfkit');
 const { parseAllViewQueries, runQuery, buildQueryString } = require('../engine/query');
 const { parseFrontmatterDocument } = require('../core/frontmatter');
+const { CALLOUT_TYPE_FAMILY } = require('./markdownItCallouts');
+
+const CALLOUT_LINE_RE = /^>\s*\[!([A-Z]+)\](?:\s+(.+))?$/i;
+
+const CALLOUT_PDF_STYLES = {
+    amber:  { bg: '#fdf6e3', stroke: '#e6a817', badge: '#7a5a10', body: '#3d2d08' },
+    blue:   { bg: '#eaf4fb', stroke: '#4a9fc8', badge: '#1a5a80', body: '#0f3a55' },
+    orange: { bg: '#fff4e0', stroke: '#e89020', badge: '#8a5c10', body: '#5a3a08' },
+    red:    { bg: '#ffeaea', stroke: '#d95050', badge: '#8a2020', body: '#5a1010' },
+};
+
+let _PDFDocument = null;
+function getPDFDocument() {
+    if (!_PDFDocument) _PDFDocument = require('pdfkit');
+    return _PDFDocument;
+}
 
 function buildViewExportModel(query, contextNodeId) {
     const result = runQuery(query, contextNodeId || null);
@@ -69,11 +84,17 @@ function exportNotePdf(filePath, model) {
 
     if (model.body) {
         writeSectionTitle(doc, 'Note');
-        doc.font('Helvetica').fontSize(11).fillColor('#1b1f24').text(model.body, {
-            width: doc.page.width - doc.page.margins.left - doc.page.margins.right,
-            lineGap: 3
-        });
-        doc.moveDown(1.1);
+        const bodyWidth = doc.page.width - doc.page.margins.left - doc.page.margins.right;
+        for (const seg of parseBodySegments(model.body)) {
+            if (seg.type === 'callout') {
+                writeCalloutBlock(doc, seg.calloutType, seg.title, seg.content);
+            } else {
+                doc.font('Helvetica').fontSize(11).fillColor('#1b1f24')
+                    .text(seg.content, { width: bodyWidth, lineGap: 3 });
+                doc.moveDown(0.8);
+            }
+        }
+        doc.moveDown(0.3);
     }
 
     for (const view of model.views || []) {
@@ -95,6 +116,7 @@ function exportNotePdf(filePath, model) {
 
 function createDocument(filePath, title) {
     fs.mkdirSync(path.dirname(filePath), { recursive: true });
+    const PDFDocument = getPDFDocument();
     const doc = new PDFDocument({
         size: 'A4',
         margin: 44,
@@ -139,6 +161,92 @@ function writeKeyValue(doc, key, value) {
     ensureSpace(doc, 18);
     doc.font('Helvetica-Bold').fontSize(10).fillColor('#64707a').text(String(key).toUpperCase(), { continued: true });
     doc.font('Helvetica').fillColor('#1b1f24').text(`  ${value}`);
+}
+
+/**
+ * Split body text into alternating text / callout segments.
+ * @param {string} text
+ * @returns {Array<{type:'text',content:string}|{type:'callout',calloutType:string,title:string,content:string}>}
+ */
+function parseBodySegments(text) {
+    const lines = text.split('\n');
+    /** @type {Array<{type:'text',content:string}|{type:'callout',calloutType:string,title:string,content:string}>} */
+    const segments = [];
+    let i = 0;
+
+    while (i < lines.length) {
+        const calloutMatch = lines[i].match(CALLOUT_LINE_RE);
+        if (calloutMatch) {
+            const calloutType = calloutMatch[1].toUpperCase();
+            const title = calloutMatch[2] || calloutType;
+            i++;
+            const bodyLines = [];
+            while (i < lines.length && /^>/.test(lines[i])) {
+                bodyLines.push(lines[i].replace(/^>\s?/, ''));
+                i++;
+            }
+            segments.push(/** @type {{type:'callout',calloutType:string,title:string,content:string}} */ ({
+                type: 'callout',
+                calloutType,
+                title,
+                content: bodyLines.join('\n').trim()
+            }));
+        } else {
+            const textLines = [];
+            while (i < lines.length && !CALLOUT_LINE_RE.test(lines[i])) {
+                textLines.push(lines[i]);
+                i++;
+            }
+            const content = textLines.join('\n').trim();
+            if (content) {
+                segments.push(/** @type {{type:'text',content:string}} */ ({
+                    type: 'text',
+                    content
+                }));
+            }
+        }
+    }
+
+    return segments;
+}
+
+function writeCalloutBlock(doc, calloutType, title, content) {
+    const family = CALLOUT_TYPE_FAMILY[calloutType] || 'blue';
+    const s = CALLOUT_PDF_STYLES[family];
+    const pageWidth = doc.page.width - doc.page.margins.left - doc.page.margins.right;
+    const innerWidth = pageWidth - 24;
+    const label = title && title.toUpperCase() !== calloutType
+        ? `${calloutType} — ${title}`
+        : calloutType;
+
+    const labelHeight = doc.heightOfString(label, { width: innerWidth, fontSize: 9 });
+    const bodyHeight = content
+        ? doc.heightOfString(content, { width: innerWidth, fontSize: 10 }) + 6
+        : 0;
+    const boxHeight = 10 + labelHeight + bodyHeight + 10;
+
+    ensureSpace(doc, boxHeight + 8);
+
+    const x = doc.x;
+    const y = doc.y;
+
+    // Background fill
+    doc.rect(x, y, pageWidth, boxHeight).fill(s.bg);
+    // Left accent bar
+    doc.rect(x, y, 3, boxHeight).fill(s.stroke);
+
+    // Label
+    doc.font('Helvetica-Bold').fontSize(9).fillColor(s.badge)
+        .text(label, x + 12, y + 10, { width: innerWidth });
+
+    // Body
+    if (content) {
+        const labelActualHeight = doc.heightOfString(label, { width: innerWidth, fontSize: 9 });
+        doc.font('Helvetica').fontSize(10).fillColor(s.body)
+            .text(content, x + 12, y + 10 + labelActualHeight + 4, { width: innerWidth, lineGap: 2 });
+    }
+
+    doc.y = y + boxHeight + 6;
 }
 
 function writeCallout(doc, title, text) {

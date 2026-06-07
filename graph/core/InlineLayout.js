@@ -73,6 +73,24 @@ export class InlineLayout {
     this._simulation?.stop();
   }
 
+  // ── Drag API (mirrors LayoutWorker) ────────────────────────────────────────
+
+  dragStart(id) {
+    if (!this._simulation) return;
+    this._simulation.alphaTarget(0.3).restart();
+  }
+
+  drag(id, x, y) {
+    const node = this._nodes.find(n => n.id === id);
+    if (node) { node.fx = x; node.fy = y; }
+  }
+
+  dragEnd(id) {
+    const node = this._nodes.find(n => n.id === id);
+    if (node) { node.fx = null; node.fy = null; }
+    this._simulation?.alphaTarget(0);
+  }
+
   destroy() {
     this._simulation?.stop();
     this._simulation = null;

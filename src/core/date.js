@@ -117,6 +117,7 @@ function normaliseTextualMonthNoYear(match, dayFirst, referenceDate) {
     return toIsoDate(base.getFullYear(), month, day);
 }
 
+/** @param {any} value @param {Date|string|null} [referenceDate] @returns {string|null} */
 function normaliseDateInput(value, referenceDate = null) {
     const raw = String(value ?? '').trim();
     if (!raw) return null;
@@ -200,6 +201,7 @@ function extractRelativeDateFromText(text, referenceDate) {
     return '';
 }
 
+/** @param {any} text @param {Date|string|null} [referenceDate] @returns {string|null} */
 function extractDateFromText(text, referenceDate) {
     const raw = String(text ?? '');
     const patterns = [
@@ -220,15 +222,18 @@ function extractDateFromText(text, referenceDate) {
     return extractRelativeDateFromText(raw, referenceDate);
 }
 
+/** @param {any} value @returns {boolean} */
 function isDateLike(value) {
     return !!normaliseDateInput(value);
 }
 
+/** @returns {string|null} */
 function getTodayIsoLocal() {
     const now = new Date();
     return toIsoDate(now.getFullYear(), now.getMonth() + 1, now.getDate());
 }
 
+/** @param {string|null} isoDate @param {number} days @returns {string|null} */
 function addDaysIso(isoDate, days) {
     const match = String(isoDate ?? '').match(/^(\d{4})-(\d{2})-(\d{2})$/);
     if (!match) return null;
@@ -237,6 +242,7 @@ function addDaysIso(isoDate, days) {
     return toIsoDate(dt.getUTCFullYear(), dt.getUTCMonth() + 1, dt.getUTCDate());
 }
 
+/** @param {any} token @param {Date|string|null} [referenceDate] @returns {string|null} */
 function resolveDateShortcutToken(token, referenceDate = null) {
     const normalized = String(token || '').trim().toLowerCase().replace(/^@+/, '');
     const base = getReferenceDate(referenceDate);
@@ -268,6 +274,7 @@ function resolveDateShortcutToken(token, referenceDate = null) {
     }
 }
 
+/** @param {Date|string|null} [referenceDate] @returns {Array<{token: string, label: string, iso: string}>} */
 function buildDateShortcutEntries(referenceDate = null) {
     const entries = [
         ['today', 'Today'],

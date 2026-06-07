@@ -3,6 +3,9 @@
 const yaml = require('js-yaml');
 const { normaliseDateInput } = require('./date');
 
+/** @typedef {{ hasFrontmatter: boolean, data: Record<string,any>, body: string, originalOrder: string[] }} FrontmatterDoc */
+
+/** @param {any} text @returns {string} */
 function normalizeText(text) {
     return String(text || '').replace(/\r\n/g, '\n').replace(/\r/g, '\n');
 }
@@ -39,6 +42,7 @@ function splitFrontmatter(text) {
     };
 }
 
+/** @param {string} text @returns {FrontmatterDoc} */
 function parseFrontmatterDocument(text) {
     const parts = splitFrontmatter(text);
     if (!parts.hasFrontmatter) {
@@ -68,6 +72,7 @@ function parseFrontmatterDocument(text) {
     };
 }
 
+/** @param {FrontmatterDoc|null} doc @param {string} key @param {any} value @returns {FrontmatterDoc} */
 function setField(doc, key, value) {
     const data = { ...(doc?.data || {}) };
     data[key] = normalizeValue(value, data[key]);
@@ -79,6 +84,7 @@ function setField(doc, key, value) {
     };
 }
 
+/** @param {FrontmatterDoc|null} doc @param {string} key @returns {FrontmatterDoc} */
 function deleteField(doc, key) {
     const data = { ...(doc?.data || {}) };
     delete data[key];
@@ -90,6 +96,7 @@ function deleteField(doc, key) {
     };
 }
 
+/** @param {FrontmatterDoc} doc @returns {string} */
 function serializeFrontmatterDocument(doc) {
     const ordered = {};
     const seen = new Set();
@@ -202,6 +209,7 @@ function serializeScalarForYaml(value) {
     return JSON.stringify(s);
 }
 
+/** @param {string} content @param {string} key @param {any} value @returns {string|null} */
 function writeFrontmatterFieldSurgically(content, key, value) {
     const normalized = normalizeText(content);
     if (!normalized.startsWith('---\n')) return null;

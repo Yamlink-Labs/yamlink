@@ -1,3 +1,4 @@
+/** @param {any} value @returns {string} */
 function canonicalizeId(value) {
     const raw = String(value ?? '').trim();
     if (!raw) return '';
@@ -12,6 +13,7 @@ function canonicalizeId(value) {
         .replace(/^[-_]+|[-_]+$/g, '');
 }
 
+/** @param {string} content @returns {string|null} */
 function extractCanonicalIdFromFrontmatter(content) {
     if (!content || !/^\s*---/.test(content)) return null;
 
@@ -28,6 +30,7 @@ function extractCanonicalIdFromFrontmatter(content) {
     return canonical || null;
 }
 
+/** @param {any} raw @returns {string} */
 function canonicalizeLinkedTarget(raw) {
     const target = String(raw || '').trim().split('|')[0].trim().split('#')[0].trim().split('^')[0].trim();
     return target ? canonicalizeId(target) : '';
@@ -36,6 +39,12 @@ function canonicalizeLinkedTarget(raw) {
 // Resolves a raw wikilink target to a canonical ID that actually exists
 // in idIndex. Checks direct ID first, then alias index. Returns the
 // resolved canonical ID, or null if not found.
+/**
+ * @param {any} raw
+ * @param {Map<string, string>} idIndex
+ * @param {Map<string, string>} [aliasIndex]
+ * @returns {string|null}
+ */
 function resolveLinkedTarget(raw, idIndex, aliasIndex) {
     const canonical = canonicalizeLinkedTarget(raw);
     if (!canonical) return null;

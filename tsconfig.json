@@ -1,0 +1,40 @@
+{
+  "compilerOptions": {
+    "target": "ES2020",
+    "module": "commonjs",
+    "lib": ["ES2020"],
+    "checkJs": true,
+    "allowJs": true,
+    "noEmit": true,
+    "strict": false,
+    "noImplicitAny": false,
+    "strictNullChecks": false,
+    "skipLibCheck": true,
+    "moduleResolution": "node",
+    "resolveJsonModule": true
+  },
+  "include": [
+    "extension.js",
+    "src/**/*.js",
+    "src/**/*.ts"
+  ],
+  "exclude": [
+    "node_modules",
+    "test",
+    "graph",
+    "site",
+    "site-app",
+    "bin",
+    "scripts",
+    "dist",
+    "src/features/entityHubScript.js",
+    "src/features/calendarPanelScript.js",
+    "src/features/viewPanelScript.js",
+    "src/features/viewPanelUiRuntime.js",
+    "src/features/viewPanelStateRuntime.js",
+    "src/features/viewPanelEditRuntime.js",
+    "src/features/viewPanelValueRuntime.js",
+    "src/features/health/healthScript.js",
+    "src/features/home/homeScript.js"
+  ]
+}

@@ -36,23 +36,25 @@ export function adaptYamlinkModel(model) {
         field:    d.field ?? null,
         weight:   d.weight ?? 0.5,
         strength: d.strength ?? 'medium',
+        directed: d.directed ?? true,
       });
     } else {
       // It's a node
-      const weight     = _normalizeWeight(d.hubScore ?? 0, d.weightedDegree ?? 0);
-      const kind       = _inferKind(d.type, d.label);
-      const group      = d.type ?? 'default';
+      const weight = _normalizeWeight(d.hubScore ?? 0, d.weightedDegree ?? 0);
+      const kind   = _inferKind(d.type, d.label);
+      const group  = d.type ?? 'default';
 
       nodes.push({
-        id:       d.id,
-        label:    d.label ?? d.id,
+        id:             d.id,
+        label:          d.label ?? d.id,
         kind,
         group,
-        type:     d.type ?? null,
+        type:           d.type ?? null,
         weight,
-        isOrphan: d.isOrphan ?? false,
-        // carry through for the edge connectivity check in NodeLayer
-        edges:    [], // populated below
+        isOrphan:       d.isOrphan ?? false,
+        lifecycleState: d.lifecycleState ?? null,
+        driftState:     d.driftState ?? null,
+        edges:          [],
       });
     }
   }
@@ -80,14 +82,16 @@ export function adaptDocsGraph(docsData) {
   const maxLinks = Math.max(1, ...docsData.nodes.map(n => n.linkCount ?? 0));
 
   const nodes = docsData.nodes.map(n => ({
-    id:       n.id,
-    label:    n.label ?? n.id,
-    kind:     _sectionToKind(n.section),
-    group:    n.section ?? 'default',
-    type:     n.type ?? null,
-    weight:   (n.linkCount ?? 0) / maxLinks,
-    isOrphan: (n.linkCount ?? 0) === 0,
-    edges:    [],
+    id:             n.id,
+    label:          n.label ?? n.id,
+    kind:           _sectionToKind(n.section),
+    group:          n.section ?? 'default',
+    type:           n.type ?? null,
+    weight:         (n.linkCount ?? 0) / maxLinks,
+    isOrphan:       (n.linkCount ?? 0) === 0,
+    lifecycleState: _inferDocsLifecycle(n.linkCount ?? 0),
+    driftState:     null,
+    edges:          [],
   }));
 
   const edges = docsData.edges.map((e, i) => ({
@@ -97,6 +101,7 @@ export function adaptDocsGraph(docsData) {
     field:    e.field ?? null,
     weight:   0.5,
     strength: 'medium',
+    directed: true,
   }));
 
   // Attach edge refs for connectivity lookup
@@ -151,6 +156,14 @@ const SECTION_KIND_MAP = {
   'glossary':        'artifact',
   'changelog':       'task',
 };
+
+function _inferDocsLifecycle(links) {
+  if (links >= 12) return 'hub';
+  if (links >= 6)  return 'consolidated';
+  if (links >= 2)  return 'growing';
+  if (links >= 1)  return 'draft';
+  return 'stale';
+}
 
 function _sectionToKind(section) {
   if (!section) return 'default';

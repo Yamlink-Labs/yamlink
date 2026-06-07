@@ -5,4 +5,5 @@ name: Ace Levy
 unit: [[roughnecks]]
 rank: private
 homeworld: "<santiago"
+gender:
 ---

@@ -214,6 +214,7 @@ async function scanAsync(dir, workspaceRoot, ignoreRules, pattern, results) {
     }
 }
 
+/** @param {RegExp} pattern @param {string} content @returns {boolean} */
 function contentHasRenameMatch(pattern, content) {
     pattern.lastIndex = 0;
     return pattern.test(content);
@@ -292,6 +293,7 @@ async function revertId(currentId, targetId) {
     }
 }
 
+/** @param {import('vscode').TextDocument} document @returns {string|null} */
 function extractIdFromDocument(document) {
     return extractCanonicalIdFromFrontmatter(document.getText());
 }
@@ -301,6 +303,7 @@ function buildRenameRegex(oldId) {
     return new RegExp(`!?\\[\\[${escaped}(?=\\||#|\\^|\\]\\])`, 'g');
 }
 
+/** @param {string} text @param {string} oldId @returns {Array<{start: number, end: number}>} */
 function findRenameMatchesInText(text, oldId) {
     const regex = buildRenameRegex(oldId);
     const matches = [];

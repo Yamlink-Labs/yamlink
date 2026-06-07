@@ -143,6 +143,9 @@ require.cache.__viewlight_date_stub__ = {
     exports: {
         normaliseDateInput(value) {
             return String(value || '').trim() || null;
+        },
+        getTodayIsoLocal() {
+            return '2026-05-30';
         }
     }
 };

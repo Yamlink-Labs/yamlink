@@ -11,16 +11,19 @@
 
 const _cache = new Map();
 
+/** @param {string} nodeId @param {number} generation @returns {import('./tasks').TaskRow[]|null} */
 function getCachedTasks(nodeId, generation) {
     const entry = _cache.get(nodeId);
     if (!entry || entry.generation !== generation) return null;
     return entry.tasks;
 }
 
+/** @param {string} nodeId @param {import('./tasks').TaskRow[]} tasks @param {number} generation @returns {void} */
 function setCachedTasks(nodeId, tasks, generation) {
     _cache.set(nodeId, { tasks, generation });
 }
 
+/** @returns {void} */
 function clearTaskCache() {
     _cache.clear();
 }

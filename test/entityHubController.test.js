@@ -194,7 +194,10 @@ beforeEach(() => {
         suggestionExplanation: '',
         recipes: [],
         vaultPositionRows: [],
-        vaultDiagnosticRows: []
+        vaultDiagnosticRows: [],
+        historyGroups: [],
+        historyCount: 0,
+        historyArc: []
     };
 });
 

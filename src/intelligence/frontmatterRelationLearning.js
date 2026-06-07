@@ -50,6 +50,15 @@ function scoreObservedSimilarity(nodeFields = {}, noteContext = {}, observedFiel
     };
 }
 
+/**
+ * Builds a relation model for a field by scoring observed notes that share similar structure.
+ * @param {string} fieldName
+ * @param {object} [nodeFields]
+ * @param {object} [noteContext]
+ * @param {Map<string,object>} [fieldsCache]
+ * @param {object} [options]
+ * @returns {{ family: string|null, field: string, variants: string[], preferredTargets: string[], targetScores: Map<string,number>, supportingNotes: number, sourceRoles: string[], sourceTypes: string[], sharedFields: string[], summary: string, reasonText: string, insertText: string }}
+ */
 function buildFieldFamilyRelationModel(fieldName, nodeFields = {}, noteContext = {}, fieldsCache = new Map(), options = {}) {
     const normalizedField = String(fieldName || '').trim().toLowerCase();
     const currentRoleResult = getFieldRoleResult(noteContext, normalizedField);

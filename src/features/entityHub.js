@@ -22,6 +22,7 @@ let _subscriptions = [];
 let _syncTimer = null;
 let _syncToken = 0;
 
+/** @param {import('vscode').ExtensionContext} context @param {{ immediate?: boolean }} [options] @returns {void} */
 function syncEntityHub(context, options = {}) {
     _extUri = context.extensionUri;
     const token = ++_syncToken;
@@ -55,6 +56,7 @@ function syncEntityHub(context, options = {}) {
     _syncTimer = setTimeout(run, 80);
 }
 
+/** @param {string|null} [changedId] @returns {void} */
 function refreshEntityHub(changedId) {
     if (!sidebarView || !_lastId) return;
     if (changedId && changedId !== _lastId) {
@@ -67,6 +69,7 @@ function refreshEntityHub(changedId) {
     renderHub(_lastId);
 }
 
+/** @param {import('vscode').ExtensionContext} context @returns {void} */
 function registerEntityHubView(context) {
     _extUri = context.extensionUri;
     const provider = {
@@ -85,7 +88,7 @@ function registerEntityHubView(context) {
                             if (!fp) return;
                             vscode.workspace.openTextDocument(fp).then(function (doc) {
                                 vscode.window.showTextDocument(doc, { viewColumn: vscode.ViewColumn.One, preview: false });
-                            }).catch(function (err) {
+                            }, function (err) {
                                 console.error('Yamlink — openNode failed:', err.message);
                             });
                             return;
@@ -96,8 +99,15 @@ function registerEntityHubView(context) {
                             vscode.workspace.openTextDocument(fp).then(async function (doc) {
                                 await vscode.window.showTextDocument(doc, { viewColumn: vscode.ViewColumn.One, preview: false });
                                 await vscode.commands.executeCommand('yamlink.insertViewBlock', doc, msg.queryText, msg.sourceType, msg.field, msg.id);
-                            }).catch(function (err) {
+                            }, function (err) {
                                 console.error('Yamlink — insertView failed:', err.message);
+                            });
+                        }
+                        if (msg.command === 'addMissingField') {
+                            vscode.commands.executeCommand('yamlink._addMissingField', {
+                                noteId: _lastId,
+                                field: msg.field,
+                                isRelation: msg.isRelation
                             });
                         }
                     })
@@ -154,7 +164,12 @@ function renderHub(nodeId) {
             suggestionExplanation,
             recipes,
             vaultPositionRows,
-            vaultDiagnosticRows
+            vaultDiagnosticRows,
+            historyGroups,
+            historyCount,
+            historyArc,
+            unlinkedMentions,
+            noteArc
         } = model;
 
         if ('title' in host) host.title = `${nodeId} · report`;
@@ -179,7 +194,12 @@ function renderHub(nodeId) {
             vaultPositionRows,
             vaultDiagnosticRows,
             nodeFields,
-            idIndex
+            idIndex,
+            historyGroups,
+            historyCount,
+            historyArc,
+            unlinkedMentions,
+            noteArc
         });
     } catch (error) {
         renderError(`Could not render report for ${nodeId}`, error);
@@ -199,6 +219,7 @@ function renderError(label, error) {
     host.webview.html = buildEntityHubErrorHtml(label, error);
 }
 
+/** @returns {void} */
 function focusEntityHub() {
     if (sidebarView && typeof sidebarView.show === 'function') {
         sidebarView.show?.(true);

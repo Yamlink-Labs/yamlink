@@ -1,29 +1,42 @@
 # <img src="./media/icon.png" alt="Yamlink logo" width="30" valign="middle"> Yamlink
 
-Structured knowledge for Markdown, inside VS Code.
+Wikilinks, backlinks, knowledge graph, and live query tables — all inside VS Code, all plain Markdown files.
 
 [![CI](https://github.com/Yamlink-Labs/yamlink/actions/workflows/ci.yml/badge.svg)](https://github.com/Yamlink-Labs/yamlink/actions/workflows/ci.yml)
-[![VS Code Marketplace](https://img.shields.io/visual-studio-marketplace/v/yamlink.yamlink?label=Marketplace)](https://marketplace.visualstudio.com/items?itemName=yamlink.yamlink)
-![Version](https://img.shields.io/badge/version-0.5.0--Zim-blue)
+[![VS Code Marketplace](https://vsmarketplacebadges.dev/version/yamlink.yamlink.svg)](https://marketplace.visualstudio.com/items?itemName=yamlink.yamlink)
+[![Installs](https://vsmarketplacebadges.dev/installs/yamlink.yamlink.svg)](https://marketplace.visualstudio.com/items?itemName=yamlink.yamlink)
+[![Rating](https://vsmarketplacebadges.dev/rating/yamlink.yamlink.svg)](https://marketplace.visualstudio.com/items?itemName=yamlink.yamlink)
 ![License](https://img.shields.io/badge/license-MIT-green)
-![VS Code](https://img.shields.io/badge/VS%20Code-%5E1.85.0-blueviolet)
+![VS Code](https://img.shields.io/badge/VS%20Code-%5E1.120.0-blueviolet)
 
-Yamlink turns a folder of Markdown files into a local-first knowledge system:
+Yamlink turns a folder of Markdown files into a structured knowledge graph inside VS Code. Notes get stable `id:` identities that survive renaming. `[[wikilinks]]` become typed graph edges. YAML frontmatter becomes queryable structured data. `!view` blocks run live queries and open editable tables — edit a cell and it writes back to the source file.
 
-- notes get stable `id:` identities that survive renames and moves
-- `[[wikilinks]]` become graph edges
-- YAML frontmatter becomes structured, queryable data
-- `!view` blocks run live queries and open editable tables
-- side panels give the vault an operational command structure
+No database. No sync. No locked platform. Your files stay plain Markdown and work in any editor.
 
-No database. No sync. No locked platform. The files stay plain Markdown.
+VS Code is the flagship Yamlink experience today. Shujimi also opens a headless CLI path for automation, publishing workflows, and future editor integrations.
 
 If you want the practical start, see [GETTING_STARTED.md](./GETTING_STARTED.md).  
-For the full query contract, see [QUERY_LANGUAGE.md](./QUERY_LANGUAGE.md).
+For the full query language and usage, see [QUERY_LANGUAGE.md](./QUERY_LANGUAGE.md).  
+New to Yamlink's terminology? See [GLOSSARY.md](./GLOSSARY.md).  
+To understand the intelligence system, what the lightbulbs mean, and how Yamlink learns: see [INTELLIGENCE.md](./INTELLIGENCE.md).
 
 ---
 
 ## What it looks like
+
+### A Yamlink note
+
+<!-- hero screenshot: open sample/yamlink-hero.md in VS Code with Yamlink Apollo Night theme, capture the editor at ~1400px wide -->
+![Yamlink note — frontmatter relations, wikilinks, live query, callouts](./media/readme/hero.png)
+
+| | |
+|---|---|
+| **Frontmatter** | Structured YAML at the top of every note. Fields like `platform: [[vs-code]]` are typed graph edges — Yamlink indexes, completes, and renames them vault-wide. |
+| **`[[wikilinks]]`** | Every link becomes a graph edge. Ctrl+Click navigates, completions rank by type, broken links surface as diagnostics. Rename a note — every link updates automatically. |
+| **Callouts** | `> [!INFO]` `> [!TIP]` `> [!WARNING]` — body structure signals that feed note-role inference and the Note Report. |
+| **Tasks** | `- [ ]` checkboxes extracted from the note body, tracked in the Calendar, queryable with `!view open-tasks`. |
+| **`!view` block** | A live query written inline in the note. Runs against the vault, opens an editable table beside the editor. Edit a cell — it writes back to the source Markdown file. |
+| **Tags** | `#local-first #pkm` — body hashtags and frontmatter tags, both filterable in queries with `where #pkm`. |
 
 ### Live tables
 
@@ -39,9 +52,17 @@ Note Report shows where a note sits in the system: its connections, lifecycle st
 
 ### Graph
 
-Two surfaces. The sidebar shows full vault visible at a glance — note types color-coded, hub notes rising by connection count. Graph Workspace opens a focused explorer centered on the current note, a query result, or any custom note set.
+Two surfaces in the extension: the sidebar shows the full vault at a glance — note types color-coded, hub notes rising by connection count. Graph Workspace opens a focused explorer centered on the current note.
+
+x-graph is the underlying engine: Canvas2D + D3-force, no third-party graph library. Three layers — base topology, semantic edge coloring by relation type, health rings by lifecycle/drift state. Nodes are draggable with live physics.
 
 ![Graph](./media/readme/graph.gif)
+
+### Vault Health
+
+A full-vault audit in one panel. Broken links, duplicate IDs, schema violations, orphaned notes, and lifecycle drift — all surfaced instantly, with one-click navigation to the offending note. Keep your knowledge base clean as it grows.
+
+![Vault Health](./media/readme/vault-health.gif)
 
 ---
 
@@ -91,9 +112,10 @@ Run the view. A table opens beside the note. Edit a cell. It writes back to the 
 
 ---
 
-## Zim 0.5.0
+## Shujimi (0.6.0)
 
-Zim turns Yamlink into a fuller workspace: a rebuilt graph with both a sidebar constellation and a focused Graph Workspace, smarter frontmatter help, improved table controls and aesthetics, Note Report and Vault Health with lifecycle and type-consistency signals, and a stronger query language with `!=`, empty checks, `#tag` shorthand, cross-field `or`, date functions, and `group by`.
+Shujimi is the "headless and depth release". New capabilities: the **Yamlink CLI** (`build`, `health`, `validate`, `query`, `serve`, `export`) for scripting and vault-as-CMS use cases; **matrix view** as a layout toggle on any `!view` table; **schema conformance reporting** in Vault Health with per-type coverage, non-conformant notes, and dangling-relation warnings; **Git history import** (`yamlink.importGitHistory`) for reconstructing full note evolution from commit history; **Smart Templates** with live drift detection and vault-wide propagation; **quick-capture** (`Ctrl+Alt+N`) with L3 contextual back-linking; **auto-date stamping** and `file.created`/`file.modified` virtual query fields; a **four-phase intelligence overhaul** (vault-first classification, implicit interaction history, outcome calibration, note arc prediction — the vault trains the system); **unlinked references** in Note Report (Roam-style organic mention discovery); **daily notes** (`Ctrl+Alt+J`); the **Home panel** (`yamlink.openHome`) — activity stream, vault pulse, continue-working, nudge cards; **natural language query generation** (plain-English → `!view` syntax); **true note splitting** (`yamlink.splitNoteBody` — selected body text → new note → embed in place); **click-to-add** from the Note Report arc section; and a complete **Yamlink color palette** (Apollo Night/Dusk/Dawn) applied across all webview surfaces — the extension now carries a fully branded visual identity distinct from VS Code's default accent colors. The platform optimization pass replaced the entire React Flow + Cytoscape graph stack with a custom Canvas2D engine (x-graph), shedding ~65 MB from the VSIX.
+
 
 The full release notes are in [WHATS_NEW.md](./WHATS_NEW.md).
 
@@ -107,8 +129,21 @@ The full release notes are in [WHATS_NEW.md](./WHATS_NEW.md).
 - body and frontmatter wikilinks in the same graph
 - display aliases (`[[id|Label]]`) and vault aliases (`aliases:` in frontmatter)
 - embeds (`![[id]]`): dimmed decoration, Ctrl+Click navigation, broken-link diagnostics
+- broken `[[links]]` decorated with amber brackets + faded amber text — readable signal, no squiggle
+- broken link quick fix walks through the template workflow: pick from existing templates (type-matched floats to top) or let Yamlink scaffold a starter
 - broken link and duplicate ID diagnostics with quick-fix actions
 - Graph 2.0: sidebar constellation + Graph Workspace with filters, search, isolate, and minimap
+
+### x-graph (flagship)
+
+Yamlink's custom graph engine — Canvas2D renderer + D3-force physics, built from scratch. Designed as a layered visualization system.
+
+Three independent visual layers that stack:
+
+- **Base** — nodes sized by hub score, kind-colored, hover dims non-neighbors, click pins focus, drag repositions nodes with live physics
+- **Semantic** — edges colored by relation type (person/teal, event/amber, topic/purple, container/blue), direction arrowheads, dashed weak links
+- **Health** — rings around nodes encode lifecycle state (hub → stale) and structural drift (minor-drift → outlier), with the health legend expanding inline
+
 
 ### Query
 
@@ -119,6 +154,7 @@ The full release notes are in [WHATS_NEW.md](./WHATS_NEW.md).
 - cross-field OR: `where status = active or type = contact`
 - `#tag` shorthand: `where #crm and status = active`
 - date functions: `today()`, `days-from-now(n)`, `days-ago(n)` and more
+- **`file.created` / `file.modified`** — virtual fields from the file system; filter notes by when they were created or last touched without adding anything to frontmatter (`where file.created >= 2026-01-01`)
 - incoming relation queries: `!view incoming mission via commander`
 - shortcut queries: `!view today`, `!view upcoming`, `!view open-tasks`, `!view overdue`
 
@@ -127,7 +163,8 @@ The full release notes are in [WHATS_NEW.md](./WHATS_NEW.md).
 - editable cells: text, relation, boolean, dropdown, number, date
 - bulk spreadsheet-style paste, row-level revert, undo
 - per-column value filters, client-side sort, column hide/show, drag-to-reorder
-- task status pills: Done, Not done, Overdue
+- **matrix view** — toggle any `!view` table to a two-axis grid: rows = query results, columns = any vault type, cells show connections (●)
+- task status pills: Done, Not done, Due today, Due soon, Overdue
 - export: CSV, JSON, PDF
 
 ### Intelligence
@@ -137,16 +174,37 @@ The full release notes are in [WHATS_NEW.md](./WHATS_NEW.md).
 - schema-driven note creation (`yamlink.newNoteFromSchema`)
 - note creation priority: Template → Schema → vault inference → bare stub
 - vault-derived field bundle suggestions over hardcoded archetypes
-- lifecycle state: `draft`, `growing`, `established`, `hub`, `stale`
+- **feedback loop** — the system also learns from completions you accept: accepting a relation suggestion writes a training signal to the mutation log; that history boosts confidence in future predictions for the same field
+- **note arc prediction** — shows which fields similar notes typically have that yours doesn't, ranked by vault frequency and your acceptance history
+- lifecycle state: `draft`, `growing`, `consolidated`, `hub`, `stale`
 - type consistency: `on track`, `slightly unusual`, `missing structure`, `very unusual`
 - `@today`, `@tomorrow`, `@thisweek`, and other date shortcuts in frontmatter
+- **quick capture** — `Ctrl+Alt+N` / `Cmd+Alt+N` creates a new note without breaking editor flow; when triggered from inside a Yamlink note, offers to link the new note back to the current one (L3 contextual linking)
+- **auto-date stamp** — new notes get `created:` written at creation time; `Yamlink: Add Missing Creation Dates` stamps existing notes from file system birthtime
 
 ### Surfaces
 
-- **Note Report** — Overview, Links, Tasks, Views tabs; tab state persists across note switches
+- **Home** — activity feed, vault pulse, continue-working, nudge cards; status bar `$(home)` button for instant access from anywhere
+- **Note Report** — Overview, Links, Tasks, Views, History tabs; tab state persists across note switches
 - **Calendar** — month, week, day views; keyboard shortcuts `M W D [ ] T`; click-through to notes
-- **Vault Health** — lifecycle distribution, drift score cards, health score, broken link counts
-- **Graph** — sidebar constellation and Graph Workspace
+- **Vault Health** — lifecycle distribution, drift score cards, schema conformance coverage, health score, broken link counts (compact status bar: `◈ 31  ⚠ 5`)
+- **Graph** — sidebar constellation and Graph Workspace (x-graph: Canvas2D + D3-force, no third-party graph library)
+
+### CLI
+
+Run Yamlink capabilities without VS Code:
+
+```bash
+yamlink build --vault ./vault        # index vault, report broken links (exits 1 in CI)
+yamlink health                       # lifecycle, drift, type distribution
+yamlink validate                     # schema conformance (exits 1 if required fields missing)
+yamlink query "where type = contact" # run a query, print table or JSON
+yamlink report <note-id>             # note report in terminal
+yamlink serve --port 3000            # local HTTP API: /api/nodes, /api/query, /api/graph
+yamlink export --format csv          # dump vault to JSON or CSV
+```
+
+`yamlink serve` exposes a REST API that lets any website framework (Next.js, Astro, etc.) read your vault at build time — vault as CMS backend.
 
 ### Integrations
 
@@ -187,7 +245,7 @@ commander: [[johnny-rico]]
 
 **4. Run one view**
 
-```md
+```
 !view character
 select name, type
 sort name
@@ -211,9 +269,9 @@ Search for `Yamlink` in the VS Code Extensions panel, or install from the Market
 
 [Yamlink on the VS Code Marketplace](https://marketplace.visualstudio.com/items?itemName=yamlink.yamlink)
 
-On first activation, Yamlink copies a sample vault into your workspace so you can explore the model immediately. The sample files are plain Markdown — delete them whenever you want.
+On first activation, Yamlink copies a sample vault into your workspace so you can explore the model immediately. The sample files are plain Markdown.
 
-Coming from Obsidian? Run `Yamlink: Import Obsidian Vault` from the command palette. Yamlink either copies the vault into your current workspace or adds it as a workspace folder, skips `.obsidian/` config, rebuilds the index, and can open Vault Health so you can see the structural state of your notes immediately.
+Coming from Obsidian? Run `Yamlink: Import Obsidian Vault` from the command palette. Yamlink either copies the vault into your current workspace or adds it as a workspace folder, skips `.obsidian/` config, rebuilds the index, and can open Vault Health so you can see the structural state of your notes immediately. Importing plugin configuration is still in development and testing.
 
 ---
 
@@ -221,7 +279,7 @@ Coming from Obsidian? Run `Yamlink: Import Obsidian Vault` from the command pale
 
 Most tools that give you structure want you to live inside them. Yamlink makes no such demand.
 
-The work stays in Markdown. The files stay on disk. The editor stays VS Code. Yamlink reads what you already have and makes it linkable, queryable, and operational — without a database, without a server, without a lock-in.
+The work stays in Markdown. The files stay on disk. The editor stays VS Code. Yamlink reads what you already have and makes it linkable, queryable, and operational — your own local knowledge system.
 
 If the structure outgrows what Yamlink can do, the files are still just files.
 
@@ -229,6 +287,14 @@ If the structure outgrows what Yamlink can do, the files are still just files.
 ---
 
 If Yamlink is useful to you, please star the repo on [GitHub](https://github.com/Yamlink-Labs/yamlink) and leave a review on the VS Code Marketplace.
+
+---
+
+## Yamlink Theme Family
+
+All screenshots and GIFs in this README use the **Yamlink Theme Family** — a companion VS Code color theme built to match Yamlink's panel aesthetic. Available separately on the Marketplace.
+
+[Install on VS Code Marketplace](https://marketplace.visualstudio.com/items?itemName=yamlink.yamlink-theme) · [GitHub](https://github.com/Yamlink-Labs/yamlink-theme)
 
 ---
 

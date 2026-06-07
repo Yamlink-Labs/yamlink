@@ -3,6 +3,7 @@
 const vscode = require('vscode');
 const { perfTracker } = require('../../runtime/performanceTracker');
 
+/** @param {Record<string,any>} services @returns {Record<string,any>} */
 function createViewPanelController(services) {
     let panel = null;
     let lastQuery = null;
@@ -103,6 +104,12 @@ function createViewPanelController(services) {
 
             if (msg.command === 'saveState') {
                 panelState = msg.state;
+                return;
+            }
+
+            if (msg.command === 'requestRerender') {
+                if (msg.state) panelState = msg.state;
+                renderCurrent();
                 return;
             }
 

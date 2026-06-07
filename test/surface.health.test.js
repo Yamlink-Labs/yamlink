@@ -239,6 +239,150 @@ describe('healthStats — schema registration', () => {
     });
 });
 
+// ── Schema intelligence ───────────────────────────────────────────────────────
+
+const SCHEMA_CONTACT = [
+    '---',
+    'id: schema-contact',
+    'type: schema',
+    'target: contact',
+    'fields:',
+    '  name:',
+    '    type: string',
+    '    required: true',
+    '  account:',
+    '    type: relation',
+    '    target: account',
+    '---'
+].join('\n');
+
+describe('healthStats — schema intelligence', () => {
+    test('no schemas → schemaIntelligence has empty arrays', () => {
+        const vault = createVault(CRM);
+        const stats = vault.healthStats();
+        assert.ok(Array.isArray(stats.schemaIntelligence.advisories));
+        assert.ok(Array.isArray(stats.schemaIntelligence.coverage));
+        assert.ok(Array.isArray(stats.schemaIntelligence.danglingRelations));
+        assert.equal(stats.schemaIntelligence.advisories.length, 0, 'no advisories without schemas');
+        vault.destroy();
+    });
+
+    test('schema with all conformant notes → 100% coverage', () => {
+        const vault = createVault({
+            ...CRM,
+            'schema-contact.md': SCHEMA_CONTACT
+        });
+        const stats = vault.healthStats();
+        const entry = stats.schemaIntelligence.coverage.find(c => c.type === 'contact');
+        assert.ok(entry, 'coverage entry for contact schema exists');
+        assert.equal(entry.total, 3);
+        assert.equal(entry.conformant, 3);
+        assert.equal(entry.nonConformant, 0);
+        vault.destroy();
+    });
+
+    test('note missing required field → appears in nonConformant', () => {
+        const vault = createVault({
+            'schema-contact.md': SCHEMA_CONTACT,
+            'rico.md': NOTE('rico', 'contact', 'name: Johnny Rico\n'),
+            'nameless.md': NOTE('nameless', 'contact')  // missing required 'name' field
+        });
+        const stats = vault.healthStats();
+        const entry = stats.schemaIntelligence.coverage.find(c => c.type === 'contact');
+        assert.ok(entry);
+        assert.equal(entry.total, 2);
+        assert.equal(entry.nonConformant, 1);
+        assert.ok(entry.notesWithMissing.some(n => n.noteId === 'nameless'));
+        assert.ok(entry.notesWithMissing[0].missingFields.includes('name'));
+        vault.destroy();
+    });
+
+    test('unschematized types get advisories when any schema exists', () => {
+        const vault = createVault({
+            ...CRM,
+            'schema-contact.md': SCHEMA_CONTACT
+        });
+        const stats = vault.healthStats();
+        const advisories = stats.schemaIntelligence.advisories;
+        // account and mission types have no schema
+        assert.ok(advisories.length > 0, 'advisories present for unschematized types');
+        const typeNames = advisories.map(a => a.type);
+        assert.ok(typeNames.includes('account') || typeNames.includes('mission'));
+        vault.destroy();
+    });
+
+    test('advisories are sorted by count descending', () => {
+        const vault = createVault({
+            ...CRM,
+            'schema-contact.md': SCHEMA_CONTACT
+        });
+        const stats = vault.healthStats();
+        const advisories = stats.schemaIntelligence.advisories;
+        for (let i = 1; i < advisories.length; i++) {
+            assert.ok(advisories[i - 1].count >= advisories[i].count);
+        }
+        vault.destroy();
+    });
+
+    test('dangling relation when schema targets a type with no vault notes', () => {
+        const schemaWithDangling = [
+            '---',
+            'id: schema-solo',
+            'type: schema',
+            'target: solo',
+            'fields:',
+            '  partner:',
+            '    type: relation',
+            '    target: ghost-type',
+            '---'
+        ].join('\n');
+        const vault = createVault({
+            'schema-solo.md': schemaWithDangling,
+            'alice.md': NOTE('alice', 'solo')
+        });
+        const stats = vault.healthStats();
+        const dangling = stats.schemaIntelligence.danglingRelations;
+        assert.ok(dangling.length > 0, 'dangling relation detected');
+        assert.equal(dangling[0].schemaType, 'solo');
+        assert.equal(dangling[0].field, 'partner');
+        assert.equal(dangling[0].targetType, 'ghost-type');
+        vault.destroy();
+    });
+
+    test('no dangling relations when relation target type has vault notes', () => {
+        const vault = createVault({
+            ...CRM,
+            'schema-contact.md': SCHEMA_CONTACT  // contact.account → account type (which exists in CRM)
+        });
+        const stats = vault.healthStats();
+        assert.equal(stats.schemaIntelligence.danglingRelations.length, 0);
+        vault.destroy();
+    });
+
+    test('schema with no required fields → all notes conformant by definition', () => {
+        const optionalSchema = [
+            '---',
+            'id: schema-mission',
+            'type: schema',
+            'target: mission',
+            'fields:',
+            '  title:',
+            '    type: string',
+            '---'
+        ].join('\n');
+        const vault = createVault({
+            ...CRM,
+            'schema-mission.md': optionalSchema
+        });
+        const stats = vault.healthStats();
+        const entry = stats.schemaIntelligence.coverage.find(c => c.type === 'mission');
+        assert.ok(entry);
+        assert.equal(entry.requiredCount, 0);
+        assert.equal(entry.conformant, entry.total, 'all notes conformant when no required fields');
+        vault.destroy();
+    });
+});
+
 // ── healthScore ───────────────────────────────────────────────────────────────
 
 describe('healthScore', () => {

@@ -2,14 +2,15 @@
 
 const { getFieldsCache, getVaultGeneration } = require('../core/indexService');
 const { normaliseDateInput } = require('../core/date');
-const {
-    DEFAULT_STATUS_LIKE_VALUES,
-    DEFAULT_SEMANTIC_ROLE_PRIORS
-} = require('../intelligence/fieldRolesCore');
 const { inferNoteRole } = require('../intelligence/noteRolesCore');
 const { filterItemsForSurface } = require('../intelligence/confidence');
 const { getVaultPatterns } = require('../intelligence/intelligenceCache');
-const { getCachedPriors, getCommonFieldsForType } = require('../intelligence/vaultPriors');
+const {
+    getCachedPriors,
+    getCommonFieldsForType,
+    buildVaultStatusValues,
+    buildVaultSemanticRolePriors
+} = require('../intelligence/vaultPriors');
 const { computeNoteDrift } = require('../intelligence/driftDetector');
 const {
     buildFrontmatterOpportunityModel,
@@ -17,10 +18,7 @@ const {
     summarizeGuidanceExplanation
 } = require('../intelligence/frontmatterIntelligence');
 const {
-    FRONTMATTER_ARCHETYPES,
-    NOTE_ROLE_FIELD_PRIORS,
     buildDocumentIntelligence,
-    extractDocumentArchetype,
     normalizeFrontmatterKey
 } = require('./completionContextHelpers');
 const { inferFieldRole } = require('../intelligence/fieldRoles');
@@ -49,10 +47,15 @@ function buildStarterActionLabel(action) {
     return 'add next step';
 }
 
+/** @param {import('vscode').TextDocument} document @param {string|null} docType @param {Map<string,string>} idIndex @param {((type: string) => any)|null} [getSchema] @returns {Record<string,any>} */
 function buildAdaptiveFrontmatterContext(document, docType, idIndex, getSchema) {
     const fieldsCache = getFieldsCache();
+    const priors = getCachedPriors(fieldsCache, getVaultGeneration());
     const intelligence = buildDocumentIntelligence(document, docType, idIndex);
     const { observedFields, observedIndex } = getVaultPatterns(fieldsCache, getVaultGeneration());
+    // Vault-derived semantic values — the vault teaches the system, not the other way round.
+    const statusLikeValues = buildVaultStatusValues(priors.workflowFields);
+    const semanticRolePriors = buildVaultSemanticRolePriors(priors);
     const opportunities = buildFrontmatterOpportunityModel(intelligence.nodeFields, {
         nodeId: String(intelligence.nodeFields.id || '').trim(),
         nodeType: docType,
@@ -63,8 +66,8 @@ function buildAdaptiveFrontmatterContext(document, docType, idIndex, getSchema) 
         noteContext: intelligence,
         getSchemaForType: getSchema,
         dateParser: normaliseDateInput,
-        statusLikeValues: DEFAULT_STATUS_LIKE_VALUES,
-        semanticRolePriors: DEFAULT_SEMANTIC_ROLE_PRIORS,
+        statusLikeValues,
+        semanticRolePriors,
         getDefaultSortField: () => '',
         limit: 4
     });
@@ -92,6 +95,7 @@ function filterAdaptiveHints(items = [], options = {}) {
         .slice(0, options.limit || 4);
 }
 
+/** @param {import('vscode').TextDocument} document @param {string|null} docType @param {Map<string,string>} idIndex @param {(type: string) => any} getSchema @param {Record<string,any>} adaptiveContext @returns {Array<Record<string,any>>} */
 function collectAdaptiveFrontmatterStarterSuggestions(document, docType, idIndex, getSchema, adaptiveContext) {
     const context = adaptiveContext || buildAdaptiveFrontmatterContext(document, docType, idIndex, getSchema);
     const { guidance, opportunities } = context;
@@ -125,6 +129,7 @@ function collectAdaptiveFrontmatterStarterSuggestions(document, docType, idIndex
     }));
 }
 
+/** @param {string|null} [docType] @returns {Array<{key: string, count: number}>} */
 function collectObservedFrontmatterFields(docType) {
     const fieldsCache = getFieldsCache();
     const counts = new Map();
@@ -142,6 +147,7 @@ function collectObservedFrontmatterFields(docType) {
         .map(([key, count]) => ({ key, count }));
 }
 
+/** @param {import('vscode').TextDocument} document @param {string|null} docType @param {Map<string,string>} idIndex @returns {Array<Record<string,any>>} */
 function collectRoleAlignedObservedFrontmatterFields(document, docType, idIndex) {
     const fieldsCache = getFieldsCache();
     const intelligence = buildDocumentIntelligence(document, docType, idIndex);
@@ -152,14 +158,16 @@ function collectRoleAlignedObservedFrontmatterFields(document, docType, idIndex)
         ? priors.noteRoleTypePriors.get(noteRole.noteRole)?.dominantType || ''
         : '';
     const vaultBundle = proxyType ? priors.typeFieldBundles.get(proxyType) : null;
-    const hardcodedPriors = new Set(NOTE_ROLE_FIELD_PRIORS[noteRole.noteRole] || []);
+    // roleAligned is true only when the vault bundle confirms it — no hardcoded fallback.
+    // A field is role-aligned when the vault has actually seen it on notes of this role.
     return observed.map((entry) => ({
         ...entry,
         noteRole,
-        roleAligned: vaultBundle ? vaultBundle.has(entry.key) : hardcodedPriors.has(entry.key)
+        roleAligned: Boolean(vaultBundle && vaultBundle.has(entry.key))
     }));
 }
 
+/** @param {import('vscode').TextDocument} document @param {string|null} docType @param {Map<string,string>} idIndex @returns {Array<Record<string,any>>} */
 function collectContextualObservedFrontmatterFields(document, docType, idIndex) {
     const fieldsCache = getFieldsCache();
     const intelligence = buildDocumentIntelligence(document, docType, idIndex);
@@ -216,6 +224,7 @@ function collectContextualObservedFrontmatterFields(document, docType, idIndex) 
         }));
 }
 
+/** @param {import('vscode').TextDocument} document @param {string|null} docType @param {Map<string,string>} idIndex @param {Record<string,any>} adaptiveContext @returns {Array<Record<string,any>>} */
 function collectAdaptiveFrontmatterFieldSuggestions(document, docType, idIndex, adaptiveContext) {
     const context = adaptiveContext || buildAdaptiveFrontmatterContext(document, docType, idIndex);
     const { opportunities, guidance } = context;
@@ -231,6 +240,7 @@ function collectAdaptiveFrontmatterFieldSuggestions(document, docType, idIndex, 
     }));
 }
 
+/** @param {import('vscode').TextDocument} document @param {string|null} docType @param {Map<string,string>} idIndex @param {Record<string,any>} adaptiveContext @returns {Array<Record<string,any>>} */
 function collectSchemaAdaptiveGapSuggestions(document, docType, idIndex, adaptiveContext) {
     const context = adaptiveContext || buildAdaptiveFrontmatterContext(document, docType, idIndex);
     const { opportunities, guidance } = context;
@@ -249,28 +259,17 @@ function collectSchemaAdaptiveGapSuggestions(document, docType, idIndex, adaptiv
     }));
 }
 
+/** @param {import('vscode').TextDocument} document @param {string|null} docType @returns {Array<Record<string,any>>} */
 function collectArchetypeFieldSuggestions(document, docType) {
     const fieldsCache = getFieldsCache();
     const bundleSuggestions = buildBundleFieldSuggestions(docType, fieldsCache, { limit: 8, minRatio: 0.30 });
-    if (bundleSuggestions.length) {
-        return bundleSuggestions;
-    }
-
-    const archetypes = extractDocumentArchetype(document, docType);
-    const fields = new Map();
-    for (const archetype of archetypes) {
-        const suggestions = FRONTMATTER_ARCHETYPES[archetype] || [];
-        suggestions.forEach((field, index) => {
-            const current = fields.get(field);
-            const score = Math.max(0, 40 - index);
-            if (!current || score > current.score) {
-                fields.set(field, { key: field, score, source: archetype, hardcodedFallback: true });
-            }
-        });
-    }
-    return Array.from(fields.values()).sort((a, b) => b.score - a.score || a.key.localeCompare(b.key));
+    // Return vault-learned bundle suggestions only. On zero-evidence vaults we return
+    // nothing rather than guessing from a global archetype table — the vault teaches
+    // the system once it has real examples, not before.
+    return bundleSuggestions;
 }
 
+/** @param {import('vscode').TextDocument} document @param {string|null} docType @param {Map<string,string>} idIndex @returns {Array<Record<string,any>>} */
 function collectDriftMissingFieldSuggestions(document, docType, idIndex) {
     const fieldsCache = getFieldsCache();
     const intelligence = buildDocumentIntelligence(document, docType, idIndex);
@@ -290,6 +289,7 @@ function collectDriftMissingFieldSuggestions(document, docType, idIndex) {
     }));
 }
 
+/** @param {import('vscode').TextDocument} document @param {string|null} docType @param {Map<string,string>} idIndex @returns {Array<Record<string,any>>} */
 function collectNoteRoleFieldSuggestions(document, docType, idIndex) {
     const fieldsCache = getFieldsCache();
     const intelligence = buildDocumentIntelligence(document, docType, idIndex);
@@ -299,41 +299,26 @@ function collectNoteRoleFieldSuggestions(document, docType, idIndex) {
         ? priors.noteRoleTypePriors.get(noteRole.noteRole)?.dominantType || ''
         : '';
     const bundleSuggestions = buildBundleFieldSuggestions(proxyType, fieldsCache, { limit: 8, minRatio: 0.30 });
-    if (bundleSuggestions.length) {
-        const raw = bundleSuggestions.map((entry, index) => ({
-            key: entry.key,
-            score: entry.score,
-            source: proxyType,
-            roleSummary: proxyType ? `${proxyType} notes often use this field` : `${noteRole.noteRole} note`,
-            confidence: noteRole.confidence,
-            reasons: [
-                ...(noteRole.supportingSignals || noteRole.reasons || []),
-                `vault bundle: ${proxyType} notes commonly include ${entry.key}`
-            ],
-            conflictingSignals: noteRole.conflictingSignals || [],
-            noteRole
-        }));
-        return filterItemsForSurface(raw, 'frontmatter-note-role', {
-            confidenceKey: 'confidence',
-            scoreScale: 180
-        });
-    }
-
-    const suggestions = NOTE_ROLE_FIELD_PRIORS[noteRole.noteRole] || [];
-    const raw = suggestions.map((key, index) => ({
-        key,
-        score: Math.max(0, 40 - index),
-        source: noteRole.noteRole,
-        hardcodedFallback: true,
-        roleSummary: `${noteRole.noteRole} note`,
-        confidence: Math.min(noteRole.confidence, 0.40),
-        reasons: noteRole.supportingSignals || noteRole.reasons || [],
+    // Return vault-bundle suggestions only. When the vault has no evidence for this
+    // role's proxy type, we return nothing rather than guessing from a hardcoded
+    // field list. The vault builds the right list organically.
+    if (!bundleSuggestions.length) return [];
+    const raw = bundleSuggestions.map((entry) => ({
+        key: entry.key,
+        score: entry.score,
+        source: proxyType,
+        roleSummary: proxyType ? `${proxyType} notes often use this field` : `${noteRole.noteRole} note`,
+        confidence: noteRole.confidence,
+        reasons: [
+            ...(noteRole.supportingSignals || noteRole.reasons || []),
+            `vault bundle: ${proxyType} notes commonly include ${entry.key}`
+        ],
         conflictingSignals: noteRole.conflictingSignals || [],
         noteRole
     }));
     return filterItemsForSurface(raw, 'frontmatter-note-role', {
         confidenceKey: 'confidence',
-        scoreScale: 60
+        scoreScale: 180
     });
 }
 

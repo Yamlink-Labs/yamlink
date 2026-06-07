@@ -9,20 +9,26 @@ function repairUiText(text) {
         .replace(/â€¦/g, '...');
 }
 
+/**
+ * @template {import('vscode').QuickPickItem & Record<string, any>} T
+ * @param {T[]} items
+ * @param {import('vscode').QuickPickOptions} [options]
+ * @returns {Thenable<T | undefined>}
+ */
 function showBuilderQuickPick(items, options = {}) {
-    const safeItems = Array.isArray(items)
+    const safeItems = /** @type {T[]} */ (Array.isArray(items)
         ? items.map((item) => ({
             ...item,
             label: repairUiText(item?.label),
             description: repairUiText(item?.description),
             detail: repairUiText(item?.detail)
         }))
-        : items;
-    return vscode.window.showQuickPick(safeItems, {
+        : items);
+    return /** @type {Thenable<T | undefined>} */ (vscode.window.showQuickPick(safeItems, {
         ...options,
         title: repairUiText(options.title),
         placeHolder: repairUiText(options.placeHolder)
-    });
+    }));
 }
 
 function showBuilderInput(options = {}) {

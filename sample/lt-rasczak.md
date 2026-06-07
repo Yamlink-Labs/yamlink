@@ -8,6 +8,7 @@ homeworld: Buenos Aires
 species: human
 status: KIA
 created: 2297-04-01
+gender:
 ---
 
 Rasczak taught Social Studies before the war. [[johnny-rico]] was one of his students. The teacher who went back in and made Lieutenant — one of the less unusual stories from the Bug War, but one of the more consequential ones.

@@ -38,6 +38,7 @@ const FALLBACK_TYPE_CANDIDATES = new Set([
     'record'
 ]);
 
+/** @returns {{ type: string, fields: object }[]} */
 function buildObservedFields() {
     const observedFields = [];
     for (const value of getFieldsCache().values()) {
@@ -70,13 +71,22 @@ function buildGraphObservations(idIndex) {
     return observations;
 }
 
+/**
+ * @param {string} fieldName
+ * @returns {string|null}
+ */
 function inferTargetTypeFromFieldName(fieldName) {
-    return inferTargetTypeFromFieldNamePure(fieldName, new Set([
+    return inferTargetTypeFromFieldNamePure(fieldName, [
         ...Array.from(getTypes()),
         ...Array.from(FALLBACK_TYPE_CANDIDATES)
-    ]));
+    ]);
 }
 
+/**
+ * @param {string} fieldName
+ * @param {{ documentType?: string, idIndex?: Map<string,object> }} [options]
+ * @returns {object} Field role inference result from fieldRolesCore.
+ */
 function inferFieldRole(fieldName, options = {}) {
     const documentType = normalizeFieldName(options.documentType || '');
     const normalizedField = normalizeFieldName(fieldName);

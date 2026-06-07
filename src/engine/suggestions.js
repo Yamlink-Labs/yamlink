@@ -31,6 +31,23 @@ const { explainSuggestionState } = require('./suggestionsExplain');
 
 const QUERY_SUGGESTION_THRESHOLD = 2;
 
+/**
+ * @typedef {{
+ *   kind: string,
+ *   nodeId: string,
+ *   field: string,
+ *   sourceType: string,
+ *   count: number,
+ *   score: number,
+ *   title: string,
+ *   description: string,
+ *   queryText: string,
+ *   inserted?: boolean,
+ *   confidence?: number
+ * }} Suggestion
+ */
+
+/** @param {string} text @returns {string} */
 function flattenQuery(text) {
     return String(text || '')
         .replace(/[ \t]*\r?\n[ \t]*/g, ' ')
@@ -38,6 +55,10 @@ function flattenQuery(text) {
         .trim();
 }
 
+/**
+ * @param {string} text @param {string} sourceType @param {string} field @param {string} nodeId
+ * @returns {boolean}
+ */
 function queryAlreadyExists(text, sourceType, field, nodeId) {
     const flat = flattenQuery(text);
     if (flat.includes(`!view incoming ${sourceType} via ${field}`)) return true;
@@ -59,6 +80,10 @@ function pluralize(type, count) {
     return count === 1 ? type : `${type}s`;
 }
 
+/**
+ * @param {string} sourceType @param {string} field @param {string} nodeId @param {Function} [getDefaultSortField]
+ * @returns {string}
+ */
 function buildForwardRelationQuery(sourceType, field, nodeId, getDefaultSortField = getDefaultSortFieldForType) {
     let query = `!view ${sourceType}\nwhere ${field} = [[${nodeId}]]`;
     const sortField = getDefaultSortField(sourceType);
@@ -66,6 +91,10 @@ function buildForwardRelationQuery(sourceType, field, nodeId, getDefaultSortFiel
     return query;
 }
 
+/**
+ * @param {string} nodeType @param {string} field @param {string} relatedId @param {Function} [getDefaultSortField]
+ * @returns {string}
+ */
 function buildPeerRelationQuery(nodeType, field, relatedId, getDefaultSortField = getDefaultSortFieldForType) {
     let query = `!view ${nodeType}\nwhere ${field} = [[${relatedId}]]`;
     const sortField = getDefaultSortField(nodeType);
@@ -94,6 +123,12 @@ function addSuggestion(results, seen, suggestion, docText, keepExisting) {
     });
 }
 
+/**
+ * @param {string} nodeId
+ * @param {string|null} [docText]
+ * @param {{ keepExisting?: boolean }} [options]
+ * @returns {Suggestion[]}
+ */
 function computeSuggestionsForNode(nodeId, docText = null, options = {}) {
     const backlinks = getBacklinks(nodeId);
     const fieldsCache = getFieldsCache();

@@ -42,6 +42,10 @@ const FAMILY_MAP = new Map(
     ])
 );
 
+/**
+ * @param {{ field: string, relational?: boolean, sharedFields?: Set<string>, sampleTargets?: Set<string> }} pattern
+ * @returns {string}
+ */
 function summarizePattern(pattern) {
     const sharedFields = Array.from(pattern.sharedFields || []);
     const sampleTargets = Array.from(pattern.sampleTargets || []);
@@ -54,6 +58,10 @@ function summarizePattern(pattern) {
     return sharedLead;
 }
 
+/**
+ * @param {string[]} [items]
+ * @returns {string}
+ */
 function naturalList(items = []) {
     const list = items.filter(Boolean);
     if (list.length <= 1) return list[0] || '';
@@ -61,6 +69,10 @@ function naturalList(items = []) {
     return `${list.slice(0, -1).join(', ')}, and ${list[list.length - 1]}`;
 }
 
+/**
+ * @param {string[]} [sourceTypes]
+ * @returns {string}
+ */
 function pickPreferredSourceType(sourceTypes = []) {
     const list = sourceTypes.filter(Boolean);
     if (!list.length) return '';
@@ -68,6 +80,10 @@ function pickPreferredSourceType(sourceTypes = []) {
     return specific || list[0];
 }
 
+/**
+ * @param {object} [nodeFields]
+ * @returns {string}
+ */
 function pickConnectionField(nodeFields = {}) {
     const keys = Object.keys(nodeFields || {}).map((key) => String(key || '').trim().toLowerCase());
     if (keys.includes('related')) return 'related';
@@ -77,6 +93,11 @@ function pickConnectionField(nodeFields = {}) {
     return 'related';
 }
 
+/**
+ * @param {string} fieldName
+ * @param {string|null} [semanticRole]
+ * @returns {string|null}
+ */
 function detectFieldFamily(fieldName, semanticRole = null) {
     const normalized = String(fieldName || '').trim().toLowerCase();
     const compact = normalized.replace(/[_\s]+/g, '-');
@@ -92,6 +113,11 @@ function detectFieldFamily(fieldName, semanticRole = null) {
     return null;
 }
 
+/**
+ * @param {object} [nodeFields]
+ * @param {object} [noteContext]
+ * @returns {Set<string>}
+ */
 function collectCurrentFieldFamilies(nodeFields = {}, noteContext = {}) {
     const families = new Set();
     const roleResultsByField = new Map(
@@ -108,6 +134,11 @@ function collectCurrentFieldFamilies(nodeFields = {}, noteContext = {}) {
     return families;
 }
 
+/**
+ * @param {object} [noteContext]
+ * @param {string} [fieldName]
+ * @returns {object|null}
+ */
 function getFieldRoleResult(noteContext = {}, fieldName = '') {
     const normalized = String(fieldName || '').trim().toLowerCase();
     return (noteContext.fieldRoleResults || []).find((result) => {

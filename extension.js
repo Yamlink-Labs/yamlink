@@ -5,6 +5,7 @@ const { buildIndex, updateSingleFile, removeFileFromIndex, getIndex, getPathInde
 const { getEdges } = require('./src/core/graph');
 const { getPrimaryWorkspaceRoot } = require('./src/core/workspace');
 const { registerDefinition } = require('./src/features/definition');
+const { registerHover, registerQueryPreviewHover } = require('./src/features/hover');
 const { registerCompletion } = require('./src/features/completion');
 const { registerViewLightbulb } = require('./src/features/viewLightbulb');
 const { registerDiagnostics, validateAll, validateDocument, getBrokenCount, clearAll } = require('./src/diagnostics/diagnostics');
@@ -14,17 +15,21 @@ const { registerDecorations } = require('./src/features/decorations');
 const { parseFrontmatterDocument } = require('./src/core/frontmatter');
 const { buildNoteExportModel, exportNotePdf } = require('./src/export/pdf');
 const { openHealthPanel, updatePanel } = require('./src/features/healthPanel');
+const { openHomePanel, refreshHomePanel } = require('./src/features/homePanel');
 const { openViewPanel, refreshViewPanel, closeViewPanel, getOpenViewDocumentPath, setViewPanelStateListener } = require('./src/features/viewPanel');
 const { registerViewCodeLens } = require('./src/features/viewCodeLens');
 const { openCalendarPanel, refreshCalendarPanel, registerCalendarView, focusCalendarView } = require('./src/features/calendarPanel');
-const { openGraph2Panel, refreshGraph2Panel, registerGraphView, refreshGraphSidebarView } = require('./src/features/graphPanel');
-const { buildRunGraphOptions, buildRunVaultGraphOptions } = require('./src/features/graph2/graph2LaunchOptions');
+const { registerGraphView, refreshGraphSidebarView } = require('./src/features/graphPanel');
+const { createGraphPanelController } = require('./src/features/graph/graphPanelController');
 const { syncEntityHub, refreshEntityHub, registerEntityHubView, focusEntityHub } = require('./src/features/entityHub');
 const { importObsidianVault } = require('./src/features/importObsidian');
+const { runGitHistoryImport } = require('./src/intelligence/gitHistoryImport');
 const { registerActiveViewRuntime } = require('./src/runtime/activeViewRuntime');
 const { createRefreshRouter } = require('./src/runtime/refreshRouter');
 const { createStatusRuntime } = require('./src/runtime/statusRuntime');
 const { perfTracker } = require('./src/runtime/performanceTracker');
+const { initMutationLog, appendMutationEvents, emitOutcomeEvent, getMutationEvents } = require('./src/runtime/mutationEventLog');
+const { setMutationEventsProvider } = require('./src/intelligence/vaultPriors');
 const { createPreviewPanelController } = require('./src/features/preview/previewPanelController');
 
 // ─────────────────────────────────────────────────────────────────
@@ -120,8 +125,152 @@ async function activate(context) {
     const _onVaultChange = new vscode.EventEmitter();
     context.subscriptions.push(_onVaultChange);
 
+    // ── Mutation event log — load persisted history before first index build ─
+    const _vaultRoot = getPrimaryWorkspaceRoot(vscode.workspace.workspaceFolders);
+    if (_vaultRoot) {
+        initMutationLog(path.join(_vaultRoot, '.yamlink', 'mutation-log.ndjson'));
+    }
+    setMutationEventsProvider(getMutationEvents);
+
+    // ── Outcome event commands ───────────────────────────────────────────────
+    // Internal commands fired by completion items and lightbulb actions to log
+    // user feedback. These are not user-facing — the underscore prefix signals
+    // that they are internal to the extension.
+    context.subscriptions.push(
+        vscode.commands.registerCommand('yamlink._completionAccepted', (payload) => {
+            if (!payload || !payload.noteId || !payload.field) return;
+            appendMutationEvents([{
+                type: 'completion_accepted',
+                noteId: payload.noteId,
+                field: payload.field,
+                newValue: payload.targetId ? `[[${payload.targetId}]]` : null,
+                oldValue: null,
+                meta: {
+                    confidence: payload.confidence,
+                    source: payload.source,
+                    category: payload.category,
+                    targetId: payload.targetId
+                }
+            }]);
+        }),
+        vscode.commands.registerCommand('yamlink._lightbulbApplied', (payload) => {
+            if (!payload || !payload.noteId || !payload.field) return;
+            appendMutationEvents([{
+                type: 'lightbulb_applied',
+                noteId: payload.noteId,
+                field: payload.field,
+                newValue: payload.action || null,
+                oldValue: null,
+                meta: {
+                    confidence: payload.confidence,
+                    source: payload.source,
+                    action: payload.action
+                }
+            }]);
+        }),
+        vscode.commands.registerCommand('yamlink._addMissingField', async (payload) => {
+            if (!payload || !payload.noteId || !payload.field) return;
+            const filePath = getIndex().get(payload.noteId);
+            if (!filePath) {
+                vscode.window.showWarningMessage(`Yamlink: Note "${payload.noteId}" not found in index.`);
+                return;
+            }
+
+            let doc;
+            try {
+                doc = await vscode.workspace.openTextDocument(filePath);
+            } catch (err) {
+                vscode.window.showErrorMessage(`Yamlink: Could not open note — ${err.message}`);
+                return;
+            }
+
+            // Locate the frontmatter closing ---
+            const lines = doc.getText().split('\n');
+            let closingLine = -1;
+            let sawOpen = false;
+            for (let i = 0; i < lines.length; i++) {
+                if (/^---\s*$/.test(lines[i])) {
+                    if (!sawOpen) { sawOpen = true; continue; }
+                    closingLine = i;
+                    break;
+                }
+            }
+            if (closingLine === -1) {
+                vscode.window.showWarningMessage('Yamlink: Note has no frontmatter closing ---.');
+                return;
+            }
+
+            // Preserve the field name casing from the payload (arc surfaces it as-is from the vault)
+            const fn = String(payload.field || '').trim();
+            const fnLower = fn.toLowerCase();
+            const alreadyExists = lines.slice(0, closingLine).some(l => {
+                const m = l.match(/^([\w-]+)\s*:/);
+                return m && m[1].trim().toLowerCase() === fnLower;
+            });
+            if (alreadyExists) {
+                vscode.window.showInformationMessage(`Yamlink: Field "${fn}" already exists in this note.`);
+                return;
+            }
+
+            // Insert field stub before the closing --- without stealing editor focus
+            const stub = payload.isRelation ? `${fn}: [[\n` : `${fn}: \n`;
+            const insertPos = new vscode.Position(closingLine, 0);
+            const edit = new vscode.WorkspaceEdit();
+            edit.insert(doc.uri, insertPos, stub);
+            const ok = await vscode.workspace.applyEdit(edit);
+            if (!ok) {
+                vscode.window.showErrorMessage(`Yamlink: Could not insert field "${fn}".`);
+                return;
+            }
+
+            // Save immediately so the index picks up the change
+            await doc.save();
+
+            emitOutcomeEvent({
+                type: 'lightbulb_applied',
+                noteId: payload.noteId,
+                field: fnLower,
+                newValue: 'addMissingField',
+                meta: { action: 'addMissingField', source: 'arc' }
+            });
+
+            // Brief status confirmation — user stays in the Note Report
+            vscode.window.setStatusBarMessage(`Yamlink: Added "${fn}" to ${payload.noteId}`, 3000);
+        })
+    );
+
     // ── Build index ──────────────────────────────────────────────────────────
     perfTracker.measureSync('index.buildIndex.activate', null, () => buildIndex(vscode.workspace.workspaceFolders));
+
+    // ── Backfill history for pre-existing notes ───────────────────────────────
+    // Runs once per vault (guarded by a marker file). Seeds a synthetic
+    // note_created event for every indexed note that has no log history yet,
+    // using the file's mtime as the timestamp anchor.
+    if (_vaultRoot) {
+        const { getMutationEvents: _getME } = require('./src/runtime/mutationEventLog');
+        const _backfillMarker = path.join(_vaultRoot, '.yamlink', 'history-backfill.done');
+        if (!fs.existsSync(_backfillMarker)) {
+            const _backfillEvents = [];
+            for (const [noteId, filePath] of getIndex()) {
+                if (_getME({ noteId, limit: 1 }).length > 0) continue;
+                let mtimeMs;
+                try { mtimeMs = fs.statSync(filePath).mtimeMs; } catch (_) { continue; }
+                _backfillEvents.push({
+                    timestamp: new Date(mtimeMs).toISOString(),
+                    type: 'note_created',
+                    noteId,
+                    field: null,
+                    oldValue: null,
+                    newValue: null
+                });
+            }
+            if (_backfillEvents.length) appendMutationEvents(_backfillEvents);
+            try {
+                fs.mkdirSync(path.join(_vaultRoot, '.yamlink'), { recursive: true });
+                fs.writeFileSync(_backfillMarker, new Date().toISOString(), 'utf8');
+            } catch (_) {}
+        }
+    }
 
     const { updateStatusBar, refreshSuggestionBar, resetSuggestionCache } = createStatusRuntime(context, {
         getIndex,
@@ -135,8 +284,8 @@ async function activate(context) {
     registerDefinition(context, getIndex);
     registerCompletion(context, getIndex);
     registerViewLightbulb(context);
-    // registerHover(context, getIndex);
-    // registerQueryPreviewHover(context, getIndex);
+    registerHover(context, getIndex);
+    registerQueryPreviewHover(context, getIndex);
     registerDiagnostics(context, getIndex);
     registerCodeActions(context, getIndex);
     registerRename(context, getIndex, getPathIndex, buildIndex, validateAll);
@@ -146,6 +295,7 @@ async function activate(context) {
     const decorationsProvider = registerDecorations(context, getIndex);
     const codeLensProvider = registerViewCodeLens(context, getOpenViewDocumentPath);
     const { openPreviewPanel, refreshPreviewPanel } = createPreviewPanelController();
+    const graphPanelController = createGraphPanelController();
     setViewPanelStateListener(() => codeLensProvider.refresh());
 
     validateAll(getIndex);
@@ -165,17 +315,30 @@ async function activate(context) {
         refreshStatusBar:  updateStatusBar,
         refreshHealthPanel:updatePanel,
         refreshViews:      refreshViewPanel,
-        refreshGraph2:     refreshGraph2Panel,
+        refreshGraph:      () => graphPanelController.refreshGraphPanel(),
         refreshGraphSidebar: refreshGraphSidebarView,
         refreshEntityHub:  refreshEntityHub,
         refreshCalendar:   refreshCalendarPanel,
-        refreshSuggestions:refreshSuggestionBar
+        refreshSuggestions:refreshSuggestionBar,
+        refreshHome:       refreshHomePanel
     });
 
     // Diagnostics fire an initial validation pass after 1500ms (graph warm-up).
     // Run updateStatusBar slightly after so the suggestion bar reflects that
     // settled state on first open, not the cold-start snapshot.
     setTimeout(() => { updateStatusBar(); refreshSuggestionBar(); }, 1600);
+
+    // ── Home panel auto-open ─────────────────────────────────────────────────
+    // Show on first activation for this vault root. After that, only on command.
+    if (_vaultRoot) {
+        const homeKey = `yamlink.homeShown.${_vaultRoot.replace(/[^a-zA-Z0-9]/g, '_')}`;
+        const alreadyShown = context.globalState.get(homeKey, false);
+        if (!alreadyShown) {
+            context.globalState.update(homeKey, true);
+            // Small delay so the editor has settled before the panel opens
+            setTimeout(() => openHomePanel(context), 800);
+        }
+    }
 
     // ── First-run setup ──────────────────────────────────────────────────────
     // Non-blocking — errors are caught so they never crash activation.
@@ -260,8 +423,9 @@ async function activate(context) {
         }
         const filePath = e.files[0].fsPath;
         if (!filePath.endsWith('.md')) return;
-        const wasKnown = removeFileFromIndex(filePath);
-        if (wasKnown) {
+        const { removed, mutationEvents } = removeFileFromIndex(filePath);
+        if (removed) {
+            appendMutationEvents(mutationEvents);
             router.refreshForPassiveIndexSweep();
             _onVaultChange.fire({ changedId: null, full: true });
         }
@@ -343,7 +507,6 @@ async function activate(context) {
         } else {
             syncEntityHub(context);
         }
-        refreshGraph2Panel();
         refreshPreviewPanel();
         resetSuggestionCache();
         refreshSuggestionBar();
@@ -378,6 +541,134 @@ async function activate(context) {
     );
 
     context.subscriptions.push(
+        vscode.commands.registerCommand('yamlink.importGitHistory', async () => {
+            const workspaceRoot = getPrimaryWorkspaceRoot(vscode.workspace.workspaceFolders);
+            if (!workspaceRoot) {
+                vscode.window.showErrorMessage('Yamlink: Open a workspace folder first.');
+                return;
+            }
+
+            /** @type {any} */
+            let result;
+            await vscode.window.withProgress({
+                location: vscode.ProgressLocation.Notification,
+                title: 'Yamlink: Importing git history…',
+                cancellable: false
+            }, async (progress) => {
+                result = runGitHistoryImport(workspaceRoot, {
+                    appendEvents: appendMutationEvents,
+                    onProgress: ({ file, done, total }) => {
+                        progress.report({ message: `${done + 1}/${total}: ${file}` });
+                    }
+                });
+            });
+
+            if (result.skipped) {
+                if (result.reason === 'not-a-git-repo') {
+                    vscode.window.showInformationMessage('Yamlink: This workspace is not a git repository — git history import skipped.');
+                } else if (result.reason === 'already-done') {
+                    vscode.window.showInformationMessage('Yamlink: Git history already imported. Delete .yamlink/git-history-import.done to re-run.');
+                }
+            } else {
+                vscode.window.showInformationMessage(
+                    `Yamlink: Git history imported — ${result.eventsEmitted} events from ${result.filesProcessed} file${result.filesProcessed === 1 ? '' : 's'}.`
+                );
+            }
+        })
+    );
+
+    context.subscriptions.push(
+        vscode.commands.registerCommand('yamlink.naturalQuery', async () => {
+            const { parseNaturalQuery, exampleQueries } = require('./src/intelligence/nlQuery');
+            const { getCachedPriors } = require('./src/intelligence/vaultPriors');
+            const { getTypes } = require('./src/registries/typeRegistry');
+
+            const { getVaultGeneration: _getGen } = require('./src/core/indexService');
+            const fieldsCache = getFieldsCache();
+            const priors = getCachedPriors(fieldsCache, _getGen());
+            const SYSTEM = new Set(['schema', 'template', 'dashboard']);
+            const types = [...getTypes()].filter(t => !SYSTEM.has(t));
+
+            const allFields = new Set();
+            for (const [, bundle] of priors.typeFieldBundles) {
+                for (const field of bundle.keys()) allFields.add(field);
+            }
+
+            const vocab = {
+                types,
+                fields: [...allFields],
+                workflowFields: priors.workflowFields,
+                noteIds: [...getIndex().keys()]
+            };
+
+            const examples = exampleQueries(types);
+            const input = await vscode.window.showInputBox({
+                prompt: 'Describe what you want to query in plain English',
+                placeHolder: examples[0] || 'e.g., active contacts',
+                title: 'Yamlink — Natural Query'
+            });
+            if (!input) return;
+
+            const result = parseNaturalQuery(input, vocab);
+            if (!result) {
+                const examples2 = examples.slice(0, 3).join(' · ');
+                vscode.window.showWarningMessage(
+                    `Yamlink: Couldn't understand that query. Try: ${examples2}`,
+                    'Try again'
+                ).then(choice => {
+                    if (choice === 'Try again') vscode.commands.executeCommand('yamlink.naturalQuery');
+                });
+                return;
+            }
+
+            // Show preview and ask to insert
+            const picked = await vscode.window.showQuickPick(
+                [
+                    { label: result.query, description: result.explanation, picked: true },
+                    { label: '$(pencil) Edit before inserting', description: 'Open the generated query for manual editing' }
+                ],
+                { title: 'Yamlink — Insert this view?', placeHolder: result.explanation }
+            );
+            if (!picked) return;
+
+            let queryText = result.query;
+            if (picked.label.startsWith('$(pencil)')) {
+                const edited = await vscode.window.showInputBox({
+                    value: result.query,
+                    prompt: 'Edit the query before inserting',
+                    title: 'Yamlink — Edit Query'
+                });
+                if (!edited) return;
+                queryText = edited;
+            }
+
+            const editor = vscode.window.activeTextEditor;
+            if (!editor) {
+                vscode.window.showErrorMessage('Yamlink: Open a Markdown note first.');
+                return;
+            }
+
+            const insertPos = editor.selection.active;
+            const lineText  = editor.document.lineAt(insertPos.line).text;
+            const insertAt  = lineText.trim() === ''
+                ? new vscode.Position(insertPos.line, 0)
+                : new vscode.Position(insertPos.line + 1, 0);
+
+            const block = `\n${queryText}\n`;
+            const edit = new vscode.WorkspaceEdit();
+            edit.insert(editor.document.uri, insertAt, block);
+            await vscode.workspace.applyEdit(edit);
+
+            // Position cursor inside the block and run views
+            const newPos = new vscode.Position(insertAt.line + 1, queryText.length);
+            editor.selection = new vscode.Selection(newPos, newPos);
+            await vscode.commands.executeCommand('yamlink.runViews');
+        }),
+
+        vscode.commands.registerCommand('yamlink.openHome', () => {
+            openHomePanel(context);
+        }),
+
         vscode.commands.registerCommand('yamlink.openHealthPanel', () => {
             openHealthPanel(context);
         })
@@ -438,13 +729,11 @@ async function activate(context) {
 
     context.subscriptions.push(
         vscode.commands.registerCommand('yamlink.runGraph', () => {
-            console.log('Yamlink — runGraph invoked (Graph 2.0)');
+            console.log('Yamlink — runGraph invoked (x-graph)');
             try {
-                const activeEditor = vscode.window.activeTextEditor;
-                const hasNote = activeEditor && activeEditor.document.languageId === 'markdown';
-                openGraph2Panel(context, buildRunGraphOptions(hasNote));
+                graphPanelController.openGraphPanel(context, { mode: 'local' });
             } catch (error) {
-                const message = error && error.message ? error.message : String(error || 'Unknown graph 2.0 error');
+                const message = error && error.message ? error.message : String(error || 'Unknown graph error');
                 console.error('Yamlink — runGraph failed:', error);
                 vscode.window.showErrorMessage(`Yamlink graph failed: ${message}`);
             }
@@ -453,34 +742,17 @@ async function activate(context) {
 
     context.subscriptions.push(
         vscode.commands.registerCommand('yamlink.runVaultGraph', () => {
-            console.log('Yamlink — runVaultGraph invoked (Graph 2.0)');
+            console.log('Yamlink — runVaultGraph invoked (x-graph)');
             try {
-                openGraph2Panel(context, buildRunVaultGraphOptions());
+                graphPanelController.openGraphPanel(context, { mode: 'vault' });
             } catch (error) {
-                const message = error && error.message ? error.message : String(error || 'Unknown graph 2.0 error');
+                const message = error && error.message ? error.message : String(error || 'Unknown graph error');
                 console.error('Yamlink — runVaultGraph failed:', error);
                 vscode.window.showErrorMessage(`Yamlink vault graph failed: ${message}`);
             }
         })
     );
 
-    context.subscriptions.push(
-        vscode.commands.registerCommand('yamlink.runGraph2Preview', () => {
-            console.log('Yamlink — runGraph2Preview invoked');
-            try {
-                openGraph2Panel(context, {
-                    source: 'current',
-                    scope: 'neighborhood',
-                    depth: 2,
-                    nodeCap: 128
-                });
-            } catch (error) {
-                const message = error && error.message ? error.message : String(error || 'Unknown graph 2.0 error');
-                console.error('Yamlink — runGraph2Preview failed:', error);
-                vscode.window.showErrorMessage(`Yamlink graph 2.0 failed: ${message}`);
-            }
-        })
-    );
 
     context.subscriptions.push(
         vscode.commands.registerCommand('yamlink.openNotePreview', () => {
@@ -610,4 +882,10 @@ async function activate(context) {
 
 function deactivate() {}
 
-module.exports = { activate, deactivate };
+function extendMarkdownIt(md) {
+    const { calloutPlugin } = require('./src/export/markdownItCallouts');
+    calloutPlugin(md);
+    return md;
+}
+
+module.exports = { activate, deactivate, extendMarkdownIt };

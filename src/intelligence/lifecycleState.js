@@ -3,6 +3,17 @@
 const fs = require('fs');
 const { inferLikelyTypesForNote, getCommonFieldsForType } = require('./vaultPriors');
 
+/**
+ * @typedef {{
+ *   state: string,
+ *   label: string,
+ *   isStale: boolean,
+ *   reasons: string[],
+ *   likelyType: string|null,
+ *   metrics: Record<string, any>
+ * }} LifecycleResult
+ */
+
 const SYSTEM_FIELDS = new Set(['id', 'type', 'created', 'updated', 'modified', 'indexed', '__yamlink_tags']);
 const DATE_FIELDS = ['updated', 'modified', 'indexed', 'created', 'date', 'due', 'deadline', 'followup'];
 const MS_PER_DAY = 24 * 60 * 60 * 1000;
@@ -57,6 +68,12 @@ function _collectLifecycleDates(noteFields) {
     return entries;
 }
 
+/**
+ * @param {string} noteId
+ * @param {Record<string, any>} noteFields
+ * @param {{ nowMs?: number, mtimeMs?: number, lastMutationMs?: number, fieldsCache?: Map<string, any>, idIndex?: Map<string, string>, typeFieldBundles?: Map<string, any>, noteRoleTypePriors?: Map<string, any>, fieldTargetTypes?: Map<string, any>, noteRole?: Record<string, any>|null, inboundCount?: number, avgInbound?: number, noteType?: string }} [options]
+ * @returns {LifecycleResult}
+ */
 function inferLifecycleState(noteId, noteFields, options = {}) {
     const nowMs = Number.isFinite(options.nowMs) ? options.nowMs : Date.now();
     const fieldsCache = options.fieldsCache || new Map();
@@ -95,11 +112,12 @@ function inferLifecycleState(noteId, noteFields, options = {}) {
         : 0;
 
     const fileMtimeMs = Number.isFinite(options.mtimeMs) ? options.mtimeMs : _getFileMtimeMs(idIndex, noteId);
+    const lastMutationMs = Number.isFinite(options.lastMutationMs) ? options.lastMutationMs : null;
     const lifecycleDates = _collectLifecycleDates(noteFields);
     const mostRecentStructuredMs = lifecycleDates
         .filter((entry) => ['updated', 'modified', 'indexed', 'created'].includes(entry.field))
         .reduce((best, entry) => Math.max(best, entry.ms), 0) || null;
-    const lastTouchedMs = Math.max(fileMtimeMs || 0, mostRecentStructuredMs || 0) || null;
+    const lastTouchedMs = Math.max(fileMtimeMs || 0, mostRecentStructuredMs || 0, lastMutationMs || 0) || null;
     const lastTouchedDays = lastTouchedMs ? Math.floor((nowMs - lastTouchedMs) / MS_PER_DAY) : null;
 
     const pastScheduleDates = lifecycleDates
@@ -163,6 +181,10 @@ function inferLifecycleState(noteId, noteFields, options = {}) {
     };
 }
 
+/**
+ * @param {LifecycleResult|null} lifecycle
+ * @returns {string}
+ */
 function summarizeLifecycleState(lifecycle) {
     if (!lifecycle) return '';
     const summary = lifecycle.reasons && lifecycle.reasons.length

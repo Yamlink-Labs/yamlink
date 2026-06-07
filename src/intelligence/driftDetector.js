@@ -1,5 +1,19 @@
 'use strict';
 
+/**
+ * @typedef {{
+ *   noteId: string,
+ *   noteType: string,
+ *   insufficientData: boolean,
+ *   driftScore?: number,
+ *   driftLabel?: string,
+ *   missingExpected?: Array<{field: string, ratio: number, count: number}>,
+ *   unusualFields?: Array<{field: string, ratio: number, count: number}>,
+ *   valueMismatches?: Array<{field: string, expected: string, actual: string, linkRatio: number}>,
+ *   typeTotal?: number
+ * }} NoteDrift
+ */
+
 // Structural drift detection — computes how far a note's field structure has
 // diverged from how its type is normally shaped in this vault.
 //
@@ -37,6 +51,13 @@ function _rawValue(noteFields, normalizedField) {
     return key !== undefined ? noteFields[key] : undefined;
 }
 
+/**
+ * @param {string} noteId
+ * @param {Record<string, any>} noteFields
+ * @param {Map<string, Record<string, any>>} fieldsCache
+ * @param {{ typeFieldBundles: Map<string, Map<string, number>>, fieldAmbiguity: Map<string, {linkRatio: number, total: number}> }} priors
+ * @returns {NoteDrift|null}
+ */
 function computeNoteDrift(noteId, noteFields, fieldsCache, priors) {
     const noteType = _norm(noteFields?.type);
     if (!noteType || noteType === 'schema') return null;
@@ -114,6 +135,11 @@ function computeNoteDrift(noteId, noteFields, fieldsCache, priors) {
     };
 }
 
+/**
+ * @param {Map<string, Record<string, any>>} fieldsCache
+ * @param {{ typeFieldBundles: Map<string, Map<string, number>>, fieldAmbiguity: Map<string, {linkRatio: number, total: number}> }} priors
+ * @returns {NoteDrift[]}
+ */
 function computeVaultDrift(fieldsCache, priors) {
     const results = [];
     for (const [noteId, noteFields] of fieldsCache) {
@@ -126,6 +152,10 @@ function computeVaultDrift(fieldsCache, priors) {
     return results.sort((a, b) => b.driftScore - a.driftScore || a.noteId.localeCompare(b.noteId));
 }
 
+/**
+ * @param {NoteDrift[]} vaultDrift
+ * @returns {{ total: number, onTrack: number, minorDrift: number, drifting: number, outliers: number, needsAttention: NoteDrift[] }}
+ */
 function getDriftSummary(vaultDrift) {
     const counts = { 'on-track': 0, 'minor-drift': 0, drifting: 0, outlier: 0 };
     for (const d of vaultDrift) counts[d.driftLabel] = (counts[d.driftLabel] || 0) + 1;

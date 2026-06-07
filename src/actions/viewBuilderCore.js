@@ -161,33 +161,34 @@ function refineParsedQuery(query, refinement = {}) {
         ...query,
         wheres: Array.isArray(query.wheres) ? query.wheres.map(where => ({ ...where })) : []
     };
+    const r = /** @type {Record<string, any>} */ (refinement);
 
-    if ('label' in refinement) next.label = refinement.label || null;
+    if ('label' in r) next.label = r.label || null;
 
-    if ('sortField' in refinement) {
-        if (refinement.sortField) {
+    if ('sortField' in r) {
+        if (r.sortField) {
             next.sort = {
-                field: refinement.sortField,
-                desc: String(refinement.sortDirection || 'asc').toLowerCase() === 'desc'
+                field: r.sortField,
+                desc: String(r.sortDirection || 'asc').toLowerCase() === 'desc'
             };
         } else {
             next.sort = null;
         }
     }
 
-    if ('limit' in refinement) {
-        next.limit = Number.isInteger(refinement.limit) && refinement.limit > 0
-            ? refinement.limit
+    if ('limit' in r) {
+        next.limit = Number.isInteger(r.limit) && r.limit > 0
+            ? r.limit
             : null;
     }
 
-    if ('whereField' in refinement) {
-        if (refinement.whereField && refinement.whereValue) {
+    if ('whereField' in r) {
+        if (r.whereField && r.whereValue) {
             next.wheres = [{
-                field: refinement.whereField,
-                op: refinement.whereOperator || '=',
-                value: refinement.whereValue,
-                valueKind: String(refinement.whereValue || '').startsWith('[[') && String(refinement.whereValue || '').endsWith(']]')
+                field: r.whereField,
+                op: r.whereOperator || '=',
+                value: r.whereValue,
+                valueKind: String(r.whereValue || '').startsWith('[[') && String(r.whereValue || '').endsWith(']]')
                     ? 'relation'
                     : 'string'
             }];

@@ -18,7 +18,7 @@
         const bar = document.querySelector('.live-bar');
         if (!bar) return;
         if (!document.getElementById('table-status')) {
-            bar.innerHTML = `<span id="table-status" class="live-status">${DEFAULT_STATUS_MESSAGE}</span><span>Click relation pills to open</span>`;
+            bar.innerHTML = `<span id="table-status" class="live-status" role="status" aria-live="polite">${DEFAULT_STATUS_MESSAGE}</span><span>Click relation pills to open</span>`;
         }
     }());
 
@@ -64,6 +64,7 @@
         moveColumn,
         navigateCell,
         reorderColumns,
+        requestViewUpdate,
         resetPanelState,
         saveState,
         setColumnFilters,
@@ -81,6 +82,20 @@
 
     document.querySelectorAll('.tab-btn').forEach((btn, i) => {
         btn.addEventListener('click', function () { switchTab(i); });
+        btn.addEventListener('keydown', function (event) {
+            const buttons = Array.from(document.querySelectorAll('.tab-btn'));
+            const currentIndex = buttons.indexOf(btn);
+            if (currentIndex === -1) return;
+            let nextIndex = currentIndex;
+            if (event.key === 'ArrowRight') nextIndex = (currentIndex + 1) % buttons.length;
+            else if (event.key === 'ArrowLeft') nextIndex = (currentIndex - 1 + buttons.length) % buttons.length;
+            else if (event.key === 'Home') nextIndex = 0;
+            else if (event.key === 'End') nextIndex = buttons.length - 1;
+            else return;
+            event.preventDefault();
+            switchTab(nextIndex);
+            buttons[nextIndex].focus();
+        });
     });
 
     const editRuntime = editRuntimeFactory.createViewPanelEditRuntime({
@@ -92,6 +107,7 @@
         getVisibleColumnIndex,
         getEditableVisibleCells,
         applyPanelView,
+        requestViewUpdate,
         saveState,
         setColumnFilters,
         getColumnFilters,
@@ -119,6 +135,7 @@
         state: tableState,
         applyColumnWidth,
         applyPanelView,
+        requestViewUpdate,
         clearSelection,
         commitEdit,
         getColumnIndex,
@@ -150,4 +167,34 @@
     });
 
     uiRuntime.attach();
+
+    // Matrix layout toggle and column type picker
+    document.addEventListener('click', function (e) {
+        const layoutBtn = e.target.closest('[data-layout-btn]');
+        if (layoutBtn) {
+            const newLayout = layoutBtn.dataset.layoutBtn;
+            const panel = layoutBtn.closest('.tab-panel');
+            if (!panel) return;
+            panel.dataset.layout = newLayout;
+            if (newLayout === 'table') panel.dataset.matrixColType = '';
+            vscode.postMessage({ command: 'requestRerender', state: viewRuntime.getState() });
+            return;
+        }
+        const rowHead = e.target.closest('.matrix-row-head');
+        if (rowHead) { vscode.postMessage({ command: 'openNode', id: rowHead.dataset.id }); return; }
+        const colHead = e.target.closest('.matrix-col-head');
+        if (colHead) { vscode.postMessage({ command: 'openNode', id: colHead.dataset.id }); return; }
+        const cell = e.target.closest('.matrix-cell.linked');
+        if (cell) { vscode.postMessage({ command: 'openNode', id: cell.dataset.col }); return; }
+    });
+
+    document.addEventListener('change', function (e) {
+        const sel = e.target.closest('[data-matrix-col-select]');
+        if (sel) {
+            const panel = sel.closest('.tab-panel');
+            if (!panel) return;
+            panel.dataset.matrixColType = sel.value;
+            vscode.postMessage({ command: 'requestRerender', state: viewRuntime.getState() });
+        }
+    });
 }());

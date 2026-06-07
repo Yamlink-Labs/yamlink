@@ -191,7 +191,7 @@ fs.readFileSync = function (p, enc) {
     return origRead(p, enc);
 };
 fs.statSync = function (p) {
-    if (MOCK_BODIES.has(p)) return { mtimeMs: 1000 };
+    if (MOCK_BODIES.has(p)) return { birthtimeMs: 1000, mtimeMs: 946684800000 };  // created 1970-01-01, modified 2000-01-01
     return origStat(p);
 };
 
@@ -1298,6 +1298,49 @@ describe('runQuery — forward — group by', () => {
         assert.equal(r.groups.length, 1);
         assert.equal(r.groups[0].key, 'defeat');
         assert.equal(r.groups[0].count, 1);
+    });
+
+});
+
+// ─────────────────────────────────────────────────────────────────
+// file.created / file.modified implicit query fields
+// ─────────────────────────────────────────────────────────────────
+
+describe('runQuery — forward — file.created and file.modified', () => {
+
+    test('where file.modified exists matches notes whose files are stat-able', () => {
+        const r = runQuery(parseSingleViewLine('!view character where file.modified exists'));
+        assert.deepEqual(ids(r), ['carl-jenkins', 'johnny-rico']);
+    });
+
+    test('where file.created = 1970-01-01 matches notes with stub birthtimeMs', () => {
+        const r = runQuery(parseSingleViewLine('!view character where file.created = 1970-01-01'));
+        assert.deepEqual(ids(r), ['carl-jenkins', 'johnny-rico']);
+    });
+
+    test('where file.modified = 2000-01-01 matches notes with stub mtimeMs', () => {
+        const r = runQuery(parseSingleViewLine('!view character where file.modified = 2000-01-01'));
+        assert.deepEqual(ids(r), ['carl-jenkins', 'johnny-rico']);
+    });
+
+    test('where file.created >= 2000-01-01 matches nothing when birthtime is 1970', () => {
+        const r = runQuery(parseSingleViewLine('!view character where file.created >= 2000-01-01'));
+        assert.deepEqual(ids(r), []);
+    });
+
+    test('where file.modified < 2000-01-01 matches nothing when mtime is 2000-01-01', () => {
+        const r = runQuery(parseSingleViewLine('!view character where file.modified < 2000-01-01'));
+        assert.deepEqual(ids(r), []);
+    });
+
+    test('where file.modified >= 2000-01-01 matches all character notes', () => {
+        const r = runQuery(parseSingleViewLine('!view character where file.modified >= 2000-01-01'));
+        assert.deepEqual(ids(r), ['carl-jenkins', 'johnny-rico']);
+    });
+
+    test('where file.created empty returns nothing (file stat always resolves)', () => {
+        const r = runQuery(parseSingleViewLine('!view character where file.created is empty'));
+        assert.deepEqual(ids(r), []);
     });
 
 });

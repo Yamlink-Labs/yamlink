@@ -2,6 +2,20 @@
 
 const { normalizeFieldName } = require('./fieldRolesCore');
 
+/**
+ * @typedef {{
+ *   noteRole: string|null,
+ *   confidence: number,
+ *   reasons: string[],
+ *   supportingSignals: string[],
+ *   secondaryRoles?: string[],
+ *   secondarySignals?: string[],
+ *   conflictingSignals?: string[],
+ *   roleLabel?: string,
+ *   roleSummary?: string
+ * }} NoteRoleResult
+ */
+
 const DEFAULT_NOTE_ROLE_PRIORS = {
     person: ['person', 'contact', 'lead', 'prospect', 'customer', 'character', 'author', 'member', 'employee', 'user', 'stakeholder'],
     container: ['account', 'company', 'client', 'partner', 'organization', 'org', 'team', 'unit', 'group', 'department', 'workspace'],
@@ -132,8 +146,19 @@ function withHumanizedRole(result, nodeFields = {}, titleHints = []) {
     };
 }
 
+/**
+ * @param {Record<string, any>} [nodeFields]
+ * @param {{
+ *   noteRolePriors?: Record<string, string[]>,
+ *   titleHints?: string[],
+ *   fieldRoleResults?: Array<Record<string, any>>,
+ *   typeRoleMap?: Map<string, {role: string, confidence: number, inboundRatio: number, relCount: number, dateCount: number, workflowCount: number}>
+ * }} [options]
+ * @returns {NoteRoleResult}
+ */
 function inferNoteRole(nodeFields = {}, options = {}) {
     const priors = options.noteRolePriors || DEFAULT_NOTE_ROLE_PRIORS;
+    const typeRoleMap = options.typeRoleMap || null;
     const type = normalizeFieldName(nodeFields.type || '');
     const signals = [];
     const weights = emptyRoleWeights();
@@ -145,6 +170,28 @@ function inferNoteRole(nodeFields = {}, options = {}) {
         return withHumanizedRole(result, nodeFields, titleHints);
     }
 
+    // 1. Vault-derived structural role — no hardcoded type names.
+    // The vault has analyzed its own field patterns and inferred what role each
+    // type plays structurally. This is authoritative: if the vault says "fighter"
+    // is a person-type based on field patterns, that's what we use.
+    if (type && typeRoleMap) {
+        const vaultRole = typeRoleMap.get(type);
+        if (vaultRole) {
+            return finalize({
+                noteRole: vaultRole.role,
+                confidence: vaultRole.confidence,
+                reasons: [`"${type}" structurally matches ${vaultRole.role} in this vault (${vaultRole.relCount} relation fields, inbound ratio ${vaultRole.inboundRatio.toFixed(1)})`],
+                supportingSignals: [`vault-derived: relCount=${vaultRole.relCount}, dateCount=${vaultRole.dateCount}, inboundRatio=${vaultRole.inboundRatio.toFixed(1)}`],
+                conflictingSignals: []
+            });
+        }
+    }
+
+    // 2. Hardcoded type-name prior — weak bootstrap only.
+    // Fires when vault evidence is absent (new vault, few notes of this type).
+    // Confidence is 0.65, not 0.92 — this is a convention-based guess,
+    // not vault-derived truth. As the vault grows, the vault-derived role above
+    // replaces this completely.
     if (type) {
         for (const [role, names] of Object.entries(priors)) {
             if (names.includes(type)) {
@@ -153,9 +200,9 @@ function inferNoteRole(nodeFields = {}, options = {}) {
                 }
                 return finalize({
                     noteRole: role,
-                    confidence: 0.92,
-                    reasons: [`note type "${type}" strongly matches the ${role} role`],
-                    supportingSignals: [`note type "${type}" strongly matches the ${role} role`],
+                    confidence: 0.65,
+                    reasons: [`"${type}" conventionally maps to the ${role} role (vault learning pending — role will improve with more notes)`],
+                    supportingSignals: [`prior: "${type}" matches known ${role}-type names`],
                     conflictingSignals: []
                 });
             }
@@ -307,6 +354,11 @@ function inferNoteRole(nodeFields = {}, options = {}) {
     });
 }
 
+/**
+ * @param {NoteRoleResult|Record<string, any>|null} result
+ * @param {number} [max]
+ * @returns {string}
+ */
 function summarizeNoteRoleReasons(result, max = 2) {
     if (!result || !Array.isArray(result.reasons)) return '';
     return result.reasons
@@ -315,6 +367,10 @@ function summarizeNoteRoleReasons(result, max = 2) {
         .join('; ');
 }
 
+/**
+ * @param {NoteRoleResult|Record<string, any>|null} result
+ * @returns {string}
+ */
 function summarizeNoteRole(result) {
     if (!result || !result.noteRole) return 'note';
     return result.roleSummary || `${result.roleLabel || result.noteRole} note`;

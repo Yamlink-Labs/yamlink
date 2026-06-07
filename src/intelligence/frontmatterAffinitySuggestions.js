@@ -26,6 +26,14 @@ function collectRelationNeighborhood(nodeFields = {}) {
     };
 }
 
+/**
+ * Finds notes that share relation targets with the current note but aren't directly linked.
+ * @param {object} nodeFields
+ * @param {object} noteContext
+ * @param {Map<string,object>} fieldsCache
+ * @param {object} [options]
+ * @returns {object[]}
+ */
 function buildAffinityConnections(nodeFields, noteContext, fieldsCache, options = {}) {
     const nodeId = String(options.nodeId || '').trim();
     const nodeType = String(options.nodeType || nodeFields?.type || '').trim().toLowerCase();
@@ -107,6 +115,12 @@ function buildAffinityConnections(nodeFields, noteContext, fieldsCache, options 
         }));
 }
 
+/**
+ * Turns affinity connections into ready-to-insert !view query hints.
+ * @param {object[]} [likelyConnections]
+ * @param {{ getDefaultSortField?: (type: string) => string }} [options]
+ * @returns {object[]}
+ */
 function buildRelationViewHints(likelyConnections = [], options = {}) {
     const sortResolver = options.getDefaultSortField || (() => '');
     const seen = new Set();

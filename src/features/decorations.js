@@ -58,6 +58,18 @@ const embedBangDecoration = vscode.window.createTextEditorDecorationType({
     textDecoration: 'none'
 });
 
+// Broken [[links]] — amber brackets signal the dead reference; inner text fades out.
+// Contrast with working links: those have dimmed brackets + vivid mint text.
+// Here it inverts: the container warns, the content recedes.
+const brokenBracketDecoration = vscode.window.createTextEditorDecorationType({
+    color: 'rgba(231,168,90,0.55)',
+    textDecoration: 'none'
+});
+const brokenLinkDecoration = vscode.window.createTextEditorDecorationType({
+    color: 'rgba(231,168,90,0.32)',
+    textDecoration: 'none'
+});
+
 // Callout type markers: [!SOURCE], [!NOTE], [!WARNING], [!DANGER]
 const calloutSourceDecoration = vscode.window.createTextEditorDecorationType({
     color: '#f59e0b', fontWeight: '700'
@@ -81,6 +93,7 @@ const CALLOUT_COLOR_MAP = {
 
 let debounceTimer = null;
 
+/** @param {import('vscode').ExtensionContext} context @param {() => Map<string,string>} getIndex @returns {{ refresh: () => void }} */
 function registerDecorations(context, getIndex) {
 
     const activeEditor = vscode.window.activeTextEditor;
@@ -109,11 +122,14 @@ function registerDecorations(context, getIndex) {
     };
 }
 
+/** @param {import('vscode').TextEditor} editor @param {() => Map<string,string>} getIndex @returns {void} */
 function updateDecorations(editor, getIndex) {
     if (!editor || editor.document.languageId !== 'markdown') {
-        editor.setDecorations(bracketDecoration, []);
-        editor.setDecorations(linkDecoration, []);
-        editor.setDecorations(embedBangDecoration, []);
+        editor.setDecorations(bracketDecoration,       []);
+        editor.setDecorations(linkDecoration,          []);
+        editor.setDecorations(brokenBracketDecoration, []);
+        editor.setDecorations(brokenLinkDecoration,    []);
+        editor.setDecorations(embedBangDecoration,     []);
         editor.setDecorations(dateShortcutDecoration, []);
         editor.setDecorations(resolvedDateDecoration, []);
         editor.setDecorations(tagDecoration, []);
@@ -130,29 +146,38 @@ function updateDecorations(editor, getIndex) {
     // Capture optional leading ! for embed syntax
     const regex    = /(!?)\[\[([^\]]+)\]\]/g;
 
-    const brackets  = [];
-    const links     = [];
-    const embedBangs = [];
-    const dateTokens = [];
-    const resolvedDates = [];
-    const tags = [];
-    const calloutSource = [];
-    const calloutInfo = [];
+    const brackets       = [];
+    const links          = [];
+    const embedBangs     = [];
+    const brokenBrackets = [];
+    const brokenLinks    = [];
+    const dateTokens     = [];
+    const resolvedDates  = [];
+    const tags           = [];
+    const calloutSource  = [];
+    const calloutInfo    = [];
     const calloutWarning = [];
-    const calloutDanger = [];
+    const calloutDanger  = [];
 
     let match;
     while ((match = regex.exec(text)) !== null) {
-        const isEmbed   = match[1] === '!';
-        const rawInner  = match[2];
-        const resolvedId = resolveLinkedTarget(rawInner, idIndex, aliasIdx);
-        if (!resolvedId) continue; // unresolved — leave alone
+        const isEmbed      = match[1] === '!';
+        const rawInner     = match[2];
+        const resolvedId   = resolveLinkedTarget(rawInner, idIndex, aliasIdx);
 
-        const fullStart = match.index;
-        const fullEnd   = match.index + match[0].length;
-        const bracketStart = fullStart + match[1].length; // skip the ! if present
-        const idStart   = bracketStart + 2;               // after [[
-        const idEnd     = bracketStart + 2 + rawInner.length; // before ]]
+        const fullStart    = match.index;
+        const fullEnd      = match.index + match[0].length;
+        const bracketStart = fullStart + match[1].length; // skip ! if embed
+        const idStart      = bracketStart + 2;            // after [[
+        const idEnd        = bracketStart + 2 + rawInner.length; // before ]]
+
+        if (!resolvedId) {
+            // Broken link — amber brackets + faded amber inner text.
+            brokenBrackets.push({ range: new vscode.Range(editor.document.positionAt(bracketStart),     editor.document.positionAt(bracketStart + 2)) });
+            brokenBrackets.push({ range: new vscode.Range(editor.document.positionAt(fullEnd - 2),      editor.document.positionAt(fullEnd)) });
+            brokenLinks.push({    range: new vscode.Range(editor.document.positionAt(idStart),          editor.document.positionAt(idEnd)) });
+            continue;
+        }
 
         if (isEmbed) {
             // Dim the leading !
@@ -165,8 +190,8 @@ function updateDecorations(editor, getIndex) {
         }
 
         brackets.push({ range: new vscode.Range(editor.document.positionAt(bracketStart), editor.document.positionAt(bracketStart + 2)) });
-        brackets.push({ range: new vscode.Range(editor.document.positionAt(fullEnd - 2), editor.document.positionAt(fullEnd)) });
-        links.push({ range: new vscode.Range(editor.document.positionAt(idStart), editor.document.positionAt(idEnd)) });
+        brackets.push({ range: new vscode.Range(editor.document.positionAt(fullEnd - 2),  editor.document.positionAt(fullEnd)) });
+        links.push({    range: new vscode.Range(editor.document.positionAt(idStart),      editor.document.positionAt(idEnd)) });
     }
 
     for (const { range, family } of collectCalloutDecorations(editor.document)) {
@@ -186,9 +211,11 @@ function updateDecorations(editor, getIndex) {
         tags.push({ range: tagRange });
     }
 
-    editor.setDecorations(bracketDecoration, brackets);
-    editor.setDecorations(linkDecoration, links);
-    editor.setDecorations(embedBangDecoration, embedBangs);
+    editor.setDecorations(bracketDecoration,       brackets);
+    editor.setDecorations(linkDecoration,          links);
+    editor.setDecorations(brokenBracketDecoration, brokenBrackets);
+    editor.setDecorations(brokenLinkDecoration,    brokenLinks);
+    editor.setDecorations(embedBangDecoration,     embedBangs);
     editor.setDecorations(dateShortcutDecoration, dateTokens);
     editor.setDecorations(resolvedDateDecoration, resolvedDates);
     editor.setDecorations(tagDecoration, tags);
@@ -198,6 +225,7 @@ function updateDecorations(editor, getIndex) {
     editor.setDecorations(calloutDangerDecoration, calloutDanger);
 }
 
+/** @param {import('vscode').TextDocument} document @returns {import('vscode').Range[]} */
 function collectDateShortcutDecorations(document) {
     const ranges = [];
     const text = document.getText();
@@ -217,6 +245,7 @@ function collectDateShortcutDecorations(document) {
     return ranges;
 }
 
+/** @param {import('vscode').TextDocument} document @returns {import('vscode').Range[]} */
 function collectResolvedDateDecorations(document) {
     const ranges = [];
     const text = document.getText();
@@ -231,6 +260,7 @@ function collectResolvedDateDecorations(document) {
     return ranges;
 }
 
+/** @param {import('vscode').TextDocument} document @returns {import('vscode').Range[]} */
 function collectTagDecorations(document) {
     const ranges = [];
     const text = document.getText();
@@ -282,6 +312,7 @@ function collectTagDecorations(document) {
     return ranges;
 }
 
+/** @param {import('vscode').TextDocument} document @returns {Array<{range: import('vscode').Range, family: string}>} */
 function collectCalloutDecorations(document) {
     const results = [];
     const text = document.getText();

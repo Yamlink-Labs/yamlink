@@ -88,14 +88,18 @@ describe('fieldCategory — classifyField', () => {
         assert.notEqual(result.category, CATEGORY.RELATION);
     });
 
-    it('observed usage < 3 observations returns no signal from usage', () => {
+    it('2 wikilink observations → RELATION with sparse-sample confidence penalty', () => {
+        // Even without typed targets, a field that is always a wikilink is relational.
+        // The classifier no longer requires 3 observations — it applies a confidence
+        // penalty for sparse samples instead of returning null.
         const fieldsCache = new Map([
             ['a', { rare: '[[x]]' }],
             ['b', { rare: '[[y]]' }],
         ]);
-        // Only 2 observations → usage returns null → falls through to UNKNOWN
         const result = classifyField('rare', { fieldsCache });
-        assert.equal(result.category, CATEGORY.UNKNOWN);
+        assert.equal(result.category, CATEGORY.RELATION);
+        // Confidence should be moderate but not high — sparse sample penalty applies
+        assert.ok(result.confidence < 0.85, `expected sparse-penalised confidence, got ${result.confidence}`);
     });
 
     it('schema takes priority over observed usage', () => {
@@ -469,5 +473,199 @@ describe('fieldCategory — getActionThreshold', () => {
 
     it('returns default for unknown action type', () => {
         assert.equal(typeof getActionThreshold('nonexistent'), 'number');
+    });
+});
+
+// ─── Vault wins over name patterns (Shift 1) ─────────────────────────────
+
+describe('fieldCategory — vault evidence overrides name patterns', () => {
+    it('status field used as wikilink → RELATION not WORKFLOW', () => {
+        // Vault consistently uses status as a relation field
+        const fieldsCache = new Map([
+            ['n1', { type: 'mission', status: '[[active-op]]' }],
+            ['n2', { type: 'mission', status: '[[standby-op]]' }],
+            ['n3', { type: 'mission', status: '[[active-op]]' }],
+            ['active-op', { type: 'operation' }],
+            ['standby-op', { type: 'operation' }],
+        ]);
+        // With direct typed link in current note
+        const result = classifyField('status', {
+            noteFields: { status: '[[active-op]]' },
+            fieldsCache
+        });
+        assert.equal(result.category, CATEGORY.RELATION, 'vault wikilink evidence must override RE_WORKFLOW name pattern');
+    });
+
+    it('date field used as wikilink → RELATION not DATE', () => {
+        const fieldsCache = new Map([
+            ['n1', { type: 'note', date: '[[event-a]]' }],
+            ['n2', { type: 'note', date: '[[event-b]]' }],
+            ['event-a', { type: 'event' }],
+            ['event-b', { type: 'event' }],
+        ]);
+        const result = classifyField('date', {
+            noteFields: { date: '[[event-a]]' },
+            fieldsCache
+        });
+        assert.equal(result.category, CATEGORY.RELATION);
+    });
+
+    it('status with purely scalar values → WORKFLOW (soft pattern correct)', () => {
+        // No wikilinks at all — soft RE_WORKFLOW should fire as fallback
+        const fieldsCache = new Map([
+            ['n1', { type: 'deal', status: 'open' }],
+            ['n2', { type: 'deal', status: 'closed' }],
+            ['n3', { type: 'deal', status: 'pending' }],
+        ]);
+        const result = classifyField('status', { fieldsCache });
+        assert.equal(result.category, CATEGORY.WORKFLOW, 'no wikilinks = WORKFLOW fallback still works');
+    });
+
+    it('vault-detected workflow field overrides name: custom status name', () => {
+        const { buildValuePatterns, buildWorkflowFields } = require('../src/intelligence/vaultPriors');
+        const fieldsCache = new Map([
+            ['n1', { type: 'mission', disposition: 'active' }],
+            ['n2', { type: 'mission', disposition: 'standby' }],
+            ['n3', { type: 'mission', disposition: 'complete' }],
+            ['n4', { type: 'mission', disposition: 'active' }],
+        ]);
+        const vp = buildValuePatterns(fieldsCache);
+        const wf = buildWorkflowFields(vp);
+        // 'disposition' is not in RE_WORKFLOW — but vault shows it's workflow-like
+        const result = classifyField('disposition', { fieldsCache, workflowFields: wf, valuePatterns: vp });
+        assert.equal(result.category, CATEGORY.WORKFLOW);
+        assert.equal(result.source, 'usage', 'source should be usage not prior');
+    });
+});
+
+// ─── Cold-start: graph-topology-first (Step 2.5) ──────────────────────────
+
+describe('fieldCategory — cold-start: direct typed link evidence', () => {
+    const fieldsCache = new Map([
+        ['rico',        { type: 'character' }],
+        ['roughnecks',  { type: 'unit' }],
+        ['op-klendathu', { type: 'mission' }],
+    ]);
+
+    it('one typed wikilink in the current field → RELATION on a brand-new vault', () => {
+        // This is the core cold-start case: no vault history, one typed link.
+        const result = classifyField('commander', {
+            noteFields: { commander: '[[rico]]' },
+            fieldsCache
+        });
+        assert.equal(result.category, CATEGORY.RELATION);
+        assert.ok(result.confidence >= 0.55, `expected >= 0.55, got ${result.confidence}`);
+        assert.equal(result.source, 'usage');
+    });
+
+    it('multiple typed links raise confidence', () => {
+        const result = classifyField('participants', {
+            noteFields: { participants: ['[[rico]]', '[[roughnecks]]'] },
+            fieldsCache
+        });
+        assert.equal(result.category, CATEGORY.RELATION);
+        assert.ok(result.confidence > 0.55, `expected > 0.55, got ${result.confidence}`);
+    });
+
+    it('untyped wikilink (target not in vault) does not trigger step 2.5', () => {
+        // Target has no type → step 2.5 skips it; falls through to later steps
+        const result = classifyField('mystery', {
+            noteFields: { mystery: '[[unknown-note]]' },
+            fieldsCache
+        });
+        // Should NOT be RELATION from step 2.5; may be UNKNOWN from step 7
+        assert.notEqual(result.source, 'usage');
+    });
+
+    it('step 2.5 fires before vault-prior step — works with zero vault history', () => {
+        // No fieldTargetTypes, no typeFieldBundles — pure cold start
+        const result = classifyField('mission', {
+            noteFields: { mission: '[[op-klendathu]]' },
+            fieldsCache,
+            fieldTargetTypes: new Map(),
+            fieldAmbiguity: new Map()
+        });
+        assert.equal(result.category, CATEGORY.RELATION);
+    });
+
+    it('classifyField stamps vaultMaturity onto result', () => {
+        const result = classifyField('commander', {
+            noteFields: { commander: '[[rico]]' },
+            fieldsCache,
+            vaultMaturity: 0.2
+        });
+        assert.equal(result.vaultMaturity, 0.2);
+    });
+
+    it('vaultMaturity defaults to 1 when not supplied', () => {
+        const result = classifyField('id');
+        assert.equal(result.vaultMaturity, 1);
+    });
+});
+
+// ─── Implicit interaction history (Step 3.5) ──────────────────────────────
+
+describe('fieldCategory — implicit history signal', () => {
+    const { buildImplicitFieldWeights } = require('../src/intelligence/implicitWeights');
+
+    it('field with no current vault state but historical relation use → RELATION', () => {
+        // Simulates: user had kommandant: [[rico]] in a note, then cleared it.
+        // fieldsCache and fieldTargetTypes show no wikilinks now. Implicit log remembers.
+        const implicitFieldWeights = buildImplicitFieldWeights([
+            { type: 'relation_changed', field: 'kommandant', newValue: '[[rico]]', noteId: 'old-note' },
+            { type: 'relation_changed', field: 'kommandant', newValue: '[[carmen]]', noteId: 'old-note-2' },
+        ]);
+        const result = classifyField('kommandant', { implicitFieldWeights });
+        assert.equal(result.category, CATEGORY.RELATION);
+        assert.equal(result.source, 'implicit');
+    });
+
+    it('implicit source confidence is moderate — not enough for QUICKFIX alone', () => {
+        const implicitFieldWeights = buildImplicitFieldWeights([
+            { type: 'relation_changed', field: 'reports-to', newValue: '[[boss]]', noteId: 'n1' },
+        ]);
+        const result = classifyField('reports-to', { implicitFieldWeights });
+        assert.equal(result.category, CATEGORY.RELATION);
+        // With 1 use: base 0.38 + 0.10 = 0.48. Should be below QUICKFIX ec bar.
+        assert.ok(result.confidence < 0.70, `confidence should be moderate, got ${result.confidence}`);
+    });
+
+    it('more history → higher confidence', () => {
+        const few = buildImplicitFieldWeights([
+            { type: 'relation_changed', field: 'managed-by', newValue: '[[x]]', noteId: 'n1' },
+        ]);
+        const many = buildImplicitFieldWeights(
+            Array.from({ length: 8 }, (_, i) => ({
+                type: 'relation_changed', field: 'managed-by', newValue: '[[x]]', noteId: `n${i}`
+            }))
+        );
+        const lowConf = classifyField('managed-by', { implicitFieldWeights: few }).confidence;
+        const highConf = classifyField('managed-by', { implicitFieldWeights: many }).confidence;
+        assert.ok(highConf > lowConf);
+    });
+
+    it('current vault evidence (step 3) takes priority over implicit history', () => {
+        // If the field has current typed links, step 3 fires before step 4.5
+        const fieldsCache = new Map([
+            ['note-a', { type: 'mission', commander: '[[rico]]' }],
+            ['rico', { type: 'character' }],
+        ]);
+        const implicitFieldWeights = buildImplicitFieldWeights([
+            { type: 'relation_changed', field: 'commander', newValue: '[[x]]', noteId: 'old' }
+        ]);
+        const result = classifyField('commander', { fieldsCache, implicitFieldWeights });
+        // Source should be 'usage' (vault priors or step 2.5), not 'implicit'
+        assert.notEqual(result.source, 'implicit');
+        assert.equal(result.category, CATEGORY.RELATION);
+    });
+
+    it('implicit does not fire when field has no wikilink history', () => {
+        // status has mutations but none are wikilinks — no relation boost
+        const weights = buildImplicitFieldWeights([
+            { type: 'relation_changed', field: 'status', newValue: 'active', noteId: 'n1' },
+        ]);
+        const result = classifyField('status', { implicitFieldWeights: weights });
+        // status matches RE_WORKFLOW → WORKFLOW regardless; implicit boost is 0 for non-links
+        assert.equal(result.category, CATEGORY.WORKFLOW);
     });
 });

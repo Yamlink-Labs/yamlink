@@ -2,10 +2,12 @@
 
 const { normalizeFieldName } = require('./fieldRolesCore');
 
+/** @param {any} value @returns {string} */
 function normalizeTagToken(value) {
     return normalizeFieldName(String(value || '').replace(/^#+/, ''));
 }
 
+/** @param {string} text @returns {string[]} */
 function extractTagsFromText(text) {
     const tags = new Set();
     const regex = /(^|[\s(])#([A-Za-z][\w-]*)/gm;
@@ -17,6 +19,7 @@ function extractTagsFromText(text) {
     return [...tags];
 }
 
+/** @param {Record<string, any>} [nodeFields] @returns {string[]} */
 function extractTagsFromNodeFields(nodeFields = {}) {
     const tags = new Set();
     for (const key of ['tags', 'tag', 'labels', 'label', '__yamlink_tags']) {
@@ -31,6 +34,7 @@ function extractTagsFromNodeFields(nodeFields = {}) {
     return [...tags];
 }
 
+/** @param {{ getText?: () => string }} document @param {Record<string, any>} [nodeFields] @returns {string[]} */
 function collectDocumentTags(document, nodeFields = {}) {
     return [...new Set([
         ...extractTagsFromNodeFields(nodeFields),

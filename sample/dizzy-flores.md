@@ -7,6 +7,8 @@ unit: [[roughnecks]]
 homeworld: Buenos Aires
 species: human
 created: 2297-01-15
+gender:
+race:
 ---
 
 Played on the same football team as [[johnny-rico]] before the war. Chose Mobile Infantry specifically to follow him — a fact Rico didn't figure out until it was too late to matter.

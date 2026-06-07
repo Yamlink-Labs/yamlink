@@ -5,6 +5,9 @@ const path = require('path');
 
 const IGNORE_FILE = '.yamlinkignore';
 
+/** @typedef {{ type: 'dir'|'path'|'name', value: string }} IgnoreRule */
+
+/** @param {string} rawRule @returns {IgnoreRule|null} */
 function normalizeRule(rawRule) {
     const trimmed = String(rawRule || '').trim();
     if (!trimmed || trimmed.startsWith('#')) return null;
@@ -23,6 +26,7 @@ function normalizeRule(rawRule) {
     return { type: 'name', value: normalized };
 }
 
+/** @param {string} content @returns {IgnoreRule[]} */
 function parseIgnoreFile(content) {
     return String(content || '')
         .split(/\r?\n/)
@@ -30,6 +34,7 @@ function parseIgnoreFile(content) {
         .filter(Boolean);
 }
 
+/** @param {string} workspaceRoot @returns {IgnoreRule[]} */
 function loadIgnoreRules(workspaceRoot) {
     if (!workspaceRoot) return [];
     const ignorePath = path.join(workspaceRoot, IGNORE_FILE);
@@ -41,6 +46,7 @@ function loadIgnoreRules(workspaceRoot) {
     }
 }
 
+/** @param {string} filePath @param {string} workspaceRoot @returns {string} */
 function toRelativeWorkspacePath(filePath, workspaceRoot) {
     if (!filePath || !workspaceRoot) return '';
     const resolvedFile = path.resolve(filePath);
@@ -51,6 +57,7 @@ function toRelativeWorkspacePath(filePath, workspaceRoot) {
     return path.relative(resolvedRoot, resolvedFile).replace(/\\/g, '/');
 }
 
+/** @param {string} filePath @param {string} workspaceRoot @param {IgnoreRule[]} [rules] @returns {boolean} */
 function isIgnoredPath(filePath, workspaceRoot, rules = []) {
     if (!filePath || !workspaceRoot || !Array.isArray(rules) || rules.length === 0) return false;
     const rel = toRelativeWorkspacePath(filePath, workspaceRoot);

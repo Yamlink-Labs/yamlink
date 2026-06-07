@@ -1,6 +1,6 @@
 const vscode = require('vscode');
 const { getFieldsCache } = require('../core/indexService');
-const { registerNodeCreationCommands } = require('./codeActionsNodeCreationCommands');
+const { registerNodeCreationCommands, registerDailyNoteCommand } = require('./codeActionsNodeCreationCommands');
 
 function buildLinkEdit(document, targetId) {
     const text = document.getText();
@@ -134,6 +134,7 @@ function registerDuplicateIdCommand(context) {
 function registerNodeCommands(context, getIndex, getTypes) {
     registerNodeLinkCommands(context);
     registerNodeCreationCommands(context, getIndex, getTypes);
+    registerDailyNoteCommand(context);
     registerDuplicateIdCommand(context);
 }
 

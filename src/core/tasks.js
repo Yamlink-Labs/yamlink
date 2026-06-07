@@ -3,6 +3,23 @@ const { extractDateFromText } = require('./date');
 const { normalizeText } = require('./frontmatter');
 const { getCachedTasks, setCachedTasks } = require('./taskCache');
 
+/**
+ * @typedef {{
+ *   id: string,
+ *   fileId: string,
+ *   filePath: string,
+ *   line: number,
+ *   text: string,
+ *   displayText: string,
+ *   body: string,
+ *   done: boolean,
+ *   date: string|null,
+ *   links: string[],
+ *   fields: { text: string, done: string, date: string|null, file: string, line: string },
+ *   nodeType: string
+ * }} TaskRow
+ */
+
 function hashString(str) {
   let h = 5381;
   for (let i = 0; i < str.length; i++) {
@@ -29,6 +46,7 @@ function stripDateMarkers(text) {
   return text.replace(DATE_MARKER_RE, '').replace(/\s{2,}/g, ' ').trim();
 }
 
+/** @param {string} content @param {string} fileId @param {string} filePath @param {string|null} [referenceDate] @returns {TaskRow[]} */
 function parseTasksFromContent(content, fileId, filePath, referenceDate = null) {
   const body = stripFrontmatter(normalizeText(content));
   const lines = body.split('\n');
@@ -93,6 +111,7 @@ function parseTasksFromContent(content, fileId, filePath, referenceDate = null) 
   return tasks;
 }
 
+/** @param {Map<string,string>} index @param {number} [vaultGeneration] @returns {TaskRow[]} */
 function buildTaskRows(index, vaultGeneration) {
   const rows = [];
   const useCache = vaultGeneration !== undefined;

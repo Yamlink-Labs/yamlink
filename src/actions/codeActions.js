@@ -4,7 +4,8 @@ const { getTypes } = require('../registries/typeRegistry');
 const { getSchema } = require('../registries/schemaRegistry');
 const { isOrphan } = require('../core/graph');
 const { computeSuggestionsForNode } = require('../engine/suggestions');
-const { getFieldsCache, getPathIndex } = require('../core/indexService');
+const { getFieldsCache, getPathIndex, getVaultGeneration } = require('../core/indexService');
+const { getCachedPriors, getDominantTargetType } = require('../intelligence/vaultPriors');
 const { canonicalizeId, extractCanonicalIdFromFrontmatter } = require('../core/id');
 const { buildStarterViewQuery, registerViewCommands } = require('./codeActionsViewCommands');
 const { registerNodeCommands } = require('./codeActionsNodeCommands');
@@ -25,6 +26,11 @@ const {
     runViewRefinementByIndex
 } = require('./viewBuilder');
 
+/**
+ * @param {import('vscode').ExtensionContext} context
+ * @param {() => Map<string, string>} getIndex
+ * @returns {void}
+ */
 function registerCodeActions(context, getIndex) {
 
     context.subscriptions.push(
@@ -59,7 +65,7 @@ function registerCodeActions(context, getIndex) {
                     for (const diagnostic of codeActionContext.diagnostics) {
                         if (diagnostic.source !== 'yamlink') continue;
 
-                        const code = diagnostic.code?.value ?? diagnostic.code;
+                        const code = /** @type {any} */ (diagnostic.code)?.value ?? diagnostic.code;
 
                         if (code === 'yamlink.missingId') {
                             const fileName = canonicalizeId(path.basename(document.uri.fsPath, '.md'));
@@ -98,6 +104,22 @@ function registerCodeActions(context, getIndex) {
                             }
                         }
 
+                        if (code === 'yamlink.templateDrift') {
+                            const noteType = document.getText().match(/^\s*type:\s*(.+?)$/m)?.[1]?.trim() || 'note';
+                            const fieldList = diagnostic.message.replace(/^Yamlink: Missing template fields:\s*/, '');
+                            const driftAction = new vscode.CodeAction(
+                                `Yamlink: Add missing "${noteType}" fields (${fieldList})`,
+                                vscode.CodeActionKind.QuickFix
+                            );
+                            driftAction.command = {
+                                command: 'yamlink.addMissingTemplateFields',
+                                title: 'Add missing template fields'
+                            };
+                            driftAction.diagnostics = [diagnostic];
+                            driftAction.isPreferred = true;
+                            actions.push(driftAction);
+                        }
+
                         if (code === 'yamlink.duplicateId') {
                             const thisId = extractCanonicalIdFromFrontmatter(document.getText());
                             if (thisId) {
@@ -131,7 +153,9 @@ function registerCodeActions(context, getIndex) {
 
                             const knownTypes = getTypes ? new Set(getTypes()) : new Set();
                             let resolvedType = null;
+                            let typeSource = 'schema';
                             if (fieldName) {
+                                // 1. Schema — strongest signal
                                 for (const targetType of knownTypes) {
                                     const schema = getSchema ? getSchema(targetType) : null;
                                     if (schema && schema.fields[fieldName] && schema.fields[fieldName].type === 'relation' && schema.fields[fieldName].target) {
@@ -139,7 +163,20 @@ function registerCodeActions(context, getIndex) {
                                         break;
                                     }
                                 }
-                                if (!resolvedType && knownTypes.has(fieldName)) resolvedType = fieldName;
+                                // 2. Field name matches a known type exactly
+                                if (!resolvedType && knownTypes.has(fieldName)) {
+                                    resolvedType = fieldName;
+                                    typeSource = 'name';
+                                }
+                                // 3. Vault priors — what type does this field usually link to?
+                                if (!resolvedType) {
+                                    const priors = getCachedPriors(getFieldsCache(), getVaultGeneration());
+                                    const dominant = getDominantTargetType(fieldName, priors.fieldTargetTypes);
+                                    if (dominant && dominant.ratio >= 0.6 && dominant.count >= 2) {
+                                        resolvedType = dominant.targetType;
+                                        typeSource = 'vault';
+                                    }
+                                }
                             }
 
                             // Get source note info for smart reverse relation backfill
@@ -167,15 +204,18 @@ function registerCodeActions(context, getIndex) {
                                 })()
                                 : 0;
 
-                            const label = resolvedType
-                                ? `Yamlink: Create ${resolvedType} "${id}"${fieldCount > 0 ? ` (${fieldCount} fields)` : ''}`
-                                : `Yamlink: Create node "${id}"`;
+                            const typeHint = resolvedType
+                                ? (typeSource === 'vault' ? `${resolvedType} (suggested)` : resolvedType)
+                                : null;
+                            const label = typeHint
+                                ? `Yamlink: Create ${typeHint} "${id}"${fieldCount > 0 ? ` (${fieldCount} fields)` : ''}`
+                                : `Yamlink: Create note "${id}"`;
 
                             const action = new vscode.CodeAction(label, vscode.CodeActionKind.QuickFix);
                             action.command = {
                                 command: 'yamlink.createNote',
                                 title: 'Create Node',
-                                arguments: [id, resolvedType, document.uri.fsPath, sourceId, sourceType]
+                                arguments: [id, resolvedType, document.uri.fsPath, sourceId, sourceType, true]
                             };
                             action.diagnostics = [diagnostic];
                             action.isPreferred = true;

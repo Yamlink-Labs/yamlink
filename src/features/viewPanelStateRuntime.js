@@ -156,7 +156,9 @@
                     sort: sorted ? {
                         field: sorted.dataset.col,
                         direction: sorted.dataset.asc === 'false' ? 'desc' : 'asc'
-                    } : null
+                    } : null,
+                    layout: panel.dataset.layout || 'table',
+                    matrixColType: panel.dataset.matrixColType || ''
                 });
             });
             const activeBtn = document.querySelector('.tab-btn.active');
@@ -319,7 +321,40 @@
             panel.dataset.currentPage = '1';
         }
 
+        function requestRerender() {
+            vscode.postMessage({ command: 'requestRerender', state: getState() });
+        }
+
+        function requestViewUpdate(panel) {
+            if (panel && panel.dataset.largeResult === 'true') {
+                requestRerender();
+            } else {
+                applyPanelView(panel);
+            }
+        }
+
         function applyPanelView(panel) {
+            if (panel && panel.dataset.largeResult === 'true') {
+                var columnFilters = getColumnFilters(panel);
+                panel.querySelectorAll('[data-col-filter-toggle]').forEach(function (button) {
+                    var field = button.dataset.colFilterToggle;
+                    var filterRule = columnFilters[field];
+                    button.classList.toggle('has-filter', !!(filterRule && Array.isArray(filterRule.values) && filterRule.values.length));
+                });
+                panel.querySelectorAll('[data-col-filter-value]').forEach(function (input) {
+                    var field = input.dataset.colFilterValue;
+                    var filterRule = columnFilters[field];
+                    var values = filterRule && Array.isArray(filterRule.values) ? filterRule.values : [];
+                    input.checked = values.includes(input.value);
+                });
+                var totalFiltered = Number(panel.dataset.totalFilteredRows || 0);
+                panel.dataset.filteredRows = String(totalFiltered);
+                renderColumnFilters(panel);
+                renderPagination(panel, totalFiltered);
+                updateVisibleCount(panel);
+                updateTableSummary(panel);
+                return;
+            }
             var term = ((panel.querySelector('.fsearch') || {}).value || '').toLowerCase();
             var filter = getActiveFilter(panel);
             var columnFilters = getColumnFilters(panel);
@@ -413,7 +448,7 @@
             panel.dataset.currentPage = '1';
             panel.dataset.pageSize = '50';
             setColumnFilters(panel, {});
-            applyPanelView(panel);
+            requestViewUpdate(panel);
             saveState();
             setStatus('Reset table filters, search, sort, and widths.', 'success');
         }
@@ -425,8 +460,17 @@
         }
 
         function switchTab(idx) {
-            document.querySelectorAll('.tab-btn').forEach((button, i) => button.classList.toggle('active', i === idx));
-            document.querySelectorAll('.tab-panel').forEach((panel, i) => panel.style.display = i === idx ? 'flex' : 'none');
+            document.querySelectorAll('.tab-btn').forEach((button, i) => {
+                const isActive = i === idx;
+                button.classList.toggle('active', isActive);
+                button.setAttribute('aria-selected', isActive ? 'true' : 'false');
+                button.setAttribute('tabindex', isActive ? '0' : '-1');
+            });
+            document.querySelectorAll('.tab-panel').forEach((panel, i) => {
+                const isActive = i === idx;
+                panel.style.display = isActive ? 'flex' : 'none';
+                panel.hidden = !isActive;
+            });
             clearSelection();
             saveState();
         }
@@ -564,6 +608,8 @@
             moveColumn,
             navigateCell,
             reorderColumns,
+            requestRerender,
+            requestViewUpdate,
             resetPanelState,
             saveState,
             setColumnFilters,

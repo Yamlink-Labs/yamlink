@@ -54,6 +54,7 @@ const vscodeMock = {
     languages: { createDiagnosticCollection: () => new FakeCollection() },
     workspace:  { onDidChangeTextDocument: () => ({ dispose(){} }),
                   onDidOpenTextDocument:   () => ({ dispose(){} }),
+                  onDidSaveTextDocument:   () => ({ dispose(){} }),
                   textDocuments: [],
                   workspaceFolders: null },
     window:     { onDidChangeActiveTextEditor: () => ({ dispose(){} }) },

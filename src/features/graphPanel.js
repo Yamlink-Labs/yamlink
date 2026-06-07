@@ -2,7 +2,6 @@
 
 const { buildGraphModel } = require('./graph/graphModel');
 const { createGraphPanelController } = require('./graph/graphPanelController');
-const { createGraph2PanelController } = require('./graph2/graph2PanelController');
 const { createGraph2SidebarController } = require('./graph2/graph2SidebarController');
 
 const {
@@ -11,15 +10,11 @@ const {
 } = createGraphPanelController();
 
 const {
-    openGraph2Panel,
-    refreshGraph2Panel
-} = createGraph2PanelController();
-
-const {
     registerGraphView,
     refreshGraphSidebarView
 } = createGraph2SidebarController();
 
+/** @param {string} text @returns {string[]|null} */
 function parseGraphBlocks(text) {
     const blocks = [];
     const fenceRe = /```yamlink-graph\s*\n([\s\S]*?)```/g;
@@ -36,8 +31,6 @@ function parseGraphBlocks(text) {
 module.exports = {
     openGraphPanel,
     refreshGraphPanel,
-    openGraph2Panel,
-    refreshGraph2Panel,
     registerGraphView,
     refreshGraphSidebarView,
     parseGraphBlocks,

@@ -7,12 +7,12 @@ const { buildTaskRows } = require('../core/tasks');
 const { getVaultGeneration } = require('../core/indexService');
 const { normaliseDateInput } = require('../core/date');
 const { getSchema, getSchemaTargets } = require('../registries/schemaRegistry');
-const {
-    DEFAULT_STATUS_LIKE_VALUES,
-    DEFAULT_SEMANTIC_ROLE_PRIORS
-} = require('../intelligence/fieldRolesCore');
 const { inferNoteRole, summarizeNoteRole } = require('../intelligence/noteRolesCore');
-const { getCachedPriors } = require('../intelligence/vaultPriors');
+const {
+    getCachedPriors,
+    buildVaultStatusValues,
+    buildVaultSemanticRolePriors
+} = require('../intelligence/vaultPriors');
 const { inferLifecycleState, summarizeLifecycleState } = require('../intelligence/lifecycleState');
 const { filterItemsForSurface, shouldSurface } = require('../intelligence/confidence');
 const {
@@ -23,9 +23,14 @@ const { buildNoteContext } = require('../intelligence/suggestionCore');
 const { getVaultPatterns } = require('../intelligence/intelligenceCache');
 const { computeSuggestionsForNode, explainSuggestionState, queryAlreadyExists } = require('../engine/suggestions');
 const { buildIncomingViewQuery, buildTypeViewQuery, getSchemaBackedDefaultSortField } = require('../actions/viewBuilder');
+const { buildHistoryModel } = require('./entity/historyModel');
+const { findUnlinkedMentions } = require('./entity/unlinkedRefs');
+const { getMutationEvents } = require('../runtime/mutationEventLog');
+const { buildNoteArc } = require('../intelligence/noteArc');
 
 const SKIP_FIELDS = new Set(['id', 'created']);
 
+/** @param {string} nodeId @param {Map<string,string>} idIndex @param {Map<string,Record<string,any>>} fieldsCache @returns {Record<string,any>} */
 function buildEntityHubModel(nodeId, idIndex, fieldsCache) {
     const nodeFields = fieldsCache.get(nodeId) || {};
     const incomingGroups = buildIncomingGroups(nodeId, idIndex, fieldsCache);
@@ -51,6 +56,24 @@ function buildEntityHubModel(nodeId, idIndex, fieldsCache) {
         suggestions,
         suggestionExplanation
     );
+    const { groups: historyGroups, totalCount: historyCount, arc: historyArc } = buildHistoryModel(nodeId);
+    const unlinkedMentions = findUnlinkedMentions(
+        nodeId,
+        nodeFields,
+        idIndex,
+        fieldsCache,
+        getVaultGeneration()
+    );
+
+    const _arcPriors = getCachedPriors(fieldsCache, getVaultGeneration());
+    const noteArc = buildNoteArc(
+        nodeFields,
+        String(nodeFields.type || '').trim().toLowerCase(),
+        fieldsCache,
+        _arcPriors.typeFieldBundles,
+        _arcPriors.fieldTargetTypes,
+        _arcPriors.outcomeCalibration
+    );
 
     return {
         nodeFields,
@@ -64,6 +87,11 @@ function buildEntityHubModel(nodeId, idIndex, fieldsCache) {
         recipes,
         vaultPositionRows,
         vaultDiagnosticRows,
+        historyGroups,
+        historyCount,
+        historyArc,
+        unlinkedMentions,
+        noteArc,
         isEmpty: incomingGroups.length === 0
             && outgoingGroups.length === 0
             && summaryRows.length === 0
@@ -71,6 +99,7 @@ function buildEntityHubModel(nodeId, idIndex, fieldsCache) {
             && timelineRows.length === 0
             && suggestions.length === 0
             && recipes.length === 0
+            && historyCount === 0
     };
 }
 
@@ -93,6 +122,7 @@ function buildIncomingGroups(nodeId, idIndex, fieldsCache) {
         .map(([field, rows]) => ({ field, rows, direction: 'incoming' }));
 }
 
+/** @param {any} raw @returns {string[]} */
 function extractRelations(raw) {
     return [...String(raw ?? '').matchAll(/\[\[([^\]]+)\]\]/g)]
         .map(match => match[1].trim().split('|')[0].trim())
@@ -169,8 +199,8 @@ function buildIntelligenceRows(nodeId, nodeFields, fieldsCache, docText) {
         observedFields,
         getSchemaForType: getSchema,
         dateParser: normaliseDateInput,
-        statusLikeValues: DEFAULT_STATUS_LIKE_VALUES,
-        semanticRolePriors: DEFAULT_SEMANTIC_ROLE_PRIORS
+        statusLikeValues: buildVaultStatusValues(getCachedPriors(fieldsCache, getVaultGeneration()).workflowFields),
+        semanticRolePriors: buildVaultSemanticRolePriors(getCachedPriors(fieldsCache, getVaultGeneration()))
     });
     const rows = [];
     if (noteContext.noteRole?.noteRole && shouldSurface(noteContext.noteRole, 'report-note-role', { confidenceKey: 'confidence' })) {
@@ -222,6 +252,8 @@ function buildVaultPositionRows(nodeId, nodeFields, incomingGroups, outgoingGrou
     const inboundTypes = summariseTypeCounts(incomingRows);
     const outboundTypes = summariseTypeCounts(outgoingRows);
     const noteRole = inferNoteRole(nodeFields, {});
+    const lastMutationEvent = getMutationEvents({ noteId: nodeId, limit: 1 });
+    const lastMutationMs = lastMutationEvent.length > 0 ? Date.parse(lastMutationEvent[0].timestamp) : null;
     const lifecycle = inferLifecycleState(nodeId, nodeFields, {
         idIndex,
         fieldsCache,
@@ -231,7 +263,8 @@ function buildVaultPositionRows(nodeId, nodeFields, incomingGroups, outgoingGrou
         noteRole,
         noteType: String(nodeFields.type || '').trim().toLowerCase(),
         inboundCount: incomingRows.length,
-        avgInbound: stats.nodes > 0 ? (stats.totalBacklinks || 0) / stats.nodes : 0
+        avgInbound: stats.nodes > 0 ? (stats.totalBacklinks || 0) / stats.nodes : 0,
+        lastMutationMs: Number.isFinite(lastMutationMs) ? lastMutationMs : undefined
     });
 
     rows.push({ key: 'lifecycle', value: summarizeLifecycleState(lifecycle) });
@@ -402,12 +435,15 @@ function buildContextualQueryRecipes(nodeId, nodeFields, incomingGroups, outgoin
 
     if (fieldsCache && fieldsCache.size) {
         const { observedFields, observedIndex } = getVaultPatterns(fieldsCache, getVaultGeneration());
+        const _priors = getCachedPriors(fieldsCache, getVaultGeneration());
+        const _statusValues = buildVaultStatusValues(_priors.workflowFields);
+        const _semRolePriors = buildVaultSemanticRolePriors(_priors);
         const noteContext = buildNoteContext(nodeFields, nodeType, {
             observedFields,
             getSchemaForType: getSchema,
             dateParser: normaliseDateInput,
-            statusLikeValues: DEFAULT_STATUS_LIKE_VALUES,
-            semanticRolePriors: DEFAULT_SEMANTIC_ROLE_PRIORS
+            statusLikeValues: _statusValues,
+            semanticRolePriors: _semRolePriors
         });
         const opportunities = buildFrontmatterOpportunityModel(nodeFields, {
             nodeId,
@@ -421,8 +457,8 @@ function buildContextualQueryRecipes(nodeId, nodeFields, incomingGroups, outgoin
             getSchemaForType: getSchema,
             getDefaultSortField: getSchemaBackedDefaultSortField,
             dateParser: normaliseDateInput,
-            statusLikeValues: DEFAULT_STATUS_LIKE_VALUES,
-            semanticRolePriors: DEFAULT_SEMANTIC_ROLE_PRIORS,
+            statusLikeValues: _statusValues,
+            semanticRolePriors: _semRolePriors,
             limit: 4,
             connectionLimit: 3
         });
@@ -453,6 +489,7 @@ function buildContextualQueryRecipes(nodeId, nodeFields, incomingGroups, outgoin
     });
 }
 
+/** @param {Array<{fields?: Record<string,any>}>} rows @returns {string[]} */
 function getVisibleRelationColumns(rows) {
     const priority = ['type', 'status', 'owner', 'date', 'name', 'title', 'role', 'priority'];
     const fieldSet = new Set();
@@ -473,6 +510,7 @@ function getVisibleRelationColumns(rows) {
     return ['id', ...ordered.slice(0, 6)];
 }
 
+/** @param {Array<Record<string,any>>} rows @returns {string[]} */
 function getVisibleTaskColumns(rows) {
     const sameFile = rows.length > 0 && rows.every(function (row) {
         return row.file && row.file === rows[0].file;
@@ -489,6 +527,7 @@ function getVisibleTaskColumns(rows) {
 module.exports = {
     buildContextualQueryRecipes,
     buildEntityHubModel,
+    buildHistoryModel,
     getVisibleRelationColumns,
     getVisibleTaskColumns,
     extractRelations

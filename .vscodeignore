@@ -1,5 +1,6 @@
 .git
 .gitignore
+node_modules/**
 .github/**
 .vscode/**
 .vscode-test/**
@@ -8,7 +9,6 @@ backup/**
 docs/**
 website content/**
 site/**
-sample/**
 internal/**
 test/**
 coverage/**
@@ -17,8 +17,13 @@ dist/**
 eslint.config.js
 scripts/**
 media/legacy/**
+media/docs-home/**
 media/yamlink-labs*.png
 media/yamlink-labs*.jpg
+media/icon-1.png
+tmp/**
+site-app-dist/**
+graph/build.mjs
 **/*.map
 **/*.ts
 README-draft.md
@@ -39,3 +44,6 @@ Thumbs.db
 package-lock.json
 tmp-graph.html
 test-html.js
+yamlink-website/**
+site-app-preview.log
+tsconfig.json

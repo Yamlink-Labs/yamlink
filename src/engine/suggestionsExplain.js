@@ -24,6 +24,11 @@ function naturalList(items = []) {
     return `${list.slice(0, -1).join(', ')}, and ${list[list.length - 1]}`;
 }
 
+/**
+ * Builds a human-readable explanation of why there are no suggested views yet for a note.
+ * @param {string} nodeId
+ * @returns {{ title: string, description: string, reasons: string[] }}
+ */
 function explainSuggestionState(nodeId) {
     const backlinks = getBacklinks(nodeId);
     const fieldsCache = getFieldsCache();
@@ -177,7 +182,7 @@ function explainSuggestionState(nodeId) {
         if (topContext.variants?.length > 1) {
             reasons.push(`Other notes also use ${topContext.variants.slice(0, 2).join(' and ')}`);
         } else {
-            const structuralHint = adaptiveFieldHints.find((hint) => (hint.sharedFields?.length || hint.sharedFields?.size || 0) > 0);
+            const structuralHint = /** @type {any} */ (adaptiveFieldHints.find((hint) => (/** @type {any} */ (hint).sharedFields?.length || /** @type {any} */ (hint).sharedFields?.size || 0) > 0));
             if (structuralHint) {
                 const shared = Array.from(structuralHint.sharedFields || []).slice(0, 2);
                 if (shared.length) {
@@ -186,7 +191,7 @@ function explainSuggestionState(nodeId) {
             }
         }
     } else {
-        const structuralHint = adaptiveFieldHints.find((hint) => (hint.sharedFields?.length || hint.sharedFields?.size || 0) > 0);
+        const structuralHint = /** @type {any} */ (adaptiveFieldHints.find((hint) => (/** @type {any} */ (hint).sharedFields?.length || /** @type {any} */ (hint).sharedFields?.size || 0) > 0));
         if (structuralHint) {
             const shared = Array.from(structuralHint.sharedFields || []).slice(0, 2);
             if (shared.length) {

@@ -133,6 +133,7 @@ const frontmatterIntMod = require('../../src/intelligence/frontmatterIntelligenc
 const { buildObservedFields, buildObservedNoteIndex, resetObservedNoteIndexCache } = require('../../src/intelligence/suggestionCore');
 const { clearIntelligenceCache } = require('../../src/intelligence/intelligenceCache');
 const schemaRegistryMod = require('../../src/registries/schemaRegistry');
+require('../../src/features/view/viewPanelHtml');
 
 // Restore resolver after all modules are cached
 Module._resolveFilename = _originalResolve;

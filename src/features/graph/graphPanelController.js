@@ -9,6 +9,7 @@ const { perfTracker } = require('../../runtime/performanceTracker');
 
 const PANEL_VIEW_TYPE = 'yamlink.graphPanel.v2';
 
+/** @returns {Record<string,any>} */
 function createGraphPanelController() {
     let panel = null;
     let panelState = null;
@@ -31,7 +32,7 @@ function createGraphPanelController() {
         const input = activeTab && activeTab.input;
         if (!input) return null;
 
-        const uri = input.uri || input.modified || null;
+        const uri = /** @type {any} */ (input).uri || /** @type {any} */ (input).modified || null;
         const filePath = uri && uri.fsPath ? uri.fsPath : null;
         return rememberMarkdownPath(filePath);
     }
@@ -223,10 +224,14 @@ function createGraphPanelController() {
                 enableScripts: true,
                 retainContextWhenHidden: false,
                 localResourceRoots: [
-                    vscode.Uri.joinPath(context.extensionUri, 'src', 'features', 'vendor')
+                    vscode.Uri.joinPath(context.extensionUri, 'graph', 'renderer'),
                 ]
             }
         );
+
+        const rendererUri = panel.webview.asWebviewUri(
+            vscode.Uri.joinPath(context.extensionUri, 'graph', 'renderer', 'Canvas2DRenderer.js')
+        ).toString();
 
         panel.webview.onDidReceiveMessage((message) => {
             handleWebviewMessage(message);
@@ -236,7 +241,7 @@ function createGraphPanelController() {
             resetPanelRuntime(true);
         }, null, context.subscriptions);
 
-        panel.webview.html = perfTracker.measureSync('graph.buildBootHtml', null, () => buildBootHtml(panel.webview, context.extensionUri));
+        panel.webview.html = perfTracker.measureSync('graph.buildBootHtml', null, () => buildBootHtml(panel.webview, context.extensionUri, rendererUri));
 
         panel.title = getPanelTitle(panelState);
         panel.reveal(vscode.ViewColumn.Beside, false);

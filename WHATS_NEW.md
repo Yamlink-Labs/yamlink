@@ -1,184 +1,160 @@
-# Yamlink 0.5.0 — Zim
+# Yamlink 0.6.0 — Shujimi
 
-Zim is the release where Yamlink starts to feel like a fuller workspace, not just a set of note utilities.
+Shujimi is the "headless and depth release". Work is now well underway to turn The vault is now a data platform.
 
-The big story is simple:
+The big story:
 
-- the graph is now a real product surface
-- note structure is easier to query and inspect
-- completions and note creation are smarter
-- the whole extension is more stable, faster, and easier to trust
-
-If Carmen was the hardening release, Zim is the release where Yamlink becomes more readable, more operational, and more complete in daily use.
+- Yamlink now runs without VS Code — the CLI gives headless access to every vault capability
+- The intelligence system is fundamentally different — vault-first, no hardcoded rules, learns from what you actually do
+- The Home panel gives the vault a front door — activity stream, pulse, continue working
+- Natural language queries let you describe what you want in plain English
 
 ---
 
 ## What's new
 
-### A better graph
+### Yamlink CLI
 
-Zim introduces a clearer graph experience with two distinct surfaces:
+Run Yamlink from a terminal, CI pipeline, or build script. No VS Code required.
 
-- **Sidebar Graph** for ambient vault awareness
-- **Graph Workspace** for focused exploration around the current note or the whole vault
+```bash
+yamlink build          # index vault, check broken links — exits 1 in CI
+yamlink health         # lifecycle, type distribution, drift
+yamlink validate       # schema conformance — exits 1 if required fields missing
+yamlink query "where type = contact and status = active"
+yamlink report rico    # full note report in the terminal
+yamlink links rico     # all inbound and outbound links
+yamlink serve          # local HTTP API: /api/nodes, /api/query, /api/graph
+yamlink export         # dump vault to JSON or CSV
+```
 
-What this means in practice:
+`yamlink serve` exposes the vault as a REST API — any website framework (Next.js, Astro) can read your vault at build time. Notes become pages. Frontmatter becomes metadata. Wikilinks resolve to URLs. Vault as CMS, files stay plain Markdown.
 
-- you can keep the broader vault shape visible while you work
-- you can open a focused graph when you want to inspect one note in detail
-- filters, search, minimap, and note selection now make the graph more usable as a workspace instead of just a visual novelty
+### Intelligence overhaul — four phases
 
-This is not just a different renderer. It is a clearer graph model for how Yamlink should be explored.
+The intelligence layer is now fundamentally vault-first. No static field-name lists. No hardcoded type lookups. No global archetype tables. The vault teaches the system.
 
-### A stronger query language
+**Phase 1 — Cold-start awareness.** A field containing one typed `[[wikilink]]` is classified as a relation immediately — one observation is enough. Vault maturity (0–1) scales confidence thresholds, so a 3-note vault gets useful suggestions from the start.
 
-Queries are now more practical for real work.
+**Phase 2 — Sticky knowledge.** The mutation log records every wikilink assignment. A field used as a relation before stays classified as relational even after vault restructuring — the system doesn't forget what it learned.
 
-Zim adds:
+**Phase 3 — Vault-first classification.** Field names are the last resort, not the first. `status: [[rico]]` → relation. `disposition` with values `active/standby` → workflow (detected from your vocabulary, not a global list). Note roles (person, container, event) are inferred from field-bundle topology, not from type names.
 
-- `!=` for not-equal filters
-- `is empty`, `is not empty`, and `exists`
-- `#tag` shorthand
-- real cross-field `or`
-- relative date functions like `today()` and `days-ago(30)`
-- `group by`
+**Phase 4 — Outcome calibration.** Every relation completion you accept (Enter/Tab on a `[[` candidate) is persisted as a training signal. Fields confirmed before get a small confidence boost next time. The vault trains the system from use, not just from content.
 
-This makes `!view` blocks much more usable for dashboards, reviews, reports, and operational tables without turning the query language into something bloated.
+### Note arc prediction
 
-### Smarter note creation
+Yamlink now answers "what does this note need next?" — a trajectory question, not just a classification.
 
-Yamlink now does a better job helping you create structure instead of only reading it later.
+The Note Report Overview tab shows a "Likely missing" section: fields that appear on 60%+ of same-type notes that this note doesn't have yet, ranked by vault frequency and calibration history. Each row has a `+` button — click it to insert the field stub and trigger completion in one step.
 
-You can now use:
+Arc-predicted fields also appear in frontmatter field name completion with a badge: `in 80% of contact notes · likely missing`.
 
-- **Templates** when you want a repeated body/frontmatter layout
-- **Schemas** when you want a repeated field shape with stronger structure
-- **Vault learning** when you do not want to formalize everything up front
+### Home panel
 
-Zim makes those paths work together better:
+`Yamlink: Open Home` — the vault's home screen.
 
-- `Yamlink: Create Note`
-- `Yamlink: New Note from Template`
-- `Yamlink: New Note from Schema`
+- **Pulse bar** — note count, type count, broken link count
+- **Activity feed** — last 15 mutation events as a human-readable timeline; each entry opens the note
+- **Continue working** — 5 most recently touched notes, one click to open
+- **Quick actions** — New note, Today (daily note), and per-vault type buttons
 
-The goal is simple: new notes should feel easier to start, and repeated note types should feel easier to keep consistent.
+Auto-opens once on first vault activation. Shows an onboarding welcome when the vault has fewer than 5 notes.
 
-### Better completions and structure awareness
+### Natural language queries
 
-Completion is now more useful where it matters most:
+`Yamlink: Query in Plain English` — describe what you want, get a `!view` block.
 
-- relation targets are ranked more intelligently
-- human names are easier to scan than raw IDs
-- note-family and vault-pattern learning matter more than before
-- aliases, tags, dates, headings, quotes, embeds, and footnotes all contribute more clearly to Yamlink's understanding
+Type: *"active contacts I haven't updated in 30 days"*
+Get: `!view contact where status = active and file.modified < days-ago(30)`
 
-This does not mean Yamlink became noisy.
+Uses 16 sentence pattern templates and full vault vocabulary injection — your types, fields, workflow values, and note IDs. The generated query is previewed before insertion. The `!view` query language is completely unchanged — this is a generator and a learning tool.
 
-It means the system is getting better at helping where your vault already shows repeated structure.
+### Daily notes
 
-### Note Report and Vault Health feel more like real product surfaces
+`Ctrl+Alt+J` — open or create today's journal note. Uses `_templates/journal.md` if it exists; otherwise creates a stub with `id`, `type: journal`, and `date` pre-filled. Journal notes are first-class: queryable, linkable, visible in the Calendar.
 
-Zim continues the move away from “developer tool output” and toward clearer operational surfaces.
+### Unlinked references
 
-**Note Report** now does a better job showing:
+The Note Report Links tab now shows body-text mentions of the current note's name or ID from other notes — without a formal `[[wikilink]]`. Word-boundary matched, case-insensitive. Sorted by occurrence count. The Roam Research discovery pattern: organic mentions surface before you formalize the link.
 
-- what a note is
-- how it connects
-- what tasks belong to it
-- what view is worth opening next
+### True note splitting
 
-**Vault Health** now gives a clearer snapshot of:
+`Yamlink: Extract Selection to New Note` — select body text, run the command. The selection becomes the body of a new note; the selection in the original is replaced with `![[new-id]]` (an embed); `source: [[original-id]]` is written into the new note's frontmatter automatically.
 
-- broken links
-- orphan notes
-- lifecycle distribution
-- type consistency
-- overall structural health
+### Smart Templates (live, not one-time)
 
-The intent is to make these panels useful even if you are not a graph person or a query person yet.
+`_templates/*.md` files now act as live schema definitions. When you save a template with new fields, Yamlink scans the vault and asks: *"Template 'contact' has new fields. Apply to N notes?"*. Accepting inserts the missing fields into every affected note — open tabs via workspace edit, closed files directly on disk.
 
-### Time, tags, callouts, embeds, and aliases are more useful
+Notes missing template fields get a yellow squiggle on the `type:` line. The lightbulb reads: `Yamlink: Add missing "contact" fields (company, status)` — exact type and field names.
 
-Zim improves several smaller but high-value behaviors:
+### Schema conformance in Vault Health
 
-- `@today`, `@tomorrow`, and similar date shortcuts
-- body `#tags` as real queryable signals
-- callouts as readable structured note signals
-- `![[embeds]]` as first-class references
-- note aliases that resolve like real links
+Vault Health now includes per-type schema analysis:
 
-Individually these are small.
+- **Coverage** — what percentage of notes of each type have all required fields
+- **Non-conformant notes** — which specific notes are missing required fields, with the missing field names
+- **Advisories** — types with notes but no schema (invitation to formalize, never a gate)
+- **Dangling relations** — schema relation fields targeting a type that has no vault notes
 
-Together they make Yamlink feel more like one coherent Markdown system instead of a loose bundle of features.
+### `file.created` and `file.modified` virtual query fields
 
-### More trust under the hood
+Two implicit fields available in any query — no frontmatter required.
 
-The most important invisible change in Zim is trust.
+```
+!view contact
+where file.modified < days-ago(30)
+select name, status, file.modified
+sort file.modified desc
+```
 
-The codebase now has:
+Both support all operators: `=`, `!=`, `>=`, `<=`, `>`, `<`, `is empty`, `exists`.
 
-- stronger automated testing
-- linting
-- CI
-- extension-host coverage
-- better caching and refresh behavior
+### Matrix view
 
-That means Yamlink is in a better place to keep growing without turning brittle.
+Toggle any `!view` table to a two-axis relation grid. Rows = query results. Columns = all vault notes of any type you choose. Cells show ● where a connection exists. Bidirectional edge detection. Column and row headers click through to the notes.
 
-For users, the practical result is:
+### Git history import
 
-- fewer regressions
-- faster surfaces
-- more confidence that graph, Note Report, queries, and completions stay aligned
+`Yamlink: Import Git History` — for git-tracked vaults, reconstructs the full mutation history of every note from commit history. Walks each `.md` file with `git log --follow`, reads frontmatter at each commit, and emits accurate events with real commit timestamps. The Note Report History tab and arc spine are then populated going back to the first commit. Runs once, guarded by `.yamlink/git-history-import.done`.
 
----
+### QOL: status bar and broken wikilinks
 
-## Still part of Yamlink
+**Compact status bar** — the vault-health item drops "Yamlink" and "nodes" from its text. Before: `Yamlink  ⚠ 31 nodes · 104 broken`. After: `◈ 31  ⚠ 104`. The graph icon already brands it. The tooltip carries the full label. A permanent `$(home)` button now sits immediately to its right — one click opens the Home panel from any file.
 
-These are active Yamlink capabilities today, even though they were introduced before Zim:
+**Broken wikilink visual** — dead `[[links]]` are now decorated with amber brackets and faded amber text rather than a disruptive yellow squiggle. Clearly a different state from working links (which have dim brackets + vivid mint text), but doesn't interrupt the reading flow.
 
-- **PDF export** for active notes and live table views
-- **Obsidian import** for getting an existing vault into Yamlink quickly
-- **public extension API**
-- **`.yamlinkignore`** for excluding files and folders from the Yamlink system
+**Template-guided note creation** — the "Create note" quick fix on a broken wikilink now walks you through the template workflow. If `_templates/` doesn't exist, Yamlink offers to create it with a starter template. If it exists, you get a QuickPick of all available templates, with the type-matched one at the top. Pick one and the note is scaffolded from it. Cancel and nothing is created.
 
-Zim does not introduce these for the first time, but they remain part of the current product surface.
+### Callout blocks render in preview and PDF
 
----
+`> [!SOURCE]`, `> [!EVIDENCE]`, `> [!WARNING]`, and all Yamlink callout types now render as styled blocks in the note preview panel and PDF exports — not as raw `[!SOURCE] text`.
 
-## Who Zim is for
+Each family uses a distinct Yamlink Apollo palette color with a left accent bar, uppercase type label, and formatted body:
 
-Zim should feel better for both kinds of Yamlink users:
+| Callout | Color |
+|---|---|
+| SOURCE, EVIDENCE, QUOTE, REFERENCE | Amber `#E7A85A` |
+| NOTE, INFO, TIP, ABSTRACT | Teal `#5ECFBE` |
+| WARNING, CAUTION | Orange `#E67D61` |
+| DANGER, BUG, FAILURE | Red `#FF4A6A` |
 
-**If you are new to Yamlink**
-
-- the core loop is clearer:
-  - write notes
-  - link notes
-  - query notes
-  - inspect notes
-- Note Report, Vault Health, and Graph help you understand the vault without needing expert habits first
-
-**If you already use Yamlink deeply**
-
-- the graph is more usable
-- queries are more expressive
-- completions are more adaptive
-- note creation is more structured
-- the extension is more reliable at scale
+The note preview also now uses **Inter** as its body and heading font (from the system font stack — no external request required).
 
 ---
 
-## Notes for this release
 
-Zim is a major quality release, but it is not pretending every lane is finished forever.
 
-A few graph refinements are still intentionally deferred to Shujimi, especially around:
+The Zim release notes are preserved in [CHANGELOG.md](./CHANGELOG.md#050---zim).
 
-- very large-vault graph performance
-- a few remaining graph workspace controls
-- deeper graph export and secondary lenses
+---
 
-That said, the core Zim promise is real:
+## Who Shujimi is for
 
-Yamlink is now a stronger graph workspace, a stronger structured Markdown system, and a more trustworthy operational extension than it was before.
+**If you want Yamlink without VS Code open** — the CLI gives you full vault access for scripting, CI, and publishing use cases.
+
+**If you manage structured vaults** — the intelligence overhaul means the system adapts to your vocabulary, not the other way around. Schema conformance and template drift give you operational quality control.
+
+**If you want to capture faster** — Home panel, daily notes, natural language queries, and note splitting reduce friction between having a thought and having it in the vault.
+
+**If you've been using Yamlink for a while** — the feedback loop means the system gets more accurate the more you use it. Fields you've confirmed before are suggested with more confidence. The vault trains the system from use.

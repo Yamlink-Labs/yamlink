@@ -34,6 +34,10 @@ const SURFACE_POLICY = {
     'report-suggestions': { minimum: 0.6, fallbackLimit: 2 }
 };
 
+/**
+ * @param {string} surface
+ * @returns {{ minimum: number, fallbackLimit: number }}
+ */
 function getSurfacePolicy(surface) {
     return SURFACE_POLICY[surface] || { minimum: 0.5, fallbackLimit: 3 };
 }
@@ -42,11 +46,21 @@ function clamp01(value) {
     return Math.max(0, Math.min(1, Number(value || 0)));
 }
 
+/**
+ * @param {number} score Raw additive evidence score.
+ * @param {number} [scale]
+ * @returns {number} Clamped [0, 1] confidence value.
+ */
 function scoreToConfidence(score, scale = DEFAULT_SCORE_CONFIDENCE_SCALE) {
     const normalized = Number(score || 0) / Math.max(1, scale);
     return clamp01(normalized);
 }
 
+/**
+ * @param {object} item
+ * @param {{ confidenceKey?: string, scoreKey?: string, scoreScale?: number }} [options]
+ * @returns {number}
+ */
 function readConfidence(item, options = {}) {
     const confidenceKey = options.confidenceKey || 'confidence';
     const scoreKey = options.scoreKey || 'score';
@@ -57,6 +71,13 @@ function readConfidence(item, options = {}) {
     return 0;
 }
 
+/**
+ * Filters items by the surface's minimum confidence threshold, with a fallback slice.
+ * @param {object[]} items
+ * @param {string} surface
+ * @param {{ confidenceKey?: string, scoreKey?: string, scoreScale?: number }} [options]
+ * @returns {object[]}
+ */
 function filterItemsForSurface(items = [], surface, options = {}) {
     const list = Array.isArray(items) ? items : [];
     const policy = getSurfacePolicy(surface);
@@ -79,6 +100,12 @@ function filterItemsForSurface(items = [], surface, options = {}) {
         }));
 }
 
+/**
+ * @param {object} value
+ * @param {string} surface
+ * @param {{ confidenceKey?: string, scoreKey?: string, scoreScale?: number }} [options]
+ * @returns {boolean}
+ */
 function shouldSurface(value, surface, options = {}) {
     return readConfidence(value, options) >= getSurfacePolicy(surface).minimum;
 }

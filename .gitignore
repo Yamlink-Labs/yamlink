@@ -35,6 +35,14 @@ node_modules/.package-lock.json
 
 # Local backups
 backup/
+tmp/
 tmp-graph.html
 coverage/
 dist/
+site-app-dist/
+
+# Vault runtime data (per-vault mutation log, etc.)
+.yamlink/
+
+# Sibling projects in parent folder
+yamlink-website/

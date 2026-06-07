@@ -2,6 +2,10 @@
 
 const { pickConnectionField } = require('./frontmatterFieldFamilies');
 
+/**
+ * @param {string} content Full note content (frontmatter + body).
+ * @returns {Map<string, number>} id → occurrence count in body (code blocks excluded).
+ */
 function extractBodyMentionedIds(content) {
     if (!content) return new Map();
     let body = content;
@@ -21,6 +25,13 @@ function extractBodyMentionedIds(content) {
     return counts;
 }
 
+/**
+ * @param {string} content
+ * @param {object} frontmatterFields Current frontmatter fields map.
+ * @param {Map<string,object>} fieldsCache
+ * @param {{ threshold?: number }} [options]
+ * @returns {{ id: string, count: number, field: string, insertText: string }[]}
+ */
 function buildBodyMentionHints(content, frontmatterFields, fieldsCache, options = {}) {
     const threshold = options.threshold || 2;
     const bodyCounts = extractBodyMentionedIds(content);

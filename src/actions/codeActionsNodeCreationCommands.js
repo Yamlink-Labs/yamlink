@@ -9,21 +9,29 @@ const { getPrimaryWorkspaceRoot, getWorkspaceRootForFile } = require('../core/wo
 const { writeFieldValue } = require('../core/writeField');
 const { parseFrontmatterDocument } = require('../core/frontmatter');
 const { getSchema, getSchemaTargets } = require('../registries/schemaRegistry');
+const {
+    TEMPLATES_DIR,
+    loadTemplates
+} = require('../core/templateRegistry');
 
-const TEMPLATES_DIR = '_templates';
-
-function extractTemplateType(content) {
-    const match = content.match(/^\s*type:\s*(.+)$/m);
-    return match ? match[1].trim() : '';
-}
-
-function extractTemplateFields(content) {
-    const fmMatch = content.match(/^---\n([\s\S]*?)\n---/);
-    if (!fmMatch) return [];
-    return fmMatch[1].split('\n')
-        .map(line => line.match(/^\s*([\w-]+):/)?.[1])
-        .filter(Boolean)
-        .filter(f => f !== 'id' && f !== 'type' && f !== 'created');
+function getCommonVaultFields(type, fieldsCache) {
+    const fieldCounts = new Map();
+    let noteCount = 0;
+    for (const fields of fieldsCache.values()) {
+        if (String(fields.type || '').toLowerCase() !== type.toLowerCase()) continue;
+        noteCount++;
+        for (const key of Object.keys(fields)) {
+            if (key === 'type' || key === 'id' || key === 'created') continue;
+            fieldCounts.set(key, (fieldCounts.get(key) || 0) + 1);
+        }
+    }
+    if (noteCount === 0) return [];
+    const threshold = Math.max(1, noteCount * 0.4);
+    return [...fieldCounts.entries()]
+        .filter(([, count]) => count >= threshold)
+        .sort((a, b) => b[1] - a[1])
+        .slice(0, 5)
+        .map(([k]) => k);
 }
 
 function buildSmartFrontmatter(id, type, fieldsCache, today, reverseField, reverseId) {
@@ -116,35 +124,6 @@ function positionCursorOnFirstEmptyField(editor, document) {
     }
 }
 
-function loadTemplates(workspaceRoot) {
-    const templatesPath = path.join(workspaceRoot, TEMPLATES_DIR);
-    if (!fs.existsSync(templatesPath)) return [];
-
-    let files;
-    try {
-        files = fs.readdirSync(templatesPath);
-    } catch (e) {
-        console.error('Yamlink — Cannot read _templates directory:', e.message);
-        return [];
-    }
-
-    return files
-        .filter(f => f.endsWith('.md'))
-        .sort()
-        .map(f => {
-            const filePath = path.join(templatesPath, f);
-            let content = '';
-            try {
-                content = fs.readFileSync(filePath, 'utf8');
-            } catch (e) {
-                console.error(`Yamlink — Cannot read template "${f}":`, e.message);
-            }
-            const type = extractTemplateType(content);
-            const fields = extractTemplateFields(content);
-            return { label: path.basename(f, '.md'), filePath, content, type, fields };
-        })
-        .filter(t => t.content.length > 0);
-}
 
 function applyTemplate(content, newId, today) {
     let result = content;
@@ -171,6 +150,17 @@ function buildSuggestedRelationNodeId(targetType, sourceId, fieldName) {
     const target = canonicalizeId(String(targetType || fieldName || 'related').trim()) || 'related';
     if (source && target) return `${source}-${target}`;
     return `new-${target}`;
+}
+
+function buildStarterTemplateContent(type, commonFields) {
+    const skip = new Set(['id', 'type', 'created', 'updated', 'modified']);
+    const lines = ['---', 'id:', `type: ${type}`];
+    for (const field of commonFields) {
+        if (skip.has(field)) continue;
+        lines.push(`${field}: `);
+    }
+    lines.push('created:', '---', '', '');
+    return lines.join('\n');
 }
 
 function inferReverseRelationField(targetType, sourceType, sourceId, fieldsCache) {
@@ -216,9 +206,27 @@ function syncIndexAfterWrite(filePath) {
     }
 }
 
+// Cache the last non-empty editor selection so commands can read it after any
+// dialog (QuickPick, InputBox, command palette) steals editor focus.
+let _lastNonEmptySelection = null;
+
 function registerNodeCreationCommands(context, getIndex, getTypes) {
     context.subscriptions.push(
-        vscode.commands.registerCommand('yamlink.createNote', async (id, preselectedType, sourceFilePath, sourceId, sourceType) => {
+        vscode.window.onDidChangeTextEditorSelection(e => {
+            const sel = e.selections[0];
+            if (sel && !sel.isEmpty) {
+                _lastNonEmptySelection = { document: e.textEditor.document, selection: sel };
+            }
+        })
+    );
+    context.subscriptions.push(
+        vscode.window.onDidChangeActiveTextEditor(() => {
+            _lastNonEmptySelection = null;
+        })
+    );
+
+    context.subscriptions.push(
+        vscode.commands.registerCommand('yamlink.createNote', async (id, preselectedType, sourceFilePath, sourceId, sourceType, interactive = false) => {
             let chosenType = preselectedType || null;
 
             if (!id || typeof id !== 'string' || id.trim() === '') {
@@ -296,17 +304,107 @@ function registerNodeCreationCommands(context, getIndex, getTypes) {
             const today = new Date().toISOString().split('T')[0];
             let content;
             const reverseField = inferReverseRelationField(chosenType, sourceType, sourceId, getFieldsCache());
-            const templatePath = chosenType
-                ? path.join(root, '_templates', chosenType + '.md')
-                : null;
-            if (templatePath && fs.existsSync(templatePath)) {
-                try {
-                    const raw = fs.readFileSync(templatePath, 'utf8');
-                    content = applyTemplate(raw, id, today);
-                } catch (e) {
-                    content = null;
+
+            const templatesDir      = path.join(root, TEMPLATES_DIR);
+            const templatesDirExists = fs.existsSync(templatesDir);
+            const templatePath       = chosenType ? path.join(templatesDir, `${chosenType}.md`) : null;
+
+            if (!interactive) {
+                // Non-interactive (programmatic/test): silently apply a filename-matched template
+                const templateExists = templatePath && fs.existsSync(templatePath);
+                if (templateExists) {
+                    try {
+                        const raw = fs.readFileSync(templatePath, 'utf8');
+                        content = applyTemplate(raw, id, today);
+                    } catch (_) { content = null; }
+                }
+            } else {
+                // Interactive (quick-fix lightbulb): show the user the template options
+                const templates = loadTemplates(root);
+
+                if (!templatesDirExists) {
+                    // No _templates/ folder — offer to create it
+                    const pick = await vscode.window.showInformationMessage(
+                        `Yamlink: No _templates/ folder found. Create one to scaffold "${id}"?`,
+                        'Create _templates/',
+                        'Create without template'
+                    );
+                    if (pick === 'Create _templates/') {
+                        fs.mkdirSync(templatesDir, { recursive: true });
+                        const starterPath = templatePath || path.join(templatesDir, 'note.md');
+                        const starterContent = chosenType
+                            ? buildStarterTemplateContent(chosenType, getCommonVaultFields(chosenType, getFieldsCache()))
+                            : '---\nid:\ntype:\ncreated:\n---\n\n';
+                        fs.writeFileSync(starterPath, starterContent, 'utf8');
+                        const tDoc = await vscode.workspace.openTextDocument(vscode.Uri.file(starterPath));
+                        await vscode.window.showTextDocument(tDoc, { preview: false });
+                        vscode.window.showInformationMessage(
+                            `Yamlink: Template created. Edit it, then create "${id}" again.`
+                        );
+                        return;
+                    }
+                    // 'Create without template' — fall through
+
+                } else if (templates.length === 0) {
+                    // _templates/ exists but is empty — offer to create a starter
+                    const pick = await vscode.window.showInformationMessage(
+                        `Yamlink: _templates/ is empty. Create a starter template${chosenType ? ` for "${chosenType}"` : ''}?`,
+                        'Create template',
+                        'Create without template'
+                    );
+                    if (pick === 'Create template') {
+                        const starterPath = templatePath || path.join(templatesDir, 'note.md');
+                        const starterContent = chosenType
+                            ? buildStarterTemplateContent(chosenType, getCommonVaultFields(chosenType, getFieldsCache()))
+                            : '---\nid:\ntype:\ncreated:\n---\n\n';
+                        fs.writeFileSync(starterPath, starterContent, 'utf8');
+                        const tDoc = await vscode.workspace.openTextDocument(vscode.Uri.file(starterPath));
+                        await vscode.window.showTextDocument(tDoc, { preview: false });
+                        vscode.window.showInformationMessage(
+                            `Yamlink: Template created. Edit it, then create "${id}" again.`
+                        );
+                        return;
+                    }
+                    // 'Create without template' — fall through
+
+                } else {
+                    // Templates exist — show a QuickPick so user picks one
+                    const typeMatch = chosenType
+                        ? templates.find(t => t.type === chosenType.toLowerCase()) || null
+                        : null;
+                    const items = [
+                        ...templates.map(t => ({
+                            label:       t.name,
+                            description: t.type   ? `type: ${t.type}` : '(no type)',
+                            detail:      t.fields.length > 0 ? `Fields: ${t.fields.join(', ')}` : undefined,
+                            templateObj: t
+                        })),
+                        {
+                            label:       '$(circle-slash) Create without template',
+                            description: '',
+                            templateObj: null
+                        }
+                    ];
+                    // Bubble the type-matched template to the top
+                    if (typeMatch) {
+                        const idx = items.findIndex(i => i.templateObj === typeMatch);
+                        if (idx > 0) items.unshift(...items.splice(idx, 1));
+                    }
+                    const chosen = await vscode.window.showQuickPick(items, {
+                        title:       `Create "${id}" — pick a template`,
+                        placeHolder: typeMatch
+                            ? `Suggested: ${typeMatch.name} (matches type "${chosenType}")`
+                            : 'Select a template, or create without one'
+                    });
+                    if (!chosen) return; // user cancelled
+                    if (chosen.templateObj) {
+                        try { content = applyTemplate(chosen.templateObj.content, id, today); }
+                        catch (_) { content = null; }
+                    }
+                    // null templateObj = create without template — fall through
                 }
             }
+
             if (!content && chosenType) {
                 const schema = getSchema(chosenType);
                 if (schema && Object.keys(schema.fields).length > 0) {
@@ -428,7 +526,7 @@ created:
 
             const picked = await vscode.window.showQuickPick(
                 templates.map(t => ({
-                    label: t.label,
+                    label: t.name,
                     description: t.type ? `type: ${t.type}` : '',
                     detail: t.fields.length > 0 ? `Fields: ${t.fields.join(', ')}` : '',
                     template: t
@@ -467,6 +565,302 @@ created:
             positionCursorOnFirstEmptyField(editor, doc);
 
             vscode.window.showInformationMessage(`Yamlink: Created "${cleanId}" from template "${picked.label}"`);
+        })
+    );
+
+    // yamlink.newNote — unified "quick new note" entry point.
+    // Takes a human title, derives the ID, picks the best scaffold source
+    // (template → schema → smart frontmatter from existing notes).
+    // yamlink.newNote — unified "quick new note" entry point.
+    // Accepts optional prefillTitle (string) passed by newNoteFromSelection so the
+    // selection is captured before any dialog steals focus. Returns the created
+    // note's canonical ID on success, or null if the user cancelled.
+    context.subscriptions.push(
+        vscode.commands.registerCommand('yamlink.newNote', async (prefillTitle) => {
+            // Use caller-supplied text first; fall back to live selection or cached selection.
+            const selectedText = (typeof prefillTitle === 'string' && prefillTitle.trim())
+                ? prefillTitle.trim()
+                : (() => {
+                    const editor = vscode.window.activeTextEditor;
+                    if (editor && editor.selection && !editor.selection.isEmpty) {
+                        return editor.document.getText(editor.selection).trim();
+                    }
+                    if (_lastNonEmptySelection) {
+                        return _lastNonEmptySelection.document.getText(_lastNonEmptySelection.selection).trim();
+                    }
+                    return '';
+                })();
+
+            if (!vscode.workspace.workspaceFolders) {
+                vscode.window.showErrorMessage('Yamlink: No workspace folder open.');
+                return null;
+            }
+            const root = getPrimaryWorkspaceRoot(vscode.workspace.workspaceFolders);
+            if (!root) {
+                vscode.window.showErrorMessage('Yamlink: No workspace folder open.');
+                return null;
+            }
+
+            const templates = loadTemplates(root);
+            const templateTypes = new Set(templates.filter(t => t.type).map(t => t.type));
+            const knownTypes = [...getTypes()].sort();
+
+            // Build type list: types with templates first, then others
+            const typeItems = [
+                ...templates
+                    .filter(t => t.type)
+                    .map(t => ({
+                        label: t.type,
+                        description: 'template',
+                        detail: t.fields.length > 0 ? t.fields.join(', ') : undefined
+                    })),
+                ...knownTypes
+                    .filter(t => !templateTypes.has(t))
+                    .map(t => {
+                        const commonFields = getCommonVaultFields(t, getFieldsCache());
+                        return {
+                            label: t,
+                            description: 'from vault',
+                            detail: commonFields.length > 0 ? commonFields.join(', ') : undefined
+                        };
+                    }),
+                { label: '$(plus) New type…', description: '', detail: undefined }
+            ];
+
+            let chosenType = null;
+            if (typeItems.length > 1) {
+                const typePick = await vscode.window.showQuickPick(typeItems, {
+                    title: 'New Note — Pick a type',
+                    placeHolder: 'Select a type or press Escape to skip',
+                    matchOnDescription: true,
+                    matchOnDetail: true
+                });
+                if (typePick === undefined) return null;
+                if (typePick && typePick.label.startsWith('$(plus)')) {
+                    chosenType = await vscode.window.showInputBox({
+                        title: 'New type name',
+                        placeHolder: 'contact',
+                        validateInput: v => (v && !/^[a-zA-Z0-9_-]+$/.test(v.trim()))
+                            ? 'Letters, numbers, hyphens only' : null
+                    });
+                    if (chosenType) chosenType = chosenType.trim() || null;
+                } else if (typePick) {
+                    chosenType = typePick.label;
+                }
+            }
+
+            const title = await vscode.window.showInputBox({
+                title: chosenType ? `New ${chosenType}` : 'New Note',
+                prompt: 'Note title or name',
+                placeHolder: chosenType ? `My ${chosenType} name` : 'My note title',
+                value: selectedText || undefined,
+                valueSelection: selectedText ? [0, selectedText.length] : undefined,
+                validateInput: v => (!v || !v.trim()) ? 'Title cannot be empty' : null
+            });
+            if (!title) return null;
+
+            const cleanId = canonicalizeId(title);
+            if (!cleanId) {
+                vscode.window.showErrorMessage('Yamlink: Could not derive an ID from that title.');
+                return null;
+            }
+
+            const filePath = path.join(root, `${cleanId}.md`);
+            if (fs.existsSync(filePath)) {
+                vscode.window.showWarningMessage(`Yamlink: "${cleanId}.md" already exists.`);
+                return null;
+            }
+
+            // L3: if the active document is a Yamlink note, offer to link the new note back
+            let reverseField = null;
+            let reverseId = null;
+            const activeDoc = vscode.window.activeTextEditor?.document;
+            if (activeDoc && activeDoc.languageId === 'markdown') {
+                const parsedActive = parseFrontmatterDocument(activeDoc.getText());
+                const currentId = parsedActive?.hasFrontmatter && parsedActive.data?.id
+                    ? String(parsedActive.data.id).trim().toLowerCase() : null;
+                if (currentId && currentId !== cleanId) {
+                    const currentType = String(parsedActive.data?.type || '').trim().toLowerCase();
+                    const defaultField = currentType || 'source';
+                    const linkBack = await vscode.window.showQuickPick(
+                        [
+                            { label: `$(link) Link to [[${currentId}]]`, description: 'Add a relation field in the new note' },
+                            { label: '$(close) Skip', description: '' }
+                        ],
+                        { title: 'Link back to current note?', placeHolder: `Connect new note to ${currentId}` }
+                    );
+                    if (linkBack && !linkBack.label.startsWith('$(close)')) {
+                        const fieldInput = await vscode.window.showInputBox({
+                            title: 'Relation field name',
+                            prompt: `Which field on the new note links to [[${currentId}]]?`,
+                            value: defaultField,
+                            placeHolder: defaultField,
+                            validateInput: v => (!v || !v.trim()) ? 'Field name cannot be empty' : null
+                        });
+                        if (fieldInput && fieldInput.trim()) {
+                            reverseField = fieldInput.trim().toLowerCase();
+                            reverseId = currentId;
+                        }
+                    }
+                }
+            }
+
+            const today = new Date().toISOString().split('T')[0];
+            let content;
+
+            const template = chosenType
+                ? templates.find(t => t.type === chosenType.toLowerCase()) || null
+                : null;
+            if (template) {
+                content = applyTemplate(template.content, cleanId, today);
+            } else if (chosenType) {
+                const schema = getSchema(chosenType);
+                if (schema && Object.keys(schema.fields).length > 0) {
+                    content = buildSchemaFrontmatter(cleanId, chosenType, schema.fields, today, reverseField, reverseId);
+                } else {
+                    content = buildSmartFrontmatter(cleanId, chosenType, getFieldsCache(), today, reverseField, reverseId);
+                }
+            } else {
+                const revBlock = reverseField && reverseId ? `${reverseField}: [[${reverseId}]]\n` : '';
+                content = `---\nid: ${cleanId}\n${revBlock}created: ${today}\n---\n\n`;
+            }
+
+            fs.writeFileSync(filePath, content, 'utf8');
+            syncIndexAfterWrite(filePath);
+            validateAll(getIndex);
+
+            // For template-based notes, write reverse link afterward since applyTemplate doesn't inject it
+            if (template && reverseField && reverseId) {
+                await writeFieldValue(filePath, reverseField, `[[${reverseId}]]`);
+                syncIndexAfterWrite(filePath);
+            }
+
+            const doc = await vscode.workspace.openTextDocument(filePath);
+            const editor = await vscode.window.showTextDocument(doc, { preview: false });
+            positionCursorOnFirstEmptyField(editor, doc);
+
+            vscode.window.showInformationMessage(
+                `Yamlink: Created "${cleanId}"${chosenType ? ` (${chosenType})` : ''}`
+            );
+            return cleanId;
+        })
+    );
+
+    context.subscriptions.push(
+        vscode.commands.registerCommand('yamlink.newNoteFromSelection', async () => {
+            // Capture selection before any dialog opens — QuickPick/InputBox steal editor focus.
+            const editor = vscode.window.activeTextEditor;
+            const liveSel = (editor && !editor.selection.isEmpty) ? editor.selection : null;
+            const activeSelection = liveSel
+                ? { uri: editor.document.uri, range: liveSel, document: editor.document }
+                : (_lastNonEmptySelection
+                    ? { uri: _lastNonEmptySelection.document.uri, range: _lastNonEmptySelection.selection, document: _lastNonEmptySelection.document }
+                    : null);
+
+            const selectedText = activeSelection
+                ? activeSelection.document.getText(activeSelection.range).trim()
+                : '';
+
+            const createdId = await vscode.commands.executeCommand('yamlink.newNote', selectedText || undefined);
+
+            // Replace the original selection with [[createdId]] so the thought becomes a linked note.
+            if (createdId && activeSelection) {
+                const edit = new vscode.WorkspaceEdit();
+                edit.replace(activeSelection.uri, activeSelection.range, `[[${createdId}]]`);
+                await vscode.workspace.applyEdit(edit);
+            }
+        })
+    );
+
+    context.subscriptions.push(
+        vscode.commands.registerCommand('yamlink.splitNoteBody', async () => {
+            try {
+                // Capture selection before dialogs steal focus.
+                // Falls back to the last known non-empty selection so right-clicking
+                // (which may clear the live selection) still works.
+                const editor = vscode.window.activeTextEditor;
+                const liveSel = (editor && !editor.selection.isEmpty) ? editor.selection : null;
+                const activeSelection = liveSel
+                    ? { uri: editor.document.uri, range: liveSel, document: editor.document }
+                    : (_lastNonEmptySelection
+                        ? { uri: _lastNonEmptySelection.document.uri, range: _lastNonEmptySelection.selection, document: _lastNonEmptySelection.document }
+                        : null);
+
+                if (!activeSelection) {
+                    vscode.window.showInformationMessage('Yamlink: Select some text in the note body first.');
+                    return;
+                }
+
+                const bodyContent = activeSelection.document.getText(activeSelection.range).trim();
+                if (!bodyContent) {
+                    vscode.window.showInformationMessage('Yamlink: Selection is empty — select some body text first.');
+                    return;
+                }
+
+                // Derive title from first heading or first non-blank line
+                const headingMatch = bodyContent.match(/^#{1,6}\s+(.+)/m);
+                const firstLine = bodyContent.split('\n').find(l => l.trim());
+                const derivedTitle = headingMatch
+                    ? headingMatch[1].trim()
+                    : (firstLine || '').replace(/^#+\s*/, '').replace(/\*+/g, '').trim().slice(0, 80);
+
+                const title = await vscode.window.showInputBox({
+                    prompt: 'Title for the extracted note',
+                    value: derivedTitle,
+                    placeHolder: 'Note title',
+                    validateInput: v => (v && v.trim()) ? null : 'Title cannot be empty'
+                });
+                if (!title) return;
+
+                const cleanId = canonicalizeId(title);
+                if (!cleanId) {
+                    vscode.window.showErrorMessage('Yamlink: Could not generate a valid ID from that title.');
+                    return;
+                }
+
+                const root = getWorkspaceRootForFile(vscode.workspace.workspaceFolders, activeSelection.uri.fsPath)
+                    || getPrimaryWorkspaceRoot(vscode.workspace.workspaceFolders);
+                if (!root) {
+                    vscode.window.showErrorMessage('Yamlink: No workspace folder found. Make sure a folder is open.');
+                    return;
+                }
+
+                const newFilePath = path.join(root, `${cleanId}.md`);
+                if (fs.existsSync(newFilePath)) {
+                    vscode.window.showErrorMessage(`Yamlink: A note with id "${cleanId}" already exists.`);
+                    return;
+                }
+
+                // Get the source note's ID for the back-link
+                const { getPathIndex } = require('../core/indexService');
+                const sourceId = getPathIndex().get(activeSelection.uri.fsPath) || null;
+                const today = new Date().toISOString().slice(0, 10);
+
+                // Build frontmatter for the new note
+                const frontmatterLines = ['---', `id: ${cleanId}`, `created: ${today}`];
+                if (sourceId) frontmatterLines.push(`source: [[${sourceId}]]`);
+                frontmatterLines.push('---', '');
+                const newFileContent = frontmatterLines.join('\n') + bodyContent + '\n';
+
+                // Write the new file
+                fs.writeFileSync(newFilePath, newFileContent, 'utf8');
+
+                // Replace the selection in the source note with ![[cleanId]]
+                const edit = new vscode.WorkspaceEdit();
+                edit.replace(activeSelection.uri, activeSelection.range, `![[${cleanId}]]`);
+                const editApplied = await vscode.workspace.applyEdit(edit);
+                if (!editApplied) {
+                    vscode.window.showWarningMessage(`Yamlink: Created "${cleanId}" but could not replace the selection — replace manually with ![[${cleanId}]].`);
+                }
+
+                // Open the new note
+                const newDoc = await vscode.workspace.openTextDocument(newFilePath);
+                await vscode.window.showTextDocument(newDoc, { viewColumn: vscode.ViewColumn.One, preview: false });
+
+                vscode.window.showInformationMessage(`Yamlink: Created "${cleanId}" from selection`);
+            } catch (err) {
+                vscode.window.showErrorMessage(`Yamlink: Extract selection failed — ${err && err.message ? err.message : String(err)}`);
+            }
         })
     );
 
@@ -549,6 +943,67 @@ created:
     );
 
     context.subscriptions.push(
+        vscode.commands.registerCommand('yamlink.addMissingTemplateFields', async () => {
+            const document = vscode.window.activeTextEditor?.document;
+            if (!document) {
+                vscode.window.showErrorMessage('Yamlink: No active editor.');
+                return;
+            }
+
+            const root = getPrimaryWorkspaceRoot(vscode.workspace.workspaceFolders);
+            if (!root) return;
+
+            const text = document.getText();
+            const typeMatch = text.match(/^\s*type:\s*(.+)$/m);
+            const noteType = typeMatch ? typeMatch[1].trim().toLowerCase() : null;
+            if (!noteType) {
+                vscode.window.showInformationMessage('Yamlink: This note has no type: field.');
+                return;
+            }
+
+            const { getTemplateForType } = require('../core/templateRegistry');
+            const template = getTemplateForType(root, noteType);
+            if (!template || !template.fields.length) {
+                vscode.window.showInformationMessage(`Yamlink: No template found for type "${noteType}".`);
+                return;
+            }
+
+            const existingKeys = new Set(
+                [...text.matchAll(/^\s*([\w-]+):/gm)].map(m => m[1].toLowerCase())
+            );
+            const missingFields = template.fields.filter(f => !existingKeys.has(f.toLowerCase()));
+            if (!missingFields.length) {
+                vscode.window.showInformationMessage(`Yamlink: "${noteType}" note already has all template fields.`);
+                return;
+            }
+
+            // Find closing --- of frontmatter
+            const lines = text.split('\n');
+            let closingDash = -1;
+            let inFm = false;
+            for (let i = 0; i < lines.length; i++) {
+                const trimmed = lines[i].replace(/\r$/, '').trim();
+                if (!inFm && trimmed === '---') { inFm = true; continue; }
+                if (inFm && trimmed === '---') { closingDash = i; break; }
+            }
+            if (closingDash === -1) {
+                vscode.window.showErrorMessage('Yamlink: Could not find frontmatter block to insert into.');
+                return;
+            }
+
+            const insertion = missingFields.map(f => `${f}:`).join('\n') + '\n';
+            const edit = new vscode.WorkspaceEdit();
+            edit.insert(document.uri, new vscode.Position(closingDash, 0), insertion);
+            await vscode.workspace.applyEdit(edit);
+            await document.save();
+
+            vscode.window.showInformationMessage(
+                `Yamlink: Added ${missingFields.length} missing field${missingFields.length === 1 ? '' : 's'}: ${missingFields.join(', ')}`
+            );
+        })
+    );
+
+    context.subscriptions.push(
         vscode.commands.registerCommand('yamlink.addFrontmatter', async (document, suggestedId) => {
             const today = new Date().toISOString().split('T')[0];
             const text = document.getText();
@@ -573,8 +1028,107 @@ created:
             vscode.window.showInformationMessage(`Yamlink: "${suggestedId}" is now a Yamlink node`);
         })
     );
+
+    context.subscriptions.push(
+        vscode.commands.registerCommand('yamlink.backfillCreatedDates', async () => {
+            const fieldCache = getFieldsCache();
+            const idIndex = getIndex();
+            const missing = [];
+            for (const [id, filePath] of idIndex.entries()) {
+                const fields = fieldCache.get(id);
+                if (!fields || fields.created) continue;
+                missing.push({ id, filePath });
+            }
+            if (missing.length === 0) {
+                vscode.window.showInformationMessage('Yamlink: All notes already have a created: date.');
+                return;
+            }
+            const action = await vscode.window.showWarningMessage(
+                `Yamlink: ${missing.length} note(s) have no created: date. Backfill from file system birthtime?`,
+                {
+                    modal: true,
+                    detail: 'File system birthtime may not be reliable across git clones, syncs, or drive migrations. Use as a best-effort approximation only.'
+                },
+                'Backfill',
+                'Cancel'
+            );
+            if (action !== 'Backfill') return;
+            let written = 0;
+            for (const { filePath } of missing) {
+                try {
+                    const stat = fs.statSync(filePath);
+                    const dateMs = stat.birthtimeMs || stat.mtimeMs;
+                    const dateIso = new Date(dateMs).toISOString().split('T')[0];
+                    await writeFieldValue(filePath, 'created', dateIso);
+                    syncIndexAfterWrite(filePath);
+                    written++;
+                } catch (e) { /* skip */ }
+            }
+            vscode.window.showInformationMessage(`Yamlink: Backfilled created: date on ${written} note(s).`);
+            validateAll(getIndex);
+        })
+    );
+}
+
+/**
+ * Register yamlink.openDailyNote — opens (or creates) today's journal note.
+ * ID format: journal-YYYY-MM-DD. Uses _templates/journal.md if present.
+ * Keybinding: Ctrl+Alt+J / Cmd+Alt+J (wired in package.json).
+ *
+ * @param {import('vscode').ExtensionContext} context
+ */
+function registerDailyNoteCommand(context) {
+    context.subscriptions.push(
+        vscode.commands.registerCommand('yamlink.openDailyNote', async () => {
+            const workspaceRoot = getPrimaryWorkspaceRoot(vscode.workspace.workspaceFolders);
+            if (!workspaceRoot) {
+                vscode.window.showWarningMessage('Yamlink: No workspace open.');
+                return;
+            }
+
+            const today = new Date();
+            const dateIso = today.toISOString().split('T')[0]; // YYYY-MM-DD
+            const noteId = `journal-${dateIso}`;
+            const notePath = path.join(workspaceRoot, `${noteId}.md`);
+
+            // If note already exists, just open it
+            if (fs.existsSync(notePath)) {
+                const doc = await vscode.workspace.openTextDocument(vscode.Uri.file(notePath));
+                await vscode.window.showTextDocument(doc);
+                return;
+            }
+
+            // Try journal template first
+            const templates = loadTemplates(workspaceRoot);
+            const template = templates.find(t => t.type === 'journal' || t.name === 'journal');
+            let content;
+            if (template) {
+                const templateBody = template.content.replace(/^---[\s\S]*?---\s*/m, '');
+                content = `---\nid: ${noteId}\ntype: journal\ndate: ${dateIso}\n---\n\n${templateBody}`;
+            } else {
+                content = `---\nid: ${noteId}\ntype: journal\ndate: ${dateIso}\n---\n\n`;
+            }
+
+            fs.writeFileSync(notePath, content, 'utf8');
+            await updateSingleFile(notePath, { workspaceFolders: vscode.workspace.workspaceFolders });
+
+            const doc = await vscode.workspace.openTextDocument(vscode.Uri.file(notePath));
+            await vscode.window.showTextDocument(doc);
+            // Move cursor to end of frontmatter so the user can start writing
+            const editor = vscode.window.activeTextEditor;
+            if (editor) {
+                const lines = content.split('\n');
+                const closingLine = lines.findIndex((line, i) => i > 0 && /^---/.test(line));
+                if (closingLine >= 0) {
+                    const pos = new vscode.Position(closingLine + 2, 0);
+                    editor.selection = new vscode.Selection(pos, pos);
+                }
+            }
+        })
+    );
 }
 
 module.exports = {
-    registerNodeCreationCommands
+    registerNodeCreationCommands,
+    registerDailyNoteCommand
 };

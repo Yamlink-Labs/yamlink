@@ -4,6 +4,7 @@ const vscode = require('vscode');
 const { getAliasIndex } = require('../core/indexService');
 const { resolveLinkedTarget } = require('../core/id');
 
+/** @param {import('vscode').ExtensionContext} context @param {() => Map<string,string>} getIndex @returns {void} */
 function registerDefinition(context, getIndex) {
     context.subscriptions.push(
         vscode.languages.registerDocumentLinkProvider('markdown', {

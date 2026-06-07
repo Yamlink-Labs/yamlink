@@ -79,6 +79,14 @@ Notes:
 - `incoming` means backlinks to the current note
 - task/date presets resolve to task rows
 
+**Important — `!view *` produces many columns.** Because `*` queries every note type at once, and different types have different fields, the auto-generated table includes every field that exists anywhere across all matching notes. Cells for missing fields are empty. If you use `!view *`, always add a `select` clause to control which columns appear:
+
+```md
+!view *
+select id, type, created
+sort created desc
+```
+
 ---
 
 ## Clauses
@@ -194,12 +202,58 @@ reads as:
 - `(outcome = victory OR commander = [[carl-jenkins]])`
 - `AND date exists`
 
+### `file.created` and `file.modified`
+
+Two implicit virtual fields are available in any query — no frontmatter required. Yamlink reads them from the file system at query time.
+
+- **`file.created`** — the file's creation date (`YYYY-MM-DD`). Falls back to last-modified date on systems that don't preserve birthtime (git clones, some syncs).
+- **`file.modified`** — the file's last-modified date (`YYYY-MM-DD`).
+
+```md
+!view contact
+where file.created >= 2026-01-01
+select name, status, file.created
+sort file.created desc
+```
+
+```md
+!view *
+where file.modified >= today()
+select id, type, file.modified
+sort file.modified desc
+```
+
+Both fields support all operators: `=`, `!=`, `>=`, `<=`, `>`, `<`, `contains`, `is empty`, `exists`.
+
+### `group by`
+
+Collapse results into buckets by a field value. Each bucket shows the field value and a count.
+
+```md
+!view contact
+group by account
+```
+
+```md
+!view mission
+group by outcome
+sort count desc
+limit 5
+```
+
+Notes:
+- The table renders one row per group (value + count), not individual notes
+- `sort <field> asc|desc` sorts by the group key; `sort count desc` sorts by count
+- `limit` applies to the number of groups, not total notes
+- Combine with `where` to narrow which notes are grouped
+
 ### `sort`
 
 ```md
 sort date
 sort date desc
 sort value desc
+sort file.modified desc
 ```
 
 ### `limit`
@@ -226,6 +280,7 @@ via account
 - power-user multi-line queries are the safest form
 - dates work best when stored in canonical `YYYY-MM-DD`
 - numeric sorting and comparisons now use numeric behavior when the values are numeric
+- `group by <field>` collapses results by field value — returns (value, count) rows, not individual notes
 - `where` supports:
   - `=`
   - `!=`
@@ -290,6 +345,15 @@ Cross-field OR:
 where outcome = victory or commander = [[carl-jenkins]]
 where date exists
 sort date desc
+```
+
+Group by:
+
+```md
+!view contact | Contacts by account
+group by account
+sort count desc
+limit 10
 ```
 
 Tag + state:
