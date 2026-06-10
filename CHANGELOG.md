@@ -1,4 +1,10 @@
 # Changelog
+## [0.6.2] - Hotfix
+
+### Fixed
+
+- Runtime dependencies (`js-yaml`, `markdown-it`, `pdfkit` and their transitive packages) were excluded from the published VSIX due to a blanket `node_modules/**` ignore rule. The extension failed to activate with `Cannot find module 'js-yaml'`. Fixed by explicitly re-including the 26 runtime packages in `.vscodeignore`.
+
 ## [0.6.0] - "Shujimi"
 
 ### Added

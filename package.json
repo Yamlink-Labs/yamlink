@@ -2,7 +2,7 @@
     "name": "yamlink",
     "displayName": "Yamlink",
     "description": "Markdown note-taking with wikilinks, backlinks, and a knowledge graph for VS Code. Query your notes into editable live tables — edit a cell and it writes back to the file. Graph visualization, calendar, vault intelligence. No database, no sync.",
-    "version": "0.6.1",
+    "version": "0.6.2",
     "publisher": "yamlink",
     "author": {
         "name": "Yamlink Labs",
