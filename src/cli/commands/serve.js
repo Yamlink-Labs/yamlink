@@ -183,7 +183,7 @@ async function startServer({ port, vaultPath, workspaceFolders }) {
 
     await new Promise((resolve, reject) => {
         server.once('error', reject);
-        server.listen(port, host, resolve);
+        server.listen(Number(port), host, () => resolve(undefined));
     });
 
     const address = server.address();
@@ -194,7 +194,7 @@ async function startServer({ port, vaultPath, workspaceFolders }) {
         port: actualPort,
         close() {
             if (watcher && typeof watcher.close === 'function') watcher.close();
-            return new Promise((resolve) => server.close(resolve));
+            return new Promise((resolve) => server.close(() => resolve(undefined)));
         }
     };
 }

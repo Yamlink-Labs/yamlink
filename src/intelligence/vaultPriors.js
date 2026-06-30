@@ -119,6 +119,7 @@ function getCachedPriors(fieldsCache, generation) {
         const typeBundleTotals  = buildTypeBundleTotals(fieldsCache);
         const fieldAmbiguity    = buildFieldAmbiguity(fieldsCache);
         const valuePatterns     = buildValuePatterns(fieldsCache);
+        const typeRoleMap       = buildTypeRoleMap(typeFieldBundles, valuePatterns, fieldTargetTypes, fieldAmbiguity, fieldsCache);
         _cachedPriors = {
             fieldTargetTypes,
             typeFieldBundles,
@@ -130,11 +131,11 @@ function getCachedPriors(fieldsCache, generation) {
             behavioralRelationPriors: buildBehavioralRelationPriors(mutationEvents, fieldsCache),
             valuePatterns,
             workflowFields:       buildWorkflowFields(valuePatterns),
-            typeRoleMap:          buildTypeRoleMap(typeFieldBundles, valuePatterns, fieldTargetTypes, fieldAmbiguity, fieldsCache),
-            outcomeCalibration:   buildOutcomeCalibration(mutationEvents)
+            typeRoleMap,
+            outcomeCalibration:   buildOutcomeCalibration(mutationEvents),
+            noteRoleNamePriors:   buildNoteRoleNamePriors(typeRoleMap, fieldsCache),
+            noteRoleFieldHints:   buildNoteRoleFieldHints(typeFieldBundles, typeBundleTotals, typeRoleMap)
         };
-        _cachedPriors.noteRoleNamePriors = buildNoteRoleNamePriors(_cachedPriors.typeRoleMap, fieldsCache);
-        _cachedPriors.noteRoleFieldHints = buildNoteRoleFieldHints(_cachedPriors.typeFieldBundles, _cachedPriors.typeBundleTotals, _cachedPriors.typeRoleMap);
         _cachedGeneration = generation;
     }
     return _cachedPriors;

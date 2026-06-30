@@ -920,19 +920,19 @@ async function importExternalVault(context, options = {}) {
         {
             label: 'Roam Research',
             description: 'Import a JSON export into Yamlink notes',
-            kind: 'roam',
+            platformKind: 'roam',
             sourceMode: 'file'
         },
         {
             label: 'Notion',
             description: 'Import an extracted Markdown export folder',
-            kind: 'notion',
+            platformKind: 'notion',
             sourceMode: 'folder'
         },
         {
             label: 'Evernote',
             description: 'Import an ENEX export into Yamlink notes',
-            kind: 'evernote',
+            platformKind: 'evernote',
             sourceMode: 'file'
         }
     ], {
@@ -960,9 +960,9 @@ async function importExternalVault(context, options = {}) {
             title: `Yamlink: Inspecting ${platform.label} export…`,
             cancellable: false
         }, async () => {
-            if (platform.kind === 'roam') {
+            if (platform.platformKind === 'roam') {
                 inspection = inspectRoamExport(sourcePath);
-            } else if (platform.kind === 'evernote') {
+            } else if (platform.platformKind === 'evernote') {
                 inspection = inspectEvernoteExport(sourcePath);
             } else {
                 inspection = inspectNotionExport(sourcePath);
@@ -982,6 +982,7 @@ async function importExternalVault(context, options = {}) {
     const destinationRoot = chooseImportDestination(workspaceRoot, sourceBase);
 
     let stats = createImportStats();
+    /** @type {ReturnType<typeof analyzeImportedVault>|null} */
     let analysis = null;
 
     try {
@@ -990,9 +991,9 @@ async function importExternalVault(context, options = {}) {
             title: `Yamlink: Importing ${platform.label} export…`,
             cancellable: false
         }, async () => {
-            if (platform.kind === 'roam') {
+            if (platform.platformKind === 'roam') {
                 stats = importRoamJsonToVault(sourcePath, destinationRoot);
-            } else if (platform.kind === 'evernote') {
+            } else if (platform.platformKind === 'evernote') {
                 stats = importEvernoteEnexToVault(sourcePath, destinationRoot);
             } else {
                 stats = copyNotionExport(sourcePath, destinationRoot, createImportStats());
@@ -1057,7 +1058,7 @@ async function importExternalVault(context, options = {}) {
         return {
             ok: true,
             platform: platform.label,
-            platformKind: platform.kind,
+            platformKind: platform.platformKind,
             sourcePath,
             importedRoot: destinationRoot,
             followUpAction,
@@ -1071,7 +1072,7 @@ async function importExternalVault(context, options = {}) {
         return {
             ok: true,
             platform: platform.label,
-            platformKind: platform.kind,
+            platformKind: platform.platformKind,
             sourcePath,
             importedRoot: destinationRoot,
             followUpAction,
@@ -1091,7 +1092,7 @@ async function importExternalVault(context, options = {}) {
         return {
             ok: true,
             platform: platform.label,
-            platformKind: platform.kind,
+            platformKind: platform.platformKind,
             sourcePath,
             importedRoot: destinationRoot,
             followUpAction,
@@ -1106,7 +1107,7 @@ async function importExternalVault(context, options = {}) {
         return {
             ok: true,
             platform: platform.label,
-            platformKind: platform.kind,
+            platformKind: platform.platformKind,
             sourcePath,
             importedRoot: destinationRoot,
             followUpAction,
@@ -1145,7 +1146,7 @@ async function importExternalVault(context, options = {}) {
         return {
             ok: true,
             platform: platform.label,
-            platformKind: platform.kind,
+            platformKind: platform.platformKind,
             sourcePath,
             importedRoot: destinationRoot,
             followUpAction,
@@ -1181,7 +1182,7 @@ async function importExternalVault(context, options = {}) {
         return {
             ok: true,
             platform: platform.label,
-            platformKind: platform.kind,
+            platformKind: platform.platformKind,
             sourcePath,
             importedRoot: destinationRoot,
             followUpAction,
@@ -1221,7 +1222,7 @@ async function importExternalVault(context, options = {}) {
         return {
             ok: true,
             platform: platform.label,
-            platformKind: platform.kind,
+            platformKind: platform.platformKind,
             sourcePath,
             importedRoot: destinationRoot,
             followUpAction,
@@ -1233,7 +1234,7 @@ async function importExternalVault(context, options = {}) {
     return {
         ok: true,
         platform: platform.label,
-        platformKind: platform.kind,
+        platformKind: platform.platformKind,
         sourcePath,
         importedRoot: destinationRoot,
         followUpAction,

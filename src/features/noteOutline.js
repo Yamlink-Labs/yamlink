@@ -390,7 +390,7 @@ function registerNoteOutlineView(context) {
             revealTimer = null;
             const activeNode = provider.getActiveNode();
             if (!activeNode) return;
-            treeView.reveal(activeNode, { select: false, focus: false, expand: true }).catch(() => {});
+            treeView.reveal(activeNode, { select: false, focus: false, expand: true }).then(undefined, () => {});
         }, 30);
     }
 

@@ -11,7 +11,10 @@ function handleTextDocumentDiagnostic(msg, state) {
 
 async function handleWorkspaceDiagnostic(msg, state) {
     respondImmediate(msg.id, {
-        items: await collectWorkspaceDiagnostics(state, msg.id)
+        items: await collectWorkspaceDiagnostics(state, msg.id, {
+            workDoneToken: msg?.params?.workDoneToken,
+            partialResultToken: msg?.params?.partialResultToken
+        })
     });
 }
 

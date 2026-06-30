@@ -13,6 +13,7 @@ const { notify, log, logToClient } = require('./transport');
 const { WIKILINK_RE, pathToUri, collectMdFiles, readTextFileSafe } = require('./utils');
 const { findFrontmatter } = require('./documentHelpers');
 const { cancellationCheckpoint, isRequestCancelled } = require('./cancellation');
+const { beginWorkDone, reportWorkDone, endWorkDone, reportPartialResult } = require('./progress');
 
 function collectDiagnosticsFromContent(content, idIndex, filePath, state) {
     const diagnostics = [];
@@ -197,21 +198,42 @@ function collectTextDiagnostics(uri, state) {
     return collectDiagnosticsFromContent(content || '', idIndex, filePath, state);
 }
 
-async function collectWorkspaceDiagnostics(state, requestId = null) {
+async function collectWorkspaceDiagnostics(state, requestId = null, options = {}) {
     const items = [];
+    const workDoneToken = options.workDoneToken;
+    const partialResultToken = options.partialResultToken;
+    const files = collectMdFiles(state.vaultPath);
+    const total = Math.max(1, files.length || 1);
     let processed = 0;
-    for (const filePath of collectMdFiles(state.vaultPath)) {
+    let batch = [];
+
+    beginWorkDone(workDoneToken, 'Yamlink workspace diagnostics', 'Scanning markdown files', 0);
+    for (const filePath of files) {
         if (requestId != null && (processed++ % 25) === 0) await cancellationCheckpoint(state, requestId);
         const uri = pathToUri(filePath);
         const content = state.openDocs.get(uri) || readTextFileSafe(filePath) || '';
-        items.push({
+        const item = {
             uri,
             version: null,
             kind: 'full',
             items: collectDiagnosticsFromContent(content, getIndex(), filePath, state)
-        });
+        };
+        items.push(item);
+        batch.push(item);
+        if (partialResultToken && batch.length >= 25) {
+            reportPartialResult(partialResultToken, { items: batch });
+            batch = [];
+        }
+        const percentage = Math.min(100, Math.round((processed / total) * 100));
+        if (processed === total || processed % 25 === 0) {
+            reportWorkDone(workDoneToken, `Processed ${processed} / ${total} files`, percentage);
+        }
+    }
+    if (partialResultToken && batch.length) {
+        reportPartialResult(partialResultToken, { items: batch });
     }
     if (requestId != null && isRequestCancelled(state, requestId)) return [];
+    endWorkDone(workDoneToken, `Scanned ${items.length} markdown files`);
     return items;
 }
 

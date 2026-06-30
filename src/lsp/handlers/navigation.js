@@ -8,6 +8,7 @@ const { findBlockLine }                          = require('../../core/bodyBlock
 const { respond, respondImmediate }              = require('../transport');
 const { getDocumentText }                        = require('../documentState');
 const { cancellationCheckpoint, isRequestCancelled } = require('../cancellation');
+const { beginWorkDone, reportWorkDone, endWorkDone, reportPartialResult } = require('../progress');
 const {
     wikilinkMatchAtPosition,
     pathToUri,
@@ -226,8 +227,13 @@ async function handleReferences(msg, state) {
     });
     const diskOccurrences = getLinkedOccurrences(state, lookupTargets);
     const openDocUris = new Set(state.openDocs.keys());
+    const workDoneToken = msg?.params?.workDoneToken;
+    const partialResultToken = msg?.params?.partialResultToken;
+    beginWorkDone(workDoneToken, 'Yamlink references', `Resolving references for "${id}"`, 0);
 
     let processed = 0;
+    let emitted = 0;
+    const total = Math.max(1, diskOccurrences.length + candidateFiles.size);
     for (const occurrence of diskOccurrences) {
         if ((processed++ % 200) === 0) await cancellationCheckpoint(state, msg.id);
         const occurrenceUri = pathToUri(occurrence.filePath);
@@ -250,6 +256,10 @@ async function handleReferences(msg, state) {
                 end: { line: occurrence.line, character: occurrence.end }
             }
         });
+        if (partialResultToken && locations.length - emitted >= 25) {
+            reportPartialResult(partialResultToken, locations.slice(emitted));
+            emitted = locations.length;
+        }
     }
 
     if (includeDecl && declarationPath) {
@@ -327,11 +337,22 @@ async function handleReferences(msg, state) {
                         end:   { line: lineIdx, character: m.index + m[0].length }
                     }
                 });
+                if (partialResultToken && locations.length - emitted >= 25) {
+                    reportPartialResult(partialResultToken, locations.slice(emitted));
+                    emitted = locations.length;
+                }
             }
+        }
+        if (processed % 100 === 0) {
+            reportWorkDone(workDoneToken, `Processed ${processed} source chunks`, Math.min(100, Math.round((processed / total) * 100)));
         }
     }
 
     if (isRequestCancelled(state, msg.id)) return;
+    if (partialResultToken && locations.length > emitted) {
+        reportPartialResult(partialResultToken, locations.slice(emitted));
+    }
+    endWorkDone(workDoneToken, `Found ${locations.length} references`);
     respondImmediate(msg.id, locations);
 }
 

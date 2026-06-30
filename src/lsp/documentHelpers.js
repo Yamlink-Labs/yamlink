@@ -3,7 +3,7 @@
 const path = require('path');
 const yaml = require('js-yaml');
 
-const { canonicalizeId, resolveLinkedTarget } = require('../core/id');
+const { canonicalizeId, resolveLinkedTarget, extractCanonicalIdFromFrontmatter } = require('../core/id');
 const { normaliseDateInput } = require('../core/date');
 const { getCachedPriors, getCommonFieldsForType } = require('../intelligence/vaultPriors');
 const { buildNoteArc } = require('../intelligence/noteArc');
@@ -106,6 +106,37 @@ function replaceFrontmatterFieldValue(uri, content, key, newValue) {
         };
     }
     return null;
+}
+
+function replaceFrontmatterFieldValues(uri, content, replacements) {
+    const text = String(content || '');
+    const lines = splitLines(text);
+    const frontmatter = findFrontmatter(text);
+    if (!frontmatter || !Array.isArray(replacements) || replacements.length === 0) return null;
+
+    const byKeyEntries = replacements
+        .map((entry) => /** @type {[string, any]} */ ([String(entry.key || '').trim(), entry.value]))
+        .filter(([key]) => key);
+    const byKey = new Map(byKeyEntries);
+    if (!byKey.size) return null;
+
+    const edits = [];
+    for (let i = 1; i < lines.length; i++) {
+        if (lines[i] && lines[i].trim() === '---') break;
+        const match = /^(\s*([\w-]+):\s*)(.*)$/.exec(lines[i]);
+        if (!match) continue;
+        const key = match[2];
+        if (!byKey.has(key)) continue;
+        edits.push({
+            range: {
+                start: { line: i, character: match[1].length },
+                end: { line: i, character: lines[i].length }
+            },
+            newText: String(byKey.get(key) ?? '')
+        });
+    }
+    if (!edits.length) return null;
+    return { changes: { [uri]: edits } };
 }
 
 function buildCreateNoteEdit(vaultPath, targetId, targetType) {
@@ -370,11 +401,42 @@ function findBrokenLinkTargets(content, idIndex, aliasIndex) {
     return results;
 }
 
+function buildConvertRelationFieldsEdit(uri, content, priors, idIndex, aliasIndex) {
+    const parsed = parseFrontmatter(content) || {};
+    const replacements = [];
+
+    for (const [fieldName, rawValue] of Object.entries(parsed)) {
+        if (fieldName === 'id' || fieldName === 'type') continue;
+        if (Array.isArray(rawValue) || rawValue == null) continue;
+        const textValue = String(rawValue).trim();
+        if (!textValue || /^\[\[.+\]\]$/.test(textValue)) continue;
+        if (!priors?.fieldTargetTypes?.has(fieldName)) continue;
+
+        const resolvedDirect = resolveLinkedTarget(textValue, idIndex, aliasIndex);
+        const canonicalValue = canonicalizeId(textValue);
+        const resolvedId = resolvedDirect || (idIndex.has(canonicalValue) ? canonicalValue : null);
+        if (!resolvedId || !idIndex.has(resolvedId)) continue;
+
+        replacements.push({
+            key: fieldName,
+            value: `"[[${resolvedId}]]"`
+        });
+    }
+
+    if (!replacements.length) return null;
+    return replaceFrontmatterFieldValues(uri, content, replacements);
+}
+
+function extractDocumentNoteId(content) {
+    return extractCanonicalIdFromFrontmatter(String(content || ''));
+}
+
 module.exports = {
     findFrontmatter,
     buildFullDocumentEdit,
     insertFieldsBeforeClosing,
     replaceFrontmatterFieldValue,
+    replaceFrontmatterFieldValues,
     buildCreateNoteEdit,
     buildFormattedFrontmatterContent,
     buildScaffoldIdentityEdit,
@@ -382,5 +444,7 @@ module.exports = {
     inferSchemaTarget,
     inferTargetTypeFromField,
     collectMissingFieldsForNote,
-    findBrokenLinkTargets
+    findBrokenLinkTargets,
+    buildConvertRelationFieldsEdit,
+    extractDocumentNoteId
 };

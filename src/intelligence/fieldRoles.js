@@ -43,6 +43,7 @@ function resolveStatusLikeValues(priors) {
 
 function resolveSemanticRolePriors(priors) {
     const learned = buildVaultSemanticRolePriors(priors || {});
+    /** @type {Record<string, string[]>} */
     const merged = {};
     const roles = new Set([
         ...Object.keys(DEFAULT_SEMANTIC_ROLE_PRIORS),

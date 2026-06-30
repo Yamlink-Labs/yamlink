@@ -6,6 +6,7 @@ const { pathToUri } = require('../utils');
 const { getDocumentText } = require('../documentState');
 const { buildDocumentStructure } = require('../documentStructure');
 const { cancellationCheckpoint, isRequestCancelled } = require('../cancellation');
+const { beginWorkDone, reportWorkDone, endWorkDone, reportPartialResult } = require('../progress');
 
 function makeDocumentSymbol(name, detail, kind, range, selectionRange, children = []) {
     return { name, detail, kind, range, selectionRange, children };
@@ -66,12 +67,17 @@ function handleDocumentSymbols(msg, state) {
 async function handleWorkspaceSymbol(msg, state) {
     const { query } = msg.params || {};
     const q = (query || '').toLowerCase();
+    const workDoneToken = msg?.params?.workDoneToken;
+    const partialResultToken = msg?.params?.partialResultToken;
 
     const idIndex = getIndex();
     const fieldsCache = getFieldsCache();
     const symbols = [];
+    beginWorkDone(workDoneToken, 'Yamlink workspace symbols', q ? `Searching for "${q}"` : 'Scanning vault symbols', 0);
 
     let processed = 0;
+    let lastReported = 0;
+    const total = Math.max(1, idIndex.size || 1);
     for (const [id, filePath] of idIndex) {
         if ((processed++ % 200) === 0) await cancellationCheckpoint(state, msg.id);
         const fields = fieldsCache.get(id) || {};
@@ -89,10 +95,20 @@ async function handleWorkspaceSymbol(msg, state) {
                 range: { start: { line: 0, character: 0 }, end: { line: 0, character: 0 } }
             }
         });
+
+        if (partialResultToken && symbols.length % 25 === 0) {
+            reportPartialResult(partialResultToken, symbols.slice(-25));
+        }
+        const percentage = Math.min(100, Math.round((processed / total) * 100));
+        if (percentage >= lastReported + 20) {
+            lastReported = percentage;
+            reportWorkDone(workDoneToken, `Processed ${processed} / ${total} notes`, percentage);
+        }
     }
 
     symbols.sort((a, b) => a.name.localeCompare(b.name));
     if (isRequestCancelled(state, msg.id)) return;
+    endWorkDone(workDoneToken, `Found ${symbols.length} matching symbols`);
     respondImmediate(msg.id, symbols.slice(0, 100));
 }
 

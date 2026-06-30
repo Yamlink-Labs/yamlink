@@ -27,7 +27,7 @@
 const yaml = require('js-yaml');
 
 /**
- * @typedef {{ type: string, required: boolean, target?: string, options?: string[] }} SchemaField
+ * @typedef {{ type: string, required: boolean, target?: string, targetTypes?: string[], options?: string[] }} SchemaField
  * @typedef {{ sourceId: string, fields: Record<string, SchemaField> }} SchemaEntry
  */
 

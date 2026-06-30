@@ -89,6 +89,7 @@ function collectRoleMatches(candidates = [], priors = {}) {
 }
 
 function mergeRolePriorMaps(primary = {}, fallback = {}) {
+    /** @type {Record<string, string[]>} */
     const merged = {};
     const roles = new Set([...Object.keys(fallback || {}), ...Object.keys(primary || {})]);
     for (const role of roles) {
@@ -102,6 +103,12 @@ function mergeRolePriorMaps(primary = {}, fallback = {}) {
     return merged;
 }
 
+/**
+ * @param {object} [nodeFields]
+ * @param {string} [broadRole]
+ * @param {string[]} [titleHints]
+ * @param {Record<string, string[]>} [roleNamePriors]
+ */
 function pickSpecificRoleLabel(nodeFields = {}, broadRole, titleHints = [], roleNamePriors = DEFAULT_NOTE_ROLE_PRIORS) {
     const type = normalizeFieldName(nodeFields.type || '');
     const candidates = [
@@ -139,6 +146,12 @@ function pickSpecificRoleLabel(nodeFields = {}, broadRole, titleHints = [], role
     return NOTE_ROLE_DISPLAY[broadRole] || broadRole || 'note';
 }
 
+/**
+ * @param {*} result
+ * @param {object} [nodeFields]
+ * @param {string[]} [titleHints]
+ * @param {Record<string, string[]>} [roleNamePriors]
+ */
 function withHumanizedRole(result, nodeFields = {}, titleHints = [], roleNamePriors = DEFAULT_NOTE_ROLE_PRIORS) {
     if (!result || !result.noteRole) return result;
     const roleLabel = pickSpecificRoleLabel(nodeFields, result.noteRole, titleHints, roleNamePriors);

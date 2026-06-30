@@ -124,7 +124,7 @@ function classifyFieldForAuthoring(fieldName, options = {}) {
     const normalizedField = String(fieldName || '').trim().toLowerCase();
     if (!normalizedField) {
         return {
-            classification: { category: CATEGORY.UNKNOWN, confidence: 0, source: 'default', reasons: ['missing field name'] },
+            classification: { category: CATEGORY.UNKNOWN, confidence: 0, source: 'default', reasons: ['missing field name'], relationStrength: null },
             context: buildAuthoringContext(options),
             schemaFieldDef: null
         };

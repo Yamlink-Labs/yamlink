@@ -13,6 +13,9 @@ function walkUpForVaultRoot(startPath) {
     }
 }
 
+/**
+ * @param {{ cwd?: string, nodes?: any[] }} [options]
+ */
 function resolveVaultPath({ cwd, nodes } = {}) {
     const list = Array.isArray(nodes) ? nodes : [];
     for (const node of list) {

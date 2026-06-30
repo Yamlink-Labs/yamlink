@@ -114,7 +114,7 @@ function ensureNoteId(editor, getPathIndex) {
     return noteId;
 }
 
-async function resolveReferenceBlock({ getPathIndex, mode, title, placeHolder, preferredBlock }) {
+async function resolveReferenceBlock({ getPathIndex, mode, title, placeHolder, preferredBlock = null }) {
     const verb = mode === 'heading' ? 'use section references' : 'use block references';
     const editor = ensureActiveMarkdownEditor(verb);
     if (!editor) return null;

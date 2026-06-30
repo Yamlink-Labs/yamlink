@@ -69,6 +69,7 @@ function findBodyStartLine(lines) {
 function extractMeaningfulBodyBlocks(content) {
     const text = String(content || '');
     const lines = text.split('\n');
+    /** @type {BodyBlock[]} */
     const blocks = [];
     const bodyStartLine = findBodyStartLine(lines);
     const headingCounts = new Map();

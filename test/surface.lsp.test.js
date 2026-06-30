@@ -1483,6 +1483,10 @@ test('LSP initialize capabilities include renameProvider and codeActionProvider'
         init.result.capabilities.codeActionProvider.codeActionKinds.includes('quickfix'),
         'quickfix kind registered'
     );
+    assert.ok(
+        init.result.capabilities.codeActionProvider.codeActionKinds.includes('refactor.rewrite'),
+        'refactor.rewrite kind registered'
+    );
 });
 
 test('LSP initialize capabilities include references, documentSymbols, workspaceSymbol', () => {
@@ -3086,6 +3090,57 @@ test('LSP codeAction offers duplicate-id and schema repair quickfixes for Yamlin
     }
 });
 
+test('LSP codeAction offers refactor.rewrite actions for frontmatter normalization and relation wikilinks', () => {
+    const refactorVault = createVault({
+        'roughnecks.md': ['---', 'id: roughnecks', 'type: unit', 'name: Roughnecks', '---'].join('\n'),
+        'rico.md': ['---', 'id: rico', 'type: contact', 'unit: "[[roughnecks]]"', '---'].join('\n')
+    });
+    const refactorUri = rootUri(refactorVault.dir);
+    const draftUri = refactorUri + '/draft.md';
+    const draftText = [
+        '---',
+        'unit: roughnecks',
+        'type: contact',
+        'id: dizzy',
+        '---',
+        '',
+        'Draft body.'
+    ].join('\n');
+    try {
+        const { messages } = lsp(refactorVault.dir, [
+            frame({ jsonrpc: '2.0', id: 1, method: 'initialize', params: { rootUri: refactorUri, capabilities: {} } }),
+            frame({ jsonrpc: '2.0', method: 'initialized', params: {} }),
+            frame({ jsonrpc: '2.0', method: 'textDocument/didOpen', params: {
+                textDocument: { uri: draftUri, languageId: 'markdown', version: 1, text: draftText }
+            }}),
+            frame({ jsonrpc: '2.0', id: 2, method: 'textDocument/codeAction', params: {
+                textDocument: { uri: draftUri },
+                range: { start: { line: 0, character: 0 }, end: { line: 6, character: 0 } },
+                context: {
+                    only: ['refactor.rewrite'],
+                    diagnostics: []
+                }
+            }}),
+            frame({ jsonrpc: '2.0', id: 3, method: 'shutdown' }),
+            frame({ jsonrpc: '2.0', method: 'exit' }),
+        ]);
+        const actions = messages.find((m) => m.id === 2);
+        assert.ok(actions, 'refactor codeAction response present');
+        assert.ok(Array.isArray(actions.result));
+
+        const normalize = actions.result.find((action) => action.title === 'Normalize Yamlink frontmatter');
+        assert.ok(normalize, 'normalization refactor present');
+        assert.equal(normalize.kind, 'refactor.rewrite');
+
+        const convert = actions.result.find((action) => action.title === 'Convert relation fields to wikilinks');
+        assert.ok(convert, 'relation conversion refactor present');
+        assert.equal(convert.kind, 'refactor.rewrite');
+        assert.equal(convert.edit.changes[draftUri][0].newText, '"[[roughnecks]]"');
+    } finally {
+        refactorVault.destroy();
+    }
+});
+
 test('LSP workspace/diagnostic returns vault-wide diagnostic report items', () => {
     const brokenVault = createVault({
         'ghost.md': 'See [[ghost-target]]\n',
@@ -3189,5 +3244,38 @@ test('LSP workspace/diagnostic skips _templates and .yamlinkignore paths', () =>
         assert.ok(!uris.some((entry) => entry.endsWith('ignored-note.md')), 'ignored file excluded');
     } finally {
         scopedVault.destroy();
+    }
+});
+
+test('LSP workspace/diagnostic streams work-done and partial-result progress notifications', () => {
+    const files = {};
+    for (let i = 0; i < 80; i++) {
+        files[`note-${i}.md`] = `See [[missing-${i}]]\n`;
+    }
+    const progressVault = createVault(files);
+    const progressUri = rootUri(progressVault.dir);
+    try {
+        const { messages, status } = lsp(progressVault.dir, [
+            frame({ jsonrpc: '2.0', id: 1, method: 'initialize', params: { rootUri: progressUri, capabilities: {} } }),
+            frame({ jsonrpc: '2.0', method: 'initialized', params: {} }),
+            frame({ jsonrpc: '2.0', id: 2, method: 'workspace/diagnostic', params: {
+                workDoneToken: 'wd-1',
+                partialResultToken: 'part-1'
+            }}),
+            frame({ jsonrpc: '2.0', id: 3, method: 'shutdown' }),
+            frame({ jsonrpc: '2.0', method: 'exit' }),
+        ]);
+        assert.equal(status, 0);
+
+        const progress = messages.filter((m) => m.method === '$/progress');
+        assert.ok(progress.some((m) => m.params?.token === 'wd-1' && m.params?.value?.kind === 'begin'), 'work-done begin sent');
+        assert.ok(progress.some((m) => m.params?.token === 'wd-1' && m.params?.value?.kind === 'report'), 'work-done report sent');
+
+        const partials = progress.filter((m) => m.params?.token === 'part-1');
+        assert.ok(partials.length >= 1, 'partial result batches streamed');
+        assert.ok(partials.every((m) => Array.isArray(m.params?.value?.items)), 'partial batches contain diagnostic items');
+
+    } finally {
+        progressVault.destroy();
     }
 });

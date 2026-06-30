@@ -10,7 +10,7 @@ const { URLSearchParams } = require('url');
  * @typedef {{ host: string, port: number, query: string }} RunQueryOptions
  * @typedef {{ host: string, port: number, id: string }} NodeRequestOptions
  * @typedef {{ host?: string, port?: number, done?: boolean, overdue?: boolean, today?: boolean, limit?: number }} TaskRequestOptions
- * @typedef {{ host?: string, port?: number, limit?: number, since?: string, type?: string }} MutationRequestOptions
+ * @typedef {{ host?: string, port?: number, limit?: number, since?: string, type?: string, id?: string }} MutationRequestOptions
  * @typedef {{ host: string, port: number, onEvent: (payload: any) => void, onConnect?: () => void, onDisconnect?: () => void }} EventStreamOptions
  */
 
@@ -188,6 +188,10 @@ function getPressure({ host, port }) {
     return requestJson({ host, port, path: '/api/intelligence/pressure' }).catch(() => null);
 }
 
+/**
+ * @param {{ host?: string, port?: number, since?: string, from?: string, to?: string }} [options]
+ * @returns {Promise<any>}
+ */
 function getDiff({ host, port, since, from, to } = {}) {
     const params = new URLSearchParams();
     if (since) params.set('since', since);

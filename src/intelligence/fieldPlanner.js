@@ -63,7 +63,7 @@ function _adjustedThreshold(base, vaultMaturity) {
  *
  * @param {{ category: string, confidence: number, source: string, reasons?: string[], relationStrength?: string|null, vaultMaturity?: number }} classification
  * @param {string} surface
- * @returns {{ level: number, allowedActions: Set<string>, reason: string }}
+ * @returns {{ level: number, allowedActions: Set<string>, reason: string, debug: object }}
  */
 function planFieldActions(classification, surface) {
     const { category, confidence, source, relationStrength = null } = classification;

@@ -1,6 +1,6 @@
 'use strict';
 
-const { getFieldsCache, getVaultGeneration, getIndex } = require('../../core/indexService');
+const { getFieldsCache, getVaultGeneration, getIndex, getAliasIndex } = require('../../core/indexService');
 const { getCachedPriors } = require('../../intelligence/vaultPriors');
 const { CONTENT_MODIFIED, isStaleDocumentRequest, getDocumentText } = require('../documentState');
 const { respond, respondError } = require('../transport');
@@ -11,7 +11,12 @@ const {
     replaceFrontmatterFieldValue,
     suggestUniqueId,
     inferSchemaTarget,
-    inferTargetTypeFromField
+    inferTargetTypeFromField,
+    buildFormattedFrontmatterContent,
+    buildFullDocumentEdit,
+    collectMissingFieldsForNote,
+    buildConvertRelationFieldsEdit,
+    extractDocumentNoteId
 } = require('../documentHelpers');
 
 function buildQuickFixesForDocument(textDocument, diagnostics, state, options = {}) {
@@ -130,6 +135,55 @@ function buildQuickFixesForDocument(textDocument, diagnostics, state, options = 
     return actions;
 }
 
+function buildRefactorActionsForDocument(textDocument, state) {
+    const content = getDocumentText(state, textDocument.uri);
+    const actions = [];
+    const priors = getCachedPriors(getFieldsCache(), getVaultGeneration());
+    const idIndex = getIndex();
+    const formatted = buildFormattedFrontmatterContent(textDocument.uri, content);
+    if (formatted && formatted !== content) {
+        actions.push({
+            title: 'Normalize Yamlink frontmatter',
+            kind: 'refactor.rewrite',
+            isPreferred: true,
+            edit: buildFullDocumentEdit(textDocument.uri, content, formatted)
+        });
+    }
+
+    const noteId = extractDocumentNoteId(content);
+    if (noteId) {
+        const missing = collectMissingFieldsForNote(noteId, state.vaultPath).missingFields || [];
+        if (missing.length) {
+            const edit = insertFieldsBeforeClosing(
+                textDocument.uri,
+                content,
+                missing.map((field) => ({ key: field, value: '' }))
+            );
+            if (edit) {
+                actions.push({
+                    title: `Add likely missing fields: ${missing.join(', ')}`,
+                    kind: 'refactor.rewrite',
+                    isPreferred: false,
+                    edit
+                });
+            }
+        }
+    }
+
+    const aliasIndex = getAliasIndex();
+    const relationEdit = buildConvertRelationFieldsEdit(textDocument.uri, content, priors, idIndex, aliasIndex);
+    if (relationEdit) {
+        actions.push({
+            title: 'Convert relation fields to wikilinks',
+            kind: 'refactor.rewrite',
+            isPreferred: false,
+            edit: relationEdit
+        });
+    }
+
+    return actions;
+}
+
 function handleCodeAction(msg, state) {
     const { textDocument, context } = msg.params || {};
     if (!textDocument) { respond(msg.id, []); return; }
@@ -138,7 +192,17 @@ function handleCodeAction(msg, state) {
         return;
     }
 
-    respond(msg.id, buildQuickFixesForDocument(textDocument, (context && context.diagnostics) || [], state));
+    const only = Array.isArray(context?.only) ? context.only : null;
+    const wantsQuickFix = !only || only.some((kind) => kind === 'quickfix' || kind.startsWith('quickfix.'));
+    const wantsRefactorRewrite = !only || only.some((kind) => kind === 'refactor.rewrite' || kind.startsWith('refactor.rewrite.'));
+    const actions = [];
+    if (wantsQuickFix) {
+        actions.push(...buildQuickFixesForDocument(textDocument, (context && context.diagnostics) || [], state));
+    }
+    if (wantsRefactorRewrite) {
+        actions.push(...buildRefactorActionsForDocument(textDocument, state));
+    }
+    respond(msg.id, actions);
 }
 
 function handleWorkspaceCodeAction(msg, state) {

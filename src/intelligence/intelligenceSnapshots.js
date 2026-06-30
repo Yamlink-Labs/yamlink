@@ -78,7 +78,7 @@ function buildTypeArcSnapshot(noteType) {
                     : `Common in ${normalizedType} notes across this vault`
             }))
             : [],
-        ...(arc.coldStart ? { coldStart: true } : {})
+        ...(Array.isArray(arc.missingFields) && arc.missingFields.some((entry) => entry.coldStart) ? { coldStart: true } : {})
     };
 }
 

@@ -58,7 +58,7 @@ async function handleInitialize(msg, state) {
             foldingRangeProvider:    true,
             workspaceSymbolProvider: true,
             renameProvider:          { prepareProvider: true },
-            codeActionProvider:      { codeActionKinds: ['quickfix'] },
+            codeActionProvider:      { codeActionKinds: ['quickfix', 'refactor.rewrite'] },
             diagnosticProvider:      {
                 interFileDependencies: false,
                 workspaceDiagnostics:  true

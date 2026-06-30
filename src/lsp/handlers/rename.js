@@ -9,6 +9,7 @@ const { respond, respondImmediate, respondError }        = require('../transport
 const { pathToUri, WIKILINK_RE, collectLinkedCandidateFiles } = require('../utils');
 const { CONTENT_MODIFIED, isStaleDocumentRequest, getDocumentText } = require('../documentState');
 const { cancellationCheckpoint, isRequestCancelled } = require('../cancellation');
+const { beginWorkDone, reportWorkDone, endWorkDone } = require('../progress');
 const { resolveLinkedTarget, parseLinkedTargetParts, canonicalizeLinkedTarget, canonicalizeId } = require('../../core/id');
 
 function _escapeRegex(v) { return String(v).replace(/[.*+?^${}()|[\]\\]/g, '\\$&'); }
@@ -153,7 +154,10 @@ async function handleRename(msg, state) {
         idIndex,
         aliasTexts
     });
+    const workDoneToken = msg?.params?.workDoneToken;
+    const total = Math.max(1, candidateFiles.size || 1);
 
+    beginWorkDone(workDoneToken, 'Yamlink rename', `Renaming "${oldId}" to "${newId}"`, 0);
     let processed = 0;
     for (const filePath of candidateFiles) {
         if ((processed++ % 25) === 0) await cancellationCheckpoint(state, msg.id);
@@ -219,6 +223,14 @@ async function handleRename(msg, state) {
                 changes[uri].push(...edits);
             }
         }
+
+        if (processed === total || processed % 100 === 0) {
+            reportWorkDone(
+                workDoneToken,
+                `Processed ${processed} / ${total} candidate files`,
+                Math.min(100, Math.round((processed / total) * 100))
+            );
+        }
     }
 
     if (renamedSourceUri && sourceFilePath) {
@@ -235,6 +247,7 @@ async function handleRename(msg, state) {
     const result = {};
     if (Object.keys(changes).length > 0) result.changes = changes;
     if (documentChanges.length > 0) result.documentChanges = documentChanges;
+    endWorkDone(workDoneToken, `Prepared rename edits across ${processed} files`);
     respondImmediate(msg.id, result);
 
     if (Object.keys(changes).length > 0 || documentChanges.length > 0) {
