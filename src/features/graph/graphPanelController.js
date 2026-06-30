@@ -84,6 +84,23 @@ function createGraphPanelController() {
         if (panel) panel.title = getPanelTitle(panelState);
     }
 
+    function applyActiveNodeToPanel(nodeId) {
+        if (!panelState || !nodeId) return false;
+        if (panelState.mode === 'local') {
+            const changed = panelState.centerNodeId !== nodeId || panelState.selectedNodeId !== nodeId;
+            if (!changed) return false;
+            syncLocalGraphToNode(nodeId);
+            return true;
+        }
+        if (panelState.mode === 'vault') {
+            const changed = panelState.selectedNodeId !== nodeId;
+            if (!changed) return false;
+            syncExplorerGraphToNode(nodeId);
+            return true;
+        }
+        return false;
+    }
+
     function resetPanelRuntime(clearContext = false) {
         panel = null;
         panelReady = false;
@@ -251,11 +268,7 @@ function createGraphPanelController() {
     function refreshGraphPanel() {
         if (!panel || !panelState) return;
         const activeId = rememberMarkdownEditor(getPreferredMarkdownEditor());
-        if (panelState.mode === 'local' && activeId) {
-            syncLocalGraphToNode(activeId);
-        } else if (panelState.mode === 'vault' && activeId) {
-            syncExplorerGraphToNode(activeId);
-        }
+        applyActiveNodeToPanel(activeId);
         panel.title = getPanelTitle(panelState);
         pushGraphUpdate();
     }
@@ -264,16 +277,10 @@ function createGraphPanelController() {
         vscode.window.onDidChangeActiveTextEditor((editor) => {
             const nextId = rememberMarkdownEditor(editor);
             if (!panel || !panelState || !nextId) return;
-            if (panelState.mode === 'local') {
-                syncLocalGraphToNode(nextId);
-                pushGraphUpdate();
-                return;
-            } else if (panelState.mode === 'vault') {
-                syncExplorerGraphToNode(nextId);
+            if (applyActiveNodeToPanel(nextId)) {
                 pushGraphUpdate();
                 return;
             }
-            pushGraphUpdate();
         });
     }
 
@@ -281,16 +288,10 @@ function createGraphPanelController() {
         vscode.window.onDidChangeVisibleTextEditors(() => {
             const nextId = rememberMarkdownEditor(getVisibleMarkdownEditor());
             if (!panel || !panelState || !nextId) return;
-            if (panelState.mode === 'local') {
-                syncLocalGraphToNode(nextId);
-                pushGraphUpdate();
-                return;
-            } else if (panelState.mode === 'vault') {
-                syncExplorerGraphToNode(nextId);
+            if (applyActiveNodeToPanel(nextId)) {
                 pushGraphUpdate();
                 return;
             }
-            pushGraphUpdate();
         });
     }
 
@@ -298,16 +299,10 @@ function createGraphPanelController() {
         vscode.window.tabGroups.onDidChangeTabs(() => {
             const nextId = getPreferredActiveNodeId();
             if (!panel || !panelState || !nextId) return;
-            if (panelState.mode === 'local') {
-                syncLocalGraphToNode(nextId);
-                pushGraphUpdate();
-                return;
-            } else if (panelState.mode === 'vault') {
-                syncExplorerGraphToNode(nextId);
+            if (applyActiveNodeToPanel(nextId)) {
                 pushGraphUpdate();
                 return;
             }
-            pushGraphUpdate();
         });
     }
 

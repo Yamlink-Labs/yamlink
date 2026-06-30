@@ -11,6 +11,7 @@ const {
     getPathIndex,
     getFieldsCache,
     getAliasIndex,
+    getBodyBlockIndex,
     getDuplicateIds,
     getVaultGeneration,
     parseFrontmatter
@@ -21,6 +22,7 @@ module.exports = {
     getPathIndex,
     getFieldsCache,
     getAliasIndex,
+    getBodyBlockIndex,
     getDuplicateIds,
     getVaultGeneration,
     parseFrontmatter

@@ -143,7 +143,7 @@ function createViewPanelController(services) {
         }, null, context.subscriptions);
     }
 
-    function openViewPanel(context, documentText, onComplete, nextSourceDocumentPath = null, preferredTab = null) {
+    function openViewPanel(context, documentText, onComplete, nextSourceDocumentPath = null, preferredTab = null, initialPanelState = null) {
         const queries = perfTracker.measureSync('view.parseQueries', {
             source: nextSourceDocumentPath ? 'note' : 'ad-hoc'
         }, () => services.parseAllViewQueries(documentText));
@@ -153,6 +153,7 @@ function createViewPanelController(services) {
         extensionUri = context.extensionUri;
         contextNodeId = services.extractIdFromText(documentText);
         sourceDocumentPath = nextSourceDocumentPath || null;
+        panelState = initialPanelState || null;
         if (onComplete) onCompleteCallback = onComplete;
 
         perfTracker.measureSync('view.ensureIndexBuilt', null, () => services.ensureIndexBuilt());

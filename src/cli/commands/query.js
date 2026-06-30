@@ -1,7 +1,7 @@
 'use strict';
 
 const { parseViewQuery, runQuery } = require('../../engine/query');
-const fmt = require('../format');
+const { captureOutput, emitCliError, emitCliSuccess, emitText } = require('../io');
 
 // Accept either raw !view syntax or a bare clause like "where type = x".
 // Also normalise space-separated select fields to comma-separated so
@@ -16,37 +16,80 @@ function normalizeQuery(text) {
     return q;
 }
 
-function run({ query, json }) {
+function truncateValue(value, maxWidth) {
+    const text = String(value ?? '');
+    if (text.length <= maxWidth) return text;
+    if (maxWidth <= 1) return text.slice(0, maxWidth);
+    return text.slice(0, maxWidth - 1) + '…';
+}
+
+function renderTable(rows) {
+    if (!rows.length) {
+        console.log('(no results)');
+        return;
+    }
+
+    const columnSet = new Set();
+    for (const row of rows) {
+        for (const key of Object.keys(row || {})) columnSet.add(key);
+    }
+    const columns = [...columnSet];
+    const widths = columns.map((column) => {
+        const longestValue = rows.reduce((max, row) => {
+            const value = String(row?.[column] ?? '');
+            return Math.max(max, value.length);
+        }, 0);
+        return Math.min(40, Math.max(column.length, longestValue));
+    });
+
+    const header = columns.map((column, index) => truncateValue(column, widths[index]).padEnd(widths[index])).join('  ');
+    const divider = widths.map((width) => '─'.repeat(width)).join('  ');
+    console.log(header);
+    console.log(divider);
+    for (const row of rows) {
+        const line = columns.map((column, index) => {
+            const value = truncateValue(row?.[column] ?? '', widths[index]);
+            return value.padEnd(widths[index]);
+        }).join('  ');
+        console.log(line);
+    }
+}
+
+function run({ query, json, quiet, output }) {
     const normalized = normalizeQuery(query);
     let parsed;
     try {
         parsed = parseViewQuery(normalized);
     } catch (e) {
-        console.error(fmt.err('Query parse error: ' + e.message));
-        process.exit(1);
+        emitCliError({ json, outputPath: output, error: 'Query parse error: ' + e.message, code: 'QUERY_PARSE_ERROR', exitCode: 1 });
+        return;
     }
 
     if (!parsed) {
-        console.error(fmt.err('Could not parse query: ' + query));
-        console.error(fmt.c.dim('  Tip: try  where type = <value>  or  !view <type>'));
-        process.exit(1);
+        emitCliError({ json, outputPath: output, error: 'Could not parse query: ' + query, code: 'QUERY_PARSE_ERROR', exitCode: 1 });
+        return;
     }
 
     let result;
     try {
         result = runQuery(parsed);
     } catch (e) {
-        console.error(fmt.err('Query failed: ' + e.message));
-        process.exit(1);
+        emitCliError({ json, outputPath: output, error: 'Query failed: ' + e.message, code: 'QUERY_FAILED', exitCode: 2 });
+        return;
     }
 
     if (!result || result.success === false) {
-        console.error(fmt.err('Query returned no result.'));
-        process.exit(1);
+        emitCliError({ json, outputPath: output, error: 'Query returned no result.', code: 'QUERY_EMPTY', exitCode: 1 });
+        return;
     }
 
     const rows    = result.rows    || [];
     const columns = result.columns || [];
+
+    const structuredRows = rows.map((row) => ({
+        id: row.id,
+        fields: row.fields || {}
+    }));
 
     // Flatten each row: { id, fields:{...}, filePath, nodeType } → { id, field1, field2, ... }
     const flatRows = rows.map(r => {
@@ -58,25 +101,19 @@ function run({ query, json }) {
         return flat;
     });
 
-    if (json) { console.log(JSON.stringify({ query, rows: flatRows }, null, 2)); return; }
-
-    fmt.header('Query Results');
-    fmt.row('Query',   query);
-    fmt.row('Results', flatRows.length);
-    fmt.blank();
-
-    if (!flatRows.length) {
-        console.log(fmt.c.dim('  (no results)'));
-        fmt.blank();
+    if (json) {
+        emitCliSuccess({ query, count: structuredRows.length, rows: structuredRows }, output);
         return;
     }
-
-    const cols = columns.length > 0
-        ? columns.slice(0, 7)
-        : ['id', ...Object.keys(flatRows[0]).filter(k => k !== 'id')].slice(0, 7);
-
-    fmt.table(flatRows, cols.map(k => ({ key: k, label: k })));
-    fmt.blank();
+    if (!flatRows.length) {
+        emitText('(no results)\n', output);
+        return;
+    }
+    if (quiet) {
+        emitText(flatRows.map((row) => row.id).join('\n') + (flatRows.length ? '\n' : ''), output);
+        return;
+    }
+    emitText(captureOutput(() => renderTable(flatRows)), output);
 }
 
 module.exports = { run };

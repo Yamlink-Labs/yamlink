@@ -1,4 +1,4 @@
-const { getFieldsCache } = require('../core/indexService');
+const { getFieldsCache, getVaultGeneration } = require('../core/indexService');
 const { normaliseDateInput } = require('../core/date');
 const { getSchema, getSchemaTargets } = require('../registries/schemaRegistry');
 const {
@@ -8,11 +8,42 @@ const {
     normalizeFieldName
 } = require('../intelligence/fieldRolesCore');
 const {
+    getCachedPriors,
+    buildVaultStatusValues,
+    buildVaultSemanticRolePriors
+} = require('../intelligence/vaultPriors');
+const {
     buildObservedFields,
     buildObservedNoteIndex,
     buildNoteContext
 } = require('../intelligence/suggestionCore');
 const { buildFrontmatterOpportunityModel } = require('../intelligence/frontmatterIntelligence');
+
+function resolveStatusLikeValues(priors) {
+    const learned = buildVaultStatusValues(priors?.workflowFields);
+    return new Set([
+        ...Array.from(DEFAULT_STATUS_LIKE_VALUES),
+        ...Array.from(learned || [])
+    ]);
+}
+
+function resolveSemanticRolePriors(priors) {
+    const learned = buildVaultSemanticRolePriors(priors || {});
+    const merged = {};
+    const roles = new Set([
+        ...Object.keys(DEFAULT_SEMANTIC_ROLE_PRIORS),
+        ...Object.keys(learned || {})
+    ]);
+    for (const role of roles) {
+        merged[role] = [
+            ...new Set([
+                ...(DEFAULT_SEMANTIC_ROLE_PRIORS[role] || []),
+                ...(learned?.[role] || [])
+            ])
+        ];
+    }
+    return merged;
+}
 
 /**
  * @param {string} type
@@ -28,6 +59,9 @@ function getDefaultSortFieldForType(type, options = {}) {
     }
     const fieldsCache = options.fieldsCache || getFieldsCache();
     const observedFields = options.observedFields || buildObservedFields(fieldsCache);
+    const priors = fieldsCache?.size ? getCachedPriors(fieldsCache, getVaultGeneration()) : null;
+    const statusLikeValues = resolveStatusLikeValues(priors);
+    const semanticRolePriors = resolveSemanticRolePriors(priors);
     let hasCreated = false;
     let hasDate = false;
     let hasName = false;
@@ -48,8 +82,8 @@ function getDefaultSortFieldForType(type, options = {}) {
                 documentType: normalizedType,
                 observedFields,
                 dateParser: normaliseDateInput,
-                statusLikeValues: DEFAULT_STATUS_LIKE_VALUES,
-                semanticRolePriors: DEFAULT_SEMANTIC_ROLE_PRIORS
+                statusLikeValues,
+                semanticRolePriors
             });
             if (result.semanticRole !== 'date') continue;
             const normalizedField = normalizeFieldName(fieldName);
@@ -99,20 +133,26 @@ function createDefaultSortFieldResolver(fieldsCache, observedFields = null) {
  */
 function buildActivationContext(nodeId, nodeFields, nodeType, fieldsCache) {
     const observedFields = buildObservedFields(fieldsCache);
+    const priors = fieldsCache?.size ? getCachedPriors(fieldsCache, getVaultGeneration()) : null;
+    const statusLikeValues = resolveStatusLikeValues(priors);
+    const semanticRolePriors = resolveSemanticRolePriors(priors);
     const observedIndex = buildObservedNoteIndex(fieldsCache, {
         observedFields,
         getSchemaForType: getSchema,
         dateParser: normaliseDateInput,
-        statusLikeValues: DEFAULT_STATUS_LIKE_VALUES,
-        semanticRolePriors: DEFAULT_SEMANTIC_ROLE_PRIORS
+        statusLikeValues,
+        semanticRolePriors
     });
     const getDefaultSortField = createDefaultSortFieldResolver(fieldsCache, observedFields);
     const noteContext = buildNoteContext(nodeFields, nodeType, {
         observedFields,
         getSchemaForType: getSchema,
         dateParser: normaliseDateInput,
-        statusLikeValues: DEFAULT_STATUS_LIKE_VALUES,
-        semanticRolePriors: DEFAULT_SEMANTIC_ROLE_PRIORS
+        statusLikeValues,
+        semanticRolePriors,
+        noteRolePriors: priors?.noteRoleNamePriors,
+        noteRoleFieldHints: priors?.noteRoleFieldHints,
+        typeRoleMap: priors?.typeRoleMap
     });
     const frontmatterOpportunities = buildFrontmatterOpportunityModel(nodeFields, {
         nodeId,
@@ -125,8 +165,8 @@ function buildActivationContext(nodeId, nodeFields, nodeType, fieldsCache) {
         getSchemaForType: getSchema,
         getDefaultSortField,
         dateParser: normaliseDateInput,
-        statusLikeValues: DEFAULT_STATUS_LIKE_VALUES,
-        semanticRolePriors: DEFAULT_SEMANTIC_ROLE_PRIORS,
+        statusLikeValues,
+        semanticRolePriors,
         limit: 4,
         connectionLimit: 4
     });

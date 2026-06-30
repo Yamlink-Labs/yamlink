@@ -2,6 +2,8 @@
 
 const { inferFieldRole, normalizeFieldName } = require('../intelligence/fieldRoles');
 const { inferNoteRole } = require('../intelligence/noteRolesCore');
+const { getCachedPriors } = require('../intelligence/vaultPriors');
+const { getFieldsCache, getVaultGeneration } = require('../core/indexService');
 const { collectDocumentTags } = require('../intelligence/tagSignals');
 const { collectBodySignals, buildBodySignalHints } = require('../intelligence/bodySignals');
 
@@ -121,9 +123,7 @@ function getDocumentType(document) {
         const normalized = String(value || '').trim().toLowerCase();
         if (normalized) return normalized;
     }
-
-    const archetypes = extractDocumentArchetype(document, null);
-    return archetypes[0] || null;
+    return null;
 }
 
 function extractNoteRoleHints(document, nodeFields = {}) {
@@ -151,12 +151,16 @@ function buildDocumentIntelligence(document, docType, idIndex) {
     const nodeFields = extractFrontmatterFields(document);
     const currentTags = collectDocumentTags(document, nodeFields);
     const bodySignals = collectBodySignals(document.getText());
+    const priors = getCachedPriors(getFieldsCache(), getVaultGeneration());
     const fieldRoleResults = Object.keys(nodeFields)
         .filter((key) => key !== 'id' && !isTypeLikeField(key))
         .map((key) => inferFieldRole(key, { documentType: docType, idIndex }));
     const noteRole = inferNoteRole(nodeFields, {
         fieldRoleResults,
-        titleHints: extractNoteRoleHints(document, nodeFields)
+        titleHints: extractNoteRoleHints(document, nodeFields),
+        typeRoleMap: priors.typeRoleMap || null,
+        noteRolePriors: priors.noteRoleNamePriors || null,
+        noteRoleFieldHints: priors.noteRoleFieldHints || null
     });
     return {
         nodeFields,

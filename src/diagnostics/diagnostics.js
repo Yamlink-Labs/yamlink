@@ -9,6 +9,8 @@ const { computeSuggestionsForNode, QUERY_SUGGESTION_THRESHOLD } = require('../en
 const { extractCanonicalIdFromFrontmatter, resolveLinkedTarget } = require('../core/id');
 const { getTemplateForType, extractTemplateFields, extractTemplateType, TEMPLATES_DIR } = require('../core/templateRegistry');
 const { getPrimaryWorkspaceRoot } = require('../core/workspace');
+const { initializeIgnoredDiagnostics, isDiagnosticIgnored } = require('./ignoredDiagnostics');
+const { isSuppressed } = require('../core/suppressions');
 
 
 const MIN_VAULT_SIZE_FOR_TYPE_ADVISORY = 10;
@@ -33,6 +35,7 @@ function findFmClosingLine(text) {
  */
 function registerDiagnostics(context, getIndex) {
     let debounceTimer;
+    initializeIgnoredDiagnostics(context);
     diagnosticCollection = vscode.languages.createDiagnosticCollection("yamlink");
     context.subscriptions.push(diagnosticCollection);
 
@@ -411,7 +414,7 @@ function validateDocument(document, getIndex) {
                 new vscode.Position(anchorLine, anchorText.length)
             );
 
-            if (suggestions.length > 0) {
+            if (suggestions.length > 0 && !isSuppressed(thisId, 'querySuggestion')) {
                 const top = suggestions[0];
                 const diagnostic = new vscode.Diagnostic(
                     anchorRange,
@@ -508,7 +511,10 @@ function validateDocument(document, getIndex) {
         }
     }
 
-    diagnosticCollection.set(document.uri, diagnostics);
+    diagnosticCollection.set(
+        document.uri,
+        diagnostics.filter((diagnostic) => !isDiagnosticIgnored(document, diagnostic))
+    );
 }
 
 /** @returns {number} */

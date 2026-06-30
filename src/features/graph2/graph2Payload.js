@@ -38,7 +38,7 @@ function buildGraph2Payload(state, getActiveNodeId = () => null) {
         queryText: state.queryText || '',
         facets,
         model,
-        graphData: buildXGraphData(rawModel),
+        graphData: buildXGraphData(model),
         hiddenWorkspaceNeighborCount: model.summary.hiddenWorkspaceNeighborCount || 0,
         empty: model.summary.nodeCount === 0
     };

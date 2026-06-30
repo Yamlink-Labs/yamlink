@@ -1,12 +1,17 @@
 const vscode = require('vscode');
 const path = require('path');
+const { validateDocument } = require('../diagnostics/diagnostics');
+const { initializeIgnoredDiagnostics, ignoreDiagnostic, isDiagnosticIgnored } = require('../diagnostics/ignoredDiagnostics');
+const { suppress: suppressNote } = require('../core/suppressions');
 const { getTypes } = require('../registries/typeRegistry');
-const { getSchema } = require('../registries/schemaRegistry');
 const { isOrphan } = require('../core/graph');
 const { computeSuggestionsForNode } = require('../engine/suggestions');
 const { getFieldsCache, getPathIndex, getVaultGeneration } = require('../core/indexService');
-const { getCachedPriors, getDominantTargetType } = require('../intelligence/vaultPriors');
+const { getExpectedRelationTypes } = require('../intelligence/authoringEngine');
 const { canonicalizeId, extractCanonicalIdFromFrontmatter } = require('../core/id');
+const { getPrimaryWorkspaceRoot } = require('../core/workspace');
+const { getTemplateForType, extractTemplateFields, TEMPLATES_DIR } = require('../core/templateRegistry');
+const { emitOutcomeEvent } = require('../runtime/mutationEventLog');
 const { buildStarterViewQuery, registerViewCommands } = require('./codeActionsViewCommands');
 const { registerNodeCommands } = require('./codeActionsNodeCommands');
 const {
@@ -26,12 +31,94 @@ const {
     runViewRefinementByIndex
 } = require('./viewBuilder');
 
+function getMissingTemplateFieldsForDocument(document) {
+    const text = document.getText();
+    const firstDashIdx = text.indexOf('---');
+    const closingDashIdx = firstDashIdx !== -1 ? text.indexOf('---', firstDashIdx + 3) : -1;
+    if (firstDashIdx === -1 || closingDashIdx === -1) return null;
+
+    const typeMatch = text.match(/^\s*type:\s*(.+?)\s*$/m);
+    const noteType = typeMatch ? typeMatch[1].trim().toLowerCase() : '';
+    if (!noteType) return null;
+
+    const SKIP_TYPES = new Set(['schema', 'dashboard', 'template']);
+    if (SKIP_TYPES.has(noteType)) return null;
+
+    const root = getPrimaryWorkspaceRoot(vscode.workspace.workspaceFolders);
+    if (!root) return null;
+
+    const templateFilePath = path.join(root, TEMPLATES_DIR, `${noteType}.md`);
+    const openTemplate = (vscode.workspace.textDocuments || []).find(
+        (doc) => doc.uri?.fsPath?.toLowerCase() === templateFilePath.toLowerCase()
+    );
+    const templateFields = openTemplate
+        ? extractTemplateFields(openTemplate.getText())
+        : (getTemplateForType(root, noteType)?.fields || null);
+    if (!templateFields || !templateFields.length) return null;
+
+    const existingKeys = new Set(
+        [...text.matchAll(/^\s*([\w-]+):/gm)].map((match) => match[1].toLowerCase())
+    );
+    const missingFields = templateFields.filter((field) => !existingKeys.has(field.toLowerCase()));
+    if (!missingFields.length) return null;
+
+    const typeLineIndex = text.split('\n').findIndex((line) => /^\s*type:\s*.+/.test(line));
+    if (typeLineIndex === -1) return null;
+
+    return { noteType, missingFields, typeLineIndex };
+}
+
 /**
  * @param {import('vscode').ExtensionContext} context
  * @param {() => Map<string, string>} getIndex
  * @returns {void}
  */
 function registerCodeActions(context, getIndex) {
+    initializeIgnoredDiagnostics(context);
+
+    context.subscriptions.push(
+        vscode.commands.registerCommand('yamlink.suppressQuerySuggestion', (noteId, document) => {
+            if (!noteId) return;
+            suppressNote(noteId, 'querySuggestion');
+            if (document) validateDocument(document, getIndex);
+        })
+    );
+
+    context.subscriptions.push(
+        vscode.commands.registerCommand('yamlink.ignoreDiagnostic', async (document, diagnostic) => {
+            if (!document || !diagnostic) return;
+            await ignoreDiagnostic(document, diagnostic);
+            const noteId = getPathIndex().get(document.uri.fsPath) || extractCanonicalIdFromFrontmatter(document.getText()) || null;
+            if (noteId) {
+                const code = /** @type {any} */ (diagnostic.code)?.value ?? diagnostic.code ?? null;
+                emitOutcomeEvent({
+                    type: 'suggestion_ignored',
+                    noteId,
+                    field: `diagnostic:${code || 'unknown'}`,
+                    newValue: diagnostic.message || null,
+                    source: 'vscode',
+                    cause: 'ignore_diagnostic',
+                    meta: {
+                        diagnosticCode: code,
+                        line: diagnostic.range?.start?.line ?? null
+                    }
+                });
+            }
+            validateDocument(document, getIndex);
+        })
+    );
+
+    function isFrontmatterDiagnostic(document, diagnostic) {
+        if (!document || !diagnostic?.range?.start) return false;
+        const text = document.getText();
+        const firstDashIdx = text.indexOf('---');
+        const closingDashIdx = firstDashIdx !== -1 ? text.indexOf('---', firstDashIdx + 3) : -1;
+        if (firstDashIdx === -1 || closingDashIdx === -1) return false;
+        const closingLine = text.slice(0, closingDashIdx).split('\n').length - 1;
+        const startLine = diagnostic.range.start.line;
+        const endLine = diagnostic.range.end?.line ?? startLine;
+        return startLine > 0 && endLine < closingLine;
+    }
 
     context.subscriptions.push(
         vscode.languages.registerCodeActionsProvider(
@@ -40,6 +127,13 @@ function registerCodeActions(context, getIndex) {
                 provideCodeActions(document, range, codeActionContext) {
                     const actions = [];
                     const seenIds = new Set();
+                    const diagnostics = Array.isArray(codeActionContext?.diagnostics)
+                        ? codeActionContext.diagnostics
+                        : [];
+                    const hasTemplateDriftDiagnostic = diagnostics.some((diagnostic) => {
+                        const code = /** @type {any} */ (diagnostic.code)?.value ?? diagnostic.code;
+                        return code === 'yamlink.templateDrift';
+                    });
 
                     const viewBlock = getViewBlockAtRange(document, range);
                     if (viewBlock && viewBlock.query) {
@@ -62,10 +156,25 @@ function registerCodeActions(context, getIndex) {
                         actions.push(refineAction);
                     }
 
-                    for (const diagnostic of codeActionContext.diagnostics) {
+                    for (const diagnostic of diagnostics) {
                         if (diagnostic.source !== 'yamlink') continue;
+                        if (isDiagnosticIgnored(document, diagnostic)) continue;
 
                         const code = /** @type {any} */ (diagnostic.code)?.value ?? diagnostic.code;
+
+                        if (isFrontmatterDiagnostic(document, diagnostic)) {
+                            const ignoreAction = new vscode.CodeAction(
+                                'Yamlink: Ignore this suggestion here',
+                                vscode.CodeActionKind.QuickFix
+                            );
+                            ignoreAction.command = {
+                                command: 'yamlink.ignoreDiagnostic',
+                                title: 'Ignore this suggestion here',
+                                arguments: [document, diagnostic]
+                            };
+                            ignoreAction.diagnostics = [diagnostic];
+                            actions.push(ignoreAction);
+                        }
 
                         if (code === 'yamlink.missingId') {
                             const fileName = canonicalizeId(path.basename(document.uri.fsPath, '.md'));
@@ -102,6 +211,17 @@ function registerCodeActions(context, getIndex) {
                                 qAction.isPreferred = true;
                                 actions.push(qAction);
                             }
+                            const suppressAction = new vscode.CodeAction(
+                                'Yamlink: Don\'t suggest views for this note',
+                                vscode.CodeActionKind.QuickFix
+                            );
+                            suppressAction.command = {
+                                command: 'yamlink.suppressQuerySuggestion',
+                                title: 'Suppress view suggestions',
+                                arguments: [nodeId, document]
+                            };
+                            suppressAction.diagnostics = [diagnostic];
+                            actions.push(suppressAction);
                         }
 
                         if (code === 'yamlink.templateDrift') {
@@ -151,32 +271,13 @@ function registerCodeActions(context, getIndex) {
                             const fieldMatch = lineText.match(/^\s*([\w-]+)\s*:/);
                             const fieldName = fieldMatch ? fieldMatch[1].toLowerCase() : null;
 
-                            const knownTypes = getTypes ? new Set(getTypes()) : new Set();
                             let resolvedType = null;
-                            let typeSource = 'schema';
                             if (fieldName) {
-                                // 1. Schema — strongest signal
-                                for (const targetType of knownTypes) {
-                                    const schema = getSchema ? getSchema(targetType) : null;
-                                    if (schema && schema.fields[fieldName] && schema.fields[fieldName].type === 'relation' && schema.fields[fieldName].target) {
-                                        resolvedType = schema.fields[fieldName].target;
-                                        break;
-                                    }
-                                }
-                                // 2. Field name matches a known type exactly
-                                if (!resolvedType && knownTypes.has(fieldName)) {
-                                    resolvedType = fieldName;
-                                    typeSource = 'name';
-                                }
-                                // 3. Vault priors — what type does this field usually link to?
-                                if (!resolvedType) {
-                                    const priors = getCachedPriors(getFieldsCache(), getVaultGeneration());
-                                    const dominant = getDominantTargetType(fieldName, priors.fieldTargetTypes);
-                                    if (dominant && dominant.ratio >= 0.6 && dominant.count >= 2) {
-                                        resolvedType = dominant.targetType;
-                                        typeSource = 'vault';
-                                    }
-                                }
+                                resolvedType = getExpectedRelationTypes(fieldName, {
+                                    noteType: '',
+                                    fieldsCache: getFieldsCache(),
+                                    generation: getVaultGeneration()
+                                })[0] || null;
                             }
 
                             // Get source note info for smart reverse relation backfill
@@ -205,7 +306,7 @@ function registerCodeActions(context, getIndex) {
                                 : 0;
 
                             const typeHint = resolvedType
-                                ? (typeSource === 'vault' ? `${resolvedType} (suggested)` : resolvedType)
+                                ? resolvedType
                                 : null;
                             const label = typeHint
                                 ? `Yamlink: Create ${typeHint} "${id}"${fieldCount > 0 ? ` (${fieldCount} fields)` : ''}`
@@ -223,6 +324,24 @@ function registerCodeActions(context, getIndex) {
                         }
                     }
 
+                    const templateHint = getMissingTemplateFieldsForDocument(document);
+                    if (
+                        templateHint &&
+                        !hasTemplateDriftDiagnostic &&
+                        range?.start?.line === templateHint.typeLineIndex
+                    ) {
+                        const action = new vscode.CodeAction(
+                            `Yamlink: Use the ${templateHint.noteType} schema from Smart Templates`,
+                            vscode.CodeActionKind.QuickFix
+                        );
+                        action.command = {
+                            command: 'yamlink.addMissingTemplateFields',
+                            title: 'Fill template fields'
+                        };
+                        action.isPreferred = true;
+                        actions.push(action);
+                    }
+
                     const filePath = document.uri.fsPath;
                     const id = getPathIndex().get(filePath) ?? null;
                     if (id && isOrphan(id)) {
@@ -233,6 +352,9 @@ function registerCodeActions(context, getIndex) {
                             : new vscode.Position(0, 0);
 
                         if (range.start.isBefore(fmEndPos)) {
+                            const lineText = document.lineAt(range.start.line).text;
+                            const parsedField = lineText.match(/^\s*([\w-]+)\s*:/)?.[1]?.toLowerCase() || '';
+                            if (parsedField === 'type') return actions;
                             const action = new vscode.CodeAction(
                                 'Yamlink: Link this node to another…',
                                 vscode.CodeActionKind.QuickFix

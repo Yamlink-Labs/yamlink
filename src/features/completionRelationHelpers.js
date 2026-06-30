@@ -124,6 +124,26 @@ function collectObservedRelationUsage(fieldName, document, docType, idIndex) {
 
 const _FAMILY_WIKILINK_RE = /^\[\[([^\]|#]+)/;
 
+function normalizeWeightedMap(weightMap, scale = 1) {
+    if (!(weightMap instanceof Map) || !weightMap.size) return new Map();
+    const total = Array.from(weightMap.values()).reduce((sum, value) => sum + value, 0);
+    if (!total) return new Map();
+    return new Map(
+        Array.from(weightMap.entries()).map(([key, value]) => [
+            String(key || '').trim().toLowerCase(),
+            (value / total) * scale
+        ])
+    );
+}
+
+function mergeMaxScores(targetMap, sourceMap) {
+    if (!(sourceMap instanceof Map)) return;
+    for (const [key, value] of sourceMap.entries()) {
+        if (!key || typeof value !== 'number' || value <= 0) continue;
+        targetMap.set(key, Math.max(targetMap.get(key) || 0, value));
+    }
+}
+
 function buildRelationRankingHints(fieldName, targetType, preferredIds = [], observedPreferredIds = [], noteFields = null) {
     const fieldsCache = getFieldsCache();
     const priors = getCachedPriors(fieldsCache, getVaultGeneration());
@@ -132,6 +152,8 @@ function buildRelationRankingHints(fieldName, targetType, preferredIds = [], obs
     const typeCounts = priors.fieldTargetTypes.get(fieldKey) || null;
     const candidateTypeScores = new Map();
     let familyHint = null;
+    let behaviorHint = null;
+    let effectiveNoteType = String(noteFields?.type || '').trim().toLowerCase() || null;
 
     if (typeCounts && typeCounts.size) {
         const total = Array.from(typeCounts.values()).reduce((sum, count) => sum + count, 0);
@@ -150,6 +172,7 @@ function buildRelationRankingHints(fieldName, targetType, preferredIds = [], obs
         );
         if (likelyTypes.length > 0) {
             const inferredNoteType = likelyTypes[0].noteType;
+            effectiveNoteType = effectiveNoteType || inferredNoteType;
             const linkTypeCounts = new Map();
             let linkTotal = 0;
             for (const [, noteFieldData] of fieldsCache) {
@@ -180,12 +203,55 @@ function buildRelationRankingHints(fieldName, targetType, preferredIds = [], obs
         }
     }
 
+    if (!effectiveNoteType && noteFields && Object.keys(noteFields).length > 0) {
+        const likelyTypes = inferLikelyTypesForNote(
+            noteFields, fieldsCache, priors.typeFieldBundles, priors.noteRoleTypePriors,
+            null, { limit: 1, minScore: 0.45 }
+        );
+        effectiveNoteType = likelyTypes[0]?.noteType || null;
+    }
+
+    const behavioral = priors.behavioralRelationPriors || null;
+    const behavioralTypeScores = normalizeWeightedMap(
+        behavioral?.noteTypeFieldTargetTypeScores?.get(effectiveNoteType || '')?.get(fieldKey)
+        || behavioral?.fieldTargetTypeScores?.get(fieldKey)
+        || null,
+        effectiveNoteType ? 0.92 : 0.78
+    );
+    if (behavioralTypeScores.size) {
+        mergeMaxScores(candidateTypeScores, behavioralTypeScores);
+        const topEntry = Array.from(behavioralTypeScores.entries())
+            .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))[0];
+        if (topEntry) {
+            behaviorHint = effectiveNoteType
+                ? `recent ${effectiveNoteType} modeling favors ${fieldKey} → ${topEntry[0]}`
+                : `recent vault modeling favors ${fieldKey} → ${topEntry[0]}`;
+        }
+    }
+
+    const behavioralPreferredIds = canonicalizeCandidateIds(
+        Array.from(
+            Array.from(
+                (
+                    behavioral?.noteTypeFieldTargetIdScores?.get(effectiveNoteType || '')?.get(fieldKey)
+                    || behavioral?.fieldTargetIdScores?.get(fieldKey)
+                    || new Map()
+                ).entries()
+            )
+                .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
+                .slice(0, 6)
+                .map(([id]) => id)
+        )
+    );
+
     return {
         fieldName: fieldKey,
         targetType: String(targetType || '').trim().toLowerCase(),
         ambiguity,
         candidateTypeScores,
         familyHint,
+        behaviorHint,
+        behavioralPreferredIds,
         observedPreferredIds: canonicalizeCandidateIds(observedPreferredIds),
         preferredIds: canonicalizeCandidateIds(preferredIds)
     };
@@ -376,6 +442,38 @@ function collectScalarValues(fieldName, queryType) {
     return Array.from(values.values()).sort();
 }
 
+/**
+ * @param {string} fieldName
+ * @param {string|null} queryType
+ * @param {string} [partial]
+ * @returns {{ value: string, count: number }[]}
+ */
+function rankScalarValues(fieldName, queryType, partial = '') {
+    const scalarValues = collectScalarValues(fieldName, queryType);
+    if (!scalarValues.length) return [];
+
+    const fieldsCache = getFieldsCache();
+    const valueCounts = new Map();
+    const normalizedType = String(queryType || '').trim().toLowerCase();
+    const normalizedPartial = String(partial || '').trim().toLowerCase();
+
+    for (const fields of fieldsCache.values()) {
+        const noteType = String(fields?.type || '').trim().toLowerCase();
+        if (normalizedType && noteType !== normalizedType) continue;
+        const raw = String(fields?.[fieldName] ?? '').trim();
+        if (!raw || /\[\[[^\]]+\]\]/.test(raw)) continue;
+        valueCounts.set(raw, (valueCounts.get(raw) || 0) + 1);
+    }
+
+    return scalarValues
+        .filter((value) => !normalizedPartial || value.toLowerCase().startsWith(normalizedPartial))
+        .sort((a, b) => (valueCounts.get(b) || 0) - (valueCounts.get(a) || 0) || a.localeCompare(b))
+        .map((value) => ({
+            value,
+            count: valueCounts.get(value) || 0
+        }));
+}
+
 /** @param {string} value @param {string} partial @returns {number} */
 function scoreCandidateMatch(value, partial) {
     const candidate = String(value || '').toLowerCase();
@@ -408,6 +506,7 @@ function rankCandidateIds(candidateIds, partial, preferredIds = [], localLinkedI
     const preferred = new Set(canonicalizeCandidateIds(preferredIds).map((id) => String(id || '').trim().toLowerCase()));
     const local = new Set(canonicalizeCandidateIds(localLinkedIds).map((id) => String(id || '').trim().toLowerCase()));
     const observedPreferred = new Set(canonicalizeCandidateIds(rankingHints?.observedPreferredIds || []).map((id) => String(id || '').trim().toLowerCase()));
+    const behavioralPreferred = new Set(canonicalizeCandidateIds(rankingHints?.behavioralPreferredIds || []).map((id) => String(id || '').trim().toLowerCase()));
     const candidateTypeScores = rankingHints?.candidateTypeScores instanceof Map ? rankingHints.candidateTypeScores : new Map();
     const ambiguity = rankingHints?.ambiguity || null;
     const relationBiasScale = ambiguity
@@ -422,6 +521,7 @@ function rankCandidateIds(candidateIds, partial, preferredIds = [], localLinkedI
             const candidateTypeScore = candidateType ? (candidateTypeScores.get(candidateType) || 0) : 0;
             const typeBias = Math.round(candidateTypeScore * 260 * relationBiasScale);
             const observedBias = observedPreferred.has(canonicalId) ? 220 : 0;
+            const behavioralBias = behavioralPreferred.has(canonicalId) ? 180 : 0;
             return {
                 id,
                 score: matchScore >= 0
@@ -429,6 +529,7 @@ function rankCandidateIds(candidateIds, partial, preferredIds = [], localLinkedI
                         + (preferred.has(canonicalId) ? 1000 : 0)
                         + (local.has(canonicalId) ? 150 : 0)
                         + observedBias
+                        + behavioralBias
                         + typeBias
                         + Math.min(500, observedIdScores.get(canonicalId) || observedIdScores.get(id) || 0)
                     : matchScore,
@@ -453,6 +554,7 @@ module.exports = {
     collectFieldsForType,
     inferRelationField,
     collectScalarValues,
+    rankScalarValues,
     scoreCandidateMatch,
     scoreFieldSuggestion,
     rankCandidateIds,

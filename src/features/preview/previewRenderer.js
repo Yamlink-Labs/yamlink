@@ -27,6 +27,70 @@ function escapeHtml(str) {
         .replace(/"/g, '&quot;');
 }
 
+function escapeHtmlAttr(str) {
+    return escapeHtml(str).replace(/'/g, '&#39;');
+}
+
+function extractFootnoteDefinitions(text) {
+    const lines = String(text || '').split('\n');
+    const bodyLines = [];
+    const definitions = new Map();
+
+    for (let i = 0; i < lines.length; i++) {
+        const line = lines[i];
+        const match = line.match(/^\[\^([^\]]+)\]:\s*(.*)$/);
+        if (!match) {
+            bodyLines.push(line);
+            continue;
+        }
+
+        const id = String(match[1] || '').trim();
+        const valueLines = [match[2] || ''];
+        let j = i + 1;
+        while (j < lines.length && /^( {2,}|\t)/.test(lines[j])) {
+            valueLines.push(lines[j].replace(/^( {2,}|\t)/, ''));
+            j++;
+        }
+        definitions.set(id, valueLines.join('\n').trim());
+        i = j - 1;
+    }
+
+    return {
+        bodyText: bodyLines.join('\n'),
+        definitions
+    };
+}
+
+function renderMarkdownWithFootnotes(md, text) {
+    const { bodyText, definitions } = extractFootnoteDefinitions(text);
+    const orderedIds = [];
+
+    const referencedBody = bodyText.replace(/\[\^([^\]]+)\]/g, (full, rawId) => {
+        const id = String(rawId || '').trim();
+        if (!definitions.has(id)) return full;
+        let index = orderedIds.indexOf(id);
+        if (index === -1) {
+            orderedIds.push(id);
+            index = orderedIds.length - 1;
+        }
+        const num = index + 1;
+        const safeId = escapeHtmlAttr(id);
+        return `<sup class="yl-footnote-ref"><a class="yl-footnote-link" href="#yl-fn-${safeId}" id="yl-fnref-${safeId}">[${num}]</a></sup>`;
+    });
+
+    let html = md.render(referencedBody);
+    if (!orderedIds.length) return html;
+
+    const items = orderedIds.map((id, index) => {
+        const safeId = escapeHtmlAttr(id);
+        const rawText = definitions.get(id) || '';
+        const rendered = md.renderInline(rawText);
+        return `<li id="yl-fn-${safeId}"><span class="yl-footnote-index">${index + 1}.</span> <span class="yl-footnote-body">${rendered}</span> <a class="yl-footnote-backref" href="#yl-fnref-${safeId}">↩</a></li>`;
+    }).join('');
+
+    return `${html}<section class="yl-footnotes"><h2>Footnotes</h2><ol>${items}</ol></section>`;
+}
+
 function wikilinkToSpan(html) {
     const fieldsCache = getFieldsCache();
     const segments = html.split(/(<(?:code|pre)\b[^>]*>[\s\S]*?<\/(?:code|pre)>)/gi);
@@ -152,7 +216,7 @@ function renderNotePreview(documentText, contextNodeId) {
 
     for (const seg of segments) {
         if (seg.type === 'md') {
-            let html = md.render(seg.text);
+            let html = renderMarkdownWithFootnotes(md, seg.text);
             html = wikilinkToSpan(html);
             parts.push(html);
         } else {
@@ -166,4 +230,4 @@ function renderNotePreview(documentText, contextNodeId) {
     return parts.join('\n');
 }
 
-module.exports = { renderNotePreview };
+module.exports = { renderNotePreview, extractFootnoteDefinitions, renderMarkdownWithFootnotes };

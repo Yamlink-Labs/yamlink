@@ -163,9 +163,12 @@ function diffFrontmatters(prevFields, currFields, noteId, timestamp) {
         }
 
         if (targetsChanged) {
+            const relType = oldTargets.length === 0 ? 'relation_added'
+                : newTargets.length === 0 ? 'relation_removed'
+                : 'relation_changed';
             events.push({
                 timestamp,
-                type: 'relation_changed',
+                type: relType,
                 noteId,
                 field: fieldName,
                 oldValue: oldTargets.join(', ') || null,

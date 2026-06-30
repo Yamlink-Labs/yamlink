@@ -7,6 +7,7 @@ const crypto = require('crypto');
 const { getIndex, getFieldsCache, getPathIndex, getVaultGeneration } = require('../core/indexService');
 const { buildTaskRows } = require('../core/tasks');
 const { getTodayIsoLocal, normaliseDateInput } = require('../core/date');
+const { openNoteTarget } = require('./navigation/openNoteTarget');
 
 let sidebarView = null;
 let _extUri = null;
@@ -28,11 +29,8 @@ function registerCalendarView(context) {
                 };
                 view.webview.onDidReceiveMessage(async (msg) => {
                     if (!msg || msg.command !== 'openNode') return;
-                    const filePath = getIndex().get(msg.id);
-                    if (!filePath) return;
                     try {
-                        const doc = await vscode.workspace.openTextDocument(filePath);
-                        await vscode.window.showTextDocument(doc, { viewColumn: vscode.ViewColumn.One, preview: false });
+                        await openNoteTarget(msg.id, { viewColumn: vscode.ViewColumn.One, preview: false });
                     } catch (err) {
                         console.error('Yamlink — calendar openNode failed:', err.message);
                     }

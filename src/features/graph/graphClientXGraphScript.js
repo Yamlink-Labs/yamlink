@@ -22,6 +22,7 @@ const vsc = acquireVsCodeApi();
 const S = {
   renderer: null, layout: null, payload: null, selectedId: null,
   searchTerm: '', typeFilters: new Set(), primaryTypeFilter: '', ctxId: null, lastHash: '',
+  pendingLayoutHash: '', lastSettledLayoutHash: '', lastCameraSettleKey: '',
 };
 const layers = { semantic: false, health: false };
 
@@ -64,25 +65,66 @@ class SimpleLayout {
     this._nodes = [];
     this._edges = [];
     this._idx = new Map();
+    this._clusterAnchors = new Map();
+    this._clusterMeta = new Map();
     this._pinned = new Set();
     this._raf = null;
     this._alpha = 0;
     this._iter = 0;
+    this._quality = this._qualityProfile(0);
+    this._lastPositions = new Map();
   }
 
   init(nodeData, edgeData) {
     if (this._raf) { cancelAnimationFrame(this._raf); this._raf = null; }
     this._alpha = 1;
     this._iter  = 0;
-    const spread = Math.max(200, Math.sqrt(nodeData.length) * 120);
-    this._nodes = nodeData.map(n => ({
-      id: n.id,
-      x:  (Math.random() * 2 - 1) * spread,
-      y:  (Math.random() * 2 - 1) * spread,
-      vx: 0, vy: 0,
-    }));
+    this._quality = this._qualityProfile(nodeData.length);
+    // Minor-change fast path: if < 8% of nodes are new, previous positions are a
+    // good starting point — the graph barely needs to re-settle.
+    if (this._lastPositions.size > 0) {
+      const newCount = nodeData.filter(n => !this._lastPositions.has(n.id)).length;
+      if (newCount / nodeData.length < 0.08) {
+        this._quality = Object.assign({}, this._quality, {
+          prewarmTicks: Math.min(this._quality.prewarmTicks, 12),
+          maxTicks: Math.min(this._quality.maxTicks, 100),
+        });
+      }
+    }
     this._edges = edgeData;
-    this._idx   = new Map(this._nodes.map((n, i) => [n.id, i]));
+    this._idx   = new Map(nodeData.map((n, i) => [n.id, i]));
+    const graph = this._buildGraph(nodeData, edgeData);
+    this._clusterAnchors = graph.clusterAnchors;
+    this._clusterMeta = graph.clusterMeta;
+    this._nodes = nodeData.map(n => {
+      const clusterId = graph.nodeCluster.get(n.id) || n.id;
+      const anchor = graph.clusterAnchors.get(clusterId) || { x: 0, y: 0 };
+      const localRank = graph.clusterRank.get(n.id) || 0;
+      const angle = this._hashAngle(n.id);
+      const clusterSize = (graph.clusterMeta.get(clusterId) || {}).size || 1;
+      const radius = n.id === clusterId
+        ? 0
+        : this._quality.orbitBase
+          + Math.sqrt(clusterSize) * this._quality.orbitClusterScale
+          + localRank * this._quality.orbitRankStep
+          + (1 - (n.weight || 0)) * this._quality.orbitWeightStep;
+      const prev = this._lastPositions.get(n.id);
+      const seededX = anchor.x + Math.cos(angle) * radius;
+      const seededY = anchor.y + Math.sin(angle) * radius;
+      const usePrev = !!prev && Number.isFinite(prev.x) && Number.isFinite(prev.y);
+      return {
+        id: n.id,
+        group: n.group || n.kind || 'default',
+        weight: n.weight || 0,
+        clusterId,
+        anchorAngle: angle,
+        orbitRadius: radius,
+        x: usePrev ? prev.x : (seededX + (Math.random() * 2 - 1) * 18),
+        y: usePrev ? prev.y : (seededY + (Math.random() * 2 - 1) * 18),
+        vx: 0,
+        vy: 0,
+      };
+    });
   }
 
   run() {
@@ -90,18 +132,20 @@ class SimpleLayout {
     // Pre-warm: run synchronous ticks until alpha drops to ~0.4 so the first
     // rendered frame is already in a stable-ish layout (eliminates the "big bang"
     // jitter where nodes shoot across the canvas at full force).
-    while (this._alpha > 0.4 && this._iter < 80) {
-      this._alpha *= 0.985;
+    while (this._alpha > this._quality.prewarmAlpha && this._iter < this._quality.prewarmTicks) {
+      this._alpha *= this._quality.alphaDecay;
       this._step(this._alpha);
       this._iter++;
     }
     const tick = () => {
-      this._alpha *= 0.985;
+      this._alpha *= this._quality.alphaDecay;
       this._iter++;
-      const done = this._alpha < 0.005 || this._iter >= 320;
       this._step(this._alpha);
+      const converged = this._iter > 30 && (this._maxDeltaSq || 0) < 0.04;
+      const done = this._alpha < this._quality.minAlpha || this._iter >= this._quality.maxTicks || converged;
       const pos = {};
       for (const n of this._nodes) pos[n.id] = { x: n.x, y: n.y };
+      this._rememberPositions(pos);
       if (done) {
         this._raf = null;
         this._onSettled && this._onSettled(pos);
@@ -115,39 +159,262 @@ class SimpleLayout {
 
   _step(a) {
     const nodes = this._nodes;
-    const n = nodes.length;
-    const charge = 1800;
-    for (let i = 0; i < n; i++) {
-      for (let j = i + 1; j < n; j++) {
-        const dx = nodes[j].x - nodes[i].x;
-        const dy = nodes[j].y - nodes[i].y;
-        const d2 = dx * dx + dy * dy + 0.1;
-        const f  = charge * a / d2;
-        nodes[i].vx -= dx * f; nodes[i].vy -= dy * f;
-        nodes[j].vx += dx * f; nodes[j].vy += dy * f;
+    const cellSize = this._quality.cellSize;
+    const charge = this._quality.charge;
+    const grid = new Map();
+    for (let i = 0; i < nodes.length; i++) {
+      const nd = nodes[i];
+      const gx = Math.floor(nd.x / cellSize);
+      const gy = Math.floor(nd.y / cellSize);
+      const key = gx + ',' + gy;
+      let bucket = grid.get(key);
+      if (!bucket) {
+        bucket = [];
+        grid.set(key, bucket);
+      }
+      bucket.push(i);
+    }
+    for (let i = 0; i < nodes.length; i++) {
+      const src = nodes[i];
+      const gx = Math.floor(src.x / cellSize);
+      const gy = Math.floor(src.y / cellSize);
+      for (let ox = -1; ox <= 1; ox++) {
+        for (let oy = -1; oy <= 1; oy++) {
+          const bucket = grid.get((gx + ox) + ',' + (gy + oy));
+          if (!bucket) continue;
+          for (const j of bucket) {
+            if (j <= i) continue;
+            const dst = nodes[j];
+            const dx = dst.x - src.x;
+            const dy = dst.y - src.y;
+            const d2 = dx * dx + dy * dy + 16;
+            const f = charge * a / d2;
+            src.vx -= dx * f;
+            src.vy -= dy * f;
+            dst.vx += dx * f;
+            dst.vy += dy * f;
+          }
+        }
       }
     }
-    const ideal = 130;
+    const ideal = this._quality.idealDistance;
     for (const e of this._edges) {
       const si = this._idx.get(e.source), ti = this._idx.get(e.target);
       if (si === undefined || ti === undefined) continue;
       const s = nodes[si], t = nodes[ti];
       const dx = t.x - s.x, dy = t.y - s.y;
       const dist = Math.sqrt(dx * dx + dy * dy) || 1;
-      const f = (dist - ideal) * a * 0.3 / dist;
+      const f = (dist - ideal) * a * this._quality.springStrength / dist;
       if (!this._pinned.has(s.id)) { s.vx += dx * f; s.vy += dy * f; }
       if (!this._pinned.has(t.id)) { t.vx -= dx * f; t.vy -= dy * f; }
     }
     for (const nd of nodes) {
       if (this._pinned.has(nd.id)) continue;
-      nd.vx -= nd.x * 0.04 * a;
-      nd.vy -= nd.y * 0.04 * a;
+      const anchor = this._clusterAnchors.get(nd.clusterId) || { x: 0, y: 0 };
+      const meta = this._clusterMeta.get(nd.clusterId) || { size: 1 };
+      const orbitX = anchor.x + Math.cos(nd.anchorAngle) * nd.orbitRadius;
+      const orbitY = anchor.y + Math.sin(nd.anchorAngle) * nd.orbitRadius;
+      nd.vx += (orbitX - nd.x) * a * this._quality.orbitSnap;
+      nd.vy += (orbitY - nd.y) * a * this._quality.orbitSnap;
+      nd.vx += (anchor.x - nd.x) * a * (nd.id === nd.clusterId ? this._quality.anchorPull : this._quality.memberPull);
+      nd.vy += (anchor.y - nd.y) * a * (nd.id === nd.clusterId ? this._quality.anchorPull : this._quality.memberPull);
+      const orbitTightness = Math.min(1.6, 0.75 + meta.size / 18);
+      nd.vx -= (nd.x - anchor.x) * a * 0.0008 * orbitTightness;
+      nd.vy -= (nd.y - anchor.y) * a * 0.0008 * orbitTightness;
+      // Weight-aware: heavy/connected hubs feel stronger pull toward center,
+      // peripheral notes float outward — produces organic radial depth.
+      nd.vx -= nd.x * this._quality.centerPull * (1 + (nd.weight || 0) * 1.5) * a;
+      nd.vy -= nd.y * this._quality.centerPull * (1 + (nd.weight || 0) * 1.5) * a;
     }
+    let maxDeltaSq = 0;
     for (const nd of nodes) {
       if (this._pinned.has(nd.id)) { nd.vx = 0; nd.vy = 0; continue; }
-      nd.vx *= 0.65; nd.vy *= 0.65;
+      nd.vx *= this._quality.damping; nd.vy *= this._quality.damping;
       nd.x  += nd.vx; nd.y  += nd.vy;
+      const dsq = nd.vx * nd.vx + nd.vy * nd.vy;
+      if (dsq > maxDeltaSq) maxDeltaSq = dsq;
     }
+    this._maxDeltaSq = maxDeltaSq;
+  }
+
+  _buildGraph(nodeData, edgeData) {
+    const adjacency = new Map();
+    const degrees = new Map();
+    const degreeByNode = new Map();
+    for (const n of nodeData) {
+      adjacency.set(n.id, new Set());
+      const degree = (n.edges && n.edges.length) ? n.edges.length : 0;
+      const score = degree * 1.25 + (n.weight || 0) * 12;
+      degreeByNode.set(n.id, degree);
+      degrees.set(n.id, score);
+    }
+    for (const e of edgeData) {
+      if (!adjacency.has(e.source) || !adjacency.has(e.target)) continue;
+      adjacency.get(e.source).add(e.target);
+      adjacency.get(e.target).add(e.source);
+      degrees.set(e.source, (degrees.get(e.source) || 0) + 0.45);
+      degrees.set(e.target, (degrees.get(e.target) || 0) + 0.45);
+    }
+
+    const sorted = nodeData.slice().sort((a, b) => (degrees.get(b.id) || 0) - (degrees.get(a.id) || 0));
+    const clusterCount = this._quality.clusterCount;
+    const anchors = sorted.slice(0, clusterCount).map(n => n.id);
+    const clusterAnchors = new Map();
+    if (anchors.length === 1) {
+      clusterAnchors.set(anchors[0], { x: 0, y: 0 });
+    } else {
+      clusterAnchors.set(anchors[0], { x: 0, y: 0 });
+      const ringRadius = Math.max(this._quality.ringRadiusMin, Math.sqrt(nodeData.length) * this._quality.ringRadiusScale);
+      for (let i = 1; i < anchors.length; i++) {
+        const angle = i * 2.39996; // golden angle — avoids uniform ring spacing
+        const r = ringRadius * (0.35 + 0.65 * Math.sqrt(i / anchors.length));
+        clusterAnchors.set(anchors[i], {
+          x: Math.cos(angle) * r,
+          y: Math.sin(angle) * r,
+        });
+      }
+    }
+
+    const nodeCluster = new Map();
+    const clusterMembers = new Map();
+    const queue = [];
+    for (const anchorId of anchors) {
+      nodeCluster.set(anchorId, anchorId);
+      queue.push(anchorId);
+      clusterMembers.set(anchorId, [anchorId]);
+    }
+
+    while (queue.length) {
+      const current = queue.shift();
+      const clusterId = nodeCluster.get(current);
+      const neighbors = adjacency.get(current) || [];
+      for (const next of neighbors) {
+        if (nodeCluster.has(next)) continue;
+        nodeCluster.set(next, clusterId);
+        clusterMembers.get(clusterId).push(next);
+        queue.push(next);
+      }
+    }
+
+    for (const n of nodeData) {
+      if (nodeCluster.has(n.id)) continue;
+      let bestCluster = anchors[0] || n.id;
+      let bestScore = -Infinity;
+      for (const anchorId of anchors) {
+        const anchorNode = nodeData.find(item => item.id === anchorId);
+        let score = 0;
+        if (anchorNode && anchorNode.group === n.group) score += 4;
+        score += (degrees.get(anchorId) || 0) * 0.04;
+        const neighbors = adjacency.get(n.id);
+        if (neighbors && neighbors.has(anchorId)) score += 6;
+        if (score > bestScore) {
+          bestScore = score;
+          bestCluster = anchorId;
+        }
+      }
+      nodeCluster.set(n.id, bestCluster);
+      if (!clusterMembers.has(bestCluster)) clusterMembers.set(bestCluster, []);
+      clusterMembers.get(bestCluster).push(n.id);
+    }
+
+    const clusterMeta = new Map();
+    const clusterRank = new Map();
+    const bridgeCounts = new Map();
+    for (const anchorId of anchors) {
+      const members = clusterMembers.get(anchorId) || [anchorId];
+      clusterMeta.set(anchorId, { size: members.length });
+      members
+        .slice()
+        .sort((a, b) => (degrees.get(b) || 0) - (degrees.get(a) || 0))
+        .forEach((id, index) => clusterRank.set(id, index));
+    }
+
+    const icEdges = new Map();
+    for (const e of edgeData) {
+      const srcCluster = nodeCluster.get(e.source);
+      const tgtCluster = nodeCluster.get(e.target);
+      if (!srcCluster || !tgtCluster || srcCluster === tgtCluster) continue;
+      bridgeCounts.set(e.source, (bridgeCounts.get(e.source) || 0) + 1);
+      bridgeCounts.set(e.target, (bridgeCounts.get(e.target) || 0) + 1);
+      const key = srcCluster < tgtCluster ? srcCluster + '|' + tgtCluster : tgtCluster + '|' + srcCluster;
+      icEdges.set(key, (icEdges.get(key) || 0) + 1);
+    }
+
+    // Topology-aware anchor refinement: mini force-sim where cross-connected clusters
+    // pull toward each other, producing an organic field instead of a rigid ring.
+    if (anchors.length > 2) {
+      const ringR = Math.max(this._quality.ringRadiusMin, Math.sqrt(nodeData.length) * this._quality.ringRadiusScale);
+      const movable = anchors.slice(1);
+      for (let iter = 0; iter < 32; iter++) {
+        const a = 1 - iter / 32;
+        for (let i = 0; i < movable.length; i++) {
+          for (let j = i + 1; j < movable.length; j++) {
+            const pa = clusterAnchors.get(movable[i]);
+            const pb = clusterAnchors.get(movable[j]);
+            const dx = pb.x - pa.x, dy = pb.y - pa.y;
+            const d2 = dx * dx + dy * dy + 1;
+            const f = ringR * ringR * 0.5 * a / d2;
+            pa.x -= dx * f; pa.y -= dy * f;
+            pb.x += dx * f; pb.y += dy * f;
+          }
+        }
+        for (const [pair, cnt] of icEdges) {
+          const sep = pair.indexOf('|');
+          const ca = pair.slice(0, sep), cb = pair.slice(sep + 1);
+          if (ca === anchors[0] || cb === anchors[0]) continue;
+          const pa = clusterAnchors.get(ca);
+          const pb = clusterAnchors.get(cb);
+          if (!pa || !pb) continue;
+          const dx = pb.x - pa.x, dy = pb.y - pa.y;
+          const d = Math.sqrt(dx * dx + dy * dy) || 1;
+          const ideal = ringR * 0.5;
+          const str = Math.min(1, cnt / 6) * 0.1 * a;
+          const f = (d - ideal) * str / d;
+          pa.x += dx * f; pa.y += dy * f;
+          pb.x -= dx * f; pb.y -= dy * f;
+        }
+        for (const id of movable) {
+          const p = clusterAnchors.get(id);
+          p.x *= (1 - 0.01 * a); p.y *= (1 - 0.01 * a);
+        }
+      }
+    }
+
+    for (const n of nodeData) {
+      n.clusterId = nodeCluster.get(n.id) || null;
+      n.clusterRank = clusterRank.get(n.id) || 0;
+      const bridgeCount = bridgeCounts.get(n.id) || 0;
+      n.bridgeCount = bridgeCount;
+      n.bridgeScore = bridgeCount > 0 ? Math.min(1, bridgeCount / 4) : 0;
+    }
+
+    return { adjacency, degrees, nodeCluster, clusterAnchors, clusterMeta, clusterRank, degreeByNode };
+  }
+
+  _hashAngle(id) {
+    let hash = 2166136261;
+    for (let i = 0; i < id.length; i++) {
+      hash ^= id.charCodeAt(i);
+      hash = Math.imul(hash, 16777619);
+    }
+    return ((hash >>> 0) / 4294967295) * Math.PI * 2;
+  }
+
+  _qualityProfile(count) {
+    if (count >= 2200) {
+      return { clusterCount: 10, prewarmTicks: 55, prewarmAlpha: 0.16, maxTicks: 180, minAlpha: 0.016, alphaDecay: 0.964, cellSize: 220, charge: 820, idealDistance: 76, springStrength: 0.17, centerPull: 0.0026, damping: 0.84, ringRadiusMin: 420, ringRadiusScale: 26, orbitBase: 116, orbitClusterScale: 14, orbitRankStep: 18, orbitWeightStep: 24, orbitSnap: 0.022, anchorPull: 0.07, memberPull: 0.0065 };
+    }
+    if (count >= 1200) {
+      return { clusterCount: 9, prewarmTicks: 75, prewarmAlpha: 0.14, maxTicks: 240, minAlpha: 0.012, alphaDecay: 0.972, cellSize: 200, charge: 900, idealDistance: 86, springStrength: 0.19, centerPull: 0.0034, damping: 0.82, ringRadiusMin: 360, ringRadiusScale: 23, orbitBase: 104, orbitClusterScale: 13, orbitRankStep: 17, orbitWeightStep: 22, orbitSnap: 0.023, anchorPull: 0.074, memberPull: 0.007 };
+    }
+    if (count >= 500) {
+      return { clusterCount: 8, prewarmTicks: 40, prewarmAlpha: 0.12, maxTicks: 300, minAlpha: 0.009, alphaDecay: 0.978, cellSize: 180, charge: 980, idealDistance: 102, springStrength: 0.21, centerPull: 0.0042, damping: 0.8, ringRadiusMin: 300, ringRadiusScale: 21, orbitBase: 92, orbitClusterScale: 12, orbitRankStep: 16, orbitWeightStep: 20, orbitSnap: 0.024, anchorPull: 0.076, memberPull: 0.0075 };
+    }
+    return { clusterCount: Math.max(1, Math.min(8, Math.round(Math.sqrt(Math.max(1, count)) / 4))), prewarmTicks: 150, prewarmAlpha: 0.10, maxTicks: 400, minAlpha: 0.005, alphaDecay: 0.985, cellSize: 170, charge: 1100, idealDistance: count > 300 ? 108 : 126, springStrength: 0.22, centerPull: 0.006, damping: 0.78, ringRadiusMin: 260, ringRadiusScale: 18, orbitBase: 80, orbitClusterScale: 10, orbitRankStep: 14, orbitWeightStep: 18, orbitSnap: 0.025, anchorPull: 0.08, memberPull: 0.008 };
+  }
+
+  _rememberPositions(pos) {
+    this._lastPositions = new Map(Object.entries(pos));
   }
 
   dragStart(id) { this._pinned.add(id); }
@@ -168,6 +435,7 @@ function ensureRenderer() {
     onNodeClick: (id) => {
       const prev = S.selectedId;
       S.selectedId = (id === prev) ? null : (id || null);
+      S.renderer.setSelected(S.selectedId);
       updateSelCard();
       updateTopNodeHighlights();
       if (S.selectedId) vsc.postMessage({ type:'openNode', id: S.selectedId });
@@ -197,7 +465,7 @@ function ensureRenderer() {
     pos => S.renderer.updatePositions(pos),
     pos => {
       if (pos) S.renderer.updatePositions(pos);
-      S.renderer.fitView();
+      settleCameraAfterLayout();
       updateStatus();
     }
   );
@@ -224,9 +492,43 @@ function toggleLayer(name) {
 function loadGraph(graphData) {
   const r = ensureRenderer();
   if (!r) return;
-  r.load(graphData);
   S.layout.init(graphData.nodes, graphData.edges);
+  r.load(graphData);
   S.layout.run();
+}
+
+function settleCameraAfterLayout() {
+  if (!S.renderer || !S.payload) return;
+  const layoutHash = S.pendingLayoutHash || S.lastHash || '';
+  if (S.payload.mode === 'local' && S.payload.centerNodeId) {
+    const settleKey = 'local:' + S.payload.centerNodeId + ':1.28';
+    if (settleKey === S.lastCameraSettleKey && layoutHash === S.lastSettledLayoutHash) return;
+    S.renderer.focusNode(S.payload.centerNodeId, {
+      zoom: 1.28,
+      preserveHigherZoom: true,
+      duration: 180,
+    });
+    S.lastCameraSettleKey = settleKey;
+    S.lastSettledLayoutHash = layoutHash;
+    return;
+  }
+  if (S.payload.mode === 'vault' && S.payload.selectedNodeId) {
+    const settleKey = 'vault:' + S.payload.selectedNodeId + ':1.08';
+    if (settleKey === S.lastCameraSettleKey && layoutHash === S.lastSettledLayoutHash) return;
+    S.renderer.focusNode(S.payload.selectedNodeId, {
+      zoom: 1.08,
+      preserveHigherZoom: true,
+      duration: 180,
+    });
+    S.lastCameraSettleKey = settleKey;
+    S.lastSettledLayoutHash = layoutHash;
+    return;
+  }
+  const settleKey = 'fit:' + S.payload.mode;
+  if (settleKey === S.lastCameraSettleKey && layoutHash === S.lastSettledLayoutHash) return;
+  S.renderer.fitView({ duration: 180, padding: 72, maxZoom: 1.9 });
+  S.lastCameraSettleKey = settleKey;
+  S.lastSettledLayoutHash = layoutHash;
 }
 
 // ── Status bar ────────────────────────────────────────────────────────────────
@@ -274,13 +576,90 @@ E.ctxExpd.addEventListener('click',  () => { if (S.ctxId) vsc.postMessage({ type
 // ── Selection ─────────────────────────────────────────────────────────────────
 function selectNode(id) {
   S.selectedId = id;
-  if (S.renderer) S.renderer.setSelected(id);
+  if (S.renderer) {
+    S.renderer.setSelected(id);
+  }
   updateSelCard(); updateTopNodeHighlights();
 }
 function clearSel() {
   S.selectedId = null;
   if (S.renderer) S.renderer.setSelected(null);
   updateSelCard(); updateTopNodeHighlights();
+}
+
+function getKeyboardNodeOrder() {
+  const r = S.renderer;
+  if (!r || !r._nodeMap) return [];
+  return [...r._nodeMap.keys()].sort((a, b) => {
+    const na = r._nodeMap.get(a) || {};
+    const nb = r._nodeMap.get(b) || {};
+    const wa = Number(na.weight || 0);
+    const wb = Number(nb.weight || 0);
+    if (wb !== wa) return wb - wa;
+    return String(a).localeCompare(String(b));
+  });
+}
+
+function focusSelectedNode(id) {
+  const r = S.renderer;
+  if (!r || !id) return;
+  S.selectedId = id;
+  r.setSelected(id);
+  if (typeof r.focusNode === 'function') {
+    r.focusNode(id, { preserveHigherZoom: true, duration: 180 });
+  }
+  updateSelCard();
+  updateTopNodeHighlights();
+}
+
+function cycleKeyboardSelection(direction) {
+  const order = getKeyboardNodeOrder();
+  if (!order.length) return;
+  const currentId = (S.renderer && S.renderer._selectedId) || S.selectedId || null;
+  const currentIndex = currentId ? order.indexOf(currentId) : -1;
+  const nextIndex = currentIndex === -1
+    ? (direction > 0 ? 0 : order.length - 1)
+    : (currentIndex + direction + order.length) % order.length;
+  focusSelectedNode(order[nextIndex]);
+}
+
+function findDirectionalNode(direction) {
+  const r = S.renderer;
+  if (!r || !r._nodeMap || !r._positions) return null;
+  const currentId = r._selectedId || S.selectedId || null;
+  if (!currentId) return null;
+  const current = r._positions[currentId];
+  if (!current) return null;
+
+  let bestId = null;
+  let bestDistance = Infinity;
+  for (const [id] of r._nodeMap.entries()) {
+    if (id === currentId) continue;
+    const pos = r._positions[id];
+    if (!pos) continue;
+    const dx = pos.x - current.x;
+    const dy = pos.y - current.y;
+    if (direction === 'left') {
+      if (dx >= 0 || Math.abs(dy) >= Math.abs(dx) * 1.5) continue;
+    } else if (direction === 'right') {
+      if (dx <= 0 || Math.abs(dy) >= Math.abs(dx) * 1.5) continue;
+    } else if (direction === 'up') {
+      if (dy >= 0 || Math.abs(dx) >= Math.abs(dy) * 1.5) continue;
+    } else if (direction === 'down') {
+      if (dy <= 0 || Math.abs(dx) >= Math.abs(dy) * 1.5) continue;
+    }
+    const distance = Math.sqrt(dx * dx + dy * dy);
+    if (distance < bestDistance) {
+      bestDistance = distance;
+      bestId = id;
+    }
+  }
+  return bestId;
+}
+
+function handleDirectionalSelection(direction) {
+  const nextId = findDirectionalNode(direction);
+  if (nextId) focusSelectedNode(nextId);
 }
 
 // ── Search / filter ───────────────────────────────────────────────────────────
@@ -292,9 +671,7 @@ function applyFilter() {
   const at = new Set(S.typeFilters);
   if (S.primaryTypeFilter) at.add(S.primaryTypeFilter);
   if (!at.size) { S.renderer.setFilter(null); return; }
-  const kinds = new Set();
-  for (const t of at) kinds.add(TK[t.toLowerCase()] || 'default');
-  S.renderer.setFilter(kinds);
+  S.renderer.setFilter(at);
 }
 
 // ── Sidebar ───────────────────────────────────────────────────────────────────
@@ -495,11 +872,14 @@ function renderPayload(payload) {
 
   if (!payload.graphData || !payload.graphData.nodes.length) return;
 
-  const newHash = payload.graphData.nodes.map(n => n.id).sort().join(',');
+  const nodeHash = payload.graphData.nodes.map(n => n.id).sort().join(',');
+  const edgeHash = payload.graphData.edges.map(e => e.source + '->' + e.target + ':' + (e.field || '')).sort().join(',');
+  const newHash = nodeHash + '|' + edgeHash;
   const changed = newHash !== S.lastHash;
   S.lastHash = newHash;
 
   if (changed || payload.forceLayout) {
+    S.pendingLayoutHash = newHash;
     loadGraph(payload.graphData);
   }
 
@@ -526,7 +906,7 @@ E.typeSel.addEventListener('change',  () => { S.primaryTypeFilter = E.typeSel.va
 E.searchInp.addEventListener('input', () => { S.searchTerm = E.searchInp.value; applySearch(); });
 E.btnZoomIn.addEventListener('click',  () => S.renderer && S.renderer.zoomBy(1.3));
 E.btnZoomOut.addEventListener('click', () => S.renderer && S.renderer.zoomBy(0.77));
-E.btnZoomFit.addEventListener('click', () => S.renderer && S.renderer.fitView());
+E.btnZoomFit.addEventListener('click', () => S.renderer && S.renderer.fitView({ duration: 220, padding: 72, maxZoom: 1.9 }));
 if (E.btnSemantic) E.btnSemantic.addEventListener('click', () => toggleLayer('semantic'));
 if (E.btnHealth)   E.btnHealth.addEventListener('click',   () => toggleLayer('health'));
 E.btnReset.addEventListener('click', () => {
@@ -541,10 +921,35 @@ E.btnReset.addEventListener('click', () => {
 // ── Keyboard shortcuts ────────────────────────────────────────────────────────
 document.addEventListener('keydown', ev => {
   if (E.ctx.classList.contains('show') && ev.key === 'Escape') { hideCtx(); return; }
-  if (ev.target === E.searchInp) return;
+  const tag = ev.target && ev.target.tagName;
+  if (tag === 'INPUT' || tag === 'TEXTAREA') return;
   switch (ev.key) {
-    case 'Escape': clearSel(); break;
-    case 'Enter': if (S.selectedId) vsc.postMessage({ type:'openNode',   id:S.selectedId }); break;
+    case 'Tab':
+      ev.preventDefault();
+      cycleKeyboardSelection(ev.shiftKey ? -1 : 1);
+      break;
+    case 'ArrowLeft':
+      ev.preventDefault();
+      handleDirectionalSelection('left');
+      break;
+    case 'ArrowRight':
+      ev.preventDefault();
+      handleDirectionalSelection('right');
+      break;
+    case 'ArrowUp':
+      ev.preventDefault();
+      handleDirectionalSelection('up');
+      break;
+    case 'ArrowDown':
+      ev.preventDefault();
+      handleDirectionalSelection('down');
+      break;
+    case 'Escape':
+      clearSel();
+      break;
+    case 'Enter':
+      if (S.selectedId) vsc.postMessage({ type:'openNode',   id:S.selectedId });
+      break;
     case 'f': case 'F': if (S.selectedId) vsc.postMessage({ type:'focusNode',  id:S.selectedId }); break;
     case 'e': case 'E': if (S.selectedId) vsc.postMessage({ type:'expandNode', id:S.selectedId }); break;
     case '/': ev.preventDefault(); E.searchInp.focus(); break;

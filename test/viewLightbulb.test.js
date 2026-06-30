@@ -6,6 +6,7 @@ const Module = require('module');
 
 const originalResolve = Module._resolveFilename.bind(Module);
 let registeredProvider = null;
+const commandMap = new Map();
 
 class CodeAction {
     constructor(title, kind) {
@@ -56,11 +57,24 @@ require.cache.__viewlight_vscode_stub__ = {
             QuickFix: 'QuickFix',
             RefactorRewrite: 'RefactorRewrite'
         },
+        Selection: class Selection extends Range {},
         languages: {
             registerCodeActionsProvider(_lang, provider) {
                 registeredProvider = provider;
                 return { dispose() {} };
             }
+        },
+        commands: {
+            registerCommand(id, handler) {
+                commandMap.set(id, handler);
+                return { dispose() { commandMap.delete(id); } };
+            },
+            async executeCommand() {
+                return undefined;
+            }
+        },
+        window: {
+            activeTextEditor: null
         }
     }
 };
@@ -415,8 +429,106 @@ describe('view lightbulb', () => {
         };
 
         assert.equal(registeredProvider.provideCodeActions(document, { start: { line: 1 } }), undefined);
-        assert.equal(registeredProvider.provideCodeActions(document, { start: { line: 2 } }), undefined);
         assert.equal(registeredProvider.provideCodeActions(document, { start: { line: 4 } }), undefined);
+    });
+
+    test('uses populated type lines as an entry point for whole-note setup intelligence', () => {
+        const context = { subscriptions: [] };
+        registerViewLightbulb(context);
+
+        const document = {
+            languageId: 'markdown',
+            uri: { fsPath: '/vault/carl-jenkins.md' },
+            getText() {
+                return [
+                    '---',
+                    'id: carl-jenkins',
+                    'type: character',
+                    'name: Carl Jenkins',
+                    'unit: [[roughnecks]]',
+                    '---',
+                    '# Carl Jenkins'
+                ].join('\n');
+            },
+            lineAt(line) {
+                const lines = this.getText().split('\n');
+                return { text: lines[line] };
+            }
+        };
+
+        const actions = registeredProvider.provideCodeActions(document, { start: { line: 2 } });
+        assert.ok(actions);
+        assert.ok(actions.length <= 3);
+        assert.ok(actions.some((action) =>
+            action.title.includes('Use the character schema from Smart Templates')
+            || action.title.includes('Use the character schema here?')
+            || /rank|homeworld/i.test(action.title)
+        ));
+        assert.ok(actions.every((action) =>
+            !/Add unit ->|Should unit link to|Should this note link to|Add name here\?/i.test(action.title)
+        ));
+    });
+
+    test('dedupes overlapping field inserts inside smart-template schema fill', () => {
+        const context = { subscriptions: [] };
+        registerViewLightbulb(context);
+
+        const document = {
+            languageId: 'markdown',
+            uri: { fsPath: '/vault/test.md' },
+            getText() {
+                return [
+                    '---',
+                    'id: test',
+                    'type: character',
+                    '---',
+                    '# Test'
+                ].join('\n');
+            },
+            lineAt(line) {
+                const lines = this.getText().split('\n');
+                return { text: lines[line] };
+            }
+        };
+
+        const actions = registeredProvider.provideCodeActions(document, { start: { line: 2 } });
+        assert.ok(actions);
+        const fillAction = actions.find((action) => action.title === 'Use the character schema from Smart Templates');
+        assert.ok(fillAction);
+        const insertText = fillAction.edit.operations[0].text;
+        const unitCount = (insertText.match(/^unit:/gm) || []).length;
+        assert.equal(unitCount, 1);
+        assert.ok(!insertText.includes('[[roughnecks]]'));
+        assert.ok(!/^unit:\s+\[\[/m.test(insertText));
+    });
+
+    test('type-line smart-template action is singular and does not compete with generic schema actions', () => {
+        const context = { subscriptions: [] };
+        registerViewLightbulb(context);
+
+        const document = {
+            languageId: 'markdown',
+            uri: { fsPath: '/vault/test.md' },
+            getText() {
+                return [
+                    '---',
+                    'id: test',
+                    'type: character',
+                    '---',
+                    '# Test'
+                ].join('\n');
+            },
+            lineAt(line) {
+                const lines = this.getText().split('\n');
+                return { text: lines[line] };
+            }
+        };
+
+        const actions = registeredProvider.provideCodeActions(document, { start: { line: 2 } });
+        assert.ok(actions);
+        assert.equal(actions.filter((action) => /schema/i.test(action.title)).length, 1);
+        assert.ok(actions.some((action) => action.title === 'Use the character schema from Smart Templates'));
+        assert.ok(actions.every((action) => !action.title.includes('Use the usual schema for notes like this?')));
     });
 
     test('keeps empty field lightbulbs field-scoped instead of falling back to whole-note setup', () => {
@@ -455,6 +567,37 @@ describe('view lightbulb', () => {
         assert.match(unitAction.title, /roughnecks/i);
         assert.equal(unitAction.edit.operations[0].kind, 'replace');
         assert.equal(unitAction.edit.operations[0].text, ' [[roughnecks]]');
+    });
+
+    test('keeps typed empty descriptive fields alive with ranked value suggestions', () => {
+        const context = { subscriptions: [] };
+        registerViewLightbulb(context);
+
+        const document = {
+            languageId: 'markdown',
+            uri: { fsPath: '/vault/carl-jenkins.md' },
+            getText() {
+                return [
+                    '---',
+                    'id: carl-jenkins',
+                    'type: character',
+                    'name: Carl Jenkins',
+                    'rank:',
+                    '---',
+                    '',
+                    'Federal Intelligence officer.'
+                ].join('\n');
+            },
+            lineAt(line) {
+                const lines = this.getText().split('\n');
+                return { text: lines[line] };
+            }
+        };
+
+        const actions = registeredProvider.provideCodeActions(document, { start: { line: 4 } });
+        assert.ok(actions);
+        assert.ok(actions.some((action) => /Use .* for rank\?/i.test(action.title)));
+        assert.equal(actions[0].title, 'Use lieutenant for rank?');
     });
 
     test('stays quiet when frontmatter evidence is too weak', () => {

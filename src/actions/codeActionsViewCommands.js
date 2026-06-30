@@ -11,6 +11,7 @@ const {
     runViewRefinementBuilder,
     runViewRefinementByIndex
 } = require('./viewBuilder');
+const { openQueryBuilderPanel } = require('./queryBuilderPanel');
 
 function capitalize(str) {
     return str.charAt(0).toUpperCase() + str.slice(1);
@@ -149,8 +150,8 @@ function registerViewCommands(context, getTypes) {
             }
 
             if (!queryText) {
-                queryText = await buildStarterViewQuery(document, getTypes);
-                if (!queryText) return;
+                await openQueryBuilderPanel(context, { document });
+                return;
             }
 
             const text = document.getText();

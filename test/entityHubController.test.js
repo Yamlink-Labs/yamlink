@@ -131,10 +131,29 @@ require.cache.__eh_entityHubHtml__ = {
     }
 };
 
+require.cache.__eh_open_target__ = {
+    id: '__eh_open_target__',
+    filename: '__eh_open_target__',
+    loaded: true,
+    exports: {
+        async openNoteTarget(id) {
+            const filePath = new Map([
+                ['johnny-rico', 'C:\\vault\\johnny-rico.md'],
+                ['roughnecks', 'C:\\vault\\roughnecks.md']
+            ]).get(id);
+            if (!filePath) return null;
+            openedDocs.push(filePath);
+            shownDocs.push(filePath);
+            return { resolvedId: id, filePath, targetLine: 0, parts: { anchor: '', blockId: '' } };
+        }
+    }
+};
+
 Module._resolveFilename = function (request, parent, ...rest) {
     if (request === 'vscode') return '__eh_vscode__';
     if (request === '../core/indexService') return '__eh_indexService__';
     if (request === '../core/graph') return '__eh_graph__';
+    if (request === './navigation/openNoteTarget') return '__eh_open_target__';
     if (request === './entityHubModel') return '__eh_entityHubModel__';
     if (request === './entity/entityHubHtml') return '__eh_entityHubHtml__';
     return originalResolve(request, parent, ...rest);

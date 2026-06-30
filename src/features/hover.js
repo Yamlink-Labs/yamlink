@@ -1,13 +1,19 @@
 const vscode = require('vscode');
 const fs = require('fs');
 const { parseFrontmatter, getPathIndex, getFieldsCache, getAliasIndex, getVaultGeneration } = require('../core/indexService');
-const { canonicalizeLinkedTarget, resolveLinkedTarget } = require('../core/id');
+const { canonicalizeLinkedTarget, resolveLinkedTarget, parseLinkedTargetParts } = require('../core/id');
 const { normaliseDateInput } = require('../core/date');
+const { extractMeaningfulBodyBlocks, normalizeAnchorText } = require('../core/bodyBlocks');
 const { getSchema, getSchemaTargets } = require('../registries/schemaRegistry');
 const {
     DEFAULT_STATUS_LIKE_VALUES,
     DEFAULT_SEMANTIC_ROLE_PRIORS
 } = require('../intelligence/fieldRolesCore');
+const {
+    getCachedPriors,
+    buildVaultStatusValues,
+    buildVaultSemanticRolePriors
+} = require('../intelligence/vaultPriors');
 const { summarizeNoteRoleReasons } = require('../intelligence/noteRolesCore');
 const { filterItemsForSurface, shouldSurface } = require('../intelligence/confidence');
 const {
@@ -16,6 +22,7 @@ const {
     summarizeTraceHints
 } = require('../intelligence/suggestionCore');
 const { getVaultPatterns } = require('../intelligence/intelligenceCache');
+const { summarizeAuthoringFieldSignals } = require('../intelligence/authoringEngine');
 const {
     buildFrontmatterOpportunityModel,
     buildBodyMentionHints
@@ -28,6 +35,7 @@ const {
 } = require('../engine/suggestions');
 const { getCachedContext } = require('../intelligence/activationCache');
 const { perfTracker } = require('../runtime/performanceTracker');
+const { stripFrontmatter } = require('../intelligence/bodySignals');
 
 const PREVIEW_LINES = 1;
 const PREVIEW_MAX_CHARS = 220;
@@ -67,9 +75,11 @@ function registerHover(context, getIndex) {
                     const end = start + match[0].length;
                     if (position.character < start || position.character > end) continue;
 
-                    const resolvedId = resolveLinkedTarget(match[2], idIndex, aliasIdx);
+                    const rawLinkText = String(match[2] || '');
+                    const linkParts = parseLinkedTargetParts(rawLinkText);
+                    const resolvedId = resolveLinkedTarget(rawLinkText, idIndex, aliasIdx);
                     const filePath = resolvedId ? idIndex.get(resolvedId) : null;
-                    const displayId = canonicalizeLinkedTarget(match[2]);
+                    const displayId = canonicalizeLinkedTarget(rawLinkText);
 
                     const hoverRange = new vscode.Range(
                         new vscode.Position(position.line, start),
@@ -88,7 +98,14 @@ function registerHover(context, getIndex) {
                     const content = readFile(filePath);
                     if (!content) return;
 
-                    const hoverContent = buildHoverContent(resolvedId, content, filePath, idIndex);
+                    const hoverContent = buildHoverContent(
+                        resolvedId,
+                        content,
+                        filePath,
+                        idIndex,
+                        linkParts.anchor,
+                        linkParts.blockId
+                    );
                     if (isEmbed) {
                         hoverContent.appendMarkdown('\n\n---\n*Embedded note*');
                     }
@@ -111,8 +128,13 @@ function isPositionInsideWikilink(lineText, character) {
     return false;
 }
 
-/** @param {string} id @param {string} content @param {string} [filePath] @param {Map<string,string>|null} [idIndex] @returns {import('vscode').MarkdownString} */
-function buildHoverContent(id, content, filePath = '', idIndex = null) {
+/** @param {string} id @param {string} content @param {string} [filePath] @param {Map<string,string>|null} [idIndex] @param {string} [anchorRaw] @param {string} [blockId] @returns {import('vscode').MarkdownString} */
+function buildHoverContent(id, content, filePath = '', idIndex = null, anchorRaw = '', blockId = '') {
+    const anchorPreview = buildAnchorHoverContent(content, anchorRaw);
+    if (anchorPreview) return anchorPreview;
+    const blockPreview = buildBlockHoverContent(content, blockId);
+    if (blockPreview) return blockPreview;
+
     const md = new vscode.MarkdownString();
     md.isTrusted = false;
     md.supportHtml = false;
@@ -146,6 +168,77 @@ function buildHoverContent(id, content, filePath = '', idIndex = null) {
     }
 
     return md;
+}
+
+function buildAnchorHoverContent(content, anchorRaw) {
+    const anchorNorm = normalizeAnchorText(anchorRaw);
+    if (!anchorNorm) return null;
+
+    const body = stripFrontmatter(content);
+    const lines = body.split(/\r?\n/);
+
+    for (let index = 0; index < lines.length; index++) {
+        const match = lines[index].match(/^(#{1,6})\s+(.+)$/);
+        if (!match) continue;
+        const headingText = String(match[2] || '').trim();
+        if (normalizeAnchorText(headingText) !== anchorNorm) continue;
+
+        const level = match[1].length;
+        const collected = [];
+        for (let cursor = index + 1; cursor < lines.length; cursor++) {
+            const line = lines[cursor];
+            if (new RegExp(`^#{1,${level}}\\s`).test(line)) break;
+            collected.push(line);
+            if (collected.length >= 8) break;
+        }
+        const paragraphText = collected.join('\n').trim();
+        const clipped = paragraphText.length > 300 ? `${paragraphText.slice(0, 299).trimEnd()}…` : paragraphText;
+        const md = new vscode.MarkdownString();
+        md.isTrusted = true;
+        md.supportHtml = false;
+        md.supportThemeIcons = true;
+        md.appendMarkdown(`**${escapeMarkdown(headingText)}**\n\n${escapeMarkdown(clipped || headingText)}`);
+        return md;
+    }
+
+    return null;
+}
+
+function buildBlockHoverContent(content, blockId) {
+    const wanted = String(blockId || '').trim();
+    if (!wanted) return null;
+
+    const block = extractMeaningfulBodyBlocks(content).find((entry) => entry.blockId === wanted);
+    if (!block) return null;
+
+    const md = new vscode.MarkdownString();
+    md.isTrusted = true;
+    md.supportHtml = false;
+    md.supportThemeIcons = true;
+
+    const title = describeBodyBlockTitle(block);
+    const clipped = clipBlockPreviewText(block.text || block.label || title);
+    md.appendMarkdown(`**${escapeMarkdown(title)}**\n\n${escapeMarkdown(clipped)}`);
+    return md;
+}
+
+function describeBodyBlockTitle(block) {
+    switch (block?.type) {
+        case 'task':
+            return 'Task';
+        case 'quote':
+            return 'Quote';
+        case 'footnote':
+            return block.label ? `Footnote: ${block.label}` : 'Footnote';
+        default:
+            return block?.label ? String(block.label) : 'Block';
+    }
+}
+
+function clipBlockPreviewText(value) {
+    const text = String(value || '').trim().replace(/\s+/g, ' ');
+    if (!text) return '';
+    return text.length > 300 ? `${text.slice(0, 299).trimEnd()}…` : text;
 }
 
 function buildHoverChips(frontmatter) {
@@ -215,12 +308,34 @@ function cleanValue(value) {
 
 function buildHoverActivationContext(nodeId, nodeFields, nodeType, fieldsCache) {
     const { observedFields, observedIndex } = getVaultPatterns(fieldsCache, getVaultGeneration());
+    const priors = getCachedPriors(fieldsCache, getVaultGeneration());
+    const derivedStatusLikeValues = buildVaultStatusValues(priors.workflowFields);
+    const derivedSemanticRolePriors = buildVaultSemanticRolePriors(priors);
+    const statusLikeValues = new Set([
+        ...Array.from(DEFAULT_STATUS_LIKE_VALUES),
+        ...Array.from(derivedStatusLikeValues || [])
+    ]);
+    const semanticRolePriors = {};
+    for (const role of new Set([
+        ...Object.keys(DEFAULT_SEMANTIC_ROLE_PRIORS),
+        ...Object.keys(derivedSemanticRolePriors || {})
+    ])) {
+        semanticRolePriors[role] = [
+            ...new Set([
+                ...(DEFAULT_SEMANTIC_ROLE_PRIORS[role] || []),
+                ...(derivedSemanticRolePriors?.[role] || [])
+            ])
+        ];
+    }
     const noteContext = buildNoteContext(nodeFields, nodeType, {
         observedFields,
         getSchemaForType: getSchema,
         dateParser: normaliseDateInput,
-        statusLikeValues: DEFAULT_STATUS_LIKE_VALUES,
-        semanticRolePriors: DEFAULT_SEMANTIC_ROLE_PRIORS
+        statusLikeValues,
+        semanticRolePriors,
+        noteRolePriors: priors.noteRoleNamePriors,
+        noteRoleFieldHints: priors.noteRoleFieldHints,
+        typeRoleMap: priors.typeRoleMap
     });
     const frontmatterOpportunities = buildFrontmatterOpportunityModel(nodeFields, {
         nodeId,
@@ -233,8 +348,8 @@ function buildHoverActivationContext(nodeId, nodeFields, nodeType, fieldsCache) 
         getSchemaForType: getSchema,
         getDefaultSortField: getDefaultSortFieldForType,
         dateParser: normaliseDateInput,
-        statusLikeValues: DEFAULT_STATUS_LIKE_VALUES,
-        semanticRolePriors: DEFAULT_SEMANTIC_ROLE_PRIORS,
+        statusLikeValues,
+        semanticRolePriors,
         limit: 4,
         connectionLimit: 4
     });
@@ -260,6 +375,16 @@ function buildHoverContextLine(id, content, frontmatter) {
     const { observedFields, noteContext, frontmatterOpportunities } = fieldsCache.has(id)
         ? getCachedContext(id, () => buildHoverActivationContext(id, nodeFields, nodeType, fieldsCache))
         : buildHoverActivationContext(id, nodeFields, nodeType, fieldsCache);
+    const authoringSummary = summarizeAuthoringFieldSignals('lightbulb', {
+        noteType: nodeType,
+        noteFields: nodeFields,
+        documentText: content,
+        fieldsCache,
+        generation: getVaultGeneration()
+    });
+    if (authoringSummary?.summary) {
+        return normalizeContextLead(authoringSummary.summary);
+    }
 
     const traceHints = summarizeTraceHints(
         buildSharedContextTraces(id, nodeFields, noteContext, fieldsCache, {
@@ -271,8 +396,16 @@ function buildHoverContextLine(id, content, frontmatter) {
         1
     );
     const hoverConnections = filterItemsForSurface(frontmatterOpportunities.likelyConnections, 'hover-opportunities', { scoreScale: 700 });
+    const hoverLikelyFields = filterItemsForSurface(frontmatterOpportunities.likelyFields, 'hover-opportunities', { scoreScale: 700 });
+    const hoverLikelyGaps = filterItemsForSurface(frontmatterOpportunities.likelyGaps, 'hover-opportunities', { scoreScale: 700 });
     if (hoverConnections.length) {
         return normalizeContextLead(hoverConnections[0].summary);
+    }
+    if (hoverLikelyFields.length) {
+        return normalizeContextLead(hoverLikelyFields[0].summary || `Likely next field: ${hoverLikelyFields[0].field || hoverLikelyFields[0].key}`);
+    }
+    if (hoverLikelyGaps.length) {
+        return normalizeContextLead(hoverLikelyGaps[0].summary || `Likely missing field: ${hoverLikelyGaps[0].field || hoverLikelyGaps[0].key}`);
     }
     if (traceHints.length) {
         return normalizeContextLead(traceHints[0].summary);
@@ -493,6 +626,7 @@ module.exports = {
     registerHover,
     registerQueryPreviewHover,
     buildHoverContent,
+    buildAnchorHoverContent,
     buildHoverIntelligenceSummary,
     buildQueryPreview
 };

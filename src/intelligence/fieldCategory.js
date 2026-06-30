@@ -222,6 +222,10 @@ function _observedRelationStats(fieldName, fieldsCache) {
  *   noteRole?: Record<string, any>|null,
  *   noteRoleTypePriors?: Map<string, any>,
  *   implicitFieldWeights?: Map<string, any>,
+ *   behavioralRelationPriors?: {
+ *     fieldTargetTypeScores?: Map<string, Map<string, number>>,
+ *     noteTypeFieldTargetTypeScores?: Map<string, Map<string, Map<string, number>>>
+ *   },
  *   workflowFields?: Map<string, any>,
  *   valuePatterns?: Map<string, any>,
  *   outcomeCalibration?: import('./outcomeCalibration').OutcomeCalibration,
@@ -242,6 +246,7 @@ function _doClassifyField(fieldName, options = {}) {
         noteRole,
         noteRoleTypePriors,
         implicitFieldWeights,
+        behavioralRelationPriors,
         workflowFields,
         valuePatterns,
         outcomeCalibration
@@ -367,6 +372,24 @@ function _doClassifyField(fieldName, options = {}) {
                 }
             }
 
+            const behavioralTargetScores = behavioralRelationPriors?.noteTypeFieldTargetTypeScores?.get(noteType || '')?.get(norm)
+                || behavioralRelationPriors?.fieldTargetTypeScores?.get(norm)
+                || null;
+            if (behavioralTargetScores instanceof Map && behavioralTargetScores.size) {
+                const behaviorTotal = Array.from(behavioralTargetScores.values()).reduce((sum, value) => sum + value, 0);
+                if (behaviorTotal > 0) {
+                    const behaviorScore = (behavioralTargetScores.get(dominantTarget.targetType) || 0) / behaviorTotal;
+                    if (behaviorScore >= 0.45) {
+                        confidence += Math.min(0.08, behaviorScore * 0.08);
+                        reasons.push(
+                            noteType
+                                ? `recent ${noteType} modeling also links "${norm}" to ${dominantTarget.targetType} notes`
+                                : `recent vault modeling also links "${norm}" to ${dominantTarget.targetType} notes`
+                        );
+                    }
+                }
+            }
+
             // Body evidence — body prose mentions of IDs whose type matches the dominant
             // target type corroborate the vault prior. Capped boost: this is supporting
             // evidence, not a primary signal.
@@ -480,6 +503,27 @@ function _doClassifyField(fieldName, options = {}) {
         }
     }
 
+    if (behavioralRelationPriors) {
+        const behaviorTargetScores = behavioralRelationPriors?.noteTypeFieldTargetTypeScores?.get(noteType || '')?.get(norm)
+            || behavioralRelationPriors?.fieldTargetTypeScores?.get(norm)
+            || null;
+        if (behaviorTargetScores instanceof Map && behaviorTargetScores.size) {
+            const sorted = Array.from(behaviorTargetScores.entries())
+                .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]));
+            const total = sorted.reduce((sum, [, value]) => sum + value, 0);
+            const [targetType, topWeight] = sorted[0] || [];
+            const ratio = total > 0 ? topWeight / total : 0;
+            if (targetType && ratio >= 0.52) {
+                const confidence = clamp(0.42 + ratio * 0.18, 0, 0.76);
+                return _relationResult(confidence, 'behavior', [
+                    noteType
+                        ? `recent ${noteType} modeling repeatedly used "${norm}" as a relation to ${targetType} notes`
+                        : `recent vault modeling repeatedly used "${norm}" as a relation to ${targetType} notes`
+                ], { targetType });
+            }
+        }
+    }
+
     // 4.7. Outcome calibration — user explicitly accepted our relation suggestion for this field.
     //
     // This is the strongest form of historical evidence: not just that the field was set to
@@ -544,8 +588,13 @@ function _doClassifyField(fieldName, options = {}) {
  *   noteRole?: Record<string, any>|null,
  *   noteRoleTypePriors?: Map<string, any>,
  *   implicitFieldWeights?: Map<string, {relationCount: number, total: number}>,
+ *   behavioralRelationPriors?: {
+ *     fieldTargetTypeScores?: Map<string, Map<string, number>>,
+ *     noteTypeFieldTargetTypeScores?: Map<string, Map<string, Map<string, number>>>
+ *   },
  *   workflowFields?: Map<string, {values: string[], count: number}>,
  *   valuePatterns?: Map<string, any>,
+ *   outcomeCalibration?: import('./outcomeCalibration').OutcomeCalibration,
  *   vaultMaturity?: number
  * }} [options]
  * @returns {ClassificationResult}

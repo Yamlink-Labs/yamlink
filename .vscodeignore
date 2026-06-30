@@ -1,5 +1,8 @@
 .git
 .gitignore
+# Exclude all node_modules by default, then re-include the runtime deps
+# the VS Code extension actually needs (js-yaml, markdown-it, pdfkit + their
+# transitive trees). ink/ink-text-input are CLI/Conduit-only — devDeps.
 node_modules/**
 !node_modules/js-yaml/**
 !node_modules/argparse/**
@@ -38,6 +41,9 @@ site/**
 internal/**
 test/**
 coverage/**
+src/cli/**
+src/conduit/**
+bin/**
 dist/**
 .c8rc.json
 eslint.config.js

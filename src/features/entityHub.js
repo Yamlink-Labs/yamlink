@@ -3,6 +3,7 @@
 const vscode = require('vscode');
 const { getIndex, getPathIndex, getFieldsCache } = require('../core/indexService');
 const { getEdges, getBacklinks } = require('../core/graph');
+const { openNoteTarget } = require('./navigation/openNoteTarget');
 const {
     buildContextualQueryRecipes,
     buildEntityHubModel,
@@ -84,11 +85,7 @@ function registerEntityHubView(context) {
                 _subscriptions = [
                     view.webview.onDidReceiveMessage(function (msg) {
                         if (msg.command === 'openNode') {
-                            const fp = getIndex().get(msg.id);
-                            if (!fp) return;
-                            vscode.workspace.openTextDocument(fp).then(function (doc) {
-                                vscode.window.showTextDocument(doc, { viewColumn: vscode.ViewColumn.One, preview: false });
-                            }, function (err) {
+                            openNoteTarget(msg.id, { viewColumn: vscode.ViewColumn.One, preview: false }).catch(function (err) {
                                 console.error('Yamlink — openNode failed:', err.message);
                             });
                             return;
@@ -169,7 +166,9 @@ function renderHub(nodeId) {
             historyCount,
             historyArc,
             unlinkedMentions,
-            noteArc
+            noteArc,
+            documentData,
+            staleConnectedNotes
         } = model;
 
         if ('title' in host) host.title = `${nodeId} · report`;
@@ -199,7 +198,9 @@ function renderHub(nodeId) {
             historyCount,
             historyArc,
             unlinkedMentions,
-            noteArc
+            noteArc,
+            documentData,
+            staleConnectedNotes
         });
     } catch (error) {
         renderError(`Could not render report for ${nodeId}`, error);

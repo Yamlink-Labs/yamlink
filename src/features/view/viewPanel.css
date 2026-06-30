@@ -197,6 +197,7 @@ tr:hover .revert-row-btn{opacity:1}
 .layout-btn{background:none;border:none;color:var(--yl-text-muted);padding:4px 11px;font:inherit;font-size:12px;cursor:pointer;transition:background-color .12s,color .12s}
 .layout-btn:hover{color:var(--yl-text)}
 .layout-btn.active{background:color-mix(in srgb, var(--yl-accent) 16%, var(--yl-control-bg));color:var(--yl-accent);font-weight:600}
+.layout-btn:disabled{opacity:.35;cursor:not-allowed;pointer-events:auto}
 .matrix-col-picker{display:inline-flex;align-items:center;gap:7px}
 .matrix-col-label{font-size:11px;color:var(--yl-text-muted);font-weight:600;text-transform:uppercase;letter-spacing:.07em;flex-shrink:0}
 .matrix-col-select{background:var(--yl-search-bg);border:1px solid var(--yl-search-border);border-radius:8px;padding:4px 8px;color:var(--yl-text-strong);font:inherit;font-size:12px}
@@ -221,6 +222,19 @@ tr:hover .revert-row-btn{opacity:1}
 .matrix-cell{width:80px;border-bottom:1px solid var(--yl-border);text-align:center;padding:4px;font-size:16px;color:color-mix(in srgb, var(--yl-accent) 60%, transparent);transition:background-color .1s}
 .matrix-cell.linked{color:var(--yl-accent);cursor:pointer}
 .matrix-cell.linked:hover{background:color-mix(in srgb, var(--yl-accent) 10%, transparent)}
+.chart-surface{display:flex;flex-direction:column;gap:14px;padding:8px 16px 16px;min-height:0;flex:1}
+.chart-surface-head{display:flex;align-items:flex-start;justify-content:space-between;gap:12px;flex-wrap:wrap}
+.chart-surface-title{font-size:13px;font-weight:700;color:var(--yl-text-strong);letter-spacing:.01em}
+.chart-surface-copy{font-size:12px;color:var(--yl-text-muted);line-height:1.6}
+.chart-surface-copy code,.chart-info-copy code{background:var(--yl-bg-widget);border:1px solid var(--yl-border-strong);border-radius:6px;padding:1px 5px;color:var(--yl-text-strong)}
+.chart-canvas-wrap{position:relative;min-height:340px;height:min(56vh,520px);padding:14px;border:1px solid color-mix(in srgb, var(--yl-toolbar-border) 82%, transparent);border-radius:16px;background:linear-gradient(180deg, color-mix(in srgb, var(--yl-toolbar-bg) 88%, transparent), color-mix(in srgb, var(--yl-bg) 98%, transparent));box-shadow:inset 0 1px 0 color-mix(in srgb, white 3%, transparent)}
+.chart-canvas{width:100%;height:100%}
+.chart-info-card{margin:8px 16px 16px;padding:18px 18px;border:1px solid var(--yl-control-border);border-radius:16px;background:linear-gradient(180deg, color-mix(in srgb, var(--yl-toolbar-bg) 88%, transparent), color-mix(in srgb, var(--yl-bg) 98%, transparent))}
+.chart-info-title{font-size:13px;font-weight:700;color:var(--yl-text-strong);margin-bottom:6px}
+.chart-info-copy{font-size:12px;color:var(--yl-text-muted);line-height:1.65}
+.scatter-axis-picker{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+.scatter-axis-label{display:inline-flex;align-items:center;gap:8px;font-size:11px;color:var(--yl-text-muted);font-weight:600;text-transform:uppercase;letter-spacing:.07em}
+.scatter-axis-select{background:var(--yl-search-bg);border:1px solid var(--yl-search-border);border-radius:10px;padding:6px 10px;color:var(--yl-text-strong);font:inherit;font-size:12px;min-width:160px}
 body.vscode-light .btn,body.vscode-light .chip,body.vscode-light .fsearch{box-shadow:none}
 body.vscode-light .btn.refine-btn{color:color-mix(in srgb, var(--yl-accent) 68%, var(--yl-text))}
 body.vscode-light .chip.active{color:color-mix(in srgb, var(--yl-accent) 80%, var(--yl-text))}

@@ -58,3 +58,5 @@ Key personnel involved in this intelligence break:
 - [[roughnecks]] — the unit that executed both operations
 
 #intelligence #brain-bug #planet-p #source
+
+Let's go to [[johnny-rico|Missions]]

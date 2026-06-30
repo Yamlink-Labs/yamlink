@@ -2,126 +2,67 @@
 
 const vscode = require('vscode');
 const { parseAllViewQueries } = require('../engine/query');
-const { parseFrontmatter, getFieldsCache, getVaultGeneration } = require('../core/indexService');
+const { parseFrontmatter, getFieldsCache, getPathIndex, getVaultGeneration } = require('../core/indexService');
+const { getPrimaryWorkspaceRoot } = require('../core/workspace');
+const { getTemplateForType } = require('../core/templateRegistry');
 const { extractBodyMentionedIds } = require('../intelligence/frontmatterBodyHints');
 const { inferNoteRole } = require('../intelligence/noteRolesCore');
 const {
     buildFrontmatterGuidanceSummary,
     buildBodyMentionHints
 } = require('../intelligence/frontmatterIntelligence');
-const { getSurfacePolicy, readConfidence } = require('../intelligence/confidence');
 const { buildActivationContext } = require('../engine/suggestions');
 const { getCachedContext } = require('../intelligence/activationCache');
-const { classifyField, CATEGORY } = require('../intelligence/fieldCategory');
 const { planFieldActions, LEVEL } = require('../intelligence/fieldPlanner');
 const { getSchema } = require('../registries/schemaRegistry');
+const { getTypes } = require('../registries/typeRegistry');
 const { getCachedPriors, inferLikelyTypesForNote, getCommonFieldsForType } = require('../intelligence/vaultPriors');
+const {
+    classifyCurrentField,
+    getFrontmatterRange,
+    parseFrontmatterLine,
+    strictSurfaceItems,
+    formatFieldPrompt,
+    formatFieldListPrompt,
+    formatLinkPrompt,
+    getFieldTargetTypesFromSchema,
+    buildFieldValueRange,
+    getFieldValueReplacement
+} = require('./lightbulbUtils');
+const {
+    resolveFrontmatterRelationCandidates,
+    rankScalarValues,
+    rankCandidateIds,
+    buildRelationCandidateDetail
+} = require('./completionHelpers');
 
-function parseFieldNameFromLine(line) {
-    const match = String(line || '').trim().match(/^([\w-]+)\s*:/);
-    return match ? match[1].toLowerCase() : null;
-}
-
-function classifyCurrentField(fieldName, nodeType, fieldsCache, noteFields, bodyWikilinkCounts) {
-    if (!fieldName) return { category: CATEGORY.UNKNOWN, confidence: 0, source: 'default' };
-    const schema = nodeType ? getSchema(nodeType) : null;
-    const schemaFieldDef = schema && schema.fields
-        ? (schema.fields[fieldName] || schema.fields[fieldName.replace(/-/g, '_')] || null)
-        : null;
-    const priors = (!fieldsCache || !fieldsCache.size)
-        ? { fieldTargetTypes: null, typeFieldBundles: null, fieldAmbiguity: null, noteRoleTypePriors: null, typeRoleMap: null }
-        : getCachedPriors(fieldsCache, getVaultGeneration());
-    const noteRole = inferNoteRole(noteFields || {}, { typeRoleMap: priors.typeRoleMap || null });
-    return classifyField(fieldName, {
-        schemaFieldDef,
-        fieldsCache,
-        noteType: nodeType,
-        noteFields,
-        bodyWikilinkCounts: bodyWikilinkCounts || null,
-        noteRole: noteRole.noteRole ? noteRole : null,
-        ...priors
-    });
-}
-
-function getFrontmatterRange(document) {
+function focusFirstEmptyFrontmatterField(editor, document) {
+    if (!editor || !document) return false;
     const lines = document.getText().split('\n');
-    let openLine = -1;
-    let closeLine = -1;
+    let inFm = false;
     for (let i = 0; i < lines.length; i++) {
-        if (/^---\s*$/.test(lines[i])) {
-            if (openLine === -1) openLine = i;
-            else {
-                closeLine = i;
-                break;
-            }
+        const line = lines[i];
+        if (i === 0 && line.trim() === '---') { inFm = true; continue; }
+        if (inFm && line.trim() === '---') break;
+        if (!inFm) break;
+        const relMatch = line.match(/^(\s*[\w-]+:\s*)\[\[\]\]/);
+        if (relMatch) {
+            const col = relMatch[1].length + 2;
+            const pos = new vscode.Position(i, col);
+            editor.selection = new vscode.Selection(pos, pos);
+            editor.revealRange(new vscode.Range(pos, pos));
+            return true;
+        }
+        const emptyMatch = line.match(/^(\s*[\w-]+:)\s*$/);
+        if (emptyMatch) {
+            const col = emptyMatch[1].length + 1;
+            const pos = new vscode.Position(i, col);
+            editor.selection = new vscode.Selection(pos, pos);
+            editor.revealRange(new vscode.Range(pos, pos));
+            return true;
         }
     }
-    return openLine !== -1 && closeLine !== -1 ? { openLine, closeLine } : null;
-}
-
-function parseFrontmatterLine(lineText = '') {
-    const match = String(lineText || '').match(/^\s*([\w-]+)\s*:\s*(.*?)\s*$/);
-    if (!match) return null;
-    return {
-        fieldName: String(match[1] || '').trim().toLowerCase(),
-        rawValue: String(match[2] || ''),
-        value: String(match[2] || '').trim()
-    };
-}
-
-function strictSurfaceItems(items = [], surface, options = {}) {
-    const policy = getSurfacePolicy(surface);
-    return (Array.isArray(items) ? items : []).filter((item) => readConfidence(item, options) >= policy.minimum);
-}
-
-function formatFieldPrompt(field) {
-    return `Add ${field} here?`;
-}
-
-function formatFieldListPrompt(fields, fallback = 'Fill in the usual fields?') {
-    const list = Array.isArray(fields)
-        ? fields.map((value) => String(value || '').trim()).filter(Boolean)
-        : [];
-    if (list.length === 1) return `Add ${list[0]} here?`;
-    if (list.length === 2) return `Add ${list[0]} and ${list[1]} here?`;
-    if (list.length >= 3) return `Fill in the usual fields?`;
-    return fallback;
-}
-
-function formatLinkPrompt(targetId, prefix = 'Should this note link to') {
-    return `${prefix} ${targetId}?`;
-}
-
-function getFieldTargetTypesFromSchema(schema, fieldName) {
-    if (!schema?.fields || !fieldName) return [];
-    const raw = schema.fields[fieldName] || schema.fields[fieldName.replace(/-/g, '_')] || null;
-    if (!raw || String(raw.type || '').trim().toLowerCase() !== 'relation') return [];
-    if (raw.target) return [String(raw.target).trim().toLowerCase()].filter(Boolean);
-    if (Array.isArray(raw.targetTypes)) {
-        return raw.targetTypes.map((value) => String(value || '').trim().toLowerCase()).filter(Boolean);
-    }
-    return [];
-}
-
-function buildFieldValueRange(document, lineIndex, fieldName) {
-    const lineText = document.lineAt(lineIndex).text;
-    const match = String(lineText || '').match(/^(\s*[\w-]+\s*:)(\s*)(.*?)\s*$/);
-    if (!match) return null;
-    const normalized = String(fieldName || '').trim().toLowerCase();
-    const parsedField = parseFieldNameFromLine(lineText);
-    if (normalized && parsedField !== normalized) return null;
-    const valueStart = match[1].length;
-    return new vscode.Range(
-        new vscode.Position(lineIndex, valueStart),
-        new vscode.Position(lineIndex, lineText.length)
-    );
-}
-
-function getFieldValueReplacement(document, lineIndex, fieldName, replacement) {
-    const range = buildFieldValueRange(document, lineIndex, fieldName);
-    const normalizedReplacement = String(replacement || '').replace(/\r?\n$/, '');
-    if (!range) return null;
-    return { range, text: normalizedReplacement ? ` ${normalizedReplacement}` : '' };
+    return false;
 }
 
 function buildLikelyShapeActions(document, lineIndex = null, options = {}) {
@@ -129,7 +70,11 @@ function buildLikelyShapeActions(document, lineIndex = null, options = {}) {
     if (!frontmatter) return [];
     const fieldsCache = getFieldsCache();
     const priors = getCachedPriors(fieldsCache, getVaultGeneration());
-    const noteRole = inferNoteRole(frontmatter || {}, { typeRoleMap: priors.typeRoleMap || null });
+    const noteRole = inferNoteRole(frontmatter || {}, {
+        typeRoleMap: priors.typeRoleMap || null,
+        noteRolePriors: priors.noteRoleNamePriors || null,
+        noteRoleFieldHints: priors.noteRoleFieldHints || null
+    });
     const shape = inferLikelyTypesForNote(
         frontmatter,
         fieldsCache,
@@ -205,10 +150,6 @@ function buildLikelyShapeActions(document, lineIndex = null, options = {}) {
         if (canWriteType) {
             action.edit = edit;
             action.isPreferred = true;
-            action.command = {
-                command: 'yamlink.openHub',
-                title: 'Open Yamlink Note Report'
-            };
             action.diagnostics = /** @type {any} */ (topCandidate.reasons);
             pushIf(action);
         }
@@ -238,10 +179,6 @@ function buildLikelyShapeActions(document, lineIndex = null, options = {}) {
                 bundleEdit.insert(document.uri, insertPosition, insertText);
                 bundleAction.edit = bundleEdit;
                 bundleAction.isPreferred = actions.length === 0;
-                bundleAction.command = {
-                    command: 'yamlink.openHub',
-                    title: 'Open Yamlink Note Report'
-                };
                 bundleAction.diagnostics = /** @type {any} */ ([
                     `${topCandidate.matchedFields.length}/${currentFields.size || 1} current fields commonly appear on ${inferredType} notes`
                 ]);
@@ -254,7 +191,137 @@ function buildLikelyShapeActions(document, lineIndex = null, options = {}) {
 }
 
 function buildTypeInferenceActions(document, lineIndex) {
-    return buildLikelyShapeActions(document, lineIndex, { minScore: 0.46 });
+    const inferredActions = buildLikelyShapeActions(document, lineIndex, { minScore: 0.46 });
+    if (inferredActions.length) return inferredActions;
+
+    const frontmatter = parseFrontmatter(document.getText());
+    if (!frontmatter) return [];
+    const fieldsCache = getFieldsCache();
+    const typeCounts = new Map();
+    for (const fields of fieldsCache.values()) {
+        const noteType = String(fields?.type || '').trim().toLowerCase();
+        if (!noteType) continue;
+        typeCounts.set(noteType, (typeCounts.get(noteType) || 0) + 1);
+    }
+    const rankedTypes = [...getTypes()]
+        .map((type) => String(type || '').trim().toLowerCase())
+        .filter(Boolean)
+        .sort((a, b) => (typeCounts.get(b) || 0) - (typeCounts.get(a) || 0) || a.localeCompare(b))
+        .slice(0, 3);
+
+    const actions = [];
+    const pushIf = (action) => {
+        if (!action) return;
+        if (actions.some((existing) => existing.title === action.title)) return;
+        actions.push(action);
+    };
+    for (const typeName of rankedTypes) {
+        const action = new vscode.CodeAction(
+            `Set type to ${typeName}?`,
+            vscode.CodeActionKind.QuickFix
+        );
+        const edit = new vscode.WorkspaceEdit();
+        const prepared = getFieldValueReplacement(document, lineIndex, 'type', typeName);
+        if (!prepared) continue;
+        edit.replace(document.uri, prepared.range, prepared.text);
+        action.edit = edit;
+        action.isPreferred = actions.length === 0;
+        action.command = {
+            command: 'yamlink.focusFirstEmptyFrontmatterField',
+            title: 'Focus first empty frontmatter field'
+        };
+        pushIf(action);
+    }
+
+    const chooseAction = new vscode.CodeAction(
+        'Choose note type…',
+        vscode.CodeActionKind.QuickFix
+    );
+    chooseAction.command = {
+        command: 'yamlink.pickTypeForLine',
+        title: 'Choose note type',
+        arguments: [lineIndex]
+    };
+    chooseAction.isPreferred = actions.length === 0;
+    pushIf(chooseAction);
+    return actions;
+}
+
+function buildTypedEmptyFieldFallbackActions(document, lineIndex, fieldName, nodeType) {
+    const normalizedField = String(fieldName || '').trim().toLowerCase();
+    const normalizedType = String(nodeType || '').trim().toLowerCase();
+    if (!normalizedField || !normalizedType) return [];
+
+    const schema = getSchema(normalizedType);
+    const schemaField = schema?.fields?.[normalizedField] || schema?.fields?.[normalizedField.replace(/-/g, '_')] || null;
+    const fieldsCache = getFieldsCache();
+    const priors = getCachedPriors(fieldsCache, getVaultGeneration());
+    const commonFields = getCommonFieldsForType(normalizedType, priors.typeFieldBundles, fieldsCache, { limit: 8, minRatio: 0.25 });
+    const isExpectedField = Boolean(schemaField) || commonFields.some((entry) => String(entry.field || '').trim().toLowerCase() === normalizedField);
+    if (!isExpectedField) return [];
+
+    const isRelation = String(schemaField?.type || '').trim().toLowerCase() === 'relation';
+    const lineText = document.lineAt(lineIndex).text;
+    const cursorPos = new vscode.Position(lineIndex, lineText.length);
+    const actions = [];
+
+    if (isRelation) {
+        const idIndex = getPathIndex();
+        const relationState = resolveFrontmatterRelationCandidates(document, cursorPos, idIndex);
+        if (relationState) {
+            const ranked = rankCandidateIds(
+                relationState.candidateIds,
+                relationState.partial,
+                relationState.preferredIds,
+                relationState.localLinkedIds,
+                relationState.observedIdScores,
+                relationState.rankingHints
+            ).slice(0, 2);
+            for (const id of ranked) {
+                const action = new vscode.CodeAction(
+                    `Use ${id} for ${normalizedField}?`,
+                    vscode.CodeActionKind.QuickFix
+                );
+                const edit = new vscode.WorkspaceEdit();
+                const prepared = getFieldValueReplacement(document, lineIndex, normalizedField, `[[${id}]]`);
+                if (!prepared) continue;
+                edit.replace(document.uri, prepared.range, prepared.text);
+                action.edit = edit;
+                action.isPreferred = actions.length === 0;
+                action.diagnostics = /** @type {any} */ ([buildRelationCandidateDetail(id, idIndex, relationState, relationState.preferredIds.includes(id))]);
+                actions.push(action);
+            }
+        }
+    } else {
+        const rankedValues = rankScalarValues(normalizedField, normalizedType).slice(0, 3);
+        for (const { value, count } of rankedValues) {
+            const action = new vscode.CodeAction(
+                `Use ${value} for ${normalizedField}?`,
+                vscode.CodeActionKind.QuickFix
+            );
+            const edit = new vscode.WorkspaceEdit();
+            const prepared = getFieldValueReplacement(document, lineIndex, normalizedField, value);
+            if (!prepared) continue;
+            edit.replace(document.uri, prepared.range, prepared.text);
+            action.edit = edit;
+            action.isPreferred = actions.length === 0;
+            action.diagnostics = /** @type {any} */ ([`${count} ${normalizedType} note${count === 1 ? '' : 's'} already use this value`]);
+            actions.push(action);
+        }
+    }
+
+    if (actions.length) return actions;
+
+    const fallbackAction = new vscode.CodeAction(
+        isRelation ? `Suggest a link for ${normalizedField}?` : `Suggest a value for ${normalizedField}?`,
+        vscode.CodeActionKind.QuickFix
+    );
+    fallbackAction.command = {
+        command: 'editor.action.triggerSuggest',
+        title: 'Trigger Suggest'
+    };
+    fallbackAction.isPreferred = true;
+    return [fallbackAction];
 }
 
 /**
@@ -287,6 +354,8 @@ function buildAdaptiveFrontmatterActions(document, activeField = null, plan = nu
 
     const normalizedActiveField = activeField ? String(activeField).trim().toLowerCase() : '';
     const isFieldScoped = Boolean(normalizedActiveField);
+    const isTypeScoped = normalizedActiveField === 'type';
+    const canShowNoteSetup = !isFieldScoped || isTypeScoped;
     // When a plan is supplied, use it to gate field-specific actions.
     // DOCUMENT level: document-level bundles and views only, no field quickfix.
     // QUICKFIX level (or no plan): field-specific actions allowed.
@@ -387,7 +456,60 @@ function buildAdaptiveFrontmatterActions(document, activeField = null, plan = nu
         }
         return false;
     };
-    if (!isFieldScoped && guidance.bestNextStep?.insertText) {
+    const mergeInsertTexts = (...chunks) => {
+        const existingFields = new Set(Object.keys(frontmatter || {}).map((key) => String(key).trim().toLowerCase()));
+        const mergedLines = [];
+        const seenFields = new Set();
+        for (const chunk of chunks) {
+            for (const rawLine of String(chunk || '').split('\n')) {
+                const line = rawLine.replace(/\r$/, '');
+                if (!line.trim()) continue;
+                const fieldMatch = line.match(/^\s*([\w-]+):/);
+                if (!fieldMatch) {
+                    mergedLines.push(line);
+                    continue;
+                }
+                const fieldName = fieldMatch[1].toLowerCase();
+                if (existingFields.has(fieldName) || seenFields.has(fieldName)) continue;
+                seenFields.add(fieldName);
+                mergedLines.push(line);
+            }
+        }
+        return mergedLines.length ? `${mergedLines.join('\n')}\n` : '';
+    };
+    const stripInsertValues = (chunk) => {
+        const normalized = String(chunk || '');
+        if (!normalized.trim()) return '';
+        return normalized
+            .split('\n')
+            .map((rawLine) => rawLine.replace(/\r$/, ''))
+            .filter((line) => line.trim())
+            .map((line) => {
+                const fieldMatch = line.match(/^\s*([\w-]+):/);
+                return fieldMatch ? `${fieldMatch[1]}:` : line;
+            })
+            .join('\n') + '\n';
+    };
+    const buildMissingTemplateInsertText = () => {
+        const noteType = String(nodeType || '').trim().toLowerCase();
+        if (!noteType) return null;
+        const root = getPrimaryWorkspaceRoot(vscode.workspace?.workspaceFolders);
+        if (!root) return null;
+        const template = getTemplateForType(root, noteType);
+        const templateFields = Array.isArray(template?.fields) ? template.fields : [];
+        if (!templateFields.length) return null;
+        const existingKeys = new Set(Object.keys(frontmatter || {}).map((key) => String(key || '').trim().toLowerCase()));
+        const missingFields = templateFields.filter((field) => !existingKeys.has(String(field || '').trim().toLowerCase()));
+        if (!missingFields.length) return null;
+        return {
+            noteType,
+            missingFields,
+            insertText: missingFields.map((field) => `${field}:`).join('\n') + '\n'
+        };
+    };
+    const schemaOnlyInsertText = stripInsertValues(opportunities.recommendedBundle?.insertText || opportunities.setupInsertText || '');
+    const templateSchema = isTypeScoped ? buildMissingTemplateInsertText() : null;
+    if (canShowNoteSetup && !isTypeScoped && guidance.bestNextStep?.insertText) {
         const starterAction = new vscode.CodeAction(
             formatFieldPrompt(guidance.bestNextStep.label),
             vscode.CodeActionKind.QuickFix
@@ -396,16 +518,27 @@ function buildAdaptiveFrontmatterActions(document, activeField = null, plan = nu
         starterEdit.insert(document.uri, insertPosition, guidance.bestNextStep.insertText);
         starterAction.edit = starterEdit;
         starterAction.isPreferred = true;
-        starterAction.command = {
-            command: 'yamlink.openHub',
-            title: 'Open Yamlink Note Report'
-        };
         pushAction(starterAction);
     }
 
     const completionInsertText = opportunities.recommendedBundle?.insertText || opportunities.setupInsertText || '';
-    if (!isFieldScoped && guidance.bestNextStep?.insertText && completionInsertText) {
-        const combinedInsert = `${guidance.bestNextStep.insertText}${completionInsertText}`;
+    if (isTypeScoped && (templateSchema?.insertText || schemaOnlyInsertText)) {
+        const schemaAction = new vscode.CodeAction(
+            `Use the ${(templateSchema?.noteType || nodeType || 'note')} schema from Smart Templates`,
+            vscode.CodeActionKind.QuickFix
+        );
+        const schemaEdit = new vscode.WorkspaceEdit();
+        schemaEdit.insert(document.uri, insertPosition, templateSchema?.insertText || schemaOnlyInsertText);
+        schemaAction.edit = schemaEdit;
+        schemaAction.isPreferred = true;
+        schemaAction.command = {
+            command: 'yamlink.focusFirstEmptyFrontmatterField',
+            title: 'Focus first empty frontmatter field'
+        };
+        pushAction(schemaAction);
+    } else if (canShowNoteSetup && guidance.bestNextStep?.insertText && completionInsertText) {
+        const combinedInsert = mergeInsertTexts(guidance.bestNextStep.insertText, completionInsertText);
+        if (combinedInsert) {
         const completeAction = new vscode.CodeAction(
             'Fill in the usual fields?',
             vscode.CodeActionKind.QuickFix
@@ -414,14 +547,11 @@ function buildAdaptiveFrontmatterActions(document, activeField = null, plan = nu
         completeEdit.insert(document.uri, insertPosition, combinedInsert);
         completeAction.edit = completeEdit;
         completeAction.isPreferred = true;
-        completeAction.command = {
-            command: 'yamlink.openHub',
-            title: 'Open Yamlink Note Report'
-        };
         pushAction(completeAction);
+        }
     }
 
-    if (!isFieldScoped && strongLikelyFields.length > 0 && opportunities.setupInsertText) {
+    if (canShowNoteSetup && !isTypeScoped && strongLikelyFields.length > 0 && opportunities.setupInsertText) {
         const setupAction = new vscode.CodeAction(
             formatFieldListPrompt(strongLikelyFields.map((hint) => hint.field)),
             vscode.CodeActionKind.QuickFix
@@ -430,14 +560,10 @@ function buildAdaptiveFrontmatterActions(document, activeField = null, plan = nu
         setupEdit.insert(document.uri, insertPosition, opportunities.setupInsertText);
         setupAction.edit = setupEdit;
         setupAction.isPreferred = true;
-        setupAction.command = {
-            command: 'yamlink.openHub',
-            title: 'Open Yamlink Note Report'
-        };
         pushAction(setupAction);
     }
 
-    if (!isFieldScoped && opportunities.recommendedBundle?.fields?.length && opportunities.recommendedBundle.insertText) {
+    if (canShowNoteSetup && !isTypeScoped && opportunities.recommendedBundle?.fields?.length && opportunities.recommendedBundle.insertText) {
         const bundleAction = new vscode.CodeAction(
             formatFieldListPrompt(opportunities.recommendedBundle.fields.map((hint) => hint.field)),
             vscode.CodeActionKind.QuickFix
@@ -446,13 +572,9 @@ function buildAdaptiveFrontmatterActions(document, activeField = null, plan = nu
         bundleEdit.insert(document.uri, insertPosition, opportunities.recommendedBundle.insertText);
         bundleAction.edit = bundleEdit;
         bundleAction.isPreferred = true;
-        bundleAction.command = {
-            command: 'yamlink.openHub',
-            title: 'Open Yamlink Note Report'
-        };
         pushAction(bundleAction);
     }
-    if (!isFieldScoped && opportunities.contextBundle?.summary && opportunities.contextBundle.insertText) {
+    if (!isTypeScoped && canShowNoteSetup && opportunities.contextBundle?.summary && opportunities.contextBundle.insertText) {
         const flowAction = new vscode.CodeAction(
             'Use the usual fields for notes like this?',
             vscode.CodeActionKind.QuickFix
@@ -461,11 +583,11 @@ function buildAdaptiveFrontmatterActions(document, activeField = null, plan = nu
         flowEdit.insert(document.uri, insertPosition, opportunities.contextBundle.insertText);
         flowAction.edit = flowEdit;
         flowAction.isPreferred = false;
-        flowAction.command = {
-            command: 'yamlink.openHub',
-            title: 'Open Yamlink Note Report'
-        };
         pushAction(flowAction);
+    }
+
+    if (isTypeScoped) {
+        return actions.slice(0, 3);
     }
 
     for (const contextHint of (allowFieldQuickfix ? actionContexts : []).slice(0, 1)) {
@@ -477,10 +599,6 @@ function buildAdaptiveFrontmatterActions(document, activeField = null, plan = nu
         contextEdit.insert(document.uri, insertPosition, contextHint.insertText);
         contextAction.edit = contextEdit;
         contextAction.isPreferred = false;
-        contextAction.command = {
-            command: 'yamlink.openHub',
-            title: 'Open Yamlink Note Report'
-        };
         pushAction(contextAction);
     }
     for (const companionHint of actionCompanions.slice(0, 1)) {
@@ -492,10 +610,6 @@ function buildAdaptiveFrontmatterActions(document, activeField = null, plan = nu
         companionEdit.insert(document.uri, insertPosition, companionHint.insertText);
         companionAction.edit = companionEdit;
         companionAction.isPreferred = false;
-        companionAction.command = {
-            command: 'yamlink.openHub',
-            title: 'Open Yamlink Note Report'
-        };
         pushAction(companionAction);
     }
 
@@ -508,10 +622,6 @@ function buildAdaptiveFrontmatterActions(document, activeField = null, plan = nu
         relationSetupEdit.insert(document.uri, insertPosition, opportunities.relationSetupInsertText);
         relationSetupAction.edit = relationSetupEdit;
         relationSetupAction.isPreferred = false;
-        relationSetupAction.command = {
-            command: 'yamlink.openHub',
-            title: 'Open Yamlink Note Report'
-        };
         pushAction(relationSetupAction);
     }
 
@@ -524,10 +634,6 @@ function buildAdaptiveFrontmatterActions(document, activeField = null, plan = nu
         connectionEdit.insert(document.uri, insertPosition, connection.insertText);
         connectionAction.edit = connectionEdit;
         connectionAction.isPreferred = false;
-        connectionAction.command = {
-            command: 'yamlink.openHub',
-            title: 'Open Yamlink Note Report'
-        };
         pushAction(connectionAction);
     }
 
@@ -587,10 +693,6 @@ function buildAdaptiveFrontmatterActions(document, activeField = null, plan = nu
         bodyEdit.insert(document.uri, insertPosition, mention.insertText);
         bodyAction.edit = bodyEdit;
         bodyAction.isPreferred = false;
-        bodyAction.command = {
-            command: 'yamlink.openHub',
-            title: 'Open Yamlink Note Report'
-        };
         pushAction(bodyAction);
     }
 
@@ -611,10 +713,6 @@ function buildAdaptiveFrontmatterActions(document, activeField = null, plan = nu
             }
             linkAction.edit = linkEdit;
             linkAction.isPreferred = true;
-            linkAction.command = {
-                command: 'yamlink.openHub',
-                title: 'Open Yamlink Note Report'
-            };
             pushAction(linkAction);
         }
 
@@ -626,10 +724,6 @@ function buildAdaptiveFrontmatterActions(document, activeField = null, plan = nu
         }
         genericAction.edit = genericEdit;
         genericAction.isPreferred = false;
-        genericAction.command = {
-            command: 'yamlink.openHub',
-            title: 'Open Yamlink Note Report'
-        };
         if (!(hint.relational && selectedRelationTarget && isFieldScoped)) {
             pushAction(genericAction);
         }
@@ -643,6 +737,62 @@ function buildAdaptiveFrontmatterActions(document, activeField = null, plan = nu
  * @returns {void}
  */
 function registerViewLightbulb(context) {
+    context.subscriptions.push(
+        vscode.commands.registerCommand('yamlink.pickTypeForLine', async (lineIndex) => {
+            const editor = vscode.window.activeTextEditor;
+            const document = editor?.document;
+            if (!editor || !document || document.languageId !== 'markdown') return;
+
+            const fieldsCache = getFieldsCache();
+            const typeCounts = new Map();
+            for (const fields of fieldsCache.values()) {
+                const noteType = String(fields?.type || '').trim().toLowerCase();
+                if (!noteType) continue;
+                typeCounts.set(noteType, (typeCounts.get(noteType) || 0) + 1);
+            }
+            const knownTypes = [...getTypes()]
+                .map((type) => String(type || '').trim().toLowerCase())
+                .filter(Boolean)
+                .sort((a, b) => (typeCounts.get(b) || 0) - (typeCounts.get(a) || 0) || a.localeCompare(b));
+            if (!knownTypes.length) return;
+
+            const picked = await vscode.window.showQuickPick(
+                knownTypes.map((type) => ({
+                    label: type,
+                    description: `${typeCounts.get(type) || 0} note${(typeCounts.get(type) || 0) === 1 ? '' : 's'}`
+                })),
+                {
+                    title: 'Note Type',
+                    placeHolder: 'Choose a type for this note'
+                }
+            );
+            if (!picked) return;
+
+            const edit = new vscode.WorkspaceEdit();
+            const prepared = getFieldValueReplacement(document, lineIndex, 'type', picked.label);
+            if (!prepared) return;
+            edit.replace(document.uri, prepared.range, prepared.text);
+            const applied = await vscode.workspace.applyEdit(edit);
+            if (!applied) return;
+            const focused = focusFirstEmptyFrontmatterField(editor, document);
+            if (focused) {
+                await vscode.commands.executeCommand('editor.action.triggerSuggest');
+            }
+        })
+    );
+
+    context.subscriptions.push(
+        vscode.commands.registerCommand('yamlink.focusFirstEmptyFrontmatterField', async () => {
+            const editor = vscode.window.activeTextEditor;
+            const document = editor?.document;
+            if (!editor || !document || document.languageId !== 'markdown') return;
+            const focused = focusFirstEmptyFrontmatterField(editor, document);
+            if (focused) {
+                await vscode.commands.executeCommand('editor.action.triggerSuggest');
+            }
+        })
+    );
+
     const provider = {
         provideCodeActions(document, range) {
             if (!document || document.languageId !== 'markdown') return undefined;
@@ -660,6 +810,10 @@ function registerViewLightbulb(context) {
                         const typeActions = buildTypeInferenceActions(document, range.start.line);
                         return typeActions.length ? typeActions : undefined;
                     }
+                    if (parsedLine.fieldName === 'type' && parsedLine.value) {
+                        const typeActions = buildAdaptiveFrontmatterActions(document, 'type');
+                        return typeActions.length ? typeActions : undefined;
+                    }
                     // [[]] is an empty wikilink placeholder — treat it as empty,
                     // not as a real value, so relation fields get lightbulb suggestions.
                     const isEmptyPlaceholder = /^\[\[\s*\]\]$/.test(String(parsedLine.value || '').trim());
@@ -670,9 +824,14 @@ function registerViewLightbulb(context) {
                     const bodyWikilinkCounts = extractBodyMentionedIds(document.getText());
                     const classification = classifyCurrentField(parsedLine.fieldName, nodeType, fieldsCache, fmDoc, bodyWikilinkCounts);
                     const plan = { ...planFieldActions(classification, 'lightbulb'), lineIndex: range.start.line };
-                    if (plan.level < LEVEL.DOCUMENT) return undefined;
+                    if (plan.level < LEVEL.DOCUMENT) {
+                        const fallbackActions = buildTypedEmptyFieldFallbackActions(document, range.start.line, parsedLine.fieldName, nodeType);
+                        return fallbackActions.length ? fallbackActions : undefined;
+                    }
                     const actions = buildAdaptiveFrontmatterActions(document, parsedLine.fieldName, plan);
-                    return actions.length ? actions : undefined;
+                    if (actions.length) return actions;
+                    const fallbackActions = buildTypedEmptyFieldFallbackActions(document, range.start.line, parsedLine.fieldName, nodeType);
+                    return fallbackActions.length ? fallbackActions : undefined;
                 }
                 if (line.trim()) return undefined;
                 const shapeActions = buildLikelyShapeActions(document);

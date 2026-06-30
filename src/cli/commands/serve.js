@@ -1,186 +1,202 @@
 'use strict';
 
-const http    = require('http');
-const { URL } = require('url');
-const fs      = require('fs');
+const http = require('http');
+const fs = require('fs');
 
-const { getIndex, getFieldsCache } = require('../../core/indexService');
-const { getEdges, getBacklinks }   = require('../../core/graph');
-const { getRegistry }              = require('../../registries/typeRegistry');
-const { parseViewQuery, runQuery } = require('../../engine/query');
 const fmt = require('../format');
+const { emitJson, emitCliError } = require('../io');
+const { createRouter } = require('../../api/router');
+const { writeFieldSync } = require('../../api/write');
+const { errorJson } = require('../../api/http');
+const { VaultService } = require('../../core/vaultService');
+const { setDefaultMutationContextProvider } = require('../../runtime/mutationEventLog');
 
-const CORS_HEADERS = {
-    'Access-Control-Allow-Origin':  '*',
-    'Access-Control-Allow-Methods': 'GET, OPTIONS',
-    'Access-Control-Allow-Headers': 'Content-Type',
-};
-
-function json(res, data, status = 200) {
-    const body = JSON.stringify(data);
-    res.writeHead(status, { 'Content-Type': 'application/json', ...CORS_HEADERS });
-    res.end(body);
+function buildServerSessionId() {
+    const stamp = new Date().toISOString().replace(/[-:.TZ]/g, '').slice(0, 14);
+    const nonce = Math.random().toString(36).slice(2, 8);
+    return `srv-${stamp}-${nonce}`;
 }
 
-function notFound(res, msg) {
-    json(res, { error: msg }, 404);
+function buildEndpointSummary() {
+    return {
+        read: [
+            '/api/nodes',
+            '/api/nodes/:id',
+            '/api/nodes/:id/outbound',
+            '/api/nodes/:id/inbound',
+            '/api/nodes/:id/neighborhood',
+            '/api/nodes/:id/history',
+            '/api/search',
+            '/api/schema',
+            '/api/diff',
+            '/api/tasks',
+            '/api/mutations',
+            '/api/query',
+            '/api/graph',
+            '/api/types',
+            '/api/health',
+            '/api/intelligence/note',
+            '/api/intelligence/arc',
+            '/api/intelligence/fieldCategory',
+            '/api/events'
+        ],
+        write: [
+            '/api/nodes',
+            '/api/nodes/bulk',
+            '/api/nodes/:id',
+            '/api/nodes/bulk',
+            '/api/nodes/:id'
+        ]
+    };
 }
 
-function badRequest(res, msg) {
-    json(res, { error: msg }, 400);
-}
+async function run({ port, vaultPath, workspaceFolders, vaultService: existingVaultService, json, quiet }) {
+    const vaultService = existingVaultService || new VaultService({ workspaceFolders });
+    await vaultService.initialize(vaultPath);
+    const handleRequest = createRouter(vaultPath, workspaceFolders, undefined, vaultService);
+    const host = '127.0.0.1';
 
-/** @returns {Array<{id: string, type?: string, [key: string]: any}>} */
-function allNodes() {
-    const idIndex    = getIndex();
-    const fieldsCache = getFieldsCache();
-    const nodes = [];
-    for (const [id] of idIndex) {
-        const fields = fieldsCache.get(id) || {};
-        nodes.push({ id, ...Object.fromEntries(Object.entries(fields).filter(([k]) => !k.startsWith('__'))) });
-    }
-    return nodes;
-}
+    // Inject a server-scoped session ID so all API-originated mutations are grouped
+    // by serve instance. The VS Code extension overrides this with its own provider
+    // when running in-process; this only fires for standalone `yamlink serve`.
+    const serverSessionId = buildServerSessionId();
+    setDefaultMutationContextProvider(() => ({ sessionId: serverSessionId, source: 'api' }));
 
-function handleRequest(req, res) {
-    const url = new URL(req.url, 'http://localhost');
-    const pathname = url.pathname;
-
-    if (req.method === 'OPTIONS') {
-        res.writeHead(204, CORS_HEADERS);
-        res.end();
-        return;
-    }
-
-    if (req.method !== 'GET') {
-        json(res, { error: 'Method not allowed' }, 405);
-        return;
-    }
-
-    // GET /api/nodes
-    if (pathname === '/api/nodes') {
-        const type = url.searchParams.get('type');
-        let nodes = allNodes();
-        if (type) nodes = nodes.filter(n => (n.type || '').toLowerCase() === type.toLowerCase());
-        json(res, nodes);
-        return;
-    }
-
-    // GET /api/nodes/:id
-    const nodeMatch = pathname.match(/^\/api\/nodes\/([^/]+)$/);
-    if (nodeMatch) {
-        const id = decodeURIComponent(nodeMatch[1]);
-        const idIndex    = getIndex();
-        const fieldsCache = getFieldsCache();
-        if (!idIndex.has(id)) { notFound(res, 'Note not found: ' + id); return; }
-        const fields = fieldsCache.get(id) || {};
-        const outbound = (getEdges(id) || []).map(e => ({ field: e.field, to: e.targetId }));
-        const inbound  = (getBacklinks(id) || []).map(e => ({ field: e.field, from: e.sourceId }));
-        json(res, {
-            id,
-            ...Object.fromEntries(Object.entries(fields).filter(([k]) => !k.startsWith('__'))),
-            _outbound: outbound,
-            _inbound:  inbound,
+    const server = http.createServer((req, res) => {
+        Promise.resolve(handleRequest(req, res)).catch((error) => {
+            try {
+                errorJson(res, 'INTERNAL_ERROR', 'Internal server error', { detail: error.message });
+            } catch (_) {}
         });
-        return;
-    }
+    });
 
-    // GET /api/query?q=<query>
-    if (pathname === '/api/query') {
-        const q = url.searchParams.get('q');
-        if (!q) { badRequest(res, 'Missing query parameter: q'); return; }
-        let text = q.trim();
-        if (!text.startsWith('!view ')) text = '!view * ' + text;
-        const parsed = parseViewQuery(text);
-        if (!parsed) { badRequest(res, 'Could not parse query: ' + q); return; }
-        const result = runQuery(parsed, new Date().toISOString().slice(0, 10));
-        if (!result?.success) { badRequest(res, 'Query failed'); return; }
-        json(res, { query: q, count: result.rows.length, rows: result.rows, columns: result.columns });
-        return;
-    }
+    server.on('error', (error) => {
+        emitCliError({
+            json,
+            error: 'Serve failed: ' + error.message,
+            code: 'INTERNAL_ERROR',
+            exitCode: 2,
+            details: { host, port, vaultPath }
+        });
+    });
 
-    // GET /api/graph
-    if (pathname === '/api/graph') {
-        const idIndex = getIndex();
-        const fieldsCache = getFieldsCache();
-        const nodes = [];
-        const edges = [];
-        for (const [id] of idIndex) {
-            const fields = fieldsCache.get(id) || {};
-            nodes.push({ id, type: fields.type || null });
-            for (const e of getEdges(id) || []) {
-                edges.push({ from: id, to: e.targetId, field: e.field });
-            }
+    server.listen(port, host, () => {
+        const address = server.address();
+        const actualPort = address && typeof address === 'object' ? address.port : port;
+        if (json) {
+            emitJson({
+                ok: true,
+                command: 'serve',
+                host,
+                port: actualPort,
+                vaultPath,
+                pid: process.pid,
+                endpoints: buildEndpointSummary()
+            });
+            return;
         }
-        json(res, { nodes, edges });
-        return;
-    }
 
-    // GET /api/types
-    if (pathname === '/api/types') {
-        const reg = getRegistry();
-        const types = [];
-        for (const [type, ids] of reg) {
-            types.push({ type, count: ids.size });
-        }
-        json(res, types.sort((a, b) => b.count - a.count));
-        return;
-    }
+        if (quiet) return;
 
-    // GET /api/health
-    if (pathname === '/api/health') {
-        const idIndex    = getIndex();
-        const fieldsCache = getFieldsCache();
-        const reg        = getRegistry();
-        const { buildSchemaIntelligence } = require('../../features/health/healthStats');
-        const intel = buildSchemaIntelligence(idIndex, fieldsCache, reg);
-        let brokenLinks = 0;
-        for (const [id] of idIndex) {
-            for (const edge of getEdges(id) || []) {
-                if (!idIndex.has(edge.targetId)) brokenLinks++;
-            }
-        }
-        json(res, { notes: idIndex.size, brokenLinks, schemaIntelligence: intel });
-        return;
-    }
-
-    notFound(res, 'Unknown endpoint: ' + pathname);
-}
-
-function run({ port, vaultPath, workspaceFolders }) {
-    const server = http.createServer(handleRequest);
-    server.listen(port, '127.0.0.1', () => {
         fmt.header('Yamlink serve');
-        fmt.row('Vault',   vaultPath);
-        fmt.row('Address', 'http://127.0.0.1:' + port);
+        fmt.row('Vault', vaultPath);
+        fmt.row('Address', `http://${host}:${actualPort}`);
         fmt.blank();
-        console.log('Endpoints:');
-        console.log('  GET /api/nodes');
-        console.log('  GET /api/nodes/:id');
-        console.log('  GET /api/query?q=<query>');
-        console.log('  GET /api/graph');
-        console.log('  GET /api/types');
-        console.log('  GET /api/health');
+        console.log('Read endpoints:');
+        console.log('  GET    /api/nodes            ?type=&page=&limit=');
+        console.log('  GET    /api/nodes/:id');
+        console.log('  GET    /api/nodes/:id/outbound');
+        console.log('  GET    /api/nodes/:id/inbound');
+        console.log('  GET    /api/nodes/:id/neighborhood ?depth=');
+        console.log('  GET    /api/nodes/:id/history');
+        console.log('  GET    /api/search           ?q=&type=&field=&page=&limit=');
+        console.log('  GET    /api/schema           ?type=&page=&limit=');
+        console.log('  GET    /api/diff             ?from=<id>&to=<id> | ?since=<iso-date>');
+        console.log('  GET    /api/tasks            ?done=&overdue=&today=&note=&limit=');
+        console.log('  GET    /api/mutations        ?limit=&since=&type=');
+        console.log('  GET    /api/query            ?q=<query>');
+        console.log('  GET    /api/graph');
+        console.log('  GET    /api/types');
+        console.log('  GET    /api/health');
+        console.log('  GET    /api/intelligence/note          ?id=<noteId>');
+        console.log('  GET    /api/intelligence/arc           ?id=<noteId> | ?type=<noteType>');
+        console.log('  GET    /api/intelligence/fieldCategory ?id=<noteId>&field=<field>');
+        console.log('  GET    /api/events           SSE — live mutation + rebuild stream');
+        fmt.blank();
+        console.log('Write endpoints:');
+        console.log('  POST   /api/nodes            { type, fields? }');
+        console.log('  POST   /api/nodes/bulk       { notes: [{ type, fields? }, ...] }');
+        console.log('  PATCH  /api/nodes/:id        { field, value } | { fields: { ... } }');
+        console.log('  PATCH  /api/nodes/bulk       { updates: [{ id, fields }, ...] }');
+        console.log('  DELETE /api/nodes/:id');
         fmt.blank();
         console.log('Press Ctrl+C to stop.');
         fmt.blank();
     });
 
-    // File watch — rebuild index on .md changes
-    let rebuildTimer = null;
-    const { buildIndex } = require('../../core/index');
+    let watcher = null;
     try {
-        fs.watch(vaultPath, { recursive: true }, (eventType, filename) => {
+        watcher = fs.watch(vaultPath, { recursive: true }, (_eventType, filename) => {
             if (!filename || !filename.endsWith('.md')) return;
-            clearTimeout(rebuildTimer);
-            rebuildTimer = setTimeout(() => {
-                try {
-                    buildIndex(workspaceFolders);
-                    process.stderr.write('[yamlink] Index rebuilt\n');
-                } catch (_) {}
-            }, 400);
+            vaultService.notifyFileChange();
         });
     } catch (_) {}
+
+    process.on('SIGINT', () => {
+        if (watcher && typeof watcher.close === 'function') watcher.close();
+        server.close(() => process.exit(0));
+    });
 }
 
-module.exports = { run };
+/**
+ * Start the API server programmatically and return a close handle.
+ * Used by `yamlink` (no-args) / `yamlink conduit` when no server is already running.
+ * Does not print anything and does not register SIGINT — caller owns teardown.
+ *
+ * @param {{ port: number, vaultPath: string, workspaceFolders: object[] }} opts
+ * @returns {Promise<{ host: string, port: number, close(): Promise<void> }>}
+ */
+async function startServer({ port, vaultPath, workspaceFolders }) {
+    const vaultSvc = new VaultService({ workspaceFolders });
+    await vaultSvc.initialize(vaultPath);
+    const handleRequest = createRouter(vaultPath, workspaceFolders, undefined, vaultSvc);
+    const host = '127.0.0.1';
+
+    const serverSessionId = buildServerSessionId();
+    setDefaultMutationContextProvider(() => ({ sessionId: serverSessionId, source: 'api' }));
+
+    const server = http.createServer((req, res) => {
+        Promise.resolve(handleRequest(req, res)).catch((error) => {
+            try {
+                errorJson(res, 'INTERNAL_ERROR', 'Internal server error', { detail: error.message });
+            } catch (_) {}
+        });
+    });
+
+    let watcher = null;
+    try {
+        watcher = fs.watch(vaultPath, { recursive: true }, (_eventType, filename) => {
+            if (!filename || !filename.endsWith('.md')) return;
+            vaultSvc.notifyFileChange();
+        });
+    } catch (_) {}
+
+    await new Promise((resolve, reject) => {
+        server.once('error', reject);
+        server.listen(port, host, resolve);
+    });
+
+    const address = server.address();
+    const actualPort = address && typeof address === 'object' ? address.port : port;
+
+    return {
+        host,
+        port: actualPort,
+        close() {
+            if (watcher && typeof watcher.close === 'function') watcher.close();
+            return new Promise((resolve) => server.close(resolve));
+        }
+    };
+}
+
+module.exports = { run, startServer, createRouter, writeFieldSync };

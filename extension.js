@@ -1,8 +1,9 @@
 const vscode = require('vscode');
 const fs     = require('fs');
 const path   = require('path');
-const { buildIndex, updateSingleFile, removeFileFromIndex, getIndex, getPathIndex, getFieldsCache, getGraphStats } = require('./src/core/index');
-const { getEdges } = require('./src/core/graph');
+const crypto = require('crypto');
+const { buildIndex, updateSingleFile, removeFileFromIndex, getIndex, getPathIndex, getFieldsCache, getGraphStats, getVaultGeneration } = require('./src/core/index');
+const { getEdges, isOrphan } = require('./src/core/graph');
 const { getPrimaryWorkspaceRoot } = require('./src/core/workspace');
 const { registerDefinition } = require('./src/features/definition');
 const { registerHover, registerQueryPreviewHover } = require('./src/features/hover');
@@ -10,6 +11,7 @@ const { registerCompletion } = require('./src/features/completion');
 const { registerViewLightbulb } = require('./src/features/viewLightbulb');
 const { registerDiagnostics, validateAll, validateDocument, getBrokenCount, clearAll } = require('./src/diagnostics/diagnostics');
 const { registerCodeActions } = require('./src/actions/codeActions');
+const { registerBlockReferenceCommands } = require('./src/actions/blockReferenceCommands');
 const { registerRename } = require('./src/core/rename');
 const { registerDecorations } = require('./src/features/decorations');
 const { parseFrontmatterDocument } = require('./src/core/frontmatter');
@@ -22,15 +24,24 @@ const { openCalendarPanel, refreshCalendarPanel, registerCalendarView, focusCale
 const { registerGraphView, refreshGraphSidebarView } = require('./src/features/graphPanel');
 const { createGraphPanelController } = require('./src/features/graph/graphPanelController');
 const { syncEntityHub, refreshEntityHub, registerEntityHubView, focusEntityHub } = require('./src/features/entityHub');
+const { registerNoteOutlineView } = require('./src/features/noteOutline');
 const { importObsidianVault } = require('./src/features/importObsidian');
+const { importExternalVault } = require('./src/features/importExternalVaults');
 const { runGitHistoryImport } = require('./src/intelligence/gitHistoryImport');
 const { registerActiveViewRuntime } = require('./src/runtime/activeViewRuntime');
 const { createRefreshRouter } = require('./src/runtime/refreshRouter');
 const { createStatusRuntime } = require('./src/runtime/statusRuntime');
+const { createTaskNotificationRuntime } = require('./src/runtime/taskNotifications');
 const { perfTracker } = require('./src/runtime/performanceTracker');
-const { initMutationLog, appendMutationEvents, emitOutcomeEvent, getMutationEvents } = require('./src/runtime/mutationEventLog');
+const { initMutationLog, appendMutationEvents, emitOutcomeEvent, getMutationEvents, setDefaultMutationContextProvider } = require('./src/runtime/mutationEventLog');
+const { createMutationSessionRuntime } = require('./src/runtime/mutationSession');
 const { setMutationEventsProvider } = require('./src/intelligence/vaultPriors');
+const { setMutationAppender: setCompletionTrackerAppender, clearPending: clearCompletionPending, onSelectionChanged: onCompletionSelectionChanged } = require('./src/features/completionTracker');
 const { createPreviewPanelController } = require('./src/features/preview/previewPanelController');
+const { createLiveNotePanelController } = require('./src/features/preview/liveNotePanelController');
+const { buildTaskRows } = require('./src/core/tasks');
+const { initSuppressions } = require('./src/core/suppressions');
+const { appendHealthSnapshot } = require('./src/core/healthSnapshot');
 
 // ─────────────────────────────────────────────────────────────────
 // What's new — shown once per version upgrade, never on first install
@@ -127,10 +138,25 @@ async function activate(context) {
 
     // ── Mutation event log — load persisted history before first index build ─
     const _vaultRoot = getPrimaryWorkspaceRoot(vscode.workspace.workspaceFolders);
+    const _currentSessionId = 'session-' + Date.now() + '-' + crypto.randomBytes(4).toString('hex');
     if (_vaultRoot) {
-        initMutationLog(path.join(_vaultRoot, '.yamlink', 'mutation-log.ndjson'));
+        const _yamLinkDir = path.join(_vaultRoot, '.yamlink');
+        initMutationLog(path.join(_yamLinkDir, 'mutation-log.ndjson'));
+        initSuppressions(_yamLinkDir);
     }
     setMutationEventsProvider(getMutationEvents);
+    setCompletionTrackerAppender(appendMutationEvents);
+    const mutationSessionRuntime = createMutationSessionRuntime(context);
+    setDefaultMutationContextProvider(() => ({
+        source: 'vscode',
+        sessionId: _currentSessionId,
+        meta: mutationSessionRuntime.getContext().meta
+    }));
+    context.subscriptions.push({
+        dispose() {
+            setDefaultMutationContextProvider(null);
+        }
+    });
 
     // ── Outcome event commands ───────────────────────────────────────────────
     // Internal commands fired by completion items and lightbulb actions to log
@@ -139,12 +165,15 @@ async function activate(context) {
     context.subscriptions.push(
         vscode.commands.registerCommand('yamlink._completionAccepted', (payload) => {
             if (!payload || !payload.noteId || !payload.field) return;
+            clearCompletionPending();
             appendMutationEvents([{
                 type: 'completion_accepted',
                 noteId: payload.noteId,
                 field: payload.field,
                 newValue: payload.targetId ? `[[${payload.targetId}]]` : null,
                 oldValue: null,
+                source: 'vscode',
+                cause: 'completion_accept',
                 meta: {
                     confidence: payload.confidence,
                     source: payload.source,
@@ -161,6 +190,8 @@ async function activate(context) {
                 field: payload.field,
                 newValue: payload.action || null,
                 oldValue: null,
+                source: 'vscode',
+                cause: 'lightbulb_apply',
                 meta: {
                     confidence: payload.confidence,
                     source: payload.source,
@@ -231,6 +262,8 @@ async function activate(context) {
                 noteId: payload.noteId,
                 field: fnLower,
                 newValue: 'addMissingField',
+                source: 'vscode',
+                cause: 'lightbulb_add_missing_field',
                 meta: { action: 'addMissingField', source: 'arc' }
             });
 
@@ -241,6 +274,11 @@ async function activate(context) {
 
     // ── Build index ──────────────────────────────────────────────────────────
     perfTracker.measureSync('index.buildIndex.activate', null, () => buildIndex(vscode.workspace.workspaceFolders));
+    if (_vaultRoot) {
+        const _idxForSnap = getIndex();
+        const _orphanCount = [..._idxForSnap.keys()].filter(id => isOrphan(id)).length;
+        appendHealthSnapshot(path.join(_vaultRoot, '.yamlink'), { broken: getBrokenCount(), orphans: _orphanCount });
+    }
 
     // ── Backfill history for pre-existing notes ───────────────────────────────
     // Runs once per vault (guarded by a marker file). Seeds a synthetic
@@ -278,6 +316,11 @@ async function activate(context) {
         getBrokenCount,
         computeSuggestionsForNode: require('./src/engine/suggestions').computeSuggestionsForNode
     });
+    const { refreshTaskNotifications } = createTaskNotificationRuntime(context, {
+        getIndex,
+        getVaultGeneration,
+        buildTaskRows
+    });
 
     // ── Register providers ───────────────────────────────────────────────────
     // registerDiagnostics MUST come before validateAll.
@@ -288,13 +331,16 @@ async function activate(context) {
     registerQueryPreviewHover(context, getIndex);
     registerDiagnostics(context, getIndex);
     registerCodeActions(context, getIndex);
+    registerBlockReferenceCommands(context, getPathIndex);
     registerRename(context, getIndex, getPathIndex, buildIndex, validateAll);
     registerEntityHubView(context);
+    registerNoteOutlineView(context);
     registerCalendarView(context);
     registerGraphView(context);
     const decorationsProvider = registerDecorations(context, getIndex);
     const codeLensProvider = registerViewCodeLens(context, getOpenViewDocumentPath);
     const { openPreviewPanel, refreshPreviewPanel } = createPreviewPanelController();
+    const { openLiveNotePanel, refreshLiveNotePanel, refreshLiveNotePanelForDocument } = createLiveNotePanelController();
     const graphPanelController = createGraphPanelController();
     setViewPanelStateListener(() => codeLensProvider.refresh());
 
@@ -320,13 +366,18 @@ async function activate(context) {
         refreshEntityHub:  refreshEntityHub,
         refreshCalendar:   refreshCalendarPanel,
         refreshSuggestions:refreshSuggestionBar,
-        refreshHome:       refreshHomePanel
+        refreshHome:       refreshHomePanel,
+        refreshTaskNotifications
     });
 
     // Diagnostics fire an initial validation pass after 1500ms (graph warm-up).
     // Run updateStatusBar slightly after so the suggestion bar reflects that
     // settled state on first open, not the cold-start snapshot.
-    setTimeout(() => { updateStatusBar(); refreshSuggestionBar(); }, 1600);
+    setTimeout(() => {
+        updateStatusBar();
+        refreshSuggestionBar();
+        void refreshTaskNotifications({ force: true });
+    }, 1600);
 
     // ── Home panel auto-open ─────────────────────────────────────────────────
     // Show on first activation for this vault root. After that, only on command.
@@ -395,6 +446,13 @@ async function activate(context) {
     function rebuildAll() {
         if (!vscode.workspace.workspaceFolders) return;
         perfTracker.measureSync('index.buildIndex.rebuildAll', null, () => buildIndex(vscode.workspace.workspaceFolders));
+        if (_vaultRoot) {
+            const _snap = getIndex();
+            appendHealthSnapshot(path.join(_vaultRoot, '.yamlink'), {
+                broken: getBrokenCount(),
+                orphans: [..._snap.keys()].filter(id => isOrphan(id)).length
+            });
+        }
         router.refreshForPassiveIndexSweep();
         _onVaultChange.fire({ changedId: null, full: true });
     }
@@ -453,6 +511,12 @@ async function activate(context) {
 
     // Smart save handler
     context.subscriptions.push(
+        vscode.workspace.onDidChangeTextDocument((event) => {
+            refreshLiveNotePanelForDocument(event.document);
+        })
+    );
+
+    context.subscriptions.push(
         vscode.workspace.onDidSaveTextDocument((doc) => {
             const filePath = doc.uri.fsPath;
             let result = { changed: false, needsFull: false };
@@ -498,6 +562,13 @@ async function activate(context) {
             }
         })
     );
+    context.subscriptions.push(vscode.window.onDidChangeTextEditorSelection((event) => {
+        if (!event.selections.length) return;
+        if (event.textEditor.document.languageId !== 'markdown') return;
+        const noteId = getPathIndex().get(event.textEditor.document.uri.fsPath) || null;
+        onCompletionSelectionChanged(noteId, event.selections[0].active.line);
+    }));
+
     context.subscriptions.push(vscode.window.onDidChangeActiveTextEditor((editor) => {
         updateStatusBar();
         if (editor && editor.document.languageId === 'markdown') {
@@ -508,6 +579,7 @@ async function activate(context) {
             syncEntityHub(context);
         }
         refreshPreviewPanel();
+        refreshLiveNotePanel();
         resetSuggestionCache();
         refreshSuggestionBar();
     }));
@@ -533,10 +605,56 @@ async function activate(context) {
 
     context.subscriptions.push(
         vscode.commands.registerCommand('yamlink.importObsidianVault', async () => {
-            await importObsidianVault(context, {
+            const result = await importObsidianVault(context, {
                 buildIndex,
                 getWorkspaceRoot: getPrimaryWorkspaceRoot
             });
+            if (result?.ok) {
+                appendMutationEvents([{
+                    type: 'vault_import_completed',
+                    noteId: '__vault__',
+                    field: 'obsidian',
+                    oldValue: null,
+                    newValue: result.importedRoot || result.sourceRoot || 'obsidian',
+                    source: 'vscode',
+                    cause: 'import_obsidian_vault',
+                    meta: {
+                        mode: result.mode || null,
+                        followUpAction: result.followUpAction || 'none',
+                        copied: result.stats?.copied || 0,
+                        markdownCopied: result.stats?.markdownCopied || 0,
+                        idMigrationApplied: result.idMigrationApplied || 0
+                    }
+                }]);
+            }
+        })
+    );
+
+    context.subscriptions.push(
+        vscode.commands.registerCommand('yamlink.importVaultExport', async () => {
+            const result = await importExternalVault(context, {
+                buildIndex,
+                getWorkspaceRoot: getPrimaryWorkspaceRoot
+            });
+            if (result?.ok) {
+                appendMutationEvents([{
+                    type: 'vault_import_completed',
+                    noteId: '__vault__',
+                    field: String(result.platformKind || result.platform || 'external').toLowerCase(),
+                    oldValue: null,
+                    newValue: result.importedRoot || result.sourcePath || 'external',
+                    source: 'vscode',
+                    cause: 'import_external_vault',
+                    meta: {
+                        platform: result.platform || null,
+                        followUpAction: result.followUpAction || 'none',
+                        copied: result.stats?.copied || 0,
+                        dailyNotesImported: result.stats?.dailyNotesImported || 0,
+                        attachmentsExtracted: result.stats?.attachmentsExtracted || 0,
+                        databaseRowsImported: result.stats?.databaseRowsImported || 0
+                    }
+                }]);
+            }
         })
     );
 
@@ -573,6 +691,19 @@ async function activate(context) {
                 vscode.window.showInformationMessage(
                     `Yamlink: Git history imported — ${result.eventsEmitted} events from ${result.filesProcessed} file${result.filesProcessed === 1 ? '' : 's'}.`
                 );
+                appendMutationEvents([{
+                    type: 'vault_import_completed',
+                    noteId: '__vault__',
+                    field: 'git-history',
+                    oldValue: null,
+                    newValue: workspaceRoot,
+                    source: 'vscode',
+                    cause: 'import_git_history',
+                    meta: {
+                        eventsEmitted: result.eventsEmitted || 0,
+                        filesProcessed: result.filesProcessed || 0
+                    }
+                }]);
             }
         })
     );
@@ -761,6 +892,12 @@ async function activate(context) {
     );
 
     context.subscriptions.push(
+        vscode.commands.registerCommand('yamlink.openLiveNote', () => {
+            openLiveNotePanel(context);
+        })
+    );
+
+    context.subscriptions.push(
         vscode.commands.registerCommand('yamlink.openGraphSidebar', async () => {
             await vscode.commands.executeCommand('workbench.view.extension.yamlinkSidebar');
             try { await vscode.commands.executeCommand('yamlink.graph.focus'); } catch (_) {}
@@ -828,6 +965,37 @@ async function activate(context) {
     );
 
     context.subscriptions.push(
+        vscode.commands.registerCommand('yamlink.proposeSchema', async () => {
+            const { detectClusters } = require('./src/intelligence/clusterEmergence');
+            const { createSchemaNote } = require('./src/features/healthPanel');
+            const clusters = detectClusters(getIndex(), getFieldsCache()).clusters
+                .filter((c) => c.confidence === 'medium' || c.confidence === 'high');
+
+            if (clusters.length === 0) {
+                await createSchemaNote({ type: null, fields: [] });
+                return;
+            }
+
+            const items = clusters.map((c) => ({
+                label: c.dominantType ? `$(symbol-class) ${c.dominantType}` : '$(symbol-class) unnamed cluster',
+                description: `${c.noteCount} notes · ${c.confidence} confidence`,
+                detail: c.fields.join(', '),
+                cluster: c
+            }));
+            items.push({ label: '$(plus) Create schema for a different type', description: '', detail: 'Enter type name manually', cluster: null });
+
+            const pick = await vscode.window.showQuickPick(items, {
+                title: 'Yamlink — Propose Schema',
+                placeHolder: 'Select a detected cluster to name as a schema, or create one manually'
+            });
+
+            if (!pick) return;
+            await createSchemaNote({
+                type: pick.cluster ? pick.cluster.dominantType : null,
+                fields: pick.cluster ? pick.cluster.fields : []
+            });
+        }),
+
         vscode.commands.registerCommand('yamlink.showQuerySuggestionsQuickPick', async () => {
             const editor = vscode.window.activeTextEditor;
             if (!editor || editor.document.languageId !== 'markdown') return;

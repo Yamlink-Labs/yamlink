@@ -8,6 +8,7 @@ const originalResolve = Module._resolveFilename.bind(Module);
 
 // Mutable so individual tests can control the returned set
 let mockVaultTypes = new Set();
+let mockSchemaTargets = new Set();
 
 require.cache.__cc_type_registry__ = {
     id: '__cc_type_registry__',
@@ -28,6 +29,12 @@ require.cache.__cc_vault_priors__ = {
         })
     }
 };
+require.cache.__cc_schema_registry__ = {
+    id: '__cc_schema_registry__',
+    filename: '__cc_schema_registry__',
+    loaded: true,
+    exports: { getSchemaTargets: () => mockSchemaTargets }
+};
 require.cache.__cc_index_service__ = {
     id: '__cc_index_service__',
     filename: '__cc_index_service__',
@@ -37,6 +44,7 @@ require.cache.__cc_index_service__ = {
 
 Module._resolveFilename = function (request, parent, ...rest) {
     if (request === '../registries/typeRegistry') return '__cc_type_registry__';
+    if (request === '../registries/schemaRegistry') return '__cc_schema_registry__';
     if (request === '../intelligence/vaultPriors') return '__cc_vault_priors__';
     if (request === '../core/indexService') return '__cc_index_service__';
     return originalResolve(request, parent, ...rest);
@@ -51,16 +59,19 @@ Module._resolveFilename = originalResolve;
 describe('getKnownTypeCandidates', () => {
     test('returns vault types sorted when vault has types', () => {
         mockVaultTypes = new Set(['contact', 'account', 'mission']);
+        mockSchemaTargets = new Set(['schema-contact']);
         try {
             const result = getKnownTypeCandidates();
             assert.deepEqual(result, ['account', 'contact', 'mission']);
         } finally {
             mockVaultTypes = new Set();
+            mockSchemaTargets = new Set();
         }
     });
 
-    test('falls back to FRONTMATTER_ARCHETYPES keys when vault is empty', () => {
+    test('falls back to schema targets when vault has no observed types', () => {
         mockVaultTypes = new Set();
+        mockSchemaTargets = new Set(['contact', 'task', 'mission']);
         const result = getKnownTypeCandidates();
         assert.ok(Array.isArray(result));
         assert.ok(result.length > 0);
@@ -68,6 +79,14 @@ describe('getKnownTypeCandidates', () => {
         assert.ok(result.includes('task'));
         const sorted = [...result].sort();
         assert.deepEqual(result, sorted);
+        mockSchemaTargets = new Set();
+    });
+
+    test('returns empty when neither vault nor schema teaches any types', () => {
+        mockVaultTypes = new Set();
+        mockSchemaTargets = new Set();
+        const result = getKnownTypeCandidates();
+        assert.deepEqual(result, []);
     });
 
     test('returns sorted list even with unsorted vault types', () => {

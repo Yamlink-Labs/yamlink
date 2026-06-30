@@ -4,6 +4,7 @@ const { test, describe, afterEach } = require('node:test');
 const assert = require('node:assert/strict');
 const Module = require('module');
 const path = require('path');
+const { initMutationLog, clearMutationEvents, getMutationEvents } = require('../src/runtime/mutationEventLog');
 
 const originalResolve = Module._resolveFilename.bind(Module);
 
@@ -14,6 +15,10 @@ let buildIndexCalls = 0;
 let invalidateFileCacheCalls = [];
 let updateSingleFileResult = { changed: true, needsFull: false };
 let lastRevealOptions = null;
+let registeredProvider = null;
+let templateFields = ['name', 'status'];
+let orphanState = false;
+let validateDocumentCalls = 0;
 const VAULT_ROOT = 'C:\\vault';
 
 function vaultPath(...parts) {
@@ -28,6 +33,10 @@ class Position {
     constructor(line, character) {
         this.line = line;
         this.character = character;
+    }
+    isBefore(other) {
+        if (!other) return false;
+        return this.line < other.line || (this.line === other.line && this.character < other.character);
     }
 }
 
@@ -87,6 +96,11 @@ function createDocument(text, fsPath = 'C:\\vault\\note.md') {
         },
         getText() {
             return this._text;
+        },
+        positionAt(offset) {
+            const text = this._text.slice(0, offset);
+            const lines = text.split('\n');
+            return new Position(lines.length - 1, lines[lines.length - 1].length);
         },
         lineAt(line) {
             const lines = this._text.split('\n');
@@ -167,6 +181,7 @@ require.cache.__ca_vscode__ = {
         commands: mockCommands,
         languages: {
             registerCodeActionsProvider() {
+                registeredProvider = arguments[1];
                 return { dispose() {} };
             }
         },
@@ -174,8 +189,23 @@ require.cache.__ca_vscode__ = {
         Range,
         Selection,
         WorkspaceEdit,
-        CodeAction: class CodeAction {},
+        CodeAction: class CodeAction {
+            constructor(title, kind) {
+                this.title = title;
+                this.kind = kind;
+            }
+        },
         CodeActionKind: { QuickFix: 'QuickFix', RefactorRewrite: 'RefactorRewrite' }
+    }
+};
+
+const workspaceStateStore = new Map();
+const mockWorkspaceState = {
+    get(key, fallbackValue) {
+        return workspaceStateStore.has(key) ? workspaceStateStore.get(key) : fallbackValue;
+    },
+    async update(key, value) {
+        workspaceStateStore.set(key, value);
     }
 };
 
@@ -183,7 +213,10 @@ require.cache.__ca_diagnostics__ = {
     id: '__ca_diagnostics__',
     filename: '__ca_diagnostics__',
     loaded: true,
-    exports: { validateAll() {} }
+    exports: {
+        validateAll() {},
+        validateDocument() { validateDocumentCalls += 1; }
+    }
 };
 
 require.cache.__ca_typeRegistry__ = {
@@ -209,7 +242,7 @@ require.cache.__ca_graph__ = {
     filename: '__ca_graph__',
     loaded: true,
     exports: {
-        isOrphan() { return false; },
+        isOrphan() { return orphanState; },
         getBacklinks() { return []; }
     }
 };
@@ -300,6 +333,26 @@ require.cache.__ca_workspace__ = {
     }
 };
 
+require.cache.__ca_templateRegistry__ = {
+    id: '__ca_templateRegistry__',
+    filename: '__ca_templateRegistry__',
+    loaded: true,
+    exports: {
+        TEMPLATES_DIR: '_templates',
+        getTemplateForType(_root, type) {
+            if (type !== 'contact') return null;
+            return { fields: templateFields.slice() };
+        },
+        extractTemplateFields(content) {
+            return String(content)
+                .split('\n')
+                .map((line) => line.match(/^\s*([\w-]+):/)?.[1])
+                .filter(Boolean)
+                .filter((field) => !['id', 'type', 'created'].includes(field));
+        }
+    }
+};
+
 Module._resolveFilename = function (request, parent, ...rest) {
     if (request === 'vscode') return '__ca_vscode__';
     if (request === '../diagnostics/diagnostics') return '__ca_diagnostics__';
@@ -313,12 +366,15 @@ Module._resolveFilename = function (request, parent, ...rest) {
     if (request === './viewBuilder') return '__ca_viewBuilder__';
     if (request === '../core/id') return '__ca_id__';
     if (request === '../core/workspace') return '__ca_workspace__';
+    if (request === '../core/templateRegistry') return '__ca_templateRegistry__';
     return originalResolve(request, parent, ...rest);
 };
 
 const { registerCodeActions } = require('../src/actions/codeActions');
 
 afterEach(() => {
+    initMutationLog(null);
+    clearMutationEvents();
     infoMessages.length = 0;
     shownDocuments.length = 0;
     revealCalls = 0;
@@ -330,6 +386,12 @@ afterEach(() => {
     buildIndexCalls = 0;
     invalidateFileCacheCalls = [];
     updateSingleFileResult = { changed: true, needsFull: false };
+    registeredProvider = null;
+    templateFields = ['name', 'status'];
+    orphanState = false;
+    mockWorkspace.textDocuments = [];
+    workspaceStateStore.clear();
+    validateDocumentCalls = 0;
 });
 
 describe('code actions integration', () => {
@@ -455,5 +517,139 @@ describe('code actions integration', () => {
         assert.match(writtenContent, /id: lex-luthor/);
         assert.deepEqual(invalidateFileCacheCalls.map(normalizeFsPath), [vaultPath('lex-luthor.md')]);
         assert.equal(buildIndexCalls, 1);
+    });
+
+    test('surfaces a smart-template fill action directly on the type line', () => {
+        const context = { subscriptions: [] };
+        registerCodeActions(context, () => new Map(), null);
+
+        const document = createDocument([
+            '---',
+            'id: ace',
+            'type: contact',
+            '---'
+        ].join('\n'));
+
+        const actions = registeredProvider.provideCodeActions(
+            document,
+            { start: new Position(2, 0), end: new Position(2, 0) },
+            { diagnostics: [] }
+        );
+
+        assert.ok(actions.some((action) => action.title.includes('Use the contact schema from Smart Templates')));
+    });
+
+    test('does not duplicate the smart-template action when template drift diagnostic already exists', () => {
+        const context = { subscriptions: [] };
+        registerCodeActions(context, () => new Map(), null);
+
+        const document = createDocument([
+            '---',
+            'id: ace',
+            'type: contact',
+            '---'
+        ].join('\n'));
+
+        const actions = registeredProvider.provideCodeActions(
+            document,
+            { start: new Position(2, 0), end: new Position(2, 0) },
+            {
+                diagnostics: [{
+                    source: 'yamlink',
+                    code: 'yamlink.templateDrift',
+                    message: 'Yamlink: Missing template fields: name, status'
+                }]
+            }
+        );
+
+        assert.equal(actions.filter((action) => /contact.*fields/i.test(action.title)).length, 1);
+        assert.ok(actions.some((action) => action.title.includes('Add missing "contact" fields (name, status)')));
+    });
+
+    test('stays quiet when the note already has all template fields', () => {
+        const context = { subscriptions: [] };
+        registerCodeActions(context, () => new Map(), null);
+
+        const document = createDocument([
+            '---',
+            'id: ace',
+            'type: contact',
+            'name: Ace',
+            'status: active',
+            '---'
+        ].join('\n'));
+
+        const actions = registeredProvider.provideCodeActions(
+            document,
+            { start: new Position(2, 0), end: new Position(2, 0) },
+            { diagnostics: [] }
+        );
+
+        assert.ok(actions.every((action) => !/template fields/i.test(action.title)));
+    });
+
+    test('suppresses orphan linking action on the type line', () => {
+        const context = { subscriptions: [] };
+        registerCodeActions(context, () => new Map(), null);
+        orphanState = true;
+
+        const document = createDocument([
+            '---',
+            'id: ace',
+            'type: contact',
+            '---'
+        ].join('\n'));
+
+        const actions = registeredProvider.provideCodeActions(
+            document,
+            { start: new Position(2, 0), end: new Position(2, 0) },
+            { diagnostics: [] }
+        );
+
+        assert.ok(actions.every((action) => !String(action.title || '').includes('Link this node to another')));
+    });
+
+    test('offers ignore action for frontmatter diagnostics and persists dismissal', async () => {
+        const context = { subscriptions: [], workspaceState: mockWorkspaceState };
+        registerCodeActions(context, () => new Map(), null);
+
+        const document = createDocument([
+            '---',
+            'id: ace',
+            'type: contact',
+            '---'
+        ].join('\n'));
+        const diagnostic = {
+            source: 'yamlink',
+            code: 'yamlink.templateDrift',
+            message: 'Yamlink: Missing template fields: name, status',
+            range: new Range(new Position(2, 0), new Position(2, 13))
+        };
+
+        const actions = registeredProvider.provideCodeActions(
+            document,
+            { start: new Position(2, 0), end: new Position(2, 0) },
+            { diagnostics: [diagnostic] }
+        );
+
+        const ignoreAction = actions.find((action) => action.title === 'Yamlink: Ignore this suggestion here');
+        assert.ok(ignoreAction);
+
+        await commandMap.get('yamlink.ignoreDiagnostic')(document, diagnostic);
+
+        assert.equal(validateDocumentCalls, 1);
+        const ignoredEvents = getMutationEvents({ noteId: 'contact-1', type: 'suggestion_ignored' });
+        assert.equal(ignoredEvents.length, 1);
+        assert.equal(ignoredEvents[0].cause, 'ignore_diagnostic');
+        const nextContext = { subscriptions: [], workspaceState: mockWorkspaceState };
+        registerCodeActions(nextContext, () => new Map(), null);
+
+        const nextActions = registeredProvider.provideCodeActions(
+            document,
+            { start: new Position(2, 0), end: new Position(2, 0) },
+            { diagnostics: [diagnostic] }
+        );
+        assert.ok(nextActions.every((action) => action.title !== 'Yamlink: Ignore this suggestion here'));
+        assert.ok(nextActions.every((action) => action.title !== 'Yamlink: Add missing "contact" fields (name, status)'));
     });
 });

@@ -11,6 +11,7 @@ const { inferTargetTypeFromFieldName } = require('../intelligence/fieldRoles');
 const {
     buildDateShortcutItems,
     buildHeadingAnchorItems,
+    buildBlockReferenceItems,
     buildFootnoteReferenceItems,
     buildLongformBodyStructureItems,
     shouldOfferFrontmatterRelationCompletion,
@@ -32,50 +33,96 @@ const {
     collectLocalLinkedIds,
     collectObservedRelationUsage,
     rankCandidateIds,
+    rankScalarValues,
     buildFieldInferenceDetail,
     resolveQueryRelationCandidates
 } = require('./completionHelpers');
 
+function resolveFrontmatterFollowupState(document, position, getIndex) {
+    if (!document || !position || !isPositionInFrontmatter(document, position.line)) return null;
+
+    const relationState = resolveFrontmatterRelationCandidates(document, position, getIndex());
+    if (relationState) {
+        const candidateCount = (relationState.candidateIds || []).length;
+        if (relationState.hasWiki || candidateCount || relationState.missingTargetType) {
+            return {
+                kind: 'relation',
+                fieldName: relationState.fieldName,
+                partial: relationState.partial || '',
+                hasWiki: !!relationState.hasWiki,
+                candidateCount,
+                missingTargetType: !!relationState.missingTargetType
+            };
+        }
+    }
+
+    const line = document.lineAt(position.line).text;
+    const textBeforeCursor = line.substring(0, position.character);
+    const valueMatch = textBeforeCursor.match(/^\s*([\w-]+):\s*(.*?)$/);
+    if (!valueMatch) return null;
+
+    const fieldName = String(valueMatch[1] || '').trim().toLowerCase();
+    if (!fieldName || fieldName === 'type') return null;
+    const partial = String(valueMatch[2] || '').trim().toLowerCase();
+    const docType = (() => {
+        const text = document.getText();
+        const match = text.match(/^---\n([\s\S]*?)\n---/);
+        if (!match) return null;
+        const typeLine = match[1].split('\n').find((entry) => /^\s*type\s*:/i.test(entry));
+        if (!typeLine) return null;
+        return String(typeLine.split(':').slice(1).join(':') || '').trim().toLowerCase() || null;
+    })();
+    const scalarValues = rankScalarValues(fieldName, docType, partial);
+    if (!scalarValues.length) return null;
+
+    return {
+        kind: 'scalar',
+        fieldName,
+        partial,
+        candidateCount: scalarValues.length
+    };
+}
+
 /** @param {import('vscode').ExtensionContext} context @param {() => Map<string,string>} getIndex @returns {void} */
 function registerCompletion(context, getIndex) {
-    let relationSuggestTimer = null;
-    let lastRelationSuggestSignature = '';
+    let frontmatterSuggestTimer = null;
+    let lastFrontmatterSuggestSignature = '';
 
-    function maybeTriggerRelationSuggest(editor) {
+    function maybeTriggerFrontmatterSuggest(editor) {
         if (!editor || editor.document.languageId !== 'markdown') return;
         const position = editor.selection?.active;
         if (!position) return;
-        const relationState = resolveFrontmatterRelationCandidates(editor.document, position, getIndex());
-        if (!relationState || !isPositionInFrontmatter(editor.document, position.line)) return;
-        if (!relationState.hasWiki) return;
-        const candidateCount = (relationState.candidateIds || []).length;
-        if (!candidateCount && !relationState.missingTargetType) return;
+        const followupState = resolveFrontmatterFollowupState(editor.document, position, getIndex());
+        if (!followupState) return;
         const signature = [
             editor.document.uri.fsPath,
             editor.document.version,
             position.line,
             position.character,
-            relationState.fieldName,
-            relationState.partial,
-            relationState.hasWiki ? 'wiki' : 'plain'
+            followupState.kind,
+            followupState.fieldName,
+            followupState.partial,
+            followupState.hasWiki ? 'wiki' : 'plain',
+            followupState.candidateCount,
+            followupState.missingTargetType ? 'missing-target' : 'ready'
         ].join(':');
-        if (signature === lastRelationSuggestSignature) return;
-        lastRelationSuggestSignature = signature;
-        clearTimeout(relationSuggestTimer);
-        relationSuggestTimer = setTimeout(() => {
+        if (signature === lastFrontmatterSuggestSignature) return;
+        lastFrontmatterSuggestSignature = signature;
+        clearTimeout(frontmatterSuggestTimer);
+        frontmatterSuggestTimer = setTimeout(() => {
             vscode.commands.executeCommand('editor.action.triggerSuggest');
         }, 90);
     }
 
     context.subscriptions.push({
         dispose() {
-            clearTimeout(relationSuggestTimer);
+            clearTimeout(frontmatterSuggestTimer);
         }
     });
 
     context.subscriptions.push(
         vscode.window.onDidChangeTextEditorSelection((event) => {
-            maybeTriggerRelationSuggest(event.textEditor);
+            maybeTriggerFrontmatterSuggest(event.textEditor);
         })
     );
 
@@ -83,7 +130,7 @@ function registerCompletion(context, getIndex) {
         vscode.workspace.onDidChangeTextDocument((event) => {
             const editor = vscode.window.activeTextEditor;
             if (!editor || editor.document !== event.document) return;
-            maybeTriggerRelationSuggest(editor);
+            maybeTriggerFrontmatterSuggest(editor);
         })
     );
 
@@ -125,8 +172,10 @@ function registerCompletion(context, getIndex) {
 
 module.exports = {
     registerCompletion,
+    resolveFrontmatterFollowupState,
     buildDateShortcutItems,
     buildHeadingAnchorItems,
+    buildBlockReferenceItems,
     buildFootnoteReferenceItems,
     buildLongformBodyStructureItems,
     // Re-export helpers so existing test imports continue to work
@@ -144,6 +193,7 @@ module.exports = {
     collectLocalLinkedIds,
     collectObservedRelationUsage,
     rankCandidateIds,
+    rankScalarValues,
     buildFieldInferenceDetail,
     resolveQueryRelationCandidates,
     shouldOfferFrontmatterRelationCompletion,

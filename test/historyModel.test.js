@@ -3,7 +3,7 @@
 const { test, describe, beforeEach } = require('node:test');
 const assert = require('node:assert/strict');
 
-const { buildHistoryModel, buildNoteArc } = require('../src/features/entity/historyModel');
+const { buildHistoryModel, buildNoteArc, buildHistorySessions } = require('../src/features/entity/historyModel');
 const {
     initMutationLog,
     appendMutationEvents,
@@ -134,6 +134,51 @@ describe('buildHistoryModel', () => {
         const model = buildHistoryModel('nobody');
         assert.deepEqual(model.arc, []);
     });
+
+    test('note_touched events appear in history for the note', () => {
+        appendMutationEvents([{ timestamp: JAN16, type: 'note_touched', noteId: 'rico' }]);
+        const model = buildHistoryModel('rico');
+        assert.equal(model.totalCount, 1);
+        assert.equal(model.groups[0].events[0].type, 'note_touched');
+    });
+
+    test('buildHistoryModel returns compact session summaries when session ids are present', () => {
+        appendMutationEvents([
+            { timestamp: JAN15, type: 'note_created', noteId: 'rico', sessionId: 'session-a', source: 'vscode' },
+            { timestamp: JAN15_LATE, type: 'field_added', noteId: 'rico', field: 'unit', newValue: '[[roughnecks]]', sessionId: 'session-a', source: 'vscode' },
+            { timestamp: JAN16, type: 'query_builder_applied', noteId: 'rico', field: 'query', newValue: '!view contact', sessionId: 'session-b', source: 'vscode' }
+        ]);
+        const model = buildHistoryModel('rico');
+        assert.equal(model.sessions.length, 2);
+        assert.equal(model.sessions[0].sessionId, 'session-b');
+        assert.equal(model.sessions[1].sessionId, 'session-a');
+        assert.equal(model.sessions[1].count, 2);
+        assert.equal(model.sessions[0].family, 'querying');
+        assert.equal(model.sessions[0].outcome, 'applied');
+    });
+});
+
+describe('buildHistorySessions', () => {
+    test('returns empty when no session ids are present', () => {
+        assert.deepEqual(buildHistorySessions([{ timestamp: JAN15, type: 'note_created', noteId: 'rico' }]), []);
+    });
+
+    test('builds ordered summaries with top types and duration', () => {
+        const sessions = buildHistorySessions([
+            { timestamp: JAN15, type: 'note_created', noteId: 'rico', sessionId: 'session-a', source: 'vscode' },
+            { timestamp: JAN15_LATE, type: 'field_changed', noteId: 'rico', field: 'status', newValue: 'active', sessionId: 'session-a', source: 'vscode' },
+            { timestamp: JAN16, type: 'query_builder_opened', noteId: 'rico', field: 'query', newValue: 'new', sessionId: 'session-b', source: 'vscode' }
+        ]);
+
+        assert.equal(sessions.length, 2);
+        assert.equal(sessions[0].sessionId, 'session-b');
+        assert.equal(sessions[1].sessionId, 'session-a');
+        assert.ok(sessions[1].durationMinutes > 0);
+        assert.ok(sessions[1].topTypes.includes('field_changed'));
+        assert.ok(sessions[1].sources.includes('vscode'));
+        assert.equal(sessions[0].family, 'querying');
+        assert.equal(sessions[1].family, 'authoring');
+    });
 });
 
 describe('buildNoteArc', () => {
@@ -187,6 +232,16 @@ describe('buildNoteArc', () => {
         const last = arc.find(p => p.kind === 'last');
         assert.ok(last, 'should have a last phase');
         assert.ok(last.label.includes('status'), `label should mention field name, got: ${last.label}`);
+    });
+
+    test('note_touched produces a note updated last phase', () => {
+        const arc = buildNoteArc([
+            { timestamp: JAN15, type: 'note_created', noteId: 'rico' },
+            { timestamp: JAN16, type: 'note_touched', noteId: 'rico' }
+        ]);
+        const last = arc.find(p => p.kind === 'last');
+        assert.ok(last, 'should have a last phase');
+        assert.equal(last.label, 'Note updated');
     });
 
     test('last phase is omitted when most recent event is already captured', () => {

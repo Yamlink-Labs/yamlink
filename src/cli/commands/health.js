@@ -7,8 +7,9 @@ const { getCachedPriors } = require('../../intelligence/vaultPriors');
 const { inferLifecycleState } = require('../../intelligence/lifecycleState');
 const { computeVaultDrift, getDriftSummary } = require('../../intelligence/driftDetector');
 const fmt = require('../format');
+const { captureOutput, emitCliSuccess, emitText } = require('../io');
 
-function run({ json }) {
+function run({ json, output }) {
     const idIndex     = getIndex();
     const fieldsCache = getFieldsCache();
     const priors      = getCachedPriors(fieldsCache, getVaultGeneration());
@@ -67,32 +68,37 @@ function run({ json }) {
         } : null,
     };
 
-    if (json) { console.log(JSON.stringify(data, null, 2)); return; }
-
-    fmt.header('Vault Health');
-    fmt.row('Notes',        data.notes);
-    fmt.row('Types',        data.types);
-    fmt.row('Links',        data.links);
-    fmt.row('Broken links', brokenLinks > 0 ? fmt.warn(String(brokenLinks)) : fmt.ok('0'));
-
-    fmt.blank();
-    fmt.subheader('Lifecycle');
-    fmt.row('  hub',          lifecycle.hub);
-    fmt.row('  consolidated', lifecycle.consolidated);
-    fmt.row('  growing',      lifecycle.growing);
-    fmt.row('  draft',        lifecycle.draft);
-    fmt.row('  stale',        lifecycle.stale > 0 ? fmt.warn(String(lifecycle.stale)) : '0');
-
-    if (drift) {
-        fmt.blank();
-        fmt.subheader('Drift');
-        fmt.row('  on-track',    drift.onTrack);
-        if (drift.minorDrift) fmt.row('  minor-drift', drift.minorDrift);
-        if (drift.drifting)   fmt.row('  drifting',    fmt.warn(String(drift.drifting)));
-        if (drift.outliers)   fmt.row('  outliers',    fmt.warn(String(drift.outliers)));
+    if (json) {
+        emitCliSuccess(data, output);
+        return;
     }
 
-    fmt.blank();
+    emitText(captureOutput(() => {
+        fmt.header('Vault Health');
+        fmt.row('Notes',        data.notes);
+        fmt.row('Types',        data.types);
+        fmt.row('Links',        data.links);
+        fmt.row('Broken links', brokenLinks > 0 ? fmt.warn(String(brokenLinks)) : fmt.ok('0'));
+
+        fmt.blank();
+        fmt.subheader('Lifecycle');
+        fmt.row('  hub',          lifecycle.hub);
+        fmt.row('  consolidated', lifecycle.consolidated);
+        fmt.row('  growing',      lifecycle.growing);
+        fmt.row('  draft',        lifecycle.draft);
+        fmt.row('  stale',        lifecycle.stale > 0 ? fmt.warn(String(lifecycle.stale)) : '0');
+
+        if (drift) {
+            fmt.blank();
+            fmt.subheader('Drift');
+            fmt.row('  on-track',    drift.onTrack);
+            if (drift.minorDrift) fmt.row('  minor-drift', drift.minorDrift);
+            if (drift.drifting)   fmt.row('  drifting',    fmt.warn(String(drift.drifting)));
+            if (drift.outliers)   fmt.row('  outliers',    fmt.warn(String(drift.outliers)));
+        }
+
+        fmt.blank();
+    }), output);
 }
 
 module.exports = { run };

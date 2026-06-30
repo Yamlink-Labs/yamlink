@@ -72,4 +72,34 @@ describe('note-role intelligence', () => {
         const result = inferNoteRole({ type: 'kommandant' }, { typeRoleMap });
         assert.equal(result.noteRole, 'person');
     });
+
+    test('vault-learned type priors can drive role inference before hardcoded fallback', () => {
+        const result = inferNoteRole({ type: 'operator' }, {
+            noteRolePriors: {
+                person: ['operator']
+            },
+            typeRoleMap: new Map()
+        });
+        assert.equal(result.noteRole, 'person');
+        assert.ok(result.confidence >= 0.60, `expected learned-prior confidence >= 0.60, got ${result.confidence}`);
+        assert.match(result.reasons[0], /behaves like a person type elsewhere in this vault/i);
+    });
+
+    test('vault-learned field hints outrank generic fallback field hints', () => {
+        const result = inferNoteRole({
+            type: 'note',
+            owner: '[[ops-lead]]',
+            queue: '[[ops-queue]]',
+            shift: 'swing'
+        }, {
+            noteRoleFieldHints: {
+                task: ['owner', 'queue', 'shift']
+            },
+            noteRolePriors: {
+                task: ['work-item']
+            }
+        });
+        assert.equal(result.noteRole, 'task');
+        assert.ok(result.reasons.some((reason) => /learned from this vault/i.test(reason)));
+    });
 });

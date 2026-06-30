@@ -204,17 +204,61 @@ Definitions for every term used across Yamlink's surfaces, commands, and documen
 
 ---
 
+## Platform
+
+**Conduit** — Yamlink's terminal UI (`yamlink conduit`). A full-screen, stateful, keyboard-driven application — not a pretty wrapper around CLI commands. Think lazygit or k9s. Nine screens switchable with number keys: Briefing `[1]`, Query `[2]`, Navigator `[3]`, Explorer `[4]`, Health `[5]`, Search `[6]`, Graph `[7]`, Diff `[8]`, Radar `[9]`. Talks to the API server over HTTP and receives live vault events via SSE. Does not poll — updates are push-only.
+
+**Briefing** — both a CLI command (`yamlink briefing`) and the Conduit home screen `[1]`. Shows vault pulse (note/edge/type counts), open and overdue tasks, recent mutation activity, arc predictions for recently-touched notes, and a structural drift flag. The morning review surface.
+
+**JUMP TO** — the universal fuzzy finder overlay in Conduit. Opened by pressing any letter on a non-text screen (or `:` / `Ctrl+P` anywhere). Searches across all notes, commands, and types in a single ranked list. `j`/`k` to move, `Enter` to jump, `Esc` to dismiss.
+
+**Split pane** — a Conduit layout mode where two panes share the screen side by side. Explorer's split mode compacts the type and note columns to fit in the left half, keeping the detail panel visible alongside another screen.
+
+**Spatial bookmark** — a named slot (`m0`–`m9`) in Explorer that records the current screen, type filter, and selected note. Jump to any bookmark with `'0`–`'9`. Bookmarks survive restarts, stored in `.yamlink/conduit-bookmarks.json`.
+
+**Saved context** — a named Explorer state (type filter, search text, selected note) saved with `S` and restored with `R`. Contexts survive restarts, stored in `.yamlink/conduit-contexts.json`.
+
+---
+
+## Architecture
+
+**VaultService** — the shared headless rebuild coordinator (`src/core/vaultService.js`). Serializes file writes and post-write rebuilds as one atomic unit via `mutate(writeFn)`. File-watcher rebuilds flow through `notifyFileChange()`. All surfaces — API, LSP, CLI — share the same service so generation bumps, diagnostics publishes, and mutation event fanout happen once per rebuild, not once per consumer.
+
+**Generation** — an integer that increments on every completed vault rebuild. Exposed on every API response as `X-Yamlink-Generation`. All intelligence caches are keyed by generation so stale data is structurally impossible — a cache miss is a generation mismatch, not a timeout. The generation counter is also the invalidation signal for Conduit and SSE clients.
+
+**SSE (Server-Sent Events)** — the live-update transport. `GET /api/events` opens a persistent connection; Yamlink pushes fine-grained mutation events (`note_created`, `field_changed`, `relation_added`, etc.) and a final `{ type: "rebuild", generation }` event after each index rebuild. Conduit subscribes to this stream so all nine screens update live without polling.
+
+---
+
 ## CLI
 
-**`yamlink` CLI** — a standalone terminal tool (`npm link` from the project folder) for querying and inspecting a vault without VS Code.
+**`yamlink` CLI** — a standalone terminal tool (`npm link` from the project folder) for querying, inspecting, and mutating a vault without VS Code. Every command supports `--vault <path>` (default: current directory) and `--json` for machine-readable output.
 
-- `yamlink build` — index the vault, report broken links and duplicate IDs; exits 1 in CI if issues found
-- `yamlink health` — vault overview: note count, type distribution, broken links, orphan nodes, lifecycle distribution
-- `yamlink validate` — schema conformance check; exits 1 if required fields are missing
-- `yamlink query "<clause>"` — run a query using the same language as `!view` blocks
-- `yamlink report <id>` — full note report for one note: type, lifecycle state, drift, and all links
-- `yamlink links <id>` — outbound and inbound links, with broken-link markers
-- `yamlink serve` — local HTTP API server (default port 3000); endpoints include `/api/nodes`, `/api/query`, `/api/graph`, `/api/types`, `/api/health`. Live-reloads on file changes. Use case: vault as CMS backend for Next.js / Astro sites.
-- `yamlink export` — dump all notes or a query result as JSON or CSV
-- `--json` — machine-readable JSON output on any command
-- `--vault <path>` — override the vault directory (default: current working directory)
+| Command | Description |
+|---|---|
+| `yamlink init [path]` | Scaffold a new vault (creates `.yamlink/`, `_templates/`, `welcome.md`) |
+| `yamlink build` | Index vault, report broken links and duplicate IDs; exits 1 in CI if issues found |
+| `yamlink briefing` | Morning summary: vault pulse, overdue/today tasks, recent activity, arc predictions, drift flag |
+| `yamlink health` | Vault overview: note count, type distribution, broken links, orphan nodes, lifecycle distribution |
+| `yamlink validate` | Schema conformance check; exits 1 on required-field violations. `--check schema|broken-links|duplicates` |
+| `yamlink doctor` | Deep integrity audit: broken links, duplicates, arc gaps, stale notes, schema violations |
+| `yamlink status` | Fast machine-readable vault snapshot for scripts (`{ notes, types, edges, brokenLinks, generation }`) |
+| `yamlink query "<clause>"` | Run a query using the same language as `!view` blocks; ASCII table or `--json` |
+| `yamlink search <query>` | Fast ID/name/title/type lookup. `--type`, `--field` to narrow |
+| `yamlink report <id>` | Full note report: type, lifecycle state, drift, and all links |
+| `yamlink links <id>` | Outbound and inbound links, with broken-link markers |
+| `yamlink diff <id-a> <id-b>` | Compare two notes' frontmatter field sets |
+| `yamlink mutations` | Show recent mutation events. `--limit`, `--since`, `--type` to filter |
+| `yamlink set <id> <field> <value>` | Set or remove a frontmatter field. `--clear`, `--dry-run`, emits mutation events |
+| `yamlink link <id> <field> <target>` | Add a `[[wikilink]]` relation field. `--append` for multi-value fields |
+| `yamlink create <type>` | Create a note non-interactively. `--field key=value` for any frontmatter field |
+| `yamlink rename <old> <new>` | Vault-wide ID rename + wikilink rewrite. `--dry-run`, `--rename-file` |
+| `yamlink graph` | Export full vault graph as `{ nodes, edges }` JSON. `--only-types` to filter |
+| `yamlink schema list` | List all schema notes with governed types and note counts |
+| `yamlink schema check <type>` | Check schema conformance for all notes of a type. `--all` for every schema |
+| `yamlink export` | Export vault as JSON or CSV. `--query` to filter, `--output` to write to file |
+| `yamlink watch` | Persistent watcher — rebuilds on `.md` saves, prints timestamped one-liners |
+| `yamlink on <event> -- <script>` | Automation hooks: execute a script on matching mutation events. `--type` to filter |
+| `yamlink completions bash\|zsh` | Print shell completion script for tab-completion |
+| `yamlink serve` | Local HTTP API server (default port 3000). Full reference: `docs/api/README-API.md` |
+| `yamlink conduit` | Open the Conduit terminal UI. Requires `yamlink serve` running on the same port |

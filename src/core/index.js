@@ -11,17 +11,19 @@ const { clearGraph, registerEdges, getGraphStats, removeEdgesForSource } = requi
 const { getWorkspaceRoots, getWorkspaceRootForFile } = require('./workspace');
 const { loadIgnoreRules, isIgnoredPath } = require('./ignore');
 const { normaliseDateInput } = require('./date');
-const { extractCanonicalIdFromFrontmatter, canonicalizeId, canonicalizeLinkedTarget } = require('./id');
+const { extractCanonicalIdFromFrontmatter, canonicalizeId, canonicalizeLinkedTarget, resolveLinkedTarget } = require('./id');
 const { clearRegistry, registerType, unregisterType, getRegistryStats, getTypes } = require('../registries/typeRegistry');
 const { clearSchemaRegistry, registerSchemaNode } = require('../registries/schemaRegistry');
 const { normalizeText } = require('./frontmatter');
 const { extractTagsFromText, extractTagsFromNodeFields } = require('../intelligence/tagSignals');
+const { extractMeaningfulBodyBlocks } = require('./bodyBlocks');
 
 let idIndex        = new Map();
 let pathIndex      = new Map();
 let duplicateIds   = new Map();
 let fieldsCache    = new Map(); // id → parsed frontmatter fields
 let aliasIndex     = new Map(); // alias → canonical id
+let blockIndex     = new Map(); // id → (blockId → body block metadata)
 let mtimeCache     = new Map(); // filePath → mtime (ms) — skip unchanged files on incremental update
 let vaultGeneration = 0;        // incremented on every vault mutation — invalidates activation caches
 
@@ -88,9 +90,12 @@ function buildMutationEvents(oldFields, newFields, noteId) {
         }
 
         if (targetsChanged) {
+            const relType = oldTargets.length === 0 ? 'relation_added'
+                : newTargets.length === 0 ? 'relation_removed'
+                : 'relation_changed';
             events.push({
                 timestamp,
-                type: 'relation_changed',
+                type: relType,
                 noteId,
                 field: fieldName,
                 oldValue: oldTargets.join(', ') || null,
@@ -100,6 +105,22 @@ function buildMutationEvents(oldFields, newFields, noteId) {
     }
 
     return events;
+}
+
+/**
+ * @typedef {{ field: string, rawTarget: string }} RawEdge
+ */
+
+function buildTouchEvent(noteId) {
+    if (!noteId) return [];
+    return [{
+        timestamp: new Date().toISOString(),
+        type: 'note_touched',
+        noteId,
+        field: null,
+        oldValue: null,
+        newValue: null
+    }];
 }
 
 function extractAliasesFromFields(fields) {
@@ -117,6 +138,7 @@ function buildIndex(workspaceFolders) {
     duplicateIds.clear();
     fieldsCache.clear();
     aliasIndex.clear();
+    blockIndex.clear();
     mtimeCache.clear();  // must clear so updateSingleFile re-reads all files after a full rebuild
     clearGraph();
     clearRegistry();
@@ -125,15 +147,21 @@ function buildIndex(workspaceFolders) {
     if (!workspaceFolders) return;
 
     const roots = getWorkspaceRoots(workspaceFolders);
+    const pendingGraphBuild = [];
+
     for (const root of roots) {
         const ignoreRules = loadIgnoreRules(root);
-        scanDirectory(root, root, ignoreRules);
+        scanDirectory(root, root, ignoreRules, pendingGraphBuild);
+    }
+
+    for (const pending of pendingGraphBuild) {
+        registerResolvedEdges(pending.sourceId, pending.rawEdges);
     }
 
     const graphStats    = getGraphStats();
     const registryStats = getRegistryStats();
 
-    console.log(
+    console.error(
         `Yamlink — Index built: ${idIndex.size} node(s), ` +
         `${graphStats.totalEdges} edge(s), ` +
         `${registryStats.uniqueTypes} type(s) ` +
@@ -141,7 +169,7 @@ function buildIndex(workspaceFolders) {
     );
 }
 
-function scanDirectory(dir, workspaceRoot, ignoreRules = []) {
+function scanDirectory(dir, workspaceRoot, ignoreRules = [], pendingGraphBuild = []) {
     let files;
     try {
         files = fs.readdirSync(dir);
@@ -163,14 +191,14 @@ function scanDirectory(dir, workspaceRoot, ignoreRules = []) {
         try { stat = fs.statSync(fullPath); } catch (e) { continue; }
 
         if (stat.isDirectory()) {
-            scanDirectory(fullPath, workspaceRoot, ignoreRules);
+            scanDirectory(fullPath, workspaceRoot, ignoreRules, pendingGraphBuild);
         } else if (file.endsWith('.md')) {
-            indexFile(fullPath);
+            indexFile(fullPath, pendingGraphBuild);
         }
     }
 }
 
-function indexFile(fullPath) {
+function indexFile(fullPath, pendingGraphBuild = null) {
     let content;
     try {
         content = fs.readFileSync(fullPath, 'utf8');
@@ -201,25 +229,9 @@ function indexFile(fullPath) {
     pathIndex.set(fullPath, id);
 
     const rawEdges = [
-        ...extractEdgesFromFrontmatter(content),
-        ...extractBodyLinks(content)
+        ...extractEdgesFromFrontmatterRaw(content),
+        ...extractBodyLinksRaw(content)
     ];
-
-    // Deduplicate: same field + targetId pair should only produce one edge.
-    // Self-loops (a note pointing to itself) are excluded — they arise from
-    // !view query clauses like `where owner = [[self]]` and carry no structural meaning.
-    const seen  = new Set();
-    const edges = [];
-    for (const edge of rawEdges) {
-        if (edge.targetId === id) continue;
-        const key = `${edge.field}:${edge.targetId}`;
-        if (!seen.has(key)) {
-            seen.add(key);
-            edges.push(edge);
-        }
-    }
-
-    registerEdges(id, edges);
 
     const fields = parseFrontmatter(content);
     if (fields) {
@@ -242,6 +254,19 @@ function indexFile(fullPath) {
             }
         }
     }
+
+    const bodyBlocks = extractMeaningfulBodyBlocks(content);
+    if (bodyBlocks.length) {
+        blockIndex.set(id, new Map(bodyBlocks.map((block) => [block.blockId, block])));
+    } else {
+        blockIndex.delete(id);
+    }
+
+    if (pendingGraphBuild) {
+        pendingGraphBuild.push({ sourceId: id, rawEdges });
+    } else {
+        registerResolvedEdges(id, rawEdges);
+    }
 }
 
 function extractId(content) {
@@ -258,6 +283,14 @@ function extractIdFromFrontmatter(filePath) {
 
 /** @param {string} content @returns {import('./graph').OutboundEdge[]} */
 function extractEdgesFromFrontmatter(content) {
+    return extractEdgesFromFrontmatterRaw(content).map((edge) => ({
+        field: edge.field,
+        targetId: canonicalizeLinkedTarget(edge.rawTarget)
+    })).filter((edge) => edge.targetId);
+}
+
+/** @param {string} content @returns {RawEdge[]} */
+function extractEdgesFromFrontmatterRaw(content) {
     const edges = [];
     if (!/^\s*---/.test(content)) return edges;
 
@@ -285,8 +318,7 @@ function extractEdgesFromFrontmatter(content) {
                 const linkRegex = /\[\[([^\]]+)\]\]/g;
                 let m;
                 while ((m = linkRegex.exec(inlineValue)) !== null) {
-                    const targetId = canonicalizeLinkedTarget(m[1]);
-                    if (targetId) edges.push({ field: currentField, targetId });
+                    if (m[1]) edges.push({ field: currentField, rawTarget: m[1] });
                 }
             }
             continue;
@@ -294,8 +326,7 @@ function extractEdgesFromFrontmatter(content) {
 
         const listMatch = line.match(/^\s*-\s+\[\[([^\]]+)\]\]/);
         if (listMatch && currentField) {
-            const targetId = canonicalizeLinkedTarget(listMatch[1]);
-            if (targetId) edges.push({ field: currentField, targetId });
+            if (listMatch[1]) edges.push({ field: currentField, rawTarget: listMatch[1] });
             continue;
         }
 
@@ -309,6 +340,14 @@ function extractEdgesFromFrontmatter(content) {
 
 /** @param {string} content @returns {import('./graph').OutboundEdge[]} */
 function extractBodyLinks(content) {
+    return extractBodyLinksRaw(content).map((edge) => ({
+        field: edge.field,
+        targetId: canonicalizeLinkedTarget(edge.rawTarget)
+    })).filter((edge) => edge.targetId);
+}
+
+/** @param {string} content @returns {RawEdge[]} */
+function extractBodyLinksRaw(content) {
     const edges = [];
 
     let bodyStart = 0;
@@ -323,11 +362,31 @@ function extractBodyLinks(content) {
     let match;
 
     while ((match = linkRegex.exec(body)) !== null) {
-        const targetId = canonicalizeLinkedTarget(match[1]);
-        if (targetId) edges.push({ field: 'body', targetId });
+        if (match[1]) edges.push({ field: 'body', rawTarget: match[1] });
     }
 
     return edges;
+}
+
+/**
+ * @param {string} sourceId
+ * @param {RawEdge[]} rawEdges
+ * @returns {void}
+ */
+function registerResolvedEdges(sourceId, rawEdges) {
+    const seen = new Set();
+    const edges = [];
+
+    for (const edge of rawEdges || []) {
+        const targetId = resolveLinkedTarget(edge.rawTarget, idIndex, aliasIndex) || canonicalizeLinkedTarget(edge.rawTarget);
+        if (!targetId || targetId === sourceId) continue;
+        const key = `${edge.field}:${targetId}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        edges.push({ field: edge.field, targetId });
+    }
+
+    registerEdges(sourceId, edges);
 }
 
 
@@ -497,17 +556,9 @@ function updateSingleFile(filePath, options = {}) {
     removeEdgesForSource(newId);
 
     const rawEdges = [
-        ...extractEdgesFromFrontmatter(newContent),
-        ...extractBodyLinks(newContent)
+        ...extractEdgesFromFrontmatterRaw(newContent),
+        ...extractBodyLinksRaw(newContent)
     ];
-    const seen  = new Set();
-    const edges = [];
-    for (const edge of rawEdges) {
-        if (edge.targetId === newId) continue;
-        const key = `${edge.field}:${edge.targetId}`;
-        if (!seen.has(key)) { seen.add(key); edges.push(edge); }
-    }
-    if (edges.length > 0) registerEdges(newId, edges);
 
     const oldAliases = extractAliasesFromFields(oldFields);
     for (const alias of oldAliases) {
@@ -519,8 +570,16 @@ function updateSingleFile(filePath, options = {}) {
         for (const alias of extractAliasesFromFields(enrichedNew)) {
             if (!aliasIndex.has(alias)) aliasIndex.set(alias, newId);
         }
+        registerResolvedEdges(newId, rawEdges);
     } else {
         fieldsCache.delete(newId);
+    }
+
+    const bodyBlocks = extractMeaningfulBodyBlocks(newContent);
+    if (bodyBlocks.length) {
+        blockIndex.set(newId, new Map(bodyBlocks.map((block) => [block.blockId, block])));
+    } else {
+        blockIndex.delete(newId);
     }
 
     if (oldType !== newType) {
@@ -529,8 +588,9 @@ function updateSingleFile(filePath, options = {}) {
     }
 
     const mutationEvents = buildMutationEvents(oldFields, newFields ? enrichFieldsWithTagSignals(newFields, newContent) : {}, newId);
+    const effectiveEvents = mutationEvents.length > 0 ? mutationEvents : buildTouchEvent(newId);
     vaultGeneration++;
-    return { changed: true, needsFull: false, changedId: newId, mutationEvents };
+    return { changed: true, needsFull: false, changedId: newId, mutationEvents: effectiveEvents };
 }
 
 // ─────────────────────────────────────────────────────────────────
@@ -557,6 +617,7 @@ function removeFileFromIndex(filePath) {
     const deletedType   = deletedFields && deletedFields.type ? deletedFields.type.trim().toLowerCase() : null;
     if (deletedType) unregisterType(deletedType, id);
     fieldsCache.delete(id);
+    blockIndex.delete(id);
 
     vaultGeneration++;
     return {
@@ -575,6 +636,8 @@ function getDuplicateIds()    { return duplicateIds; }
 function getFieldsCache()     { return fieldsCache; }
 /** @returns {Map<string,string>} */
 function getAliasIndex()      { return aliasIndex; }
+/** @returns {Map<string,Map<string,import('./bodyBlocks').BodyBlock>>} */
+function getBodyBlockIndex()  { return blockIndex; }
 /** @returns {number} */
 function getVaultGeneration() { return vaultGeneration; }
 /** @param {string|null} [filePath] @returns {void} */
@@ -593,6 +656,7 @@ module.exports = {
     getDuplicateIds,
     getFieldsCache,
     getAliasIndex,
+    getBodyBlockIndex,
     getVaultGeneration,
     getGraphStats,
     extractIdFromFrontmatter,

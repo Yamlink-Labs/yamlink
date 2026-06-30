@@ -2,7 +2,11 @@
 
 const { describe, it } = require('node:test');
 const assert = require('node:assert/strict');
-const { buildImplicitFieldWeights, getImplicitBoost } = require('../src/intelligence/implicitWeights');
+const {
+    buildImplicitFieldWeights,
+    buildBehavioralRelationPriors,
+    getImplicitBoost
+} = require('../src/intelligence/implicitWeights');
 
 // ─── buildImplicitFieldWeights ────────────────────────────────────────────
 
@@ -124,5 +128,111 @@ describe('implicitWeights — getImplicitBoost', () => {
         ]);
         const { boost } = getImplicitBoost('status', weights);
         assert.equal(boost, 0);
+    });
+});
+
+// ─── signal decay ────────────────────────────────────────────────────────────
+
+describe('implicitWeights — signal decay', () => {
+    const HALF_LIFE = 180;
+    const MS_PER_DAY = 86400000;
+
+    it('events with no timestamp get full decay weight (1.0)', () => {
+        const events = [
+            { type: 'relation_changed', field: 'commander', newValue: '[[rico]]', noteId: 'a' }
+        ];
+        const weights = buildImplicitFieldWeights(events);
+        const w = weights.get('commander');
+        assert.ok(Math.abs(w.decayedWeight - 1.0) < 0.001,
+            `no-timestamp event should get decayedWeight 1.0, got ${w.decayedWeight}`);
+    });
+
+    it('event at exactly half-life age contributes ~0.5 decayed weight', () => {
+        const nowMs = Date.now();
+        const events = [{
+            type: 'relation_changed', field: 'commander', newValue: '[[rico]]', noteId: 'a',
+            timestamp: new Date(nowMs - HALF_LIFE * MS_PER_DAY).toISOString()
+        }];
+        const weights = buildImplicitFieldWeights(events, nowMs);
+        const w = weights.get('commander');
+        assert.ok(w, 'weight entry must exist');
+        assert.ok(Math.abs(w.decayedWeight - 0.5) < 0.01,
+            `half-life event should give decayedWeight ~0.5, got ${w.decayedWeight}`);
+    });
+
+    it('recent event gives higher boost than stale event at identical raw count', () => {
+        const nowMs = Date.now();
+        const recentWeights = buildImplicitFieldWeights([{
+            type: 'relation_changed', field: 'commander', newValue: '[[rico]]', noteId: 'a',
+            timestamp: new Date(nowMs).toISOString()
+        }], nowMs);
+        const staleWeights = buildImplicitFieldWeights([{
+            type: 'relation_changed', field: 'commander', newValue: '[[rico]]', noteId: 'a',
+            timestamp: new Date(nowMs - HALF_LIFE * 2 * MS_PER_DAY).toISOString()
+        }], nowMs);
+        const recentBoost = getImplicitBoost('commander', recentWeights).boost;
+        const staleBoost  = getImplicitBoost('commander', staleWeights).boost;
+        assert.ok(recentBoost > staleBoost,
+            `recent boost (${recentBoost}) should exceed stale boost (${staleBoost})`);
+    });
+
+    it('event older than 4× half-life decays below floor and gives zero boost', () => {
+        const nowMs = Date.now();
+        const events = [{
+            type: 'relation_changed', field: 'commander', newValue: '[[rico]]', noteId: 'a',
+            timestamp: new Date(nowMs - HALF_LIFE * 4 * MS_PER_DAY).toISOString()
+        }];
+        const weights = buildImplicitFieldWeights(events, nowMs);
+        const { boost } = getImplicitBoost('commander', weights);
+        assert.equal(boost, 0,
+            `event older than 4 half-lives (~${HALF_LIFE * 4}d) should give 0 boost`);
+    });
+
+    it('multiple recent events accumulate decayed weight correctly', () => {
+        const nowMs = Date.now();
+        const ts = new Date(nowMs).toISOString();
+        const events = Array.from({ length: 3 }, (_, i) => ({
+            type: 'relation_changed', field: 'cmd', newValue: '[[x]]', noteId: `n${i}`, timestamp: ts
+        }));
+        const weights = buildImplicitFieldWeights(events, nowMs);
+        const w = weights.get('cmd');
+        assert.ok(Math.abs(w.decayedWeight - 3.0) < 0.01,
+            `3 fresh events should give decayedWeight ~3.0, got ${w.decayedWeight}`);
+    });
+
+    it('raw relationCount still reflects integer count regardless of decay', () => {
+        const nowMs = Date.now();
+        const events = [
+            { type: 'relation_changed', field: 'commander', newValue: '[[rico]]', noteId: 'a',
+              timestamp: new Date(nowMs).toISOString() },
+            { type: 'relation_changed', field: 'commander', newValue: '[[carmen]]', noteId: 'b',
+              timestamp: new Date(nowMs - HALF_LIFE * MS_PER_DAY).toISOString() }
+        ];
+        const weights = buildImplicitFieldWeights(events, nowMs);
+        const w = weights.get('commander');
+        assert.equal(w.relationCount, 2, 'raw relationCount must remain an integer counter');
+        assert.ok(w.decayedWeight > 1.0 && w.decayedWeight < 2.0,
+            `decayedWeight should be between 1 and 2 (got ${w.decayedWeight})`);
+    });
+});
+
+describe('implicitWeights — behavioral relation priors', () => {
+    it('builds note-type-scoped target type and id scores from recent relation history', () => {
+        const fieldsCache = new Map([
+            ['carl', { type: 'character' }],
+            ['dizzy', { type: 'character' }],
+            ['roughnecks', { type: 'unit' }],
+            ['ace-levy', { type: 'character', unit: '[[roughnecks]]' }]
+        ]);
+        const priors = buildBehavioralRelationPriors([
+            { type: 'relation_changed', noteId: 'ace-levy', field: 'unit', newValue: '[[roughnecks]]' },
+            { type: 'relation_changed', noteId: 'ace-levy', field: 'commander', newValue: '[[carl]]' },
+            { type: 'relation_changed', noteId: 'ace-levy', field: 'commander', newValue: '[[dizzy]]' }
+        ], fieldsCache);
+
+        assert.equal(priors.fieldTargetTypeScores.get('unit').get('unit') > 0, true);
+        assert.equal(priors.fieldTargetIdScores.get('unit').get('roughnecks') > 0, true);
+        assert.equal(priors.noteTypeFieldTargetTypeScores.get('character').get('unit').get('unit') > 0, true);
+        assert.equal(priors.noteTypeFieldTargetIdScores.get('character').get('unit').get('roughnecks') > 0, true);
     });
 });

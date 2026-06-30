@@ -32,6 +32,49 @@ const LARGE_RESULT_THRESHOLD = 500;
 const MATRIX_MAX_ROWS = 100;
 const MATRIX_MAX_COLS = 50;
 const SYSTEM_TYPES_MATRIX = new Set(['schema', 'dashboard', 'template']);
+const CHART_PALETTE = ['#5ECFBE', '#E7A85A', '#C5FFBF', '#C49BF0', '#FF429F', '#9BB4FF', '#8899AA'];
+
+function serialiseForInlineScript(value) {
+    return JSON.stringify(value).replace(/<\//g, '<\\/');
+}
+
+function getChartColor(index) {
+    return CHART_PALETTE[index % CHART_PALETTE.length];
+}
+
+function getTypeColorMap(types) {
+    const ordered = (types || []).slice().sort();
+    const map = new Map();
+    ordered.forEach((type, index) => {
+        map.set(type, getChartColor(index));
+    });
+    return map;
+}
+
+function buildInfoCardHtml(title, copy) {
+    return `<div class="chart-info-card"><div class="chart-info-title">${esc(title)}</div><div class="chart-info-copy">${copy}</div></div>`;
+}
+
+function coerceScatterValue(raw, kind) {
+    if (raw == null || raw === '') return null;
+    if (kind === 'number') {
+        const value = Number(raw);
+        return Number.isFinite(value) ? value : null;
+    }
+    if (kind === 'date') {
+        const value = Date.parse(String(raw));
+        return Number.isFinite(value) ? value : null;
+    }
+    return null;
+}
+
+function buildScatterAxisCandidates(columns, meta) {
+    return columns.filter((field) => {
+        if (field === 'id') return false;
+        const kind = meta[field]?.kind || 'text';
+        return kind === 'number' || kind === 'date';
+    });
+}
 
 function buildMatrixGrid(rowNotes, colNotes, rowType, colType) {
     const visibleRows = rowNotes.slice(0, MATRIX_MAX_ROWS);
@@ -87,18 +130,19 @@ function renderPanel({ panel, queries, extensionUri, panelState, preferredTab = 
     const editRuntimeScriptUri = panel.webview.asWebviewUri(vscode.Uri.joinPath(extensionUri, 'src', 'features', 'viewPanelEditRuntime.js'));
     const uiRuntimeScriptUri = panel.webview.asWebviewUri(vscode.Uri.joinPath(extensionUri, 'src', 'features', 'viewPanelUiRuntime.js'));
     const scriptUri = panel.webview.asWebviewUri(vscode.Uri.joinPath(extensionUri, 'src', 'features', 'viewPanelScript.js'));
+    const chartScriptUri = panel.webview.asWebviewUri(vscode.Uri.joinPath(extensionUri, 'src', 'features', 'view', 'vendor', 'chart.umd.min.js'));
     const nonce = require('crypto').randomBytes(16).toString('hex');
     const csp = panel.webview.cspSource;
     if (getIndex().size === 0) {
         panel.webview.html = repairUiText(buildEmptyHtml(queryList));
         return;
     }
-    panel.webview.html = perfTracker.measureSync('view.buildHtml', {
-        queryCount: queryList.length
-    }, () => repairUiText(buildHtml(queryList, stateScriptUri, valueRuntimeScriptUri, editRuntimeScriptUri, uiRuntimeScriptUri, scriptUri, nonce, csp, panelState, preferredTab, contextNodeId)));
+        panel.webview.html = perfTracker.measureSync('view.buildHtml', {
+            queryCount: queryList.length
+        }, () => repairUiText(buildHtml(queryList, stateScriptUri, valueRuntimeScriptUri, editRuntimeScriptUri, uiRuntimeScriptUri, scriptUri, chartScriptUri, nonce, csp, panelState, preferredTab, contextNodeId)));
 }
 
-function buildHtml(queryList, stateScriptUri, valueRuntimeScriptUri, editRuntimeScriptUri, uiRuntimeScriptUri, scriptUri, nonce, csp, panelState, preferredTab = null, contextNodeId = null) {
+function buildHtml(queryList, stateScriptUri, valueRuntimeScriptUri, editRuntimeScriptUri, uiRuntimeScriptUri, scriptUri, chartScriptUri, nonce, csp, panelState, preferredTab = null, contextNodeId = null) {
     const allIds = [...getIndex().keys()];
     const idOpts = allIds.map(id => `<option value="${esc(id)}">`).join('');
     const activeTab = (preferredTab !== null && preferredTab !== undefined)
@@ -108,12 +152,13 @@ function buildHtml(queryList, stateScriptUri, valueRuntimeScriptUri, editRuntime
         .map((q, i) => `<button class="tab-btn${i === activeTab ? ' active' : ''}" id="tab-btn-${i}" data-tab="${i}" role="tab" aria-controls="tab-panel-${i}" aria-selected="${i === activeTab ? 'true' : 'false'}" tabindex="${i === activeTab ? '0' : '-1'}">${esc(q.label || (q.type === '*' ? 'All nodes' : q.type))}</button>`)
         .join('');
     const panels = queryList
-        .map((q, i) => buildPanel(q, i, activeTab, panelState?.tabs?.[i] || {}, contextNodeId))
+        .map((q, i) => buildPanel(q, i, activeTab, panelState?.tabs?.[i] || {}, contextNodeId, nonce))
         .join('\n');
 
     return `<!DOCTYPE html><html lang="en"><head>
 <meta charset="UTF-8">
 <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'nonce-${nonce}' ${csp};">
+<script nonce="${nonce}" src="${chartScriptUri}"></script>
 <style>${VIEW_CSS}</style></head><body>
 <datalist id="yids">${idOpts}</datalist>
 <div class="tabbar" role="tablist" aria-label="View query tabs">${tabBtns}</div>
@@ -194,7 +239,126 @@ function buildWarningBanner(query, warnings) {
     return `<div class="warning-card" data-warning-severity="${warningState.severity}"><div class="warning-card-header"><span class="warning-card-badge">!</span><span class="warning-card-title">${esc(title)}</span></div><div class="warning-card-copy">${escapeHintForHtml(intro)}</div>${details}${tip}</div>`;
 }
 
-function buildPanel(query, idx, activeTab, tabState, contextNodeId) {
+function buildLayoutToggleButtons(activeLayout, opts = {}) {
+    const layouts = [
+        ['table', 'Table', false],
+        ['matrix', 'Matrix', false],
+        ['bar', 'Bar', false],
+        ['scatter', 'Scatter', !!opts.scatterDisabled]
+    ];
+    return `<div class="layout-toggle" role="group" aria-label="Layout mode">${layouts.map(([layout, label, disabled]) =>
+        `<button class="layout-btn${activeLayout === layout ? ' active' : ''}"${disabled ? ' disabled title="No numeric or date fields in this result"' : ''} data-layout-btn="${layout}" aria-pressed="${activeLayout === layout}">${label}</button>`
+    ).join('')}</div>`;
+}
+
+function buildBarChartHtml({ idx, groups, groupField, nonce }) {
+    if (!groupField || !Array.isArray(groups)) {
+        return buildInfoCardHtml('Bar chart unavailable', 'Bar chart requires a <code>group by</code> clause.');
+    }
+    const labels = groups.map((group) => group.key === '' ? '(empty)' : group.key);
+    const counts = groups.map((group) => group.count);
+    const colors = groups.map((_, index) => getChartColor(index));
+    const canvasId = `view-chart-bar-${idx}`;
+    const config = {
+        type: 'bar',
+        data: {
+            labels,
+            datasets: [{
+                label: groupField,
+                data: counts,
+                backgroundColor: colors,
+                borderColor: colors,
+                borderWidth: 1.2,
+                borderRadius: 10,
+                borderSkipped: false,
+                maxBarThickness: 42
+            }]
+        },
+        options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            indexAxis: labels.length > 8 ? 'y' : 'x',
+            plugins: {
+                legend: { display: false },
+                tooltip: {
+                    backgroundColor: '#111318',
+                    borderColor: 'rgba(94,207,190,0.22)',
+                    borderWidth: 1,
+                    titleColor: '#e6edf3',
+                    bodyColor: '#c8c8c8',
+                    displayColors: false
+                }
+            },
+            scales: {
+                x: {
+                    ticks: { color: '#8b949e' },
+                    grid: { color: 'rgba(136,153,170,0.14)' },
+                    border: { color: 'rgba(136,153,170,0.22)' }
+                },
+                y: {
+                    ticks: { color: '#8b949e' },
+                    grid: { color: 'rgba(136,153,170,0.10)' },
+                    border: { color: 'rgba(136,153,170,0.22)' }
+                }
+            }
+        }
+    };
+    return `<div class="chart-surface"><div class="chart-surface-head"><div><div class="chart-surface-title">Bar chart</div><div class="chart-surface-copy">Grouped by <code>${esc(groupField)}</code> across ${groups.length} bucket${groups.length === 1 ? '' : 's'}.</div></div></div><div class="chart-canvas-wrap"><canvas id="${canvasId}" class="chart-canvas" aria-label="Bar chart for ${esc(groupField)}" role="img"></canvas></div></div><script nonce="${nonce}">(() => { const canvas = document.getElementById(${serialiseForInlineScript(canvasId)}); if (!canvas || !window.Chart) return; const ctx = canvas.getContext('2d'); new window.Chart(ctx, ${serialiseForInlineScript(config)}); })();</script>`;
+}
+
+function buildScatterChartHtml({ idx, rows, columns, meta, xField, yField, types, nonce }) {
+    const axisFields = buildScatterAxisCandidates(columns, meta);
+    if (!axisFields.length) {
+        return buildInfoCardHtml('Scatter chart unavailable', 'Scatter chart needs numeric or date fields in the result.');
+    }
+    const selectedX = xField || axisFields[0] || '';
+    const selectedY = yField || axisFields[1] || axisFields[0] || '';
+    const picker = `<div class="scatter-axis-picker"><label class="scatter-axis-label">X axis <select data-scatter-axis="x" class="scatter-axis-select"><option value="">Choose field…</option>${axisFields.map((field) => `<option value="${esc(field)}"${field === selectedX ? ' selected' : ''}>${esc(field)}</option>`).join('')}</select></label><label class="scatter-axis-label">Y axis <select data-scatter-axis="y" class="scatter-axis-select"><option value="">Choose field…</option>${axisFields.map((field) => `<option value="${esc(field)}"${field === selectedY ? ' selected' : ''}>${esc(field)}</option>`).join('')}</select></label></div>`;
+    const xKind = meta[selectedX]?.kind || 'text';
+    const yKind = meta[selectedY]?.kind || 'text';
+    if (!['number', 'date'].includes(xKind) || !['number', 'date'].includes(yKind)) {
+        return `<div class="chart-surface"><div class="chart-surface-head"><div><div class="chart-surface-title">Scatter chart</div><div class="chart-surface-copy"><code>${esc(selectedX)}</code> and <code>${esc(selectedY)}</code> must be numeric or date fields.</div></div></div>${picker}</div>`;
+    }
+
+    const typeColors = getTypeColorMap(types.length ? types : [...new Set(rows.map((row) => row.nodeType || 'unknown'))]);
+    const datasetsByType = new Map();
+    for (const row of rows) {
+        const xValue = coerceScatterValue(selectedX === 'id' ? row.id : row.fields[selectedX], xKind);
+        const yValue = coerceScatterValue(selectedY === 'id' ? row.id : row.fields[selectedY], yKind);
+        if (xValue == null || yValue == null) continue;
+        const type = row.nodeType || 'unknown';
+        if (!datasetsByType.has(type)) {
+            const color = typeColors.get(type) || getChartColor(datasetsByType.size);
+            datasetsByType.set(type, {
+                label: type,
+                data: [],
+                backgroundColor: color,
+                borderColor: color,
+                pointRadius: 5,
+                pointHoverRadius: 6
+            });
+        }
+        datasetsByType.get(type).data.push({
+            x: xValue,
+            y: yValue,
+            label: row.fields.name || row.fields.title || row.id,
+            id: row.id
+        });
+    }
+    const datasets = [...datasetsByType.values()].filter((dataset) => dataset.data.length);
+    if (!datasets.length) {
+        return `<div class="chart-surface"><div class="chart-surface-head"><div><div class="chart-surface-title">Scatter chart</div><div class="chart-surface-copy">No rows have values for both <code>${esc(selectedX)}</code> and <code>${esc(selectedY)}</code>.</div></div></div>${picker}</div>`;
+    }
+    const canvasId = `view-chart-scatter-${idx}`;
+    const dataConfig = {
+        datasets
+    };
+    const xIsDate = xKind === 'date';
+    const yIsDate = yKind === 'date';
+    return `<div class="chart-surface"><div class="chart-surface-head"><div><div class="chart-surface-title">Scatter chart</div><div class="chart-surface-copy">Plotting <code>${esc(selectedX)}</code> against <code>${esc(selectedY)}</code> across ${rows.length} row${rows.length === 1 ? '' : 's'}.</div></div>${picker}</div><div class="chart-canvas-wrap"><canvas id="${canvasId}" class="chart-canvas" aria-label="Scatter chart for ${esc(selectedX)} and ${esc(selectedY)}" role="img"></canvas></div></div><script nonce="${nonce}">(() => { const canvas = document.getElementById(${serialiseForInlineScript(canvasId)}); if (!canvas || !window.Chart) return; const ctx = canvas.getContext('2d'); new window.Chart(ctx, { type: 'scatter', data: ${serialiseForInlineScript(dataConfig)}, options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { labels: { color: '#c8c8c8', usePointStyle: true, boxWidth: 10, boxHeight: 10 } }, tooltip: { backgroundColor: '#111318', borderColor: 'rgba(94,207,190,0.22)', borderWidth: 1, titleColor: '#e6edf3', bodyColor: '#c8c8c8', callbacks: { title(items) { return items[0]?.raw?.label || items[0]?.raw?.id || ''; }, label(context) { const raw = context.raw || {}; const xv = ${xIsDate} ? new Date(raw.x).toISOString().slice(0, 10) : raw.x; const yv = ${yIsDate} ? new Date(raw.y).toISOString().slice(0, 10) : raw.y; return ${serialiseForInlineScript(selectedX)} + ': ' + xv + ' · ' + ${serialiseForInlineScript(selectedY)} + ': ' + yv; } } } }, scales: { x: { ticks: { color: '#8b949e', callback(value) { return ${xIsDate} ? new Date(value).toISOString().slice(0, 10) : value; } }, grid: { color: 'rgba(136,153,170,0.14)' }, border: { color: 'rgba(136,153,170,0.22)' }, title: { display: true, text: ${serialiseForInlineScript(selectedX)}, color: '#8b949e' } }, y: { ticks: { color: '#8b949e', callback(value) { return ${yIsDate} ? new Date(value).toISOString().slice(0, 10) : value; } }, grid: { color: 'rgba(136,153,170,0.10)' }, border: { color: 'rgba(136,153,170,0.22)' }, title: { display: true, text: ${serialiseForInlineScript(selectedY)}, color: '#8b949e' } } } } }); })();</script>`;
+}
+
+function buildPanel(query, idx, activeTab, tabState, contextNodeId, nonce) {
     const queryText = buildQueryString(query);
     const vaultGeneration = getVaultGeneration();
     const todayIso = getTodayIsoLocal();
@@ -209,6 +373,19 @@ function buildPanel(query, idx, activeTab, tabState, contextNodeId) {
     }
 
     const { rows, types, warnings } = result;
+    const activeLayout = ['table', 'matrix', 'bar', 'scatter'].includes(tabState.layout) ? tabState.layout : 'table';
+    let layoutToggleBtns = buildLayoutToggleButtons(activeLayout, { scatterDisabled: !!result.groupBy });
+    const scopeLabel = query.incoming ? 'Incoming' : (query.type === '*' ? 'Vault' : query.type);
+    const viewLabel = query.label || (query.type === '*' ? 'All notes' : query.type);
+    const heroTitle = {
+        table: 'Table View',
+        matrix: 'Matrix View',
+        bar: 'Bar Chart',
+        scatter: 'Scatter Plot'
+    }[activeLayout] || 'Table View';
+    const heroMetaCount = result.groupBy
+        ? `${(result.groups || []).length} group${(result.groups || []).length === 1 ? '' : 's'}`
+        : `${rows.length} row${rows.length === 1 ? '' : 's'}`;
 
     if (result.groupBy) {
         const groupField = result.groupBy;
@@ -217,17 +394,32 @@ function buildPanel(query, idx, activeTab, tabState, contextNodeId) {
         const groupBodyRows = groups.length
             ? groups.map(g => `<tr><td>${g.key === '' ? '<span class="cell-empty">-</span>' : esc(g.key)}</td><td>${g.count}</td></tr>`).join('')
             : `<tr><td colspan="2" class="empty-state">${buildTableEmptyState(query, warnings)}</td></tr>`;
-        return `<div class="tab-panel${isActive ? ' active' : ''}" data-tab="${idx}" style="display:${isActive ? 'flex' : 'none'}">${warningBanner}<div class="filterbar"><div class="chip-group"></div><div class="action-group"><button class="btn export-btn" data-format="csv">Export CSV</button><button class="btn export-btn" data-format="json">Export JSON</button></div><div class="status-group"><span class="fcount"><strong>${groups.length}</strong> group${groups.length !== 1 ? 's' : ''}</span></div></div><div class="table-wrap"><table><colgroup><col><col style="width:80px"></colgroup><thead><tr><th>${esc(groupField)}</th><th>count</th></tr></thead><tbody>${groupBodyRows}</tbody></table></div></div>`;
+        const groupedLayoutHtml = activeLayout === 'bar'
+            ? buildBarChartHtml({ idx, groups, groupField, nonce })
+            : activeLayout === 'table'
+                ? `<div class="table-wrap"><table><colgroup><col><col style="width:80px"></colgroup><thead><tr><th>${esc(groupField)}</th><th>count</th></tr></thead><tbody>${groupBodyRows}</tbody></table></div>`
+                : buildInfoCardHtml(
+                    activeLayout === 'scatter' ? 'Scatter chart unavailable' : 'Matrix view unavailable',
+                    activeLayout === 'scatter'
+                        ? 'Scatter chart works with row results. Use a standard <code>!view</code> result with numeric or date fields.'
+                        : 'Matrix view works on row results, not grouped summaries.'
+                );
+        return `<div class="tab-panel${isActive ? ' active' : ''}" id="tab-panel-${idx}" role="tabpanel" aria-labelledby="tab-btn-${idx}" data-tab="${idx}" data-layout="${esc(activeLayout)}" data-matrix-col-type="" data-scatter-x="${esc(tabState.scatterX || '')}" data-scatter-y="${esc(tabState.scatterY || '')}" data-column-filters="${esc(JSON.stringify(tabState.columnFilters || {}))}" data-current-page="1" data-page-size="50" style="display:${isActive ? 'flex' : 'none'}"${isActive ? '' : ' hidden'}><div class="view-shell">${warningBanner}<div class="query-hero"><div class="query-hero-top"><div class="query-hero-title">${heroTitle}</div><div class="query-hero-subtle">${esc(viewLabel)}</div></div><div class="query-hero-query"><span class="query-hero-query-label">${iconGlyph('query')}Query</span><code>${formatQueryHeroText(queryText)}</code></div><div class="query-hero-meta"><span class="query-hero-badge">${esc(scopeLabel)}</span><span class="query-hero-badge">${heroMetaCount}</span></div></div><div class="query-toolbar"><div class="toolbar-group group-view"><div class="toolbar-group-label">${iconGlyph('view')}View</div><div class="toolbar-group-row"><button class="btn report-btn">Open report</button><button class="btn reset-btn">Reset view</button></div></div><div class="toolbar-group group-filters"><div class="toolbar-group-label">${iconGlyph('filters')}Filters</div><div class="toolbar-group-row"><button class="btn refine-btn" data-query-index="${idx}">Refine view</button></div></div><div class="toolbar-group group-layout"><div class="toolbar-group-label">${iconGlyph('layout')}Layout</div><div class="toolbar-group-row">${layoutToggleBtns}</div></div><div class="toolbar-group group-export"><div class="toolbar-group-label">${iconGlyph('export')}Export</div><div class="toolbar-group-row"><button class="btn export-btn" data-format="csv">CSV</button><button class="btn export-btn" data-format="json">JSON</button></div></div></div>${groupedLayoutHtml}</div></div>`;
     }
 
     const columns = applySavedColumnOrder(result.columns, tabState.columnOrder);
     const meta = analyseColumns(rows, columns, query);
+    const hasNumericOrDate = Object.values(meta).some(m => m.kind === 'number' || m.kind === 'date');
+    layoutToggleBtns = buildLayoutToggleButtons(activeLayout, { scatterDisabled: !hasNumericOrDate });
     const savedSearch = tabState.search || '';
     const savedSort = normalizeSavedSort(tabState.sort);
     const savedFilter = tabState.filter || 'all';
     const savedPage = Math.max(1, Number(tabState.page || 1));
     const savedPageSize = Math.max(0, Number(tabState.pageSize || 50));
     const hiddenCols = new Set(tabState.hiddenCols || []);
+    const scatterX = tabState.scatterX || '';
+    const scatterY = tabState.scatterY || '';
+    const barGroupBy = tabState.barGroupBy || '';
 
     const sortedRows = sortRowsForSavedSort(rows, savedSort, meta);
 
@@ -267,8 +459,6 @@ function buildPanel(query, idx, activeTab, tabState, contextNodeId) {
     const colMenu = columns.map((col, index) => `<label class="col-menu-item"><input type="checkbox" data-col-toggle="${esc(col)}" ${hiddenCols.has(col) ? '' : 'checked'}> <span>${esc(col)}</span><button class="col-move" data-col-move="left" data-col="${esc(col)}" ${index === 0 ? 'disabled' : ''}>&larr;</button><button class="col-move" data-col-move="right" data-col="${esc(col)}" ${index === columns.length - 1 ? 'disabled' : ''}>&rarr;</button></label>`).join('');
     const columnWidths = tabState.columnWidths || {};
     const quickFieldHtml = buildQuickFieldHtml(columns);
-    const scopeLabel = query.incoming ? 'Incoming' : (query.type === '*' ? 'Vault' : query.type);
-    const viewLabel = query.label || (query.type === '*' ? 'All notes' : query.type);
     const metricsCardHtml = buildMetricCards({ rowCount: rows.length, fieldCount: columns.length });
     const colGroup = `<colgroup>${columns.map(col => {
         const width = Number(columnWidths[col]);
@@ -345,20 +535,28 @@ function buildPanel(query, idx, activeTab, tabState, contextNodeId) {
         }).join('')
         : `<tr><td colspan="${columns.length + 1}" class="empty-state">${buildTableEmptyState(query, warnings)}</td></tr>`;
 
-    // ── Matrix layout ──────────────────────────────────────────────────────────
-    const isMatrixMode = tabState.layout === 'matrix';
+    // ── Matrix / chart layout ─────────────────────────────────────────────────
+    const isMatrixMode = activeLayout === 'matrix';
     const matrixColType = tabState.matrixColType || '';
     const allVaultTypes = [...getRegistry().keys()].filter(t => !SYSTEM_TYPES_MATRIX.has(t.toLowerCase())).sort();
     const matrixColOptions = allVaultTypes.map(t =>
         `<option value="${esc(t)}"${t === matrixColType ? ' selected' : ''}>${esc(t)}</option>`
     ).join('');
-    const layoutToggleBtns = `<div class="layout-toggle" role="group" aria-label="Layout mode"><button class="layout-btn${!isMatrixMode ? ' active' : ''}" data-layout-btn="table" aria-pressed="${!isMatrixMode}">Table</button><button class="layout-btn${isMatrixMode ? ' active' : ''}" data-layout-btn="matrix" aria-pressed="${isMatrixMode}">Matrix</button></div>`;
     const matrixPickerHtml = isMatrixMode
         ? `<div class="matrix-col-picker"><span class="matrix-col-label">Columns</span><select class="matrix-col-select" data-matrix-col-select aria-label="Matrix column type"><option value="">Pick a type…</option>${matrixColOptions}</select></div>`
         : '';
+    const isBarMode = activeLayout === 'bar';
+    const barGroupableFields = columns.filter(c => c !== 'id');
+    const barPickerHtml = isBarMode
+        ? `<div class="matrix-col-picker"><span class="matrix-col-label">Group by</span><select class="matrix-col-select" data-bar-group-select aria-label="Bar chart group field"><option value="">Pick a field…</option>${barGroupableFields.map(f => `<option value="${esc(f)}"${f === barGroupBy ? ' selected' : ''}>${esc(f)}</option>`).join('')}</select></div>`
+        : '';
     const layoutGroupHtml = isMatrixMode
         ? `<div class="toolbar-group group-layout"><div class="toolbar-group-label">${iconGlyph('layout')}Layout</div><div class="toolbar-group-row">${layoutToggleBtns}${matrixPickerHtml}</div></div>`
-        : `<div class="toolbar-group group-layout"><div class="toolbar-group-label">${iconGlyph('layout')}Layout</div><div class="toolbar-group-row">${layoutToggleBtns}<button class="btn columns-btn" type="button" aria-haspopup="dialog" aria-expanded="false">Columns</button></div><div class="toolbar-menu" role="dialog" aria-label="Choose visible columns" hidden>${colMenu}</div></div>`;
+        : activeLayout === 'table'
+            ? `<div class="toolbar-group group-layout"><div class="toolbar-group-label">${iconGlyph('layout')}Layout</div><div class="toolbar-group-row">${layoutToggleBtns}<button class="btn columns-btn" type="button" aria-haspopup="dialog" aria-expanded="false">Columns</button></div><div class="toolbar-menu" role="dialog" aria-label="Choose visible columns" hidden>${colMenu}</div></div>`
+            : isBarMode
+                ? `<div class="toolbar-group group-layout"><div class="toolbar-group-label">${iconGlyph('layout')}Layout</div><div class="toolbar-group-row">${layoutToggleBtns}${barPickerHtml}</div></div>`
+                : `<div class="toolbar-group group-layout"><div class="toolbar-group-label">${iconGlyph('layout')}Layout</div><div class="toolbar-group-row">${layoutToggleBtns}</div></div>`;
 
     if (isMatrixMode) {
         let matrixContent = '';
@@ -370,8 +568,8 @@ function buildPanel(query, idx, activeTab, tabState, contextNodeId) {
             const colRows = colResult.success ? colResult.rows : [];
             matrixContent = buildMatrixGrid(rows, colRows, query.type || '*', matrixColType);
         }
-        return `<div class="tab-panel${isActive ? ' active' : ''}" id="tab-panel-${idx}" role="tabpanel" aria-labelledby="tab-btn-${idx}" data-tab="${idx}" data-layout="matrix" data-matrix-col-type="${esc(matrixColType)}" data-column-filters="${esc(JSON.stringify(tabState.columnFilters || {}))}" data-current-page="1" data-page-size="50" style="display:${isActive ? 'flex' : 'none'}"${isActive ? '' : ' hidden'}><div class="view-shell">${warningBanner}
-<div class="query-hero"><div class="query-hero-top"><div class="query-hero-title">Matrix View</div><div class="query-hero-subtle">${esc(viewLabel)}${matrixColType ? ` \xd7 ${esc(matrixColType)}` : ''}</div></div><div class="query-hero-query"><span class="query-hero-query-label">${iconGlyph('query')}Query</span><code>${formatQueryHeroText(queryText)}</code></div><div class="query-hero-meta"><span class="query-hero-badge">${esc(scopeLabel)}</span><span class="query-hero-badge">${rows.length} row${rows.length === 1 ? '' : 's'}</span></div></div>
+        return `<div class="tab-panel${isActive ? ' active' : ''}" id="tab-panel-${idx}" role="tabpanel" aria-labelledby="tab-btn-${idx}" data-tab="${idx}" data-layout="matrix" data-matrix-col-type="${esc(matrixColType)}" data-scatter-x="${esc(scatterX)}" data-scatter-y="${esc(scatterY)}" data-bar-group-by="${esc(barGroupBy)}" data-column-filters="${esc(JSON.stringify(tabState.columnFilters || {}))}" data-current-page="1" data-page-size="50" style="display:${isActive ? 'flex' : 'none'}"${isActive ? '' : ' hidden'}><div class="view-shell">${warningBanner}
+<div class="query-hero"><div class="query-hero-top"><div class="query-hero-title">${heroTitle}</div><div class="query-hero-subtle">${esc(viewLabel)}${matrixColType ? ` \xd7 ${esc(matrixColType)}` : ''}</div></div><div class="query-hero-query"><span class="query-hero-query-label">${iconGlyph('query')}Query</span><code>${formatQueryHeroText(queryText)}</code></div><div class="query-hero-meta"><span class="query-hero-badge">${esc(scopeLabel)}</span><span class="query-hero-badge">${heroMetaCount}</span></div></div>
 <div class="query-toolbar">
 <div class="toolbar-group group-view"><div class="toolbar-group-label">${iconGlyph('view')}View</div><div class="toolbar-group-row"><button class="btn report-btn">Open report</button><button class="btn reset-btn">Reset view</button></div></div>
 <div class="toolbar-group group-filters"><div class="toolbar-group-label">${iconGlyph('filters')}Filters</div><div class="toolbar-group-row"><button class="btn refine-btn" data-query-index="${idx}">Refine view</button></div></div>
@@ -380,8 +578,39 @@ ${layoutGroupHtml}
 ${matrixContent}</div></div>`;
     }
 
-    return `<div class="tab-panel${isActive ? ' active' : ''}" id="tab-panel-${idx}" role="tabpanel" aria-labelledby="tab-btn-${idx}" data-tab="${idx}" data-layout="table" data-matrix-col-type="" data-column-filters="${esc(JSON.stringify(tabState.columnFilters || {}))}" data-current-page="${savedPage}" data-page-size="${savedPageSize}"${isLargeResult ? ` data-large-result="true" data-total-filtered-rows="${totalFilteredRows}"` : ''} style="display:${isActive ? 'flex' : 'none'}"${isActive ? '' : ' hidden'}><div class="view-shell">${warningBanner}
-<div class="query-hero"><div class="query-hero-top"><div class="query-hero-title">Table View</div><div class="query-hero-subtle">${esc(viewLabel)}</div></div><div class="query-hero-query"><span class="query-hero-query-label">${iconGlyph('query')}Query</span><code>${formatQueryHeroText(queryText)}</code></div><div class="query-hero-meta"><span class="query-hero-badge">${esc(scopeLabel)}</span><span class="query-hero-badge">${rows.length} row${rows.length === 1 ? '' : 's'}</span></div></div>
+    if (activeLayout === 'bar') {
+        let chartHtml;
+        if (barGroupBy) {
+            const groupMap = new Map();
+            for (const row of rows) {
+                const key = String(row.fields[barGroupBy] ?? '');
+                if (!groupMap.has(key)) groupMap.set(key, { key, count: 0 });
+                groupMap.get(key).count++;
+            }
+            const groups = [...groupMap.values()].sort((a, b) => b.count - a.count);
+            chartHtml = buildBarChartHtml({ idx, groups, groupField: barGroupBy, nonce });
+        } else {
+            chartHtml = buildInfoCardHtml('Pick a field to group by', 'Use the <strong>Group&nbsp;by</strong> picker in the toolbar above to choose how to bucket this result into bars.');
+        }
+        return `<div class="tab-panel${isActive ? ' active' : ''}" id="tab-panel-${idx}" role="tabpanel" aria-labelledby="tab-btn-${idx}" data-tab="${idx}" data-layout="bar" data-matrix-col-type="" data-scatter-x="${esc(scatterX)}" data-scatter-y="${esc(scatterY)}" data-bar-group-by="${esc(barGroupBy)}" data-column-filters="${esc(JSON.stringify(tabState.columnFilters || {}))}" data-current-page="1" data-page-size="50" style="display:${isActive ? 'flex' : 'none'}"${isActive ? '' : ' hidden'}><div class="view-shell">${warningBanner}<div class="query-hero"><div class="query-hero-top"><div class="query-hero-title">${heroTitle}</div><div class="query-hero-subtle">${esc(viewLabel)}</div></div><div class="query-hero-query"><span class="query-hero-query-label">${iconGlyph('query')}Query</span><code>${formatQueryHeroText(queryText)}</code></div><div class="query-hero-meta"><span class="query-hero-badge">${esc(scopeLabel)}</span><span class="query-hero-badge">${heroMetaCount}</span></div></div><div class="query-toolbar"><div class="toolbar-group group-view"><div class="toolbar-group-label">${iconGlyph('view')}View</div><div class="toolbar-group-row"><button class="btn report-btn">Open report</button><button class="btn reset-btn">Reset view</button></div></div><div class="toolbar-group group-filters"><div class="toolbar-group-label">${iconGlyph('filters')}Filters</div><div class="toolbar-group-row"><button class="btn refine-btn" data-query-index="${idx}">Refine view</button></div></div>${layoutGroupHtml}<div class="toolbar-group group-export"><div class="toolbar-group-label">${iconGlyph('export')}Export</div><div class="toolbar-group-row"><button class="btn export-btn" data-format="csv">CSV</button><button class="btn export-btn" data-format="json">JSON</button><button class="btn export-btn" data-format="pdf">PDF</button></div></div></div>${chartHtml}</div></div>`;
+    }
+
+    if (activeLayout === 'scatter') {
+        const chartHtml = buildScatterChartHtml({
+            idx,
+            rows: sortedRows,
+            columns,
+            meta,
+            xField: scatterX,
+            yField: scatterY,
+            types,
+            nonce
+        });
+        return `<div class="tab-panel${isActive ? ' active' : ''}" id="tab-panel-${idx}" role="tabpanel" aria-labelledby="tab-btn-${idx}" data-tab="${idx}" data-layout="scatter" data-matrix-col-type="" data-scatter-x="${esc(scatterX)}" data-scatter-y="${esc(scatterY)}" data-bar-group-by="${esc(barGroupBy)}" data-column-filters="${esc(JSON.stringify(tabState.columnFilters || {}))}" data-current-page="1" data-page-size="50" style="display:${isActive ? 'flex' : 'none'}"${isActive ? '' : ' hidden'}><div class="view-shell">${warningBanner}<div class="query-hero"><div class="query-hero-top"><div class="query-hero-title">${heroTitle}</div><div class="query-hero-subtle">${esc(viewLabel)}</div></div><div class="query-hero-query"><span class="query-hero-query-label">${iconGlyph('query')}Query</span><code>${formatQueryHeroText(queryText)}</code></div><div class="query-hero-meta"><span class="query-hero-badge">${esc(scopeLabel)}</span><span class="query-hero-badge">${heroMetaCount}</span></div></div><div class="query-toolbar"><div class="toolbar-group group-view"><div class="toolbar-group-label">${iconGlyph('view')}View</div><div class="toolbar-group-row"><button class="btn report-btn">Open report</button><button class="btn reset-btn">Reset view</button></div></div><div class="toolbar-group group-filters"><div class="toolbar-group-label">${iconGlyph('filters')}Filters</div><div class="toolbar-group-row"><button class="btn refine-btn" data-query-index="${idx}">Refine view</button></div></div>${layoutGroupHtml}<div class="toolbar-group group-export"><div class="toolbar-group-label">${iconGlyph('export')}Export</div><div class="toolbar-group-row"><button class="btn export-btn" data-format="csv">CSV</button><button class="btn export-btn" data-format="json">JSON</button><button class="btn export-btn" data-format="pdf">PDF</button></div></div></div><div class="metrics-strip"><div class="metrics-card">${metricsCardHtml}</div></div>${chartHtml}</div></div>`;
+    }
+
+    return `<div class="tab-panel${isActive ? ' active' : ''}" id="tab-panel-${idx}" role="tabpanel" aria-labelledby="tab-btn-${idx}" data-tab="${idx}" data-layout="table" data-matrix-col-type="" data-scatter-x="${esc(scatterX)}" data-scatter-y="${esc(scatterY)}" data-bar-group-by="${esc(barGroupBy)}" data-column-filters="${esc(JSON.stringify(tabState.columnFilters || {}))}" data-current-page="${savedPage}" data-page-size="${savedPageSize}"${isLargeResult ? ` data-large-result="true" data-total-filtered-rows="${totalFilteredRows}"` : ''} style="display:${isActive ? 'flex' : 'none'}"${isActive ? '' : ' hidden'}><div class="view-shell">${warningBanner}
+<div class="query-hero"><div class="query-hero-top"><div class="query-hero-title">${heroTitle}</div><div class="query-hero-subtle">${esc(viewLabel)}</div></div><div class="query-hero-query"><span class="query-hero-query-label">${iconGlyph('query')}Query</span><code>${formatQueryHeroText(queryText)}</code></div><div class="query-hero-meta"><span class="query-hero-badge">${esc(scopeLabel)}</span><span class="query-hero-badge">${heroMetaCount}</span></div></div>
 <div class="query-toolbar">
 <div class="toolbar-group group-scope"><div class="toolbar-group-label">${iconGlyph('scope')}Scope</div><div class="toolbar-group-row"><div class="toolbar-chip-stack">${chips}</div></div></div>
 <div class="toolbar-group group-view"><div class="toolbar-group-label">${iconGlyph('view')}View</div><div class="toolbar-group-row"><button class="btn report-btn">Open report</button><button class="btn reset-btn">Reset view</button></div></div>
@@ -401,5 +630,7 @@ module.exports = {
     renderPanel,
     formatQueryHeroText,
     buildWarningBanner,
-    buildMatrixGrid
+    buildMatrixGrid,
+    buildBarChartHtml,
+    buildScatterChartHtml
 };

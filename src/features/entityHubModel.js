@@ -4,8 +4,10 @@ const fs = require('fs');
 const vscode = require('vscode');
 const { getBacklinks, getEdges, getGraphStats } = require('../core/graph');
 const { buildTaskRows } = require('../core/tasks');
-const { getVaultGeneration } = require('../core/indexService');
+const { getVaultGeneration, getAliasIndex } = require('../core/indexService');
 const { normaliseDateInput } = require('../core/date');
+const { parseLinkedTargetParts, resolveLinkedTarget } = require('../core/id');
+const { extractMeaningfulBodyBlocks, normalizeAnchorText } = require('../core/bodyBlocks');
 const { getSchema, getSchemaTargets } = require('../registries/schemaRegistry');
 const { inferNoteRole, summarizeNoteRole } = require('../intelligence/noteRolesCore');
 const {
@@ -27,6 +29,13 @@ const { buildHistoryModel } = require('./entity/historyModel');
 const { findUnlinkedMentions } = require('./entity/unlinkedRefs');
 const { getMutationEvents } = require('../runtime/mutationEventLog');
 const { buildNoteArc } = require('../intelligence/noteArc');
+const { collectBodySignals, stripFrontmatter } = require('../intelligence/bodySignals');
+const { extractBodyMentionedIds } = require('../intelligence/frontmatterBodyHints');
+const {
+    collectAuthoringFieldSignals,
+    formatFieldSignalList,
+    summarizeAuthoringFieldSignals
+} = require('../intelligence/authoringEngine');
 
 const SKIP_FIELDS = new Set(['id', 'created']);
 
@@ -56,7 +65,7 @@ function buildEntityHubModel(nodeId, idIndex, fieldsCache) {
         suggestions,
         suggestionExplanation
     );
-    const { groups: historyGroups, totalCount: historyCount, arc: historyArc } = buildHistoryModel(nodeId);
+    const { groups: historyGroups, totalCount: historyCount, arc: historyArc, sessions: historySessions, evolution: historyEvolution } = buildHistoryModel(nodeId);
     const unlinkedMentions = findUnlinkedMentions(
         nodeId,
         nodeFields,
@@ -74,6 +83,22 @@ function buildEntityHubModel(nodeId, idIndex, fieldsCache) {
         _arcPriors.fieldTargetTypes,
         _arcPriors.outcomeCalibration
     );
+    const signals = collectBodySignals(docText || '');
+    const bodyMentionCounts = extractBodyMentionedIds(docText || '');
+    const bodyText = stripFrontmatter(docText || '').trim();
+    const wordCount = bodyText ? bodyText.split(/\s+/).filter(Boolean).length : 0;
+    const blockBacklinks = buildBlockBacklinks(nodeId, docText || '', idIndex, fieldsCache);
+    const documentData = {
+        wordCount,
+        headings: signals.headings,
+        callouts: signals.callouts,
+        footnoteCount: signals.footnoteDefinitionCount,
+        entityMentions: [...bodyMentionCounts.entries()]
+            .map(([id, count]) => ({ id, count }))
+            .sort((a, b) => b.count - a.count || a.id.localeCompare(b.id))
+            .slice(0, 20)
+    };
+    const staleConnectedNotes = buildStaleConnectedNotes(nodeId, idIndex, fieldsCache);
 
     return {
         nodeFields,
@@ -90,8 +115,13 @@ function buildEntityHubModel(nodeId, idIndex, fieldsCache) {
         historyGroups,
         historyCount,
         historyArc,
+        historySessions,
+        historyEvolution,
         unlinkedMentions,
         noteArc,
+        documentData,
+        blockBacklinks,
+        staleConnectedNotes,
         isEmpty: incomingGroups.length === 0
             && outgoingGroups.length === 0
             && summaryRows.length === 0
@@ -203,6 +233,27 @@ function buildIntelligenceRows(nodeId, nodeFields, fieldsCache, docText) {
         semanticRolePriors: buildVaultSemanticRolePriors(getCachedPriors(fieldsCache, getVaultGeneration()))
     });
     const rows = [];
+    const authoringSummary = summarizeAuthoringFieldSignals('lightbulb', {
+        noteType: nodeType,
+        noteFields: nodeFields,
+        documentText: docText || '',
+        fieldsCache,
+        generation: getVaultGeneration()
+    });
+    const authoringSignals = collectAuthoringFieldSignals('lightbulb', {
+        noteType: nodeType,
+        noteFields: nodeFields,
+        documentText: docText || '',
+        fieldsCache,
+        generation: getVaultGeneration()
+    });
+    if (authoringSummary?.summary) {
+        rows.push({ key: 'authoring signal', value: authoringSummary.summary });
+    }
+    if (authoringSignals.length) {
+        const detail = formatFieldSignalList(authoringSignals);
+        if (detail) rows.push({ key: 'field signals', value: detail });
+    }
     if (noteContext.noteRole?.noteRole && shouldSurface(noteContext.noteRole, 'report-note-role', { confidenceKey: 'confidence' })) {
         rows.push({ key: 'note role', value: summarizeNoteRole(noteContext.noteRole) });
     }
@@ -226,7 +277,8 @@ function buildSuggestionSignalRows(suggestions) {
 function buildVaultPositionRows(nodeId, nodeFields, incomingGroups, outgoingGroups, idIndex, fieldsCache, docText = null, suggestions = [], suggestionExplanation = null) {
     const stats = getGraphStats();
     const vaultAvg = stats.nodes > 0 ? (stats.totalEdges / stats.nodes).toFixed(1) : '0';
-    const { fieldTargetTypes, typeFieldBundles, noteRoleTypePriors } = getCachedPriors(fieldsCache, getVaultGeneration());
+    const priors = getCachedPriors(fieldsCache, getVaultGeneration());
+    const { fieldTargetTypes, typeFieldBundles, noteRoleTypePriors } = priors;
 
     const incomingRows = incomingGroups.flatMap(group => group.rows);
     const outgoingRows = outgoingGroups.flatMap(group => group.rows);
@@ -251,7 +303,11 @@ function buildVaultPositionRows(nodeId, nodeFields, incomingGroups, outgoingGrou
     const outboundFields = summariseFieldCounts(outgoingGroups);
     const inboundTypes = summariseTypeCounts(incomingRows);
     const outboundTypes = summariseTypeCounts(outgoingRows);
-    const noteRole = inferNoteRole(nodeFields, {});
+    const noteRole = inferNoteRole(nodeFields, {
+        typeRoleMap: priors.typeRoleMap || null,
+        noteRolePriors: priors.noteRoleNamePriors || null,
+        noteRoleFieldHints: priors.noteRoleFieldHints || null
+    });
     const lastMutationEvent = getMutationEvents({ noteId: nodeId, limit: 1 });
     const lastMutationMs = lastMutationEvent.length > 0 ? Date.parse(lastMutationEvent[0].timestamp) : null;
     const lifecycle = inferLifecycleState(nodeId, nodeFields, {
@@ -270,6 +326,8 @@ function buildVaultPositionRows(nodeId, nodeFields, incomingGroups, outgoingGrou
     rows.push({ key: 'lifecycle', value: summarizeLifecycleState(lifecycle) });
 
     const intelligenceRows = buildIntelligenceRows(nodeId, nodeFields, fieldsCache, docText);
+    const authoringSignalRow = intelligenceRows.find(row => row.key === 'authoring signal');
+    const fieldSignalsRow = intelligenceRows.find(row => row.key === 'field signals');
     const noteRoleRow = intelligenceRows.find(row => row.key === 'note role');
     const bodyEvidenceRow = intelligenceRows.find(row => row.key === 'body evidence');
     if (noteRoleRow) rows.push(noteRoleRow);
@@ -283,6 +341,8 @@ function buildVaultPositionRows(nodeId, nodeFields, incomingGroups, outgoingGrou
     if (outgoingBodyMentions > 0) diagnosticRows.push({ key: 'body mentions from this note', value: String(outgoingBodyMentions) });
     if (inboundFields) diagnosticRows.push({ key: 'linked here via', value: inboundFields });
     if (outboundFields) diagnosticRows.push({ key: 'links out via', value: outboundFields });
+    if (authoringSignalRow) diagnosticRows.push(authoringSignalRow);
+    if (fieldSignalsRow) diagnosticRows.push(fieldSignalsRow);
     if (inboundTypes) diagnosticRows.push({ key: 'linked from types', value: inboundTypes });
     if (outboundTypes) diagnosticRows.push({ key: 'links to types', value: outboundTypes });
     if (bodyEvidenceRow) diagnosticRows.push(bodyEvidenceRow);
@@ -524,10 +584,118 @@ function getVisibleTaskColumns(rows) {
     return visible;
 }
 
+const STALE_DAYS = 60;
+const _MS_PER_DAY = 86400000;
+
+/** @param {string} nodeId @param {Map<string,string>} idIndex @param {Map<string,Record<string,any>>} fieldsCache @returns {Array<{id:string,label:string,type:string,daysSince:number}>} */
+function buildStaleConnectedNotes(nodeId, idIndex, fieldsCache) {
+    const nowMs = Date.now();
+    const connectedIds = new Set([
+        ...getEdges(nodeId).map(e => e.targetId).filter(id => id !== nodeId && idIndex.has(id)),
+        ...getBacklinks(nodeId).map(e => e.sourceId).filter(id => id !== nodeId && idIndex.has(id))
+    ]);
+
+    const stale = [];
+    for (const id of connectedIds) {
+        const events = getMutationEvents({ noteId: id });
+        if (events.length === 0) continue;
+        const lastTs = events.reduce((max, e) => (e.timestamp > max ? e.timestamp : max), events[0].timestamp);
+        const daysSince = Math.floor((nowMs - new Date(lastTs).getTime()) / _MS_PER_DAY);
+        if (daysSince < STALE_DAYS) continue;
+        const fields = fieldsCache.get(id) || {};
+        stale.push({ id, label: fields.name || fields.title || id, type: String(fields.type || ''), daysSince });
+    }
+
+    return stale.sort((a, b) => b.daysSince - a.daysSince).slice(0, 5);
+}
+
+function buildBlockBacklinks(nodeId, docText, idIndex, fieldsCache) {
+    const currentBlocks = extractMeaningfulBodyBlocks(docText || '');
+    if (!currentBlocks.length) return [];
+
+    const headingByAnchor = new Map();
+    const blockById = new Map();
+    for (const block of currentBlocks) {
+        blockById.set(block.blockId, block);
+        if (block.type === 'heading') {
+            headingByAnchor.set(normalizeAnchorText(block.label || block.text || ''), block);
+        }
+    }
+
+    const aliasIndex = getAliasIndex();
+    const rows = [];
+    const seen = new Set();
+
+    for (const edge of getBacklinks(nodeId) || []) {
+        const sourcePath = idIndex.get(edge.sourceId);
+        if (!sourcePath) continue;
+
+        let sourceText = '';
+        try {
+            sourceText = fs.readFileSync(sourcePath, 'utf8');
+        } catch (_) {
+            continue;
+        }
+
+        const lines = String(sourceText || '').split(/\r?\n/);
+        for (let lineIndex = 0; lineIndex < lines.length; lineIndex++) {
+            const line = lines[lineIndex];
+            const matches = [...line.matchAll(/\[\[([^\]]+)\]\]/g)];
+            for (const match of matches) {
+                const raw = String(match[1] || '').trim();
+                if (!raw) continue;
+                const resolved = resolveLinkedTarget(raw, idIndex, aliasIndex);
+                if (resolved !== nodeId) continue;
+
+                const parts = parseLinkedTargetParts(raw);
+                let targetBlock = null;
+                let kind = '';
+                if (parts.blockId) {
+                    targetBlock = blockById.get(parts.blockId) || null;
+                    kind = 'block ref';
+                } else if (parts.anchor) {
+                    targetBlock = headingByAnchor.get(normalizeAnchorText(parts.anchor)) || null;
+                    kind = 'section ref';
+                }
+                if (!targetBlock) continue;
+
+                const rowKey = [
+                    edge.sourceId,
+                    lineIndex,
+                    targetBlock.blockId,
+                    kind
+                ].join(':');
+                if (seen.has(rowKey)) continue;
+                seen.add(rowKey);
+
+                const sourceFields = fieldsCache.get(edge.sourceId) || {};
+                rows.push({
+                    targetBlockId: targetBlock.blockId,
+                    targetLabel: String(targetBlock.label || targetBlock.text || targetBlock.blockId),
+                    targetKind: targetBlock.type,
+                    sourceId: edge.sourceId,
+                    sourceLabel: String(sourceFields.name || sourceFields.title || edge.sourceId),
+                    sourceType: String(sourceFields.type || ''),
+                    kind,
+                    line: lineIndex + 1
+                });
+            }
+        }
+    }
+
+    return rows.sort((a, b) =>
+        a.targetLabel.localeCompare(b.targetLabel)
+        || a.sourceLabel.localeCompare(b.sourceLabel)
+        || a.line - b.line
+    );
+}
+
 module.exports = {
     buildContextualQueryRecipes,
     buildEntityHubModel,
     buildHistoryModel,
+    buildStaleConnectedNotes,
+    buildBlockBacklinks,
     getVisibleRelationColumns,
     getVisibleTaskColumns,
     extractRelations

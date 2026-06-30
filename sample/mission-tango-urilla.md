@@ -7,6 +7,9 @@ unit: [[roughnecks]]
 commander: [[johnny-rico]]
 outcome: success
 casualties: moderate
+casualty_count: 9
+duration: 2
+threat_level: 6
 bugs-encountered:
   - warrior
   - hopper

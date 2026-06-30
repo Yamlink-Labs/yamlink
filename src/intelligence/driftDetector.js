@@ -7,9 +7,10 @@
  *   insufficientData: boolean,
  *   driftScore?: number,
  *   driftLabel?: string,
- *   missingExpected?: Array<{field: string, ratio: number, count: number}>,
- *   unusualFields?: Array<{field: string, ratio: number, count: number}>,
- *   valueMismatches?: Array<{field: string, expected: string, actual: string, linkRatio: number}>,
+ *   driftLabelHuman?: string,
+ *   missingExpected?: Array<{field: string, ratio: number, count: number, message: string}>,
+ *   unusualFields?: Array<{field: string, ratio: number, count: number, message: string}>,
+ *   valueMismatches?: Array<{field: string, expected: string, actual: string, linkRatio: number, message: string}>,
  *   typeTotal?: number
  * }} NoteDrift
  */
@@ -55,7 +56,7 @@ function _rawValue(noteFields, normalizedField) {
  * @param {string} noteId
  * @param {Record<string, any>} noteFields
  * @param {Map<string, Record<string, any>>} fieldsCache
- * @param {{ typeFieldBundles: Map<string, Map<string, number>>, fieldAmbiguity: Map<string, {linkRatio: number, total: number}> }} priors
+ * @param {{ typeFieldBundles: Map<string, Map<string, number>>, fieldAmbiguity: Map<string, {linkRatio: number, total: number}>, typeBundleTotals?: Map<string, number> }} priors
  * @returns {NoteDrift|null}
  */
 function computeNoteDrift(noteId, noteFields, fieldsCache, priors) {
@@ -65,9 +66,15 @@ function computeNoteDrift(noteId, noteFields, fieldsCache, priors) {
     const bundle = priors.typeFieldBundles.get(noteType);
     if (!bundle || !bundle.size) return { noteId, noteType, insufficientData: true };
 
-    let typeTotal = 0;
-    for (const [, f] of fieldsCache) {
-        if (_norm(f?.type) === noteType) typeTotal++;
+    // Use precomputed totals when available — avoids O(n) rescan per note
+    let typeTotal;
+    if (priors.typeBundleTotals?.has(noteType)) {
+        typeTotal = priors.typeBundleTotals.get(noteType);
+    } else {
+        typeTotal = 0;
+        for (const [, f] of fieldsCache) {
+            if (_norm(f?.type) === noteType) typeTotal++;
+        }
     }
     if (typeTotal < MIN_TYPE_SAMPLE) return { noteId, noteType, insufficientData: true };
 
@@ -78,7 +85,9 @@ function computeNoteDrift(noteId, noteFields, fieldsCache, priors) {
     for (const [field, count] of bundle.entries()) {
         const ratio = count / typeTotal;
         if (ratio >= EXPECTED_RATIO && !currentFieldSet.has(field)) {
-            missingExpected.push({ field, ratio, count });
+            const pct = Math.round(ratio * 100);
+            const message = `Add '${field}' — ${pct}% of ${noteType} notes include it`;
+            missingExpected.push({ field, ratio, count, message });
         }
     }
     missingExpected.sort((a, b) => b.ratio - a.ratio);
@@ -90,7 +99,11 @@ function computeNoteDrift(noteId, noteFields, fieldsCache, priors) {
             const count = bundle.get(field) || 0;
             const ratio = count / typeTotal;
             if (ratio < UNUSUAL_RATIO) {
-                unusualFields.push({ field, ratio, count });
+                const pct = Math.round(ratio * 100);
+                const message = pct === 0
+                    ? `'${field}' isn't seen in other ${noteType} notes`
+                    : `'${field}' is uncommon in ${noteType} notes (only ${pct}% have it)`;
+                unusualFields.push({ field, ratio, count, message });
             }
         }
         unusualFields.sort((a, b) => a.ratio - b.ratio);
@@ -106,9 +119,13 @@ function computeNoteDrift(noteId, noteFields, fieldsCache, priors) {
         if (!noteValue) continue;
         const noteHasLink = noteValue.startsWith('[[');
         if (ambiguity.linkRatio >= LINK_MISMATCH_THRESHOLD && !noteHasLink) {
-            valueMismatches.push({ field, expected: 'wikilink', actual: 'scalar', linkRatio: ambiguity.linkRatio });
+            const pct = Math.round(ambiguity.linkRatio * 100);
+            const message = `'${field}' is usually a wikilink (${pct}% of cases) — consider linking to a note`;
+            valueMismatches.push({ field, expected: 'wikilink', actual: 'scalar', linkRatio: ambiguity.linkRatio, message });
         } else if ((1 - ambiguity.linkRatio) >= LINK_MISMATCH_THRESHOLD && noteHasLink) {
-            valueMismatches.push({ field, expected: 'scalar', actual: 'wikilink', linkRatio: ambiguity.linkRatio });
+            const pct = Math.round((1 - ambiguity.linkRatio) * 100);
+            const message = `'${field}' is usually a plain value (${pct}% of cases) — this note has a wikilink`;
+            valueMismatches.push({ field, expected: 'scalar', actual: 'wikilink', linkRatio: ambiguity.linkRatio, message });
         }
     }
 
@@ -122,11 +139,15 @@ function computeNoteDrift(noteId, noteFields, fieldsCache, priors) {
         driftScore < 50 ? 'minor-drift' :
         driftScore < 80 ? 'drifting'    : 'outlier';
 
+    const DRIFT_HUMAN = { 'on-track': 'On Track', 'minor-drift': 'Minor Drift', 'drifting': 'Drifting', 'outlier': 'Outlier' };
+    const driftLabelHuman = DRIFT_HUMAN[driftLabel] || driftLabel;
+
     return {
         noteId,
         noteType,
         driftScore,
         driftLabel,
+        driftLabelHuman,
         missingExpected,
         unusualFields,
         valueMismatches,

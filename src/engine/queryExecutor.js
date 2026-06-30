@@ -75,7 +75,7 @@ function readBody(filePath) {
 }
 
 /**
- * @param {import('./queryParser').QueryRow} row
+ * @param {import('./queryConditions').QueryRow} row
  * @param {string|null} preset
  * @param {string} todayIso
  * @returns {boolean}
@@ -98,7 +98,7 @@ function applyTaskPreset(row, preset, todayIso) {
 }
 
 /**
- * @param {import('./queryParser').ParsedCondition} cond
+ * @param {import('./queryConditions').ParsedCondition} cond
  * @param {Record<string, any>} fields
  * @param {string|null} filePath
  * @returns {boolean}
@@ -172,8 +172,8 @@ function matchesCondition(cond, fields, filePath) {
 }
 
 /**
- * @param {import('./queryParser').ParsedQuery} query
- * @param {import('./queryParser').QueryRow[]} rows
+ * @param {import('./queryConditions').ParsedQuery} query
+ * @param {import('./queryConditions').QueryRow[]} rows
  * @param {string[]} warnings
  * @param {Map<string, string>} index
  * @param {Map<string, Record<string, any>>} fieldCache
@@ -193,10 +193,10 @@ function addZeroResultWarnings(query, rows, warnings, index, fieldCache) {
 }
 
 /**
- * @param {import('./queryParser').ParsedQuery} query
- * @param {import('./queryParser').QueryRow[]} rows
+ * @param {import('./queryConditions').ParsedQuery} query
+ * @param {import('./queryConditions').QueryRow[]} rows
  * @param {string[]} warnings
- * @returns {import('./queryParser').QueryResult}
+ * @returns {import('./queryConditions').QueryResult}
  */
 function finaliseRows(query, rows, warnings) {
     if (!query.groupBy) {
@@ -269,9 +269,9 @@ function finaliseRows(query, rows, warnings) {
 }
 
 /**
- * @param {import('./queryParser').ParsedQuery} query
+ * @param {import('./queryConditions').ParsedQuery} query
  * @param {string|null} [contextNodeId]
- * @returns {import('./queryParser').QueryResult}
+ * @returns {import('./queryConditions').QueryResult}
  */
 function runQuery(query, contextNodeId) {
     const warnings = [];

@@ -1,6 +1,6 @@
 'use strict';
 
-const { appendMutationEvents } = require('./mutationEventLog');
+const { appendMutationEvents, withMutationContext } = require('./mutationEventLog');
 
 /**
  * @typedef {{ dirty?: string[], full?: boolean, changedId?: string|null }} RefreshEvent
@@ -34,6 +34,9 @@ function createRefreshRouter(services) {
         if (full || dirty.has('entityHub')) services.refreshEntityHub(changedId);
         if (full || dirty.has('calendar')) services.refreshCalendar(changedId);
         if (full || dirty.has('suggestions')) services.refreshSuggestions();
+        if (full || dirty.has('notifications')) {
+            if (services.refreshTaskNotifications) services.refreshTaskNotifications();
+        }
     }
 
     function refreshForIndexMutation(result = {}, options = {}) {
@@ -41,11 +44,14 @@ function createRefreshRouter(services) {
         const diagnosticsDirty = !!(result.needsFull || options.forceHeavy);
         const changedId = result.changedId ?? null;
         if (Array.isArray(result.mutationEvents) && result.mutationEvents.length) {
-            appendMutationEvents(result.mutationEvents);
+            appendMutationEvents(withMutationContext(result.mutationEvents, {
+                source: options.source || 'vscode',
+                cause: options.cause || 'workspace_index_mutation'
+            }));
         }
         const dirty = indexChanged
-            ? ['decorations', 'status', 'suggestions']
-            : ['status', 'suggestions'];
+            ? ['decorations', 'status', 'suggestions', 'notifications']
+            : ['status', 'suggestions', 'notifications'];
 
         if (diagnosticsDirty) dirty.unshift('fullDiagnostics');
         else if (indexChanged) dirty.unshift('diagnostics');
@@ -54,7 +60,7 @@ function createRefreshRouter(services) {
     }
 
     function refreshForPassiveIndexSweep() {
-        refresh({ dirty: ['fullDiagnostics', 'decorations', 'status', 'health', 'views', 'graph', 'entityHub', 'calendar', 'suggestions'] });
+        refresh({ dirty: ['fullDiagnostics', 'decorations', 'status', 'health', 'views', 'graph', 'entityHub', 'calendar', 'suggestions', 'notifications'] });
     }
 
     return {

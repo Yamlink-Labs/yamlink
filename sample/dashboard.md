@@ -88,6 +88,28 @@ The generated `!view` block is shown for your review before insertion.
 
 ---
 
+## Try: Bar Chart
+
+Run either view below, then click **Bar** in the toolbar.
+
+!view mission | Missions by Outcome
+group by outcome
+
+!view character | Personnel by Unit
+group by unit
+
+---
+
+## Try: Scatter Chart
+
+Run this view, then click **Scatter** in the toolbar. X axis: `threat_level`, Y axis: `casualty_count`.
+
+!view mission | Mission Risk vs Casualties
+select name, threat_level, casualty_count, outcome, date
+sort date
+
+---
+
 ## Try: Matrix View
 
 Run the Personnel table above, then click **Matrix** in the toolbar. Choose `unit` as the column type to see which characters belong to which units as a grid.

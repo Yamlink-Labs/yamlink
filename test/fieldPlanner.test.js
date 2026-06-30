@@ -69,9 +69,18 @@ describe('fieldPlanner — lightbulb surface', () => {
         assert.ok(!p.allowedActions.has('createNote'));
     });
 
-    it('RELATION + prior pattern (name match) → DOCUMENT', () => {
-        // prior source weight 0.70; even at 0.90 confidence: 0.90 * 0.70 = 0.63 → DOCUMENT
+    it('RELATION + prior (vault consensus, high confidence) → QUICKFIX', () => {
+        // prior source weight 0.70; confidence 0.90 → ec 0.63 >= vault-consensus threshold 0.48 → QUICKFIX
+        // This represents a field used as relation in 70%+ of same-type notes (empty on this note).
         const p = planFieldActions(cls(CATEGORY.RELATION, 0.90, 'prior', RELATION_STRENGTH.LIKELY), 'lightbulb');
+        assert.equal(p.level, LEVEL.QUICKFIX);
+        assert.ok(p.allowedActions.has('fieldQuickfix'));
+        assert.ok(p.allowedActions.has('relationCompletion'));
+    });
+
+    it('RELATION + prior (weak vault evidence) → DOCUMENT', () => {
+        // prior source weight 0.70; confidence 0.60 → ec 0.42 < vault-consensus threshold 0.48 → DOCUMENT
+        const p = planFieldActions(cls(CATEGORY.RELATION, 0.60, 'prior', RELATION_STRENGTH.LIKELY), 'lightbulb');
         assert.equal(p.level, LEVEL.DOCUMENT);
     });
 
@@ -247,5 +256,94 @@ describe('fieldPlanner — vault maturity scaling', () => {
         const p = planFieldActions(old, 'lightbulb');
         // At maturity=1, ec=0.82*0.85=0.697 — above DOCUMENT (0.38) but below QUICKFIX (0.72)
         assert.ok(p.level >= LEVEL.DOCUMENT);
+    });
+});
+
+// ─── Source weight coverage — behavior / implicit / calibration ────────────────
+//
+// These three sources are produced by fieldCategory.js but were previously
+// falling through to SOURCE_WEIGHT.default (0.00), silencing all output.
+// Each test verifies a basic non-silence outcome on each surface.
+
+describe('fieldPlanner — source weights for learned evidence', () => {
+    // behavior: used by behavioral recovery path in fieldCategory (lines 506–524).
+    // Confidence range from that path: clamp(0.42 + ratio * 0.18, 0, 0.76).
+    // At min ratio=0.52 → confidence≈0.514, ec≈0.386.
+    // Expected lightbulb outcome: DOCUMENT (ec >= 0.38 bar, WEAK relation).
+
+    it('behavior source — lightbulb → at least DOCUMENT (not silence)', () => {
+        // confidence=0.514, weight=0.75, ec≈0.386 → clears DOCUMENT bar (0.38)
+        const p = planFieldActions(cls(CATEGORY.RELATION, 0.514, 'behavior', RELATION_STRENGTH.WEAK), 'lightbulb');
+        assert.ok(p.level >= LEVEL.DOCUMENT, `expected DOCUMENT or higher, got ${p.level}`);
+        assert.ok(p.allowedActions.has('documentView'));
+    });
+
+    it('behavior source — weak lightbulb evidence never reaches QUICKFIX on its own', () => {
+        const p = planFieldActions(cls(CATEGORY.RELATION, 0.60, 'behavior', RELATION_STRENGTH.WEAK), 'lightbulb');
+        assert.ok(p.level < LEVEL.QUICKFIX, 'behavioral evidence alone must not trigger QUICKFIX');
+    });
+
+    it('behavior source — completion → HINT with relation candidates', () => {
+        const p = planFieldActions(cls(CATEGORY.RELATION, 0.514, 'behavior', RELATION_STRENGTH.WEAK), 'completion');
+        assert.equal(p.level, LEVEL.HINT);
+        assert.ok(p.allowedActions.has('relationCompletion'));
+    });
+
+    it('behavior source at 0.52 confidence crosses at least HINT on lightbulb', () => {
+        const p = planFieldActions(cls(CATEGORY.RELATION, 0.52, 'behavior', RELATION_STRENGTH.WEAK), 'lightbulb');
+        assert.ok(p.level >= LEVEL.HINT, `expected HINT or above, got ${p.level}`);
+    });
+
+    it('behavior source at 0.30 confidence stays silent on lightbulb', () => {
+        const p = planFieldActions(cls(CATEGORY.RELATION, 0.30, 'behavior', RELATION_STRENGTH.LIKELY), 'lightbulb');
+        assert.equal(p.level, LEVEL.SILENCE);
+    });
+
+    // implicit: mutation log history. Weight 0.80. Confidence from fieldCategory is 0.38–0.75.
+    // At minimum confidence 0.38: ec = 0.38 * 0.80 = 0.304 → above HINT bar (0.28) on lightbulb.
+
+    it('implicit source — lightbulb → at least HINT (mutation history recognized)', () => {
+        // clamp(0.38 + boost, 0, 0.75) at minimum boost
+        const p = planFieldActions(cls(CATEGORY.RELATION, 0.38, 'implicit', RELATION_STRENGTH.WEAK), 'lightbulb');
+        assert.ok(p.level >= LEVEL.HINT, `expected HINT or higher, got ${p.level}`);
+    });
+
+    it('implicit source with strong signal — lightbulb → DOCUMENT', () => {
+        // confidence=0.60, ec = 0.60 * 0.80 = 0.48 → clears DOCUMENT bar (0.38)
+        const p = planFieldActions(cls(CATEGORY.RELATION, 0.60, 'implicit', RELATION_STRENGTH.LIKELY), 'lightbulb');
+        assert.ok(p.level >= LEVEL.DOCUMENT, `expected DOCUMENT or higher, got ${p.level}`);
+    });
+
+    it('implicit source — completion → HINT', () => {
+        const p = planFieldActions(cls(CATEGORY.RELATION, 0.50, 'implicit', RELATION_STRENGTH.WEAK), 'completion');
+        assert.equal(p.level, LEVEL.HINT);
+        assert.ok(p.allowedActions.has('relationCompletion'));
+    });
+
+    // calibration: user accepted a prediction. Weight 0.83. Confidence 0.42–0.80.
+    // At confidence 0.50: ec = 0.50 * 0.83 = 0.415 → DOCUMENT on lightbulb.
+    // At confidence 0.80: ec = 0.80 * 0.83 = 0.664 → still below QUICKFIX (0.72).
+
+    it('calibration source — lightbulb → DOCUMENT', () => {
+        const p = planFieldActions(cls(CATEGORY.RELATION, 0.50, 'calibration', RELATION_STRENGTH.WEAK), 'lightbulb');
+        assert.ok(p.level >= LEVEL.DOCUMENT, `expected DOCUMENT or higher, got ${p.level}`);
+    });
+
+    it('calibration source — lightbulb → QUICKFIX via vault-consensus path when LIKELY', () => {
+        // confidence=0.80, weight=0.83, ec=0.664 — isLikelyRelation && ec >= 0.48 vault-consensus bar
+        // User explicitly accepted our prediction → high-quality evidence → QUICKFIX allowed
+        const p = planFieldActions(cls(CATEGORY.RELATION, 0.80, 'calibration', RELATION_STRENGTH.LIKELY), 'lightbulb');
+        assert.equal(p.level, LEVEL.QUICKFIX);
+    });
+
+    it('calibration source — completion → HINT', () => {
+        const p = planFieldActions(cls(CATEGORY.RELATION, 0.50, 'calibration', RELATION_STRENGTH.WEAK), 'completion');
+        assert.equal(p.level, LEVEL.HINT);
+        assert.ok(p.allowedActions.has('relationCompletion'));
+    });
+
+    it('unknown source still silences via default weight', () => {
+        const p = planFieldActions(cls(CATEGORY.RELATION, 0.90, 'default', RELATION_STRENGTH.CERTAIN), 'lightbulb');
+        assert.equal(p.level, LEVEL.SILENCE);
     });
 });

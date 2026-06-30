@@ -107,6 +107,15 @@
     .activity-row:hover { border-color: var(--border2); background: color-mix(in srgb, var(--surface2) 86%, var(--accent2) 14%); }
     .activity-id { font-size: 12px; font-weight: 600; color: var(--link); }
     .activity-count { font-size: 11px; color: var(--dim); white-space: nowrap; }
+    .session-list { display:flex; flex-direction:column; gap:6px; margin-top:8px; }
+    .session-row { display:grid; grid-template-columns:minmax(0,1fr) auto; align-items:start; gap:10px; padding:9px 10px; border:1px solid var(--border); border-radius:12px; background:var(--surface2); transition:border-color .1s, background .1s; }
+    .session-row[data-id] { cursor:pointer; }
+    .session-row[data-id]:hover { border-color:var(--border2); background:color-mix(in srgb, var(--surface2) 88%, var(--accent1) 12%); }
+    .session-main { min-width:0; display:flex; flex-direction:column; gap:6px; }
+    .session-summary { font-size:12px; color:var(--text); line-height:1.45; font-weight:600; }
+    .session-meta { display:flex; flex-wrap:wrap; gap:6px; }
+    .session-chip { display:inline-flex; align-items:center; min-height:18px; padding:0 7px; border-radius:999px; border:1px solid var(--border2); background:color-mix(in srgb, var(--surface3) 86%, transparent); color:var(--mid); font-size:10px; letter-spacing:.05em; text-transform:uppercase; }
+    .session-time { font-size:10px; color:var(--dim); white-space:nowrap; letter-spacing:.04em; padding-top:2px; }
     .lifecycle-grid { display:grid; grid-template-columns:repeat(5,minmax(0,1fr)); gap:7px; }
     .lifecycle-card { padding: 11px 12px; border: 1px solid var(--border); border-radius: 14px; background: var(--surface2); }
     .lifecycle-count { font-size: 20px; line-height: 1; font-weight: 760; letter-spacing: -0.03em; margin-bottom: 6px; }
@@ -199,3 +208,70 @@
         .view-btn { width: 100%; text-align: center; }
         .lifecycle-grid { grid-template-columns: 1fr; }
     }
+
+
+/* ── Intelligence Health section ──────────────────────────────────────── */
+.intel-confidence {
+    display: flex;
+    align-items: flex-start;
+    gap: 20px;
+    padding: 16px 0 12px;
+    border-bottom: 1px solid var(--border);
+    margin-bottom: 14px;
+}
+.intel-score {
+    font-size: 52px;
+    font-weight: 700;
+    line-height: 1;
+    flex-shrink: 0;
+    letter-spacing: -.02em;
+}
+.intel-score-pct { font-size: 22px; font-weight: 500; }
+.intel-confidence-body { flex: 1; min-width: 0; }
+.intel-confidence-label { font-size: 12px; font-weight: 600; color: var(--fg); margin-bottom: 3px; }
+.intel-confidence-sub { font-size: 12px; color: var(--mid); line-height: 1.5; }
+.intel-meta-row { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 8px; }
+.intel-meta-item { font-size: 11px; color: var(--dim); }
+.intel-meta-item strong { color: var(--mid); }
+
+.intel-grid {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 10px;
+}
+.intel-card {
+    background: var(--vscode-editor-background, #141414);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 12px;
+}
+.intel-card-title {
+    font-size: 11px;
+    font-weight: 600;
+    color: var(--mid);
+    letter-spacing: .06em;
+    text-transform: uppercase;
+    margin-bottom: 8px;
+}
+.intel-card-stats { display: flex; flex-wrap: wrap; gap: 8px; }
+.intel-stat { font-size: 12px; color: var(--dim); }
+.intel-stat strong { color: var(--fg); }
+.intel-stat--warn strong { color: var(--warn); }
+.intel-stat--danger strong { color: var(--danger); }
+
+.intel-flag {
+    margin-top: 8px;
+    font-size: 11px;
+    line-height: 1.5;
+    padding: 5px 8px;
+    border-radius: 4px;
+}
+.intel-flag--ok     { color: var(--accent); background: color-mix(in srgb, var(--accent) 10%, transparent); }
+.intel-flag--warn   { color: var(--warn);   background: color-mix(in srgb, var(--warn) 10%, transparent); }
+.intel-flag--dim    { color: var(--dim);    background: rgba(255,255,255,.03); }
+
+@media (max-width: 680px) { .intel-grid { grid-template-columns: 1fr; } }
+
+.trend-arrow { font-size: 12px; font-weight: 700; margin-left: 4px; vertical-align: middle; }
+.trend-bad  { color: var(--danger, #ff5c5c); }
+.trend-good { color: var(--accent, #5ecfbe); }

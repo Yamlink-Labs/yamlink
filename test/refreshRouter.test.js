@@ -4,7 +4,7 @@ const { test, describe } = require('node:test');
 const assert = require('node:assert/strict');
 
 const { createRefreshRouter } = require('../src/runtime/refreshRouter');
-const { clearMutationEvents, getMutationEvents } = require('../src/runtime/mutationEventLog');
+const { clearMutationEvents, getMutationEvents, setDefaultMutationContextProvider } = require('../src/runtime/mutationEventLog');
 
 function createServices() {
     const counts = {
@@ -18,7 +18,8 @@ function createServices() {
         refreshGraph: 0,
         refreshEntityHub: 0,
         refreshCalendar: 0,
-        refreshSuggestions: 0
+        refreshSuggestions: 0,
+        refreshTaskNotifications: 0
     };
 
     const services = Object.fromEntries(
@@ -36,6 +37,7 @@ function createServices() {
 describe('refresh router', () => {
     test('passive index sweep refreshes smart suggestions', () => {
         clearMutationEvents();
+        setDefaultMutationContextProvider(null);
         const { counts, services } = createServices();
         const router = createRefreshRouter(services);
 
@@ -46,10 +48,12 @@ describe('refresh router', () => {
         assert.equal(counts.validateTargeted, 0);
         assert.equal(counts.refreshSuggestions, 1);
         assert.equal(counts.refreshCalendar, 1);
+        assert.equal(counts.refreshTaskNotifications, 1);
     });
 
     test('index mutations still refresh suggestions in both light and heavy paths', () => {
         clearMutationEvents();
+        setDefaultMutationContextProvider(null);
         const { counts, services } = createServices();
         const router = createRefreshRouter(services);
 
@@ -62,12 +66,14 @@ describe('refresh router', () => {
         assert.equal(counts.refreshSuggestions, 2);
         assert.equal(counts.refreshViews, 1);
         assert.equal(counts.refreshCalendar, 1);
+        assert.equal(counts.refreshTaskNotifications, 2);
         assert.equal(counts.validateTargeted, 1);
         assert.equal(counts.validateAll, 0);
     });
 
     test('index mutations append structured mutation events', () => {
         clearMutationEvents();
+        setDefaultMutationContextProvider(() => ({ sessionId: 'router-session-1' }));
         const { services } = createServices();
         const router = createRefreshRouter(services);
 
@@ -85,5 +91,30 @@ describe('refresh router', () => {
         assert.equal(events.length, 2);
         assert.equal(events[1].type, 'field_added');
         assert.equal(events[1].field, 'unit');
+        assert.equal(events[0].source, 'vscode');
+        assert.equal(events[0].cause, 'workspace_index_mutation');
+        assert.equal(events[0].sessionId, 'router-session-1');
+    });
+
+    test('index mutations can carry explicit source and cause metadata', () => {
+        clearMutationEvents();
+        setDefaultMutationContextProvider(null);
+        const { services } = createServices();
+        const router = createRefreshRouter(services);
+
+        router.refreshForIndexMutation({
+            changed: true,
+            changedId: 'johnny-rico',
+            mutationEvents: [
+                { timestamp: '2026-05-17T00:00:00.000Z', type: 'field_changed', noteId: 'johnny-rico', field: 'status', newValue: 'active' }
+            ]
+        }, {
+            source: 'vscode',
+            cause: 'lightbulb_apply'
+        });
+
+        const [event] = getMutationEvents();
+        assert.equal(event.source, 'vscode');
+        assert.equal(event.cause, 'lightbulb_apply');
     });
 });

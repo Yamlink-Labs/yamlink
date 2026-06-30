@@ -38,15 +38,20 @@ const {
     buildEmptyStateHint,
     classifyQueryWarnings
 } = require('../src/features/view/viewTableLogic');
-const { formatQueryHeroText, buildWarningBanner } = require('../src/features/view/viewPanelHtml');
-const { extractIdFromText, toggleTaskCheckbox } = require('../src/features/viewPanel');
+const {
+    formatQueryHeroText,
+    buildWarningBanner,
+    buildBarChartHtml,
+    buildScatterChartHtml
+} = require('../src/features/view/viewPanelHtml');
+const { editCell, extractIdFromText, toggleTaskCheckbox } = require('../src/features/viewPanel');
 const { computeNextSortState } = require('../src/features/viewPanelUiRuntime');
 const {
     normaliseColumnFilters,
     setColumnFilterValues,
     rowMatchesColumnFilters
 } = require('../src/features/viewPanelStateRuntime');
-const { getPathIndex } = require('../src/core/indexService');
+const { getPathIndex, getFieldsCache } = require('../src/core/indexService');
 const {
     initMutationLog,
     clearMutationEvents,
@@ -57,6 +62,7 @@ beforeEach(() => {
     initMutationLog(null);
     clearMutationEvents();
     getPathIndex().clear();
+    getFieldsCache().clear();
 });
 
 describe('view panel display helpers', () => {
@@ -299,10 +305,151 @@ describe('view panel display helpers', () => {
             assert.equal(events[0].field, 'task:1');
             assert.equal(events[0].oldValue, 'open');
             assert.equal(events[0].newValue, 'done');
+            const behaviorEvents = getMutationEvents({ noteId: 'planet-p-assault', type: 'task_state_changed' });
+            assert.equal(behaviorEvents.length, 1);
+            assert.equal(behaviorEvents[0].cause, 'viewpanel_task_toggle');
         } finally {
             getPathIndex().delete(tmpPath);
             try { fs.unlinkSync(tmpPath); } catch (_) {}
         }
+    });
+
+    test('editCell appends a field_changed mutation event with oldValue and newValue', async () => {
+        const tmpPath = path.join(os.tmpdir(), `yamlink-editcell-${Date.now()}.md`);
+        try {
+            fs.writeFileSync(tmpPath, '---\nid: test-note\ntype: contact\nstatus: draft\n---\n', 'utf8');
+            getPathIndex().set(tmpPath, 'test-note');
+            getFieldsCache().set('test-note', { id: 'test-note', type: 'contact', status: 'draft' });
+
+            const ok = await editCell(tmpPath, 'status', 'active');
+            assert.equal(ok, true);
+
+            const events = getMutationEvents({ noteId: 'test-note', type: 'field_changed' });
+            assert.equal(events.length, 1);
+            assert.equal(events[0].field, 'status');
+            assert.equal(events[0].oldValue, 'draft');
+            assert.equal(events[0].newValue, 'active');
+        } finally {
+            getPathIndex().delete(tmpPath);
+            getFieldsCache().delete('test-note');
+            try { fs.unlinkSync(tmpPath); } catch (_) {}
+        }
+    });
+
+    test('editCell clearing a field emits newValue null', async () => {
+        const tmpPath = path.join(os.tmpdir(), `yamlink-editcell-clear-${Date.now()}.md`);
+        try {
+            fs.writeFileSync(tmpPath, '---\nid: clear-note\ntype: task\nowner: rico\n---\n', 'utf8');
+            getPathIndex().set(tmpPath, 'clear-note');
+            getFieldsCache().set('clear-note', { id: 'clear-note', type: 'task', owner: 'rico' });
+
+            const ok = await editCell(tmpPath, 'owner', '');
+            assert.equal(ok, true);
+
+            const events = getMutationEvents({ noteId: 'clear-note', type: 'field_changed' });
+            assert.equal(events.length, 1);
+            assert.equal(events[0].oldValue, 'rico');
+            assert.equal(events[0].newValue, null);
+        } finally {
+            getPathIndex().delete(tmpPath);
+            getFieldsCache().delete('clear-note');
+            try { fs.unlinkSync(tmpPath); } catch (_) {}
+        }
+    });
+
+    test('buildBarChartHtml renders a canvas and chart init block for grouped results', () => {
+        const html = buildBarChartHtml({
+            idx: 0,
+            groupField: 'company',
+            nonce: 'test-nonce',
+            groups: [
+                { key: 'MI', count: 3 },
+                { key: 'Fleet', count: 2 }
+            ]
+        });
+
+        assert.match(html, /canvas id="view-chart-bar-0"/);
+        assert.match(html, /new window\.Chart/);
+        assert.match(html, /"MI"/);
+        assert.match(html, /"Fleet"/);
+        assert.match(html, /"data":\[3,2\]/);
+    });
+
+    test('buildBarChartHtml returns requires group by message when grouped results are unavailable', () => {
+        const html = buildBarChartHtml({
+            idx: 1,
+            groupField: null,
+            nonce: 'test-nonce',
+            groups: null
+        });
+
+        assert.match(html, /Bar chart requires a <code>group by<\/code> clause\./);
+        assert.doesNotMatch(html, /new window\.Chart/);
+    });
+
+    test('buildScatterChartHtml renders a canvas and dataset with point values', () => {
+        const rows = [
+            {
+                id: 'mission-alpha',
+                nodeType: 'mission',
+                fields: { name: 'Mission Alpha', priority: '2', duration: '14' }
+            },
+            {
+                id: 'mission-beta',
+                nodeType: 'mission',
+                fields: { name: 'Mission Beta', priority: '4', duration: '21' }
+            }
+        ];
+        const html = buildScatterChartHtml({
+            idx: 2,
+            rows,
+            columns: ['id', 'priority', 'duration'],
+            meta: {
+                id: { kind: 'id' },
+                priority: { kind: 'number' },
+                duration: { kind: 'number' }
+            },
+            xField: 'priority',
+            yField: 'duration',
+            types: ['mission'],
+            nonce: 'test-nonce'
+        });
+
+        assert.match(html, /canvas id="view-chart-scatter-2"/);
+        assert.match(html, /new window\.Chart/);
+        assert.match(html, /"x":2/);
+        assert.match(html, /"y":14/);
+        assert.match(html, /Mission Alpha/);
+    });
+
+    test('buildScatterChartHtml auto-selects axes and renders chart when xField/yField are empty', () => {
+        const html = buildScatterChartHtml({
+            idx: 3,
+            rows: [
+                {
+                    id: 'mission-alpha',
+                    nodeType: 'mission',
+                    fields: { priority: '2', duration: '14' }
+                }
+            ],
+            columns: ['id', 'priority', 'duration'],
+            meta: {
+                id: { kind: 'id' },
+                priority: { kind: 'number' },
+                duration: { kind: 'number' }
+            },
+            xField: '',
+            yField: '',
+            types: ['mission'],
+            nonce: 'test-nonce'
+        });
+
+        assert.match(html, /data-scatter-axis="x"/);
+        assert.match(html, /data-scatter-axis="y"/);
+        assert.match(html, /Choose field/);
+        assert.match(html, /new window\.Chart/);
+        assert.match(html, /"x":2/);
+        assert.match(html, /"y":14/);
     });
 });
 

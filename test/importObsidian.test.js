@@ -32,7 +32,11 @@ const {
     buildFilenameIdMigrationPreview,
     collectMissingIdCandidates,
     applyMissingFilenameIds,
-    buildAppliedMigrationReportMarkdown
+    buildAppliedMigrationReportMarkdown,
+    rewriteFilenameStyleWikilinks,
+    applyCanonicalWikilinkRewrite,
+    buildAppliedLinkRewriteReportMarkdown,
+    buildCombinedCleanupReportMarkdown
 } = require('../src/features/importObsidian');
 
 describe('importObsidian helpers', () => {
@@ -273,5 +277,68 @@ category: mission
         assert.match(report, /johnny-rico\.md/);
         assert.match(report, /id-collision/);
         assert.match(report, /does not rewrite links/);
+    });
+
+    test('rewriteFilenameStyleWikilinks converts filename-style links to canonical ids while preserving labels and anchors', () => {
+        const rewritten = rewriteFilenameStyleWikilinks(
+            'Met [[Johnny Rico]] near [[ops/Planet P#Aftermath]].',
+            new Map([
+                ['johnny rico', { id: 'johnny-rico', label: 'Johnny Rico' }],
+                ['ops/planet p', { id: 'planet-p', label: 'Planet P' }]
+            ])
+        );
+
+        assert.equal(rewritten.rewrites, 2);
+        assert.match(rewritten.text, /\[\[johnny-rico\|Johnny Rico\]\]/);
+        assert.match(rewritten.text, /\[\[planet-p#Aftermath\|ops\/Planet P\]\]/);
+    });
+
+    test('applyCanonicalWikilinkRewrite rewrites imported markdown files in place', () => {
+        const vaultRoot = path.join(tempRoot, 'vault');
+        fs.mkdirSync(vaultRoot, { recursive: true });
+        fs.writeFileSync(path.join(vaultRoot, 'johnny-rico.md'), '---\nid: johnny-rico\nname: Johnny Rico\naliases: Johnny Rico\n---\n');
+        fs.writeFileSync(path.join(vaultRoot, 'briefing.md'), '---\nid: briefing\n---\nMet [[Johnny Rico]].\n');
+
+        const result = applyCanonicalWikilinkRewrite(vaultRoot);
+
+        assert.equal(result.changedFiles.length, 1);
+        assert.equal(result.rewritesApplied, 1);
+        const briefing = fs.readFileSync(path.join(vaultRoot, 'briefing.md'), 'utf8');
+        assert.match(briefing, /\[\[johnny-rico\|Johnny Rico\]\]/);
+    });
+
+    test('buildAppliedLinkRewriteReportMarkdown summarizes changed files and rewrite totals', () => {
+        const report = buildAppliedLinkRewriteReportMarkdown(path.join(tempRoot, 'vault'), {
+            rewritesApplied: 3,
+            changedFiles: [
+                { relativePath: 'briefing.md', rewrites: 2 },
+                { relativePath: 'ops/planet-p.md', rewrites: 1 }
+            ]
+        });
+
+        assert.match(report, /Canonical Link Rewrite Report/);
+        assert.match(report, /Links rewritten: \*\*3\*\*/);
+        assert.match(report, /briefing\.md/);
+        assert.match(report, /ops\/planet-p\.md/);
+    });
+
+    test('buildCombinedCleanupReportMarkdown combines id assignment and link rewrite outcomes', () => {
+        const report = buildCombinedCleanupReportMarkdown(path.join(tempRoot, 'vault'), {
+            idResult: {
+                applied: [{ relativePath: 'johnny-rico.md', id: 'johnny-rico' }],
+                skipped: [{ relativePath: 'folder-b/alpha.md', suggestedId: 'alpha', reason: 'id-collision' }]
+            },
+            linkResult: {
+                rewritesApplied: 2,
+                changedFiles: [{ relativePath: 'briefing.md', rewrites: 2 }]
+            }
+        });
+
+        assert.match(report, /Obsidian Cleanup Report/);
+        assert.match(report, /IDs applied: \*\*1\*\*/);
+        assert.match(report, /Links rewritten: \*\*2\*\*/);
+        assert.match(report, /johnny-rico\.md/);
+        assert.match(report, /briefing\.md/);
+        assert.match(report, /id-collision/);
     });
 });

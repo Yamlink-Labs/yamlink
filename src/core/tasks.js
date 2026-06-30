@@ -2,10 +2,12 @@ const fs = require('fs');
 const { extractDateFromText } = require('./date');
 const { normalizeText } = require('./frontmatter');
 const { getCachedTasks, setCachedTasks } = require('./taskCache');
+const { buildTaskBlockId } = require('./bodyBlocks');
 
 /**
  * @typedef {{
  *   id: string,
+ *   blockId: string,
  *   fileId: string,
  *   filePath: string,
  *   line: number,
@@ -19,15 +21,6 @@ const { getCachedTasks, setCachedTasks } = require('./taskCache');
  *   nodeType: string
  * }} TaskRow
  */
-
-function hashString(str) {
-  let h = 5381;
-  for (let i = 0; i < str.length; i++) {
-    h = ((h << 5) + h) ^ str.charCodeAt(i);
-    h >>>= 0;
-  }
-  return h.toString(36);
-}
 
 function stripFrontmatter(content) {
   if (!/^\s*---/.test(content)) return content;
@@ -66,7 +59,8 @@ function parseTasksFromContent(content, fileId, filePath, referenceDate = null) 
     const date = extractDateFromText(rawText, referenceDate);
     const displayText = stripDateMarkers(rawText) || rawText;
     const linkMatches = [...rawText.matchAll(/\[\[([^\]]+)\]\]/g)].map(m => m[1].trim());
-    const blockId = `${fileId}#t${taskNumber}-${hashString(rawText).slice(0, 6)}`;
+    const localBlockId = buildTaskBlockId(taskNumber, rawText);
+    const blockId = `${fileId}#${localBlockId}`;
 
     // Collect indented body lines that follow this task.
     // Stop at a blank line, a new task/list item at same-or-lower indent,
@@ -88,6 +82,7 @@ function parseTasksFromContent(content, fileId, filePath, referenceDate = null) 
 
     tasks.push({
       id: blockId,
+      blockId: localBlockId,
       fileId,
       filePath,
       line: i + 1,

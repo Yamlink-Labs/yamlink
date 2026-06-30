@@ -1,0 +1,344 @@
+'use strict';
+
+const fs = require('fs');
+
+const { getIndex, getAliasIndex, getBodyBlockIndex, getFieldsCache } = require('../../core/indexService');
+const { resolveLinkedTarget, parseLinkedTargetParts, canonicalizeLinkedTarget } = require('../../core/id');
+const { findBlockLine }                          = require('../../core/bodyBlocks');
+const { respond, respondImmediate }              = require('../transport');
+const { getDocumentText }                        = require('../documentState');
+const { cancellationCheckpoint, isRequestCancelled } = require('../cancellation');
+const {
+    wikilinkMatchAtPosition,
+    pathToUri,
+    WIKILINK_RE,
+    getLinkedOccurrences,
+    collectLinkedCandidateFiles,
+    findAnchorLine,
+    normalizeAnchorText
+} = require('../utils');
+
+function resolveTargetLocation(rawTarget, idIndex, aliasIndex) {
+    const resolvedId = resolveLinkedTarget(rawTarget, idIndex, aliasIndex);
+    const filePath = resolvedId ? idIndex.get(resolvedId) : null;
+    if (!filePath) return null;
+
+    const parts = parseLinkedTargetParts(rawTarget);
+    let targetLine = 0;
+    if (parts.anchor) {
+        const anchorNorm = normalizeAnchorText(parts.anchor);
+        if (anchorNorm) {
+            const anchorLine = findAnchorLine(filePath, anchorNorm);
+            if (anchorLine !== -1) targetLine = anchorLine;
+        }
+    } else if (parts.blockId) {
+        const blockLine = findBlockLine(getBodyBlockIndex(), resolvedId, parts.blockId);
+        if (blockLine !== -1) targetLine = blockLine;
+    }
+
+    return {
+        resolvedId,
+        filePath,
+        targetLine,
+        parts
+    };
+}
+
+function buildDocumentLinks(content, idIndex, aliasIndex) {
+    const links = [];
+    const lines = String(content || '').split('\n');
+
+    for (let lineIdx = 0; lineIdx < lines.length; lineIdx++) {
+        const line = lines[lineIdx];
+        WIKILINK_RE.lastIndex = 0;
+        let match;
+        while ((match = WIKILINK_RE.exec(line)) !== null) {
+            const rawTarget = match[1].trim();
+            const location = resolveTargetLocation(rawTarget, idIndex, aliasIndex);
+            if (!location) continue;
+
+            let target = pathToUri(location.filePath);
+            if (location.targetLine > 0 || location.parts.anchor || location.parts.blockId) {
+                target += `#L${location.targetLine + 1}`;
+            }
+
+            links.push({
+                range: {
+                    start: { line: lineIdx, character: match.index },
+                    end: { line: lineIdx, character: match.index + match[0].length }
+                },
+                target,
+                tooltip: location.resolvedId
+            });
+        }
+    }
+
+    return links;
+}
+
+function handleDefinition(msg, state) {
+    const { textDocument, position } = msg.params || {};
+    if (!textDocument || !position) { respond(msg.id, null); return; }
+
+    const content = getDocumentText(state, textDocument.uri);
+    const lines   = content.split('\n');
+    const line    = lines[position.line] || '';
+
+    const linkMatch = wikilinkMatchAtPosition(line, position.character);
+    if (!linkMatch) { respond(msg.id, null); return; }
+
+    const idIndex  = getIndex();
+    const aliasIndex = getAliasIndex();
+    const location = resolveTargetLocation(linkMatch.rawTarget, idIndex, aliasIndex);
+    if (!location) { respond(msg.id, null); return; }
+
+    respond(msg.id, {
+        uri:   pathToUri(location.filePath),
+        range: {
+            start: { line: location.targetLine, character: 0 },
+            end: { line: location.targetLine, character: 0 }
+        }
+    });
+}
+
+function handleDocumentLink(msg, state) {
+    const { textDocument } = msg.params || {};
+    if (!textDocument) { respond(msg.id, []); return; }
+
+    const content = getDocumentText(state, textDocument.uri);
+    const idIndex = getIndex();
+    const aliasIndex = getAliasIndex();
+    respond(msg.id, buildDocumentLinks(content, idIndex, aliasIndex));
+}
+
+function handleDocumentHighlight(msg, state) {
+    const { textDocument, position } = msg.params || {};
+    if (!textDocument || !position) { respond(msg.id, []); return; }
+
+    const content = getDocumentText(state, textDocument.uri);
+    const lines = content.split('\n');
+    const line = lines[position.line] || '';
+
+    const linkMatch = wikilinkMatchAtPosition(line, position.character);
+    let id = linkMatch ? resolveLinkedTarget(linkMatch.rawTarget, getIndex(), getAliasIndex()) : null;
+    const currentParts = linkMatch ? parseLinkedTargetParts(linkMatch.rawTarget) : null;
+    if (!id) {
+        const idMatch = /^(id:\s+)(\S+)/.exec(line);
+        if (idMatch) {
+            const start = idMatch[1].length;
+            const end = start + idMatch[2].length;
+            if (position.character >= start && position.character <= end) id = idMatch[2];
+        }
+    }
+
+    if (!id) { respond(msg.id, []); return; }
+
+    const highlights = [];
+
+    for (let lineIdx = 0; lineIdx < lines.length; lineIdx++) {
+        const currentLine = lines[lineIdx];
+
+        const idMatch = /^(id:\s+)(\S+)/.exec(currentLine);
+        if (idMatch && idMatch[2] === id) {
+            highlights.push({
+                range: {
+                    start: { line: lineIdx, character: idMatch[1].length },
+                    end: { line: lineIdx, character: idMatch[1].length + id.length }
+                },
+                kind: 1
+            });
+        }
+
+        WIKILINK_RE.lastIndex = 0;
+        let match;
+        while ((match = WIKILINK_RE.exec(currentLine)) !== null) {
+            const currentRaw = String(match[1] || '').trim();
+            const currentId = resolveLinkedTarget(currentRaw, getIndex(), getAliasIndex());
+            if (linkMatch?.rawTarget) {
+                const matchParts = parseLinkedTargetParts(currentRaw);
+                if (currentParts?.anchor || currentParts?.blockId) {
+                    if (matchParts.anchor !== currentParts.anchor) continue;
+                    if (matchParts.blockId !== currentParts.blockId) continue;
+                    if (currentId !== id) continue;
+                } else if (currentId !== id) {
+                    continue;
+                }
+                if (!currentParts?.anchor && !currentParts?.blockId && (matchParts.anchor || matchParts.blockId)) {
+                    continue;
+                }
+            } else if (currentId !== id) {
+                continue;
+            }
+            highlights.push({
+                range: {
+                    start: { line: lineIdx, character: match.index },
+                    end: { line: lineIdx, character: match.index + match[0].length }
+                },
+                kind: 2
+            });
+        }
+    }
+
+    respond(msg.id, highlights);
+}
+
+async function handleReferences(msg, state) {
+    const { textDocument, position, context } = msg.params || {};
+    if (!textDocument || !position) { respond(msg.id, []); return; }
+
+    const content = state.openDocs.get(textDocument.uri) || '';
+    const lines   = content.split('\n');
+    const line    = lines[position.line] || '';
+
+    const linkMatch = wikilinkMatchAtPosition(line, position.character);
+    const idIndex = getIndex();
+    const aliasIndex = getAliasIndex();
+    let id = linkMatch ? resolveLinkedTarget(linkMatch.rawTarget, idIndex, aliasIndex) : null;
+    const linkParts = linkMatch ? parseLinkedTargetParts(linkMatch.rawTarget) : null;
+    const scopedAnchor = linkParts?.anchor || '';
+    const scopedBlockId = linkParts?.blockId || '';
+    if (!id) {
+        const m = /^id:\s+(\S+)/.exec(line);
+        if (m) id = m[1];
+    }
+
+    if (!id) { respond(msg.id, []); return; }
+
+    const includeDecl     = !!(context && context.includeDeclaration);
+    const declarationPath = idIndex.get(id);
+    const locations       = [];
+    const fieldsCache     = getFieldsCache();
+
+    const declarationFields = fieldsCache.get(id) || {};
+    const aliasTexts = Array.isArray(declarationFields.aliases)
+        ? declarationFields.aliases.map((alias) => String(alias || '').trim()).filter(Boolean)
+        : String(declarationFields.aliases || '')
+            .split(/,\s*/)
+            .map((alias) => String(alias || '').trim())
+            .filter(Boolean);
+    const lookupTargets = [id].concat(aliasTexts);
+    const candidateFiles = collectLinkedCandidateFiles({
+        vaultPath: state.vaultPath,
+        state,
+        id,
+        idIndex,
+        aliasTexts
+    });
+    const diskOccurrences = getLinkedOccurrences(state, lookupTargets);
+    const openDocUris = new Set(state.openDocs.keys());
+
+    let processed = 0;
+    for (const occurrence of diskOccurrences) {
+        if ((processed++ % 200) === 0) await cancellationCheckpoint(state, msg.id);
+        const occurrenceUri = pathToUri(occurrence.filePath);
+        if (openDocUris.has(occurrenceUri)) continue;
+        const currentId = resolveLinkedTarget(occurrence.rawTarget, idIndex, aliasIndex);
+        if (currentId !== id) continue;
+        if (linkMatch?.rawTarget) {
+            const currentParts = parseLinkedTargetParts(occurrence.rawTarget);
+            if (scopedAnchor || scopedBlockId) {
+                if (currentParts.anchor !== scopedAnchor) continue;
+                if (currentParts.blockId !== scopedBlockId) continue;
+            } else if (currentParts.anchor || currentParts.blockId) {
+                if (canonicalizeLinkedTarget(occurrence.rawTarget) !== canonicalizeLinkedTarget(linkMatch.rawTarget)) continue;
+            }
+        }
+        locations.push({
+            uri: occurrenceUri,
+            range: {
+                start: { line: occurrence.line, character: occurrence.start },
+                end: { line: occurrence.line, character: occurrence.end }
+            }
+        });
+    }
+
+    if (includeDecl && declarationPath) {
+        const declarationUri = pathToUri(declarationPath);
+        if (!openDocUris.has(declarationUri)) {
+            let declarationText = '';
+            try { declarationText = fs.readFileSync(declarationPath, 'utf8'); } catch (_) { declarationText = ''; }
+            if (declarationText) {
+                const declarationLines = declarationText.split('\n');
+                for (let lineIdx = 0; lineIdx < declarationLines.length; lineIdx++) {
+                    const dm = /^(id:\s+)(\S+)/.exec(declarationLines[lineIdx]);
+                    if (dm && dm[2] === id) {
+                        locations.push({
+                            uri: declarationUri,
+                            range: {
+                                start: { line: lineIdx, character: dm[1].length },
+                                end: { line: lineIdx, character: dm[1].length + id.length }
+                            }
+                        });
+                        break;
+                    }
+                }
+            }
+        }
+    }
+
+    for (const filePath of candidateFiles) {
+        if ((processed++ % 25) === 0) await cancellationCheckpoint(state, msg.id);
+        let text;
+        const openUri = pathToUri(filePath);
+        if (!state.openDocs.has(openUri)) continue;
+        text = state.openDocs.get(openUri) || '';
+
+        const fileLines     = text.split('\n');
+        const isDeclaration = filePath === declarationPath;
+
+        for (let lineIdx = 0; lineIdx < fileLines.length; lineIdx++) {
+            const fl = fileLines[lineIdx];
+
+            if (isDeclaration && includeDecl) {
+                const dm = /^(id:\s+)(\S+)/.exec(fl);
+                if (dm && dm[2] === id) {
+                    locations.push({
+                        uri:   pathToUri(filePath),
+                        range: {
+                            start: { line: lineIdx, character: dm[1].length },
+                            end:   { line: lineIdx, character: dm[1].length + id.length }
+                        }
+                    });
+                    continue;
+                }
+            }
+
+            WIKILINK_RE.lastIndex = 0;
+            let m;
+            while ((m = WIKILINK_RE.exec(fl)) !== null) {
+                const currentRaw = String(m[1] || '').trim();
+                const currentId = resolveLinkedTarget(currentRaw, idIndex, aliasIndex);
+                if (currentId !== id) {
+                    continue;
+                }
+                if (linkMatch?.rawTarget) {
+                    const currentParts = parseLinkedTargetParts(currentRaw);
+                    if (scopedAnchor || scopedBlockId) {
+                        if (currentParts.anchor !== scopedAnchor) continue;
+                        if (currentParts.blockId !== scopedBlockId) continue;
+                    } else if (currentParts.anchor || currentParts.blockId) {
+                        if (canonicalizeLinkedTarget(currentRaw) !== canonicalizeLinkedTarget(linkMatch.rawTarget)) continue;
+                    }
+                }
+                locations.push({
+                    uri:   pathToUri(filePath),
+                    range: {
+                        start: { line: lineIdx, character: m.index },
+                        end:   { line: lineIdx, character: m.index + m[0].length }
+                    }
+                });
+            }
+        }
+    }
+
+    if (isRequestCancelled(state, msg.id)) return;
+    respondImmediate(msg.id, locations);
+}
+
+module.exports = {
+    handleDefinition,
+    handleReferences,
+    handleDocumentLink,
+    handleDocumentHighlight,
+    buildDocumentLinks
+};

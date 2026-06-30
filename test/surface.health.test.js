@@ -10,6 +10,11 @@
 const { test, describe } = require('node:test');
 const assert = require('node:assert/strict');
 const { createVault } = require('./lib/vaultSim');
+const {
+    appendMutationEvents,
+    clearMutationEvents
+} = require('../src/runtime/mutationEventLog');
+const { buildHealthHtml } = require('../src/features/health/healthHtml');
 
 // ── Vault fixtures ────────────────────────────────────────────────────────────
 
@@ -422,6 +427,190 @@ describe('healthStats — drift summary', () => {
         const stats = vault.healthStats();
         // In a small, consistent vault, most notes should be on-track or minor-drift
         assert.ok(typeof stats.drift === 'object');
+        vault.destroy();
+    });
+});
+
+// ── Vault projections ────────────────────────────────────────────────────────
+
+describe('healthStats — vault projections', () => {
+    test('intelligence health includes projection lanes with explainable summaries and evidence weighting', () => {
+        clearMutationEvents();
+        const now = new Date().toISOString();
+        const vault = createVault({
+            'rico.md': NOTE('rico', 'character', 'name: Johnny Rico\nunit: "[[roughnecks]]"\n'),
+            'dizzy.md': NOTE('dizzy', 'character', 'name: Dizzy Flores\nunit: "[[roughnecks]]"\n'),
+            'carmen.md': NOTE('carmen', 'character', 'name: Carmen Ibanez\nunit: "[[rogers-young]]"\n'),
+            'roughnecks.md': NOTE('roughnecks', 'unit', 'name: Roughnecks\n'),
+            'rogers-young.md': NOTE('rogers-young', 'unit', 'name: Rodger Young\n'),
+            'intel-draft.md': NOTE('intel-draft', 'dossier'),
+            'old-dossier.md': NOTE('old-dossier', 'dossier', 'title: Old Report\n')
+        });
+
+        appendMutationEvents([
+            { type: 'note_created', noteId: 'rico', timestamp: now },
+            { type: 'note_created', noteId: 'dizzy', timestamp: now },
+            { type: 'note_created', noteId: 'carmen', timestamp: now },
+            { type: 'completion_accepted', noteId: 'rico', field: 'unit', newValue: '[[roughnecks]]', timestamp: now },
+            { type: 'field_changed', noteId: 'dizzy', field: 'unit', newValue: '[[roughnecks]]', timestamp: now },
+            { type: 'note_touched', noteId: 'intel-draft', timestamp: now }
+        ]);
+
+        const stats = vault.healthStats();
+        const projections = stats.intelligenceHealth.projections;
+
+        assert.ok(projections, 'projections are present');
+        assert.equal(projections.windowDays, 30);
+        assert.equal(projections.history.bucketDays, 7);
+        assert.equal(projections.history.buckets.length, 4);
+        assert.ok(['low', 'medium', 'high'].includes(projections.growth.confidence));
+        assert.ok(typeof projections.growth.evidenceScore === 'number');
+        assert.ok(['rising', 'steady', 'falling'].includes(projections.growth.trend));
+        assert.ok(typeof projections.growth.summary === 'string' && projections.growth.summary.length > 0);
+        assert.ok(['low', 'medium', 'high'].includes(projections.stale.confidence));
+        assert.ok(typeof projections.stale.evidenceScore === 'number');
+        assert.ok(['improving', 'steady', 'worsening'].includes(projections.stale.trend));
+        assert.ok(typeof projections.stale.summary === 'string' && projections.stale.summary.length > 0);
+        assert.ok(Array.isArray(projections.stale.topTypes));
+        assert.ok(['low', 'medium', 'high'].includes(projections.structure.confidence));
+        assert.ok(typeof projections.structure.evidenceScore === 'number');
+        assert.ok(['improving', 'fragile', 'steady'].includes(projections.structure.direction));
+        assert.ok(['rising', 'steady', 'falling'].includes(projections.structure.trend));
+        assert.ok(typeof projections.structure.summary === 'string' && projections.structure.summary.length > 0);
+        assert.ok(Array.isArray(projections.structure.topTypes));
+        assert.ok(projections.scenarios);
+        assert.ok(['low', 'medium', 'high'].includes(projections.scenarios.cleanupHold.confidence));
+        assert.ok(['low', 'medium', 'high'].includes(projections.scenarios.cleanupLift.confidence));
+        assert.ok(typeof projections.scenarios.cleanupHold.summary === 'string' && projections.scenarios.cleanupHold.summary.length > 0);
+        assert.ok(typeof projections.scenarios.growthHold.summary === 'string' && projections.scenarios.growthHold.summary.length > 0);
+
+        vault.destroy();
+        clearMutationEvents();
+    });
+
+    test('health html renders projection evidence and type-specific leaders', () => {
+        clearMutationEvents();
+        const now = new Date().toISOString();
+        const vault = createVault({
+            ...CRM,
+            'old-contact.md': NOTE('old-contact', 'contact', 'name: Old Contact\n')
+        });
+        appendMutationEvents([
+            { type: 'note_created', noteId: 'rico', timestamp: now },
+            { type: 'note_created', noteId: 'carmen', timestamp: now },
+            { type: 'completion_accepted', noteId: 'rico', field: 'account', newValue: '[[mi]]', timestamp: now }
+        ]);
+        const html = buildHealthHtml(vault.healthStats(), {
+            scriptUri: 'test.js',
+            nonce: 'nonce',
+            csp: "'unsafe-inline'"
+        });
+
+        assert.match(html, /Vault Projections/);
+        assert.match(html, /Growth/);
+        assert.match(html, /Stale Pressure/);
+        assert.match(html, /Structure Direction/);
+        assert.match(html, /Recent 4-week pattern/);
+        assert.match(html, /Scenario layer/);
+        assert.match(html, /If cleanup pace holds/);
+        assert.match(html, /evidence/);
+
+        vault.destroy();
+        clearMutationEvents();
+    });
+
+    test('intelligence health includes mutation behavior semantics from recent sessions', () => {
+        clearMutationEvents();
+        const now = new Date().toISOString();
+        const vault = createVault({
+            'rico.md': NOTE('rico', 'character', 'name: Johnny Rico\nunit: "[[roughnecks]]"\n'),
+            'roughnecks.md': NOTE('roughnecks', 'unit', 'name: Roughnecks\n')
+        });
+
+        appendMutationEvents([
+            { type: 'template_applied', noteId: 'rico', field: 'type', timestamp: now, sessionId: 's1', meta: { sessionReason: 'editor_focus' } },
+            { type: 'relation_changed', noteId: 'rico', field: 'unit', newValue: '[[roughnecks]]', timestamp: now, sessionId: 's1' },
+            { type: 'query_builder_opened', noteId: 'rico', field: 'query', timestamp: now, sessionId: 's2' },
+            { type: 'query_builder_preview_opened', noteId: 'rico', field: 'query', timestamp: now, sessionId: 's2' }
+        ]);
+
+        const intel = vault.healthStats().intelligenceHealth;
+        assert.ok(intel.mutationBehavior);
+        assert.equal(intel.mutationBehavior.totalSessions, 2);
+        assert.ok(['templating', 'querying'].includes(intel.mutationBehavior.dominantFamily));
+        assert.ok(typeof intel.mutationBehavior.coherenceScore === 'number');
+        assert.ok(intel.mutationBehavior.recentSessions[0].causalChain.length >= 1);
+        assert.ok(['exploratory', 'applied', 'mixed', 'ambient'].includes(intel.mutationBehavior.recentSessions[0].mode));
+        assert.ok(Array.isArray(intel.mutationBehavior.streaks));
+        assert.ok(intel.mutationBehavior.evolution);
+
+        const html = buildHealthHtml(vault.healthStats(), {
+            scriptUri: 'test.js',
+            nonce: 'nonce',
+            csp: "'unsafe-inline'"
+        });
+        assert.match(html, /Mutation Behavior/);
+        assert.match(html, /coherence/i);
+        assert.match(html, /Top streak/i);
+
+        vault.destroy();
+        clearMutationEvents();
+    });
+});
+
+// ── Emerging clusters ───────────────────────────────────────────────────────
+
+describe('healthStats — emerging clusters', () => {
+    test('filters emerging clusters to medium/high confidence and caps them at three', () => {
+        const files = {};
+        for (let i = 0; i < 13; i++) {
+            files[`char-${i}.md`] = NOTE(`char-${i}`, 'character', 'name: Test Character\nunit: "[[roughnecks]]"\nrank: private\n');
+        }
+        files['roughnecks.md'] = NOTE('roughnecks', 'unit', 'name: Roughnecks\nbranch: infantry\n');
+
+        for (let i = 0; i < 8; i++) {
+            files[`mission-${i}.md`] = NOTE(`mission-${i}`, 'mission', 'title: Mission\ncommander: "[[char-0]]"\nstatus: active\n');
+        }
+
+        for (let i = 0; i < 7; i++) {
+            files[`unit-${i}.md`] = NOTE(`unit-${i}`, 'unit', 'name: Unit\nfaction: federation\nhomeworld: terra\n');
+        }
+
+        for (let i = 0; i < 5; i++) {
+            files[`low-${i}.md`] = NOTE(`low-${i}`, 'report', 'title: Low Cluster\nsource: "[[char-0]]"\n');
+        }
+
+        const vault = createVault(files);
+        const stats = vault.healthStats();
+
+        assert.ok(Array.isArray(stats.emergingClusters));
+        assert.equal(stats.emergingClusters.length, 3);
+        assert.deepEqual(stats.emergingClusters.map((cluster) => cluster.noteCount), [13, 8, 7]);
+        assert.deepEqual(stats.emergingClusters.map((cluster) => cluster.confidence), ['high', 'medium', 'medium']);
+        assert.ok(stats.emergingClusters.every((cluster) => cluster.confidence !== 'low'));
+
+        vault.destroy();
+    });
+
+    test('health html renders emerging patterns with schema proposal buttons', () => {
+        const files = {};
+        for (let i = 0; i < 13; i++) {
+            files[`pattern-${i}.md`] = NOTE(`pattern-${i}`, 'character', 'name: Pattern\nunit: "[[roughnecks]]"\nrank: lieutenant\n');
+        }
+        files['roughnecks.md'] = NOTE('roughnecks', 'unit', 'name: Roughnecks\n');
+
+        const vault = createVault(files);
+        const html = buildHealthHtml(vault.healthStats(), {
+            scriptUri: 'test.js',
+            nonce: 'nonce',
+            csp: "'unsafe-inline'"
+        });
+
+        assert.match(html, /Emerging Patterns/);
+        assert.match(html, /13 notes share this shape/);
+        assert.match(html, /createSchemaFromCluster/);
+        assert.match(html, /Create schema from cluster/);
+
         vault.destroy();
     });
 });

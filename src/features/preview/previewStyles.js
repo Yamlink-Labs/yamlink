@@ -93,6 +93,19 @@ th {
 td { padding: 7px 12px; border: 1px solid #d0d4d9; color: #111111; background: #ffffff; }
 tbody tr:nth-child(even) td { background: #f8f9fa; }
 .wikilink { color: #C49BF0; background: rgba(196,155,240,.08); border-radius: 3px; padding: 1px 4px; }
+.yl-footnote-ref { font-size: .78em; vertical-align: super; }
+.yl-footnote-link, .yl-footnote-backref { color: #C49BF0; text-decoration: none; }
+.yl-footnotes {
+  margin-top: 1.8em; padding-top: .9em; border-top: 1px solid #e8e8e8;
+}
+.yl-footnotes h2 {
+  font-size: 1em; margin: 0 0 .55em; padding: 0; border: none; color: #6a7080;
+  text-transform: uppercase; letter-spacing: .08em;
+}
+.yl-footnotes ol { margin: 0 0 0 1.3em; padding: 0; }
+.yl-footnotes li { margin-bottom: .45em; color: #333333; }
+.yl-footnote-index { color: #6a7080; font-weight: 600; }
+.yl-footnote-body p { display: inline; margin: 0; }
 .preview-empty { color: #888; font-style: italic; }
 .preview-error { color: #b91c1c; font-style: italic; }
 .view-block { margin: 1.4em 0; }

@@ -1,22 +1,12 @@
 'use strict';
 
-const fs = require('fs');
 const vscode = require('vscode');
 const { perfTracker } = require('../runtime/performanceTracker');
-const { buildDateShortcutEntries } = require('../core/date');
 const { getPathIndex, getFieldsCache, getAliasIndex, getVaultGeneration } = require('../core/indexService');
 const { getSchema } = require('../registries/schemaRegistry');
-const {
-    extractHeadingsFromText,
-    extractFootnoteDefinitions,
-    collectBodySignals,
-    collectUndefinedFootnoteReferences
-} = require('../intelligence/bodySignals');
-const { inferNoteRole, summarizeNoteRoleReasons } = require('../intelligence/noteRolesCore');
-const { extractBodyMentionedIds } = require('../intelligence/frontmatterBodyHints');
-const { classifyField } = require('../intelligence/fieldCategory');
-const { planFieldActions, LEVEL } = require('../intelligence/fieldPlanner');
+const { LEVEL } = require('../intelligence/fieldPlanner');
 const { getCachedPriors } = require('../intelligence/vaultPriors');
+const { evaluateFieldForSurface } = require('../intelligence/authoringEngine');
 const {
     CLAUSE_KEYWORDS,
     SIMPLE_VIEW_TYPES,
@@ -34,7 +24,7 @@ const {
     getViewBlockContext,
     collectFieldsForType,
     inferRelationField,
-    collectScalarValues,
+    rankScalarValues,
     collectObservedFrontmatterFields,
     collectRoleAlignedObservedFrontmatterFields,
     collectContextualObservedFrontmatterFields,
@@ -46,255 +36,99 @@ const {
     scoreFieldSuggestion,
     rankCandidateIds,
     collectLocalLinkedIds,
-    getHumanLabel,
-    extractDocumentArchetype
+    getHumanLabel
 } = require('./completionHelpers');
-const { getKnownTypeCandidates, buildClassificationSignals } = require('./completionCore');
+const { getKnownTypeCandidates } = require('./completionCore');
 const { buildNoteArc } = require('../intelligence/noteArc');
+const { summarizeNoteRoleReasons } = require('../intelligence/noteRolesCore');
+const { recordCompletionShown } = require('./completionTracker');
+const {
+    makeReplaceRange,
+    buildMissingRelationItem,
+    buildCreateRelationTemplateItem,
+    shouldOfferFrontmatterRelationCompletion,
+    buildMissingQueryRelationItem,
+    buildDateShortcutItems,
+    collectDocumentHeadingCandidates,
+    buildHeadingAnchorItems,
+    buildBlockReferenceItems,
+    buildFootnoteReferenceItems,
+    buildLongformBodyStructureItems,
+    inferBootstrapNoteTypes,
+    buildPreTypeBootstrapItems
+} = require('./completionItemBuilders');
 
-// ---------------------------------------------------------------------------
-// Range helpers
+function buildFrontmatterValueItems(document, position, getIndex, completionContext) {
+    if (!isPositionInFrontmatter(document, position.line)) return undefined;
 
-function makeReplaceRange(document, position, prefixLength) {
-    return new vscode.Range(
-        new vscode.Position(position.line, Math.max(0, position.character - prefixLength)),
-        position
-    );
-}
-
-// ---------------------------------------------------------------------------
-// Completion item builders
-
-function buildMissingRelationItem(frontmatterRelation) {
-    const targetType = frontmatterRelation.targetType || 'related';
-    const item = new vscode.CompletionItem(`No ${targetType} notes found yet`, vscode.CompletionItemKind.Text);
-    const fieldLead = frontmatterRelation.fieldName
-        ? `\`${frontmatterRelation.fieldName}\` expects a ${targetType} note`
-        : `This field expects a ${targetType} note`;
-    item.detail = `${fieldLead}. Create one, then link it here.`;
-    item.insertText = '';
-    item.sortText = '0000';
-    return item;
-}
-
-function buildCreateRelationTemplateItem(document, frontmatterRelation) {
-    const targetType = frontmatterRelation.targetType || frontmatterRelation.fieldName || 'related';
-    const sourceId = getPathIndex().get(document.uri.fsPath) || null;
-    const sourceType = sourceId ? String(getFieldsCache().get(sourceId)?.type || '').trim().toLowerCase() : '';
-    const item = new vscode.CompletionItem(`New ${targetType}`, vscode.CompletionItemKind.Snippet);
-    item.detail = sourceType
-        ? `Create a new ${targetType} note, back-linked to this ${sourceType}`
-        : `Create a new ${targetType} note, back-linked to this note`;
-    item.insertText = '';
-    item.sortText = '0000';
-    item.preselect = true;
-    item.command = {
-        command: 'yamlink.createRelatedNote',
-        title: 'Create related note',
-        arguments: [{
-            targetType,
-            fieldName: frontmatterRelation.fieldName,
-            sourceFilePath: document.uri.fsPath,
-            sourceId,
-            sourceType
-        }]
-    };
-    return item;
-}
-
-function shouldOfferFrontmatterRelationCompletion(frontmatterRelation, completionContext = {}) {
-    if (!frontmatterRelation) return false;
-    if (frontmatterRelation.hasWiki) return true;
-    const triggerKind = completionContext?.triggerKind;
-    return triggerKind === vscode.CompletionTriggerKind?.Invoke || triggerKind === 0;
-}
-
-function buildMissingQueryRelationItem(relationState) {
-    const targetType = relationState.targetType || 'related';
-    const item = new vscode.CompletionItem(`No ${targetType} notes found yet`, vscode.CompletionItemKind.Text);
-    const fieldLead = relationState.fieldName
-        ? `\`${relationState.fieldName}\` expects a ${targetType} note`
-        : `This field expects a ${targetType} note`;
-    item.detail = `${fieldLead}. Create one, then use [[...]] here.`;
-    item.insertText = '';
-    item.sortText = '0000';
-    return item;
-}
-
-/** @param {import('vscode').TextDocument} document @param {import('vscode').Position} position @param {string} partial @returns {import('vscode').CompletionItem[]} */
-function buildDateShortcutItems(document, position, partial) {
-    const replaceRange = makeReplaceRange(document, position, partial.length + 1);
-    return buildDateShortcutEntries()
-        .filter((entry) => entry.token.startsWith(String(partial || '').toLowerCase()))
-        .map((entry, index) => {
-            const item = new vscode.CompletionItem(`@${entry.token}`, vscode.CompletionItemKind.Event);
-            item.insertText = entry.iso;
-            item.range = replaceRange;
-            item.detail = `${entry.label} -> ${entry.iso}`;
-            item.sortText = `00${index}`;
-            return item;
-        });
-}
-
-function collectDocumentHeadingCandidates(document, targetId, idIndex) {
-    let content = '';
-    if (!targetId) {
-        content = document.getText();
-    } else {
-        const targetPath = idIndex.get(String(targetId || '').trim());
-        if (!targetPath) return [];
-        try {
-            content = fs.readFileSync(targetPath, 'utf8');
-        } catch (_) {
-            return [];
-        }
-    }
-    return [...new Set(extractHeadingsFromText(content))];
-}
-
-/** @param {import('vscode').TextDocument} document @param {import('vscode').Position} position @param {Map<string,string>} idIndex @param {string|null} targetId @param {string} partial @returns {import('vscode').CompletionItem[]} */
-function buildHeadingAnchorItems(document, position, idIndex, targetId, partial) {
-    const textAfterCursor = document.lineAt(position.line).text.substring(position.character);
-    const replaceRange = new vscode.Range(
-        new vscode.Position(position.line, Math.max(0, position.character - String(partial || '').length)),
-        new vscode.Position(position.line, position.character + (textAfterCursor.startsWith(']]') ? 2 : 0))
-    );
-    const sourceLabel = targetId || 'current note';
-    return collectDocumentHeadingCandidates(document, targetId, idIndex)
-        .filter((heading) => heading.toLowerCase().startsWith(String(partial || '').toLowerCase()))
-        .map((heading, index) => {
-            const item = new vscode.CompletionItem(heading, vscode.CompletionItemKind.Reference);
-            item.insertText = `${heading}]]`;
-            item.range = replaceRange;
-            item.filterText = targetId ? `[[${targetId}#${heading}` : `[[#${heading}`;
-            item.detail = `Heading in ${sourceLabel}`;
-            item.sortText = `01${String(index).padStart(3, '0')}`;
-            return item;
-        });
-}
-
-/** @param {import('vscode').TextDocument} document @param {import('vscode').Position} position @param {string} partial @returns {import('vscode').CompletionItem[]} */
-function buildFootnoteReferenceItems(document, position, partial) {
-    const textAfterCursor = document.lineAt(position.line).text.substring(position.character);
-    const replaceRange = new vscode.Range(
-        new vscode.Position(position.line, Math.max(0, position.character - String(partial || '').length)),
-        new vscode.Position(position.line, position.character + (textAfterCursor.startsWith(']') ? 1 : 0))
-    );
-    return [...new Set(extractFootnoteDefinitions(document.getText()))]
-        .filter((id) => id.toLowerCase().startsWith(String(partial || '').toLowerCase()))
-        .map((id, index) => {
-            const item = new vscode.CompletionItem(`[^${id}]`, vscode.CompletionItemKind.Reference);
-            item.insertText = `${id}]`;
-            item.range = replaceRange;
-            item.detail = 'Reference existing footnote';
-            item.sortText = `02${String(index).padStart(3, '0')}`;
-            return item;
-        });
-}
-
-/** @param {import('vscode').TextDocument} document @param {import('vscode').Position} position @returns {import('vscode').CompletionItem[]} */
-function buildLongformBodyStructureItems(document, position) {
-    if (isPositionInFrontmatter(document, position.line)) return [];
     const line = document.lineAt(position.line).text;
     const textBeforeCursor = line.substring(0, position.character);
-    const trimmedBefore = textBeforeCursor.trim();
-    const bodySignals = collectBodySignals(document.getText());
-    const sourceHeavy = (bodySignals.blockquoteCount || 0) >= 1
-        || (bodySignals.footnoteDefinitionCount || 0) >= 1
-        || (bodySignals.footnoteReferenceCount || 0) >= 1;
-    if (!sourceHeavy) return [];
-
-    const items = [];
-    const lineReplaceRange = new vscode.Range(
-        new vscode.Position(position.line, 0),
-        new vscode.Position(position.line, line.length)
-    );
-    const allowQuoteSnippets = trimmedBefore === '' || /^\s*>\s*/.test(textBeforeCursor);
-    const allowHeadingSnippets = trimmedBefore === '' || /^\s*#{1,3}\s*[^#]*$/.test(textBeforeCursor);
-
-    if (allowQuoteSnippets) {
-        const quoteSource = new vscode.CompletionItem('Quote from linked source', vscode.CompletionItemKind.Snippet);
-        quoteSource.insertText = new vscode.SnippetString('> From [[source-note]]\n> ${1:Quoted passage here.}');
-        quoteSource.range = lineReplaceRange;
-        quoteSource.detail = 'Source-aware quote block';
-        quoteSource.sortText = '0300';
-        items.push(quoteSource);
-
-        const quoteSection = new vscode.CompletionItem('Quote from linked section', vscode.CompletionItemKind.Snippet);
-        quoteSection.insertText = new vscode.SnippetString('> From [[source-note#Heading]]\n> ${1:Quoted passage here.}');
-        quoteSection.range = lineReplaceRange;
-        quoteSection.detail = 'Source-aware quote block with heading anchor';
-        quoteSection.sortText = '0301';
-        items.push(quoteSection);
+    const explicitWikiMatch = textBeforeCursor.match(/^\s*[\w-]+:\s*\[\[[^\]]*$/);
+    if (explicitWikiMatch) {
+        // The dedicated link provider owns explicit [[... completion. If we also
+        // return relation items here, VS Code merges both providers and users
+        // see duplicate wikilink suggestions.
+        return undefined;
     }
+    const valueMatch = textBeforeCursor.match(/^\s*([\w-]+):\s*(.*?)$/);
+    if (!valueMatch) return undefined;
 
-    if (allowHeadingSnippets) {
-        const evidenceHeading = new vscode.CompletionItem('## Evidence', vscode.CompletionItemKind.Snippet);
-        evidenceHeading.insertText = '## Evidence';
-        evidenceHeading.range = lineReplaceRange;
-        evidenceHeading.detail = 'Longform heading suggestion';
-        evidenceHeading.sortText = '0310';
-        items.push(evidenceHeading);
+    const fieldKey = normalizeFrontmatterKey(valueMatch[1]);
+    if (!fieldKey) return undefined;
 
-        const referencesHeading = new vscode.CompletionItem('## References', vscode.CompletionItemKind.Snippet);
-        referencesHeading.insertText = '## References';
-        referencesHeading.range = lineReplaceRange;
-        referencesHeading.detail = 'Longform heading suggestion';
-        referencesHeading.sortText = '0311';
-        items.push(referencesHeading);
-    }
-
-    const undefinedRefs = collectUndefinedFootnoteReferences(document.getText());
-    if (trimmedBefore === '' || /^\[\^[^\]]*\]:?\s*$/.test(trimmedBefore)) {
-        undefinedRefs.slice(0, 6).forEach((id, index) => {
-            const item = new vscode.CompletionItem(`[^${id}]:`, vscode.CompletionItemKind.Snippet);
-            item.insertText = new vscode.SnippetString(`[^${id}]: \${1:Source detail}`);
-            item.range = lineReplaceRange;
-            item.detail = 'Define missing footnote';
-            item.sortText = `032${String(index).padStart(2, '0')}`;
-            items.push(item);
+    const idIndex = getIndex();
+    const relationState = resolveFrontmatterRelationCandidates(document, position, idIndex);
+    if (relationState && shouldOfferFrontmatterRelationCompletion(relationState, completionContext || { triggerKind: 0 })) {
+        const valueStart = position.character - relationState.partial.length - (relationState.wikiPrefixLength || 0);
+        const replaceRange = new vscode.Range(
+            new vscode.Position(position.line, Math.max(0, valueStart)),
+            new vscode.Position(position.line, position.character + (relationState.closingLength || 0))
+        );
+        const templateItem = buildCreateRelationTemplateItem(document, relationState);
+        if (relationState.missingTargetType) {
+            return [templateItem, buildMissingRelationItem(relationState)];
+        }
+        const items = rankCandidateIds(
+            relationState.candidateIds,
+            relationState.partial,
+            relationState.preferredIds,
+            relationState.localLinkedIds,
+            relationState.observedIdScores,
+            relationState.rankingHints
+        ).map((id) => {
+            const humanName = getHumanLabel(id);
+            const label = humanName ? { label: humanName, description: id } : id;
+            const item = new vscode.CompletionItem(label, vscode.CompletionItemKind.Reference);
+            item.insertText = `[[${id}]]`;
+            item.range = replaceRange;
+            item.filterText = humanName ? `${id} ${humanName}` : id;
+            const preferred = relationState.preferredIds.includes(id);
+            item.detail = buildRelationCandidateDetail(id, idIndex, relationState, preferred);
+            item.sortText = preferred ? `01-${id}` : `02-${id}`;
+            return item;
         });
+        return [templateItem, ...items];
     }
 
-    return items;
+    if (isTypeLikeField(fieldKey)) return undefined;
+
+    const docType = getDocumentType(document);
+    const partial = String(valueMatch[2] || '').trim().toLowerCase();
+    const rankedScalarValues = rankScalarValues(fieldKey, docType, partial);
+    if (!rankedScalarValues.length) return undefined;
+
+    return rankedScalarValues
+        .map(({ value, count }) => {
+            const item = new vscode.CompletionItem(value, vscode.CompletionItemKind.Value);
+            item.insertText = value;
+            item.range = makeReplaceRange(document, position, partial.length);
+            item.detail = count > 0
+                ? `observed in ${count} ${docType || 'vault'} note${count === 1 ? '' : 's'}`
+                : `observed ${docType || 'vault'} value`;
+            item.sortText = String(999 - Math.min(count, 998)).padStart(4, '0') + value.toLowerCase();
+            return item;
+        });
 }
-
-function inferBootstrapNoteTypes(document, adaptiveContext) {
-    const likely = new Set();
-    for (const archetype of extractDocumentArchetype(document, null)) {
-        if (archetype) likely.add(archetype);
-    }
-    const priors = getCachedPriors(getFieldsCache(), getVaultGeneration());
-    const noteRole = adaptiveContext?.intelligence?.noteRole;
-    const proxyType = noteRole?.noteRole
-        ? priors.noteRoleTypePriors.get(noteRole.noteRole)?.dominantType || ''
-        : '';
-    if (proxyType) likely.add(proxyType);
-    return [...likely].filter(Boolean);
-}
-
-function buildPreTypeBootstrapItems(document, partialKey, adaptiveContext) {
-    const likelyTypes = inferBootstrapNoteTypes(document, adaptiveContext);
-    const topType = likelyTypes[0] || '';
-    const items = [];
-
-    if ('type'.startsWith(String(partialKey || '').toLowerCase())) {
-        const item = new vscode.CompletionItem('type', vscode.CompletionItemKind.Field);
-        item.detail = topType
-            ? `Set note identity first · likely ${topType}`
-            : 'Set note identity first';
-        item.insertText = topType
-            ? new vscode.SnippetString(`type: ${topType}`)
-            : new vscode.SnippetString('type: ${1|account,contact,mission,character,task,project,note|}');
-        item.sortText = '000-type';
-        items.push(item);
-    }
-
-    return items;
-}
-
-// ---------------------------------------------------------------------------
-// Provider implementations
 
 /** @param {import('vscode').TextDocument} document @param {import('vscode').Position} position @param {any} _token @param {any} completionContext @param {() => Map<string,string>} getIndex */
 function provideLinkAndDateCompletions(document, position, _token, completionContext, getIndex) {
@@ -312,24 +146,17 @@ function provideLinkAndDateCompletions(document, position, _token, completionCon
             let classification = null;
             if (frontmatterRelation.fieldName && !frontmatterRelation.hasWiki) {
                 const docTypeForClass = getDocumentType(document);
-                const schemaForClass = getSchema(docTypeForClass);
-                const schemaFieldDef = schemaForClass?.fields?.[frontmatterRelation.fieldName] || null;
                 const fieldsCache = getFieldsCache();
-                const priors = getCachedPriors(fieldsCache, getVaultGeneration());
                 const noteFields = extractFrontmatterFields(document);
-                const bodyWikilinkCounts = extractBodyMentionedIds(document.getText());
-                const noteRole = inferNoteRole(noteFields || {}, { typeRoleMap: priors.typeRoleMap || null });
-                classification = classifyField(frontmatterRelation.fieldName, /** @type {any} */ ({
-                    schemaFieldDef,
+                const evaluation = evaluateFieldForSurface(frontmatterRelation.fieldName, 'completion', /** @type {any} */ ({
+                    noteType: docTypeForClass,
                     noteFields,
-                    bodyWikilinkCounts,
-                    noteRole: noteRole.noteRole ? noteRole : null,
-                    ...buildClassificationSignals(docTypeForClass, fieldsCache),
-                    workflowFields: priors.workflowFields,
-                    valuePatterns: priors.valuePatterns
+                    documentText: document.getText(),
+                    fieldsCache,
+                    generation: getVaultGeneration()
                 }));
-                const plan = planFieldActions(classification, 'completion');
-                if (plan.level < LEVEL.COMPLETION_ONLY) return undefined;
+                classification = evaluation.classification;
+                if (evaluation.plan.level < LEVEL.COMPLETION_ONLY) return undefined;
             }
             const templateItem = buildCreateRelationTemplateItem(document, frontmatterRelation);
             if (frontmatterRelation.missingTargetType) {
@@ -340,7 +167,9 @@ function provideLinkAndDateCompletions(document, position, _token, completionCon
                 new vscode.Position(position.line, Math.max(0, valueStart)),
                 new vscode.Position(position.line, position.character + (frontmatterRelation.closingLength || 0))
             );
-            const _outcomeNoteId = classification ? (getPathIndex().get(document.uri.fsPath) || null) : null;
+            const _noteId = getPathIndex().get(document.uri.fsPath) || null;
+            const _outcomeNoteId = classification ? _noteId : null;
+            recordCompletionShown(_noteId, frontmatterRelation.fieldName, position.line);
             const relationItems = rankCandidateIds(
                 frontmatterRelation.candidateIds,
                 frontmatterRelation.partial,
@@ -390,6 +219,19 @@ function provideLinkAndDateCompletions(document, position, _token, completionCon
         if (noteHeadingMatch) {
             const targetId = String(noteHeadingMatch[1] || '').trim();
             const items = buildHeadingAnchorItems(document, position, idIndex, targetId, noteHeadingMatch[2] || '');
+            if (items.length) return items;
+        }
+
+        const currentBlockMatch = textBeforeCursor.match(/\[\[\^([^\]]*)$/);
+        if (currentBlockMatch) {
+            const items = buildBlockReferenceItems(document, position, idIndex, '', currentBlockMatch[1] || '');
+            if (items.length) return items;
+        }
+
+        const noteBlockMatch = textBeforeCursor.match(/\[\[([^#\]\|^]+)\^([^\]]*)$/);
+        if (noteBlockMatch) {
+            const targetId = String(noteBlockMatch[1] || '').trim();
+            const items = buildBlockReferenceItems(document, position, idIndex, targetId, noteBlockMatch[2] || '');
             if (items.length) return items;
         }
 
@@ -489,6 +331,8 @@ function provideFrontmatterFieldCompletions(document, position, getIndex) {
         if (!isPositionInFrontmatter(document, position.line)) return undefined;
         const line = document.lineAt(position.line).text;
         const trimmed = line.trimStart();
+        const valueItems = buildFrontmatterValueItems(document, position, getIndex, { triggerKind: 0 });
+        if (valueItems && valueItems.length) return valueItems;
         const keyMatch = trimmed.match(/^([^:\n]*)$/);
         if (!keyMatch) return undefined;
         const docType = getDocumentType(document);
@@ -514,9 +358,12 @@ function provideFrontmatterFieldCompletions(document, position, getIndex) {
         const _arcFieldsCache = getFieldsCache();
         const _arcPriors = getCachedPriors(_arcFieldsCache, getVaultGeneration());
         const _arcNoteFields = extractFrontmatterFields(document);
-        const _arc = docType
-            ? buildNoteArc(_arcNoteFields, docType, _arcFieldsCache, _arcPriors.typeFieldBundles, _arcPriors.fieldTargetTypes, _arcPriors.outcomeCalibration)
-            : { inferredType: null, missingFields: [] };
+        const _arc = buildNoteArc(
+            _arcNoteFields, docType, _arcFieldsCache,
+            _arcPriors.typeFieldBundles, _arcPriors.fieldTargetTypes,
+            _arcPriors.outcomeCalibration,
+            { typeBundleTotals: _arcPriors.typeBundleTotals }
+        );
 
         const combined = new Map();
 
@@ -652,16 +499,17 @@ function provideFrontmatterFieldCompletions(document, position, getIndex) {
             }
         }
 
-        for (const { field, ratio, calibrationCount, isRelation } of (_arc.missingFields || [])) {
-            const pct = Math.round(ratio * 100);
+        for (const { field, ratio, calibrationCount, isRelation, coldStart } of (_arc.missingFields || [])) {
             const relNote = isRelation ? ' · relation' : '';
             const calNote = calibrationCount > 0 ? ` · accepted ${calibrationCount}×` : '';
-            const arcDetail = `in ${pct}% of ${_arc.inferredType || ''} notes · likely missing${relNote}${calNote}`;
+            const arcDetail = coldStart
+                ? `starter field${relNote}`
+                : `in ${Math.round(ratio * 100)}% of ${_arc.inferredType || ''} notes · likely missing${relNote}${calNote}`;
             const existing = combined.get(field);
             if (!existing) {
                 combined.set(field, {
                     key: field,
-                    sortScore: 1300 + Math.round(ratio * 80) + calibrationCount * 5,
+                    sortScore: coldStart ? 1200 : 1300 + Math.round(ratio * 80) + calibrationCount * 5,
                     detail: arcDetail,
                     source: 'arc'
                 });
@@ -782,9 +630,9 @@ function provideQueryCompletions(document, position, getIndex) {
                 item.range = makeReplaceRange(document, position, partial.length);
                 return [item];
             }
-            const values = collectScalarValues(fieldName, queryType).filter(v => v.toLowerCase().startsWith(partial));
-            return values.map(v => {
-                const item = new vscode.CompletionItem(v, vscode.CompletionItemKind.Value);
+            const values = rankScalarValues(fieldName, queryType, partial);
+            return values.map(({ value }) => {
+                const item = new vscode.CompletionItem(value, vscode.CompletionItemKind.Value);
                 item.range = makeReplaceRange(document, position, partial.length);
                 return item;
             });
@@ -803,10 +651,12 @@ module.exports = {
     buildDateShortcutItems,
     collectDocumentHeadingCandidates,
     buildHeadingAnchorItems,
+    buildBlockReferenceItems,
     buildFootnoteReferenceItems,
     buildLongformBodyStructureItems,
     inferBootstrapNoteTypes,
     buildPreTypeBootstrapItems,
+    buildFrontmatterValueItems,
     provideLinkAndDateCompletions,
     provideFrontmatterFieldCompletions,
     provideQueryCompletions

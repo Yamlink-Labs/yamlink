@@ -38,3 +38,7 @@ Open `Yamlink: Open Calendar` to see these tasks grouped by day. Open `Yamlink: 
 Open `query-shortcuts.md` and run `!view open-tasks`, `!view overdue`, and `!view upcoming` to see each task category.
 
 Open the Calendar from `Yamlink: Open Calendar`. Navigate with `M` (month), `W` (week), `D` (day), `[`/`]` to move, `T` to jump to today.
+
+## Characters
+
+!view character

@@ -2,9 +2,11 @@
 id: zander-barcalow
 type: character
 name:
-rank:
-unit: [[]]
+rank: 
+unit: 
 homeworld:
 gender: 
 ---
 
+
+[[johnny-rico|##notes]]

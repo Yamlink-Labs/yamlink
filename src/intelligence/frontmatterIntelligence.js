@@ -5,6 +5,39 @@ const {
     DEFAULT_SEMANTIC_ROLE_PRIORS
 } = require('./fieldRolesCore');
 const {
+    getCachedPriors,
+    buildVaultStatusValues,
+    buildVaultSemanticRolePriors
+} = require('./vaultPriors');
+
+function resolveStatusLikeValues(priors, provided) {
+    if (provided) return provided;
+    const learned = buildVaultStatusValues(priors?.workflowFields);
+    return new Set([
+        ...Array.from(DEFAULT_STATUS_LIKE_VALUES),
+        ...Array.from(learned || [])
+    ]);
+}
+
+function resolveSemanticRolePriors(priors, provided) {
+    if (provided) return provided;
+    const learned = buildVaultSemanticRolePriors(priors || {});
+    const merged = {};
+    const roles = new Set([
+        ...Object.keys(DEFAULT_SEMANTIC_ROLE_PRIORS),
+        ...Object.keys(learned || {})
+    ]);
+    for (const role of roles) {
+        merged[role] = [
+            ...new Set([
+                ...(DEFAULT_SEMANTIC_ROLE_PRIORS[role] || []),
+                ...(learned?.[role] || [])
+            ])
+        ];
+    }
+    return merged;
+}
+const {
     buildObservedFields,
     buildObservedNoteIndex,
     buildNoteContext,
@@ -43,6 +76,9 @@ const {
  */
 function buildFrontmatterOpportunityModel(nodeFields, options = {}) {
     const fieldsCache = options.fieldsCache || new Map();
+    const priors = fieldsCache?.size ? getCachedPriors(fieldsCache, options.generation || 0) : null;
+    const statusLikeValues = resolveStatusLikeValues(priors, options.statusLikeValues);
+    const semanticRolePriors = resolveSemanticRolePriors(priors, options.semanticRolePriors);
     const observedFields = options.observedFields || buildObservedFields(fieldsCache);
     const observedIndex = options.observedIndex || buildObservedNoteIndex(fieldsCache, {
         ...options,
@@ -53,8 +89,11 @@ function buildFrontmatterOpportunityModel(nodeFields, options = {}) {
         observedFields,
         getSchemaForType: options.getSchemaForType,
         dateParser: options.dateParser,
-        statusLikeValues: options.statusLikeValues || DEFAULT_STATUS_LIKE_VALUES,
-        semanticRolePriors: options.semanticRolePriors || DEFAULT_SEMANTIC_ROLE_PRIORS
+        statusLikeValues,
+        semanticRolePriors,
+        noteRolePriors: priors?.noteRoleNamePriors,
+        noteRoleFieldHints: priors?.noteRoleFieldHints,
+        typeRoleMap: priors?.typeRoleMap
     });
     const currentMentionedIds = options.currentMentionedIds
         || [...extractBodyMentionedIds(options.content || '').keys()];
@@ -72,8 +111,8 @@ function buildFrontmatterOpportunityModel(nodeFields, options = {}) {
         currentMentionedIds,
         getSchemaForType: options.getSchemaForType,
         dateParser: options.dateParser,
-        statusLikeValues: options.statusLikeValues || DEFAULT_STATUS_LIKE_VALUES,
-        semanticRolePriors: options.semanticRolePriors || DEFAULT_SEMANTIC_ROLE_PRIORS
+        statusLikeValues,
+        semanticRolePriors
     });
 
     const likelyFields = patterns
@@ -148,8 +187,8 @@ function buildFrontmatterOpportunityModel(nodeFields, options = {}) {
         observedIndex,
         getSchemaForType: options.getSchemaForType,
         dateParser: options.dateParser,
-        statusLikeValues: options.statusLikeValues || DEFAULT_STATUS_LIKE_VALUES,
-        semanticRolePriors: options.semanticRolePriors || DEFAULT_SEMANTIC_ROLE_PRIORS,
+        statusLikeValues,
+        semanticRolePriors,
         connectionLimit: options.connectionLimit || 3
     });
     const connectionMap = new Map();
@@ -170,8 +209,8 @@ function buildFrontmatterOpportunityModel(nodeFields, options = {}) {
         observedIndex,
         getSchemaForType: options.getSchemaForType,
         dateParser: options.dateParser,
-        statusLikeValues: options.statusLikeValues || DEFAULT_STATUS_LIKE_VALUES,
-        semanticRolePriors: options.semanticRolePriors || DEFAULT_SEMANTIC_ROLE_PRIORS,
+        statusLikeValues,
+        semanticRolePriors,
         gapLimit: options.gapLimit || 4
     }).map((gap) => {
         const sampleTargets = Array.from(gap.sampleTargets || []);
@@ -229,8 +268,8 @@ function buildFrontmatterOpportunityModel(nodeFields, options = {}) {
         getSchemaForType: options.getSchemaForType,
         getDefaultSortField: options.getDefaultSortField,
         dateParser: options.dateParser,
-        statusLikeValues: options.statusLikeValues || DEFAULT_STATUS_LIKE_VALUES,
-        semanticRolePriors: options.semanticRolePriors || DEFAULT_SEMANTIC_ROLE_PRIORS,
+        statusLikeValues,
+        semanticRolePriors,
         surroundingLimit: options.surroundingLimit || 3,
         surroundingSetupLimit: options.surroundingSetupLimit || 2
     });

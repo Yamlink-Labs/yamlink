@@ -2,6 +2,7 @@
 
 const { test, describe, beforeEach, after } = require('node:test');
 const assert = require('node:assert/strict');
+const { initMutationLog, clearMutationEvents, getMutationEvents } = require('../src/runtime/mutationEventLog');
 const Module = require('module');
 const path = require('path');
 
@@ -148,6 +149,7 @@ const mockCommands = {
         return { dispose() { commandMap.delete(id); } };
     },
     async executeCommand(id, ...args) {
+        if (id === 'editor.action.triggerSuggest') return true;
         const handler = commandMap.get(id);
         if (!handler) return undefined;
         return handler(...args);
@@ -336,8 +338,10 @@ Module._resolveFilename = function (request, parent, ...rest) {
 
 const { registerNodeCreationCommands } = require('../src/actions/codeActionsNodeCreationCommands');
 
-beforeEach(() => {
-    commandMap.clear();
+    beforeEach(() => {
+        initMutationLog(null);
+        clearMutationEvents();
+        commandMap.clear();
     infoMessages.length = 0;
     warningMessages.length = 0;
     errorMessages.length = 0;
@@ -436,6 +440,52 @@ describe('node creation commands', () => {
             call.field === 'account' &&
             call.value.includes('[[existing-account]]') &&
             call.value.includes('[[target-account]]')
+        ));
+    });
+
+    test('createRelatedNote also injects the reverse account link when contact creation uses a template path', async () => {
+        const context = { subscriptions: [] };
+        registerNodeCreationCommands(context, () => new Map(), () => new Set(['contact', 'account']));
+
+        writeFiles.set(vaultPath('source-account.md'), [
+            '---',
+            'id: marketing-directo',
+            'type: account',
+            'contacts: [[gaston-bussio]]',
+            '---',
+            ''
+        ].join('\n'));
+        writeFiles.set(vaultPath('_templates', 'contact.md'), [
+            '---',
+            'id:',
+            'type: contact',
+            'name:',
+            'account:',
+            'email:',
+            'created:',
+            '---',
+            ''
+        ].join('\n'));
+        inputQueue.push('new-contact');
+
+        await commandMap.get('yamlink.createRelatedNote')({
+            targetType: 'contact',
+            fieldName: 'contacts',
+            sourceId: 'marketing-directo',
+            sourceFilePath: vaultPath('source-account.md'),
+            sourceType: 'account'
+        });
+
+        assert.ok(writeFiles.has(vaultPath('new-contact.md')));
+        assert.ok(writeFieldCalls.some((call) =>
+            normalizeFsPath(call.filePath) === vaultPath('new-contact.md') &&
+            call.field === 'account' &&
+            call.value === '[[marketing-directo]]'
+        ));
+        assert.ok(writeFieldCalls.some((call) =>
+            normalizeFsPath(call.filePath) === vaultPath('source-account.md') &&
+            call.field === 'contacts' &&
+            call.value.includes('[[new-contact]]')
         ));
     });
 
@@ -542,6 +592,100 @@ describe('node creation commands', () => {
         await commandMap.get('yamlink.newNoteFromSchema')();
 
         assert.ok(infoMessages.some((message) => message.includes('No schemas found')));
+    });
+
+    test('addMissingTemplateFields inserts only missing fields and preserves existing values', async () => {
+        const context = { subscriptions: [] };
+        registerNodeCreationCommands(context, () => new Map(), () => new Set(['contact', 'mission']));
+
+        templateDirExists = true;
+        templateFiles = ['contact.md'];
+        writeFiles.set(vaultPath('_templates', 'contact.md'), [
+            '---',
+            'type: contact',
+            'name:',
+            'status:',
+            'homeworld:',
+            '---',
+            ''
+        ].join('\n'));
+
+        const document = createDocument([
+            '---',
+            'id: ace-levy',
+            'type: contact',
+            'name: Ace Levy',
+            '---'
+        ].join('\n'), vaultPath('ace-levy.md'));
+        document.save = async function save() { return true; };
+        openDocs.set(vaultPath('ace-levy.md'), document);
+        mockWindow.activeTextEditor = { document };
+
+        await commandMap.get('yamlink.addMissingTemplateFields')();
+
+        assert.match(document.getText(), /name: Ace Levy/);
+        assert.match(document.getText(), /status:/);
+        assert.match(document.getText(), /homeworld:/);
+        assert.ok(!/name:\s*\n/.test(document.getText()), 'existing name value should be preserved');
+        assert.ok(infoMessages.some((message) => message.includes('Added 2 missing fields: status, homeworld')));
+        const templateApplyEvents = getMutationEvents({ noteId: 'ace-levy', type: 'template_applied' });
+        const templateFillEvents = getMutationEvents({ noteId: 'ace-levy', type: 'template_fields_filled' });
+        assert.equal(templateApplyEvents.length, 1);
+        assert.equal(templateApplyEvents[0].newValue, 'contact');
+        assert.equal(templateFillEvents.length, 1);
+        assert.equal(templateFillEvents[0].cause, 'smart_template_fill_missing_fields');
+    });
+
+    test('addMissingTemplateFields hands off to the first empty field and triggers suggest', async () => {
+        const context = { subscriptions: [] };
+        registerNodeCreationCommands(context, () => new Map(), () => new Set(['contact', 'mission']));
+
+        templateDirExists = true;
+        templateFiles = ['contact.md'];
+        writeFiles.set(vaultPath('_templates', 'contact.md'), [
+            '---',
+            'type: contact',
+            'name:',
+            'account:',
+            'email:',
+            '---',
+            ''
+        ].join('\n'));
+
+        const document = createDocument([
+            '---',
+            'id: ace-levy',
+            'type: contact',
+            'name: Ace Levy',
+            '---'
+        ].join('\n'), vaultPath('ace-levy.md'));
+        document.save = async function save() { return true; };
+        openDocs.set(vaultPath('ace-levy.md'), document);
+
+        let triggerSuggestCalls = 0;
+        const realExecuteCommand = mockCommands.executeCommand;
+        mockWindow.activeTextEditor = {
+            document,
+            selection: new Selection(new Position(0, 0), new Position(0, 0)),
+            revealRange() {}
+        };
+        mockCommands.executeCommand = async function (id, ...args) {
+            if (id === 'editor.action.triggerSuggest') {
+                triggerSuggestCalls += 1;
+                return true;
+            }
+            return realExecuteCommand.call(this, id, ...args);
+        };
+
+        try {
+            await commandMap.get('yamlink.addMissingTemplateFields')();
+        } finally {
+            mockCommands.executeCommand = realExecuteCommand;
+        }
+
+        assert.equal(triggerSuggestCalls, 1);
+        assert.equal(mockWindow.activeTextEditor.selection.start.line, 4);
+        assert.equal(mockWindow.activeTextEditor.selection.start.character, 'account:'.length + 1);
     });
 
     test('addFrontmatter inserts a starter block into notes without frontmatter', async () => {

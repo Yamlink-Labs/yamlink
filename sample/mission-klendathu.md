@@ -7,6 +7,9 @@ unit: [[roughnecks]]
 commander: [[johnny-rico]]
 outcome: catastrophic-failure
 casualties: high
+casualty_count: 87
+duration: 1
+threat_level: 10
 bugs-encountered:
   - warrior
   - tanker
@@ -24,3 +27,33 @@ The Roughnecks were reformed afterward under [[lt-rasczak]], with the survivors 
 ## Notes
 
 Military historians later called it one of the worst planned offensives in Federation history. At the time, the propaganda networks presented it as a strategic withdrawal.
+
+## Test
+
+
+## Characters
+
+!view character
+select *
+group by created
+
+## Characters
+
+!view character
+select *
+
+## Characters
+
+!view character
+select *
+group by gender
+
+## characters
+
+!view character | characters
+select *
+
+## characters
+
+!view unit | characters
+select *

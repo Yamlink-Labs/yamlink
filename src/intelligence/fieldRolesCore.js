@@ -30,16 +30,16 @@
 const DEFAULT_INFERENCE_CONFIDENCE = 0.6;
 const DEFAULT_STATUS_LIKE_VALUES = new Set([
     'open', 'closed', 'active', 'inactive', 'todo', 'done', 'pending', 'blocked',
-    'won', 'lost', 'draft', 'published', 'paused', 'archived', 'scheduled', 'complete',
-    'in-progress', 'in_review', 'in-review', 'backlog', 'planned', 'cancelled', 'canceled'
+    'draft', 'paused', 'archived', 'scheduled', 'complete',
+    'in-progress', 'in_review', 'in-review', 'planned', 'cancelled', 'canceled'
 ]);
 
 const DEFAULT_SEMANTIC_ROLE_PRIORS = {
-    date: ['date', 'created', 'updated', 'due', 'deadline', 'start', 'end', 'followup', 'close-date', 'review-date', 'ship-date', 'release-date'],
-    status: ['status', 'stage', 'phase', 'state', 'priority', 'outcome', 'progress', 'health'],
-    person: ['owner', 'owners', 'contact', 'contacts', 'participant', 'participants', 'assignee', 'assignees', 'author', 'reporter', 'reviewer', 'editor'],
-    container: ['account', 'accounts', 'company', 'companies', 'client', 'clients', 'partner', 'partners', 'project', 'projects', 'repo', 'repos', 'workspace', 'team', 'unit'],
-    topic: ['concept', 'concepts', 'topic', 'topics', 'product', 'products', 'component', 'components', 'feature', 'features', 'tag', 'tags', 'chapter', 'chapters', 'scene', 'scenes']
+    date: ['date', 'created', 'updated', 'due', 'deadline', 'start', 'end', 'followup'],
+    status: ['status', 'stage', 'phase', 'state', 'priority', 'outcome', 'progress'],
+    person: ['owner', 'contact', 'participant', 'assignee', 'author', 'reporter'],
+    container: ['account', 'company', 'client', 'partner', 'project', 'repo', 'workspace', 'team', 'unit'],
+    topic: ['concept', 'topic', 'product', 'component', 'feature', 'tag']
 };
 
 /**

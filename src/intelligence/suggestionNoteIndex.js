@@ -7,7 +7,7 @@ const {
     DEFAULT_SEMANTIC_ROLE_PRIORS,
     extractBareRelationTargets
 } = require('./fieldRolesCore');
-const { inferNoteRole, DEFAULT_NOTE_ROLE_PRIORS } = require('./noteRolesCore');
+const { inferNoteRole } = require('./noteRolesCore');
 const { getVaultGeneration } = require('../core/indexService');
 const { getTodayIsoLocal } = require('../core/date');
 const { extractTagsFromNodeFields } = require('./tagSignals');
@@ -189,7 +189,9 @@ function buildNoteContext(nodeFields, nodeType, options = {}) {
     const noteRole = inferNoteRole(nodeFields, {
         fieldRoleResults,
         titleHints: options.titleHints || buildNoteRoleHints(nodeFields),
-        noteRolePriors: options.noteRolePriors
+        noteRolePriors: options.noteRolePriors,
+        noteRoleFieldHints: options.noteRoleFieldHints,
+        typeRoleMap: options.typeRoleMap
     });
     return { fieldRoleResults, noteRole };
 }
@@ -354,9 +356,7 @@ function collectCurrentRelationSignals(nodeFields = {}, currentMentionedIds = []
 }
 
 function buildLearnedNoteRolePriors(sourceNotes = []) {
-    const learned = Object.fromEntries(
-        Object.entries(DEFAULT_NOTE_ROLE_PRIORS).map(([role, names]) => [role, [...names]])
-    );
+    const learned = {};
     const roleTypeCounts = new Map();
 
     for (const observed of sourceNotes) {

@@ -362,3 +362,96 @@ describe('driftDetector', () => {
         });
     });
 });
+
+// ─── prescriptive messages ────────────────────────────────────────────────────
+
+describe('driftDetector — prescriptive messages', () => {
+    function makeBundle(pairs) {
+        const b = new Map();
+        for (const [k, v] of pairs) b.set(k, v);
+        return b;
+    }
+    function makeAmbiguity(pairs) {
+        const m = new Map();
+        for (const [k, v] of pairs) m.set(k, v);
+        return m;
+    }
+
+    it('missingExpected entries include a descriptive message', () => {
+        // 5 notes all have 'faction'; test note is missing it
+        const bundle = makeBundle([['faction', 5], ['name', 5]]);
+        const fieldsCache = new Map([
+            ['a', { type: 'contact', name: 'A', faction: 'x' }],
+            ['b', { type: 'contact', name: 'B', faction: 'y' }],
+            ['c', { type: 'contact', name: 'C', faction: 'z' }],
+            ['d', { type: 'contact', name: 'D', faction: 'q' }],
+            ['e', { type: 'contact', name: 'E', faction: 'r' }]
+        ]);
+        const priors = { typeFieldBundles: new Map([['contact', bundle]]), fieldAmbiguity: new Map(), typeBundleTotals: new Map([['contact', 5]]) };
+        const result = computeNoteDrift('nx', { type: 'contact', name: 'Test' }, fieldsCache, priors);
+        assert.ok(!result.insufficientData, 'should have data');
+        const factionEntry = result.missingExpected.find(e => e.field === 'faction');
+        assert.ok(factionEntry, 'faction must be in missingExpected');
+        assert.ok(typeof factionEntry.message === 'string' && factionEntry.message.length > 0,
+            'message must be a non-empty string');
+        assert.ok(factionEntry.message.includes('faction'), 'message must mention the field name');
+        assert.ok(factionEntry.message.includes('100'), 'message must mention the 100% ratio');
+    });
+
+    it('missingExpected message includes note type and percentage', () => {
+        const bundle = makeBundle([['unit', 4], ['name', 5]]);
+        const fieldsCache = new Map([
+            ['a', { type: 'soldier', name: 'A', unit: 'u1' }],
+            ['b', { type: 'soldier', name: 'B', unit: 'u2' }],
+            ['c', { type: 'soldier', name: 'C', unit: 'u3' }],
+            ['d', { type: 'soldier', name: 'D', unit: 'u4' }],
+            ['e', { type: 'soldier', name: 'E' }]
+        ]);
+        const priors = { typeFieldBundles: new Map([['soldier', bundle]]), fieldAmbiguity: new Map(), typeBundleTotals: new Map([['soldier', 5]]) };
+        const result = computeNoteDrift('nx', { type: 'soldier', name: 'Test' }, fieldsCache, priors);
+        assert.ok(!result.insufficientData, 'should have data');
+        const unitEntry = result.missingExpected.find(e => e.field === 'unit');
+        assert.ok(unitEntry, 'unit must be in missingExpected');
+        assert.ok(unitEntry.message.includes('soldier'), 'message must mention the note type');
+        assert.ok(unitEntry.message.includes('80'), 'message must mention 80% (4/5)');
+    });
+
+    it('unusualFields entries include a descriptive message', () => {
+        // 5+ notes, test note has 'homeworld' which nobody else has
+        const bundle = makeBundle([['name', 5], ['faction', 5]]);
+        const fieldsCache = new Map([
+            ['a', { type: 'contact', name: 'A', faction: 'x' }],
+            ['b', { type: 'contact', name: 'B', faction: 'y' }],
+            ['c', { type: 'contact', name: 'C', faction: 'z' }],
+            ['d', { type: 'contact', name: 'D', faction: 'q' }],
+            ['e', { type: 'contact', name: 'E', faction: 'r' }]
+        ]);
+        const priors = { typeFieldBundles: new Map([['contact', bundle]]), fieldAmbiguity: new Map(), typeBundleTotals: new Map([['contact', 5]]) };
+        const result = computeNoteDrift('nx', { type: 'contact', name: 'Test', faction: 'f', homeworld: 'Earth' }, fieldsCache, priors);
+        assert.ok(!result.insufficientData);
+        const hw = result.unusualFields.find(e => e.field === 'homeworld');
+        if (hw) {
+            assert.ok(typeof hw.message === 'string' && hw.message.length > 0, 'message must be present');
+            assert.ok(hw.message.includes('homeworld'), 'message must mention the field');
+        }
+    });
+
+    it('valueMismatches entries include a descriptive message', () => {
+        const fieldsCache = new Map([
+            ['a', { type: 'contact', unit: '[[alpha]]' }],
+            ['b', { type: 'contact', unit: '[[beta]]' }],
+            ['c', { type: 'contact', unit: '[[gamma]]' }]
+        ]);
+        const bundle = makeBundle([['unit', 3]]);
+        // linkRatio=0.90 → unit should be a wikilink; test note has scalar
+        const ambiguity = makeAmbiguity([['unit', { linkRatio: 0.90, total: 3 }]]);
+        const priors = { typeFieldBundles: new Map([['contact', bundle]]), fieldAmbiguity: ambiguity, typeBundleTotals: new Map([['contact', 3]]) };
+        const result = computeNoteDrift('nx', { type: 'contact', unit: 'Alpha Squad' }, fieldsCache, priors);
+        assert.ok(!result.insufficientData);
+        const mm = result.valueMismatches.find(e => e.field === 'unit');
+        assert.ok(mm, 'unit must be in valueMismatches');
+        assert.ok(typeof mm.message === 'string' && mm.message.length > 0, 'message must be present');
+        assert.ok(mm.message.includes('unit'), 'message must mention the field');
+        assert.ok(mm.message.includes('wikilink'), 'message must mention wikilink');
+    });
+});

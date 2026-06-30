@@ -1,8 +1,13 @@
 const { getTypes, getRegistry } = require('../registries/typeRegistry');
-const { getSchema } = require('../registries/schemaRegistry');
+const { getSchema, getSchemaTargets } = require('../registries/schemaRegistry');
 const { getEdges } = require('../core/graph');
-const { getFieldsCache, getIndex } = require('../core/indexService');
+const { getFieldsCache, getIndex, getVaultGeneration } = require('../core/indexService');
 const { normaliseDateInput } = require('../core/date');
+const {
+    getCachedPriors,
+    buildVaultStatusValues,
+    buildVaultSemanticRolePriors
+} = require('./vaultPriors');
 const {
     DEFAULT_INFERENCE_CONFIDENCE,
     DEFAULT_STATUS_LIKE_VALUES,
@@ -18,25 +23,41 @@ const {
     inferFieldRole: inferFieldRolePure
 } = require('./fieldRolesCore');
 
-const FALLBACK_TYPE_CANDIDATES = new Set([
-    'account',
-    'company',
-    'contact',
-    'lead',
-    'opportunity',
-    'project',
-    'task',
-    'meeting',
-    'event',
-    'note',
-    'mission',
-    'character',
-    'unit',
-    'artifact',
-    'concept',
-    'place',
-    'record'
-]);
+function collectKnownTypes() {
+    const schemaTargets = typeof getSchemaTargets === 'function'
+        ? Array.from(getSchemaTargets())
+        : [];
+    return new Set([
+        ...Array.from(getTypes()),
+        ...schemaTargets
+    ]);
+}
+
+function resolveStatusLikeValues(priors) {
+    const learned = buildVaultStatusValues(priors?.workflowFields);
+    return new Set([
+        ...Array.from(DEFAULT_STATUS_LIKE_VALUES),
+        ...Array.from(learned || [])
+    ]);
+}
+
+function resolveSemanticRolePriors(priors) {
+    const learned = buildVaultSemanticRolePriors(priors || {});
+    const merged = {};
+    const roles = new Set([
+        ...Object.keys(DEFAULT_SEMANTIC_ROLE_PRIORS),
+        ...Object.keys(learned || {})
+    ]);
+    for (const role of roles) {
+        merged[role] = [
+            ...new Set([
+                ...(DEFAULT_SEMANTIC_ROLE_PRIORS[role] || []),
+                ...(learned?.[role] || [])
+            ])
+        ];
+    }
+    return merged;
+}
 
 /** @returns {{ type: string, fields: object }[]} */
 function buildObservedFields() {
@@ -76,10 +97,7 @@ function buildGraphObservations(idIndex) {
  * @returns {string|null}
  */
 function inferTargetTypeFromFieldName(fieldName) {
-    return inferTargetTypeFromFieldNamePure(fieldName, [
-        ...Array.from(getTypes()),
-        ...Array.from(FALLBACK_TYPE_CANDIDATES)
-    ]);
+    return inferTargetTypeFromFieldNamePure(fieldName, collectKnownTypes());
 }
 
 /**
@@ -92,6 +110,10 @@ function inferFieldRole(fieldName, options = {}) {
     const normalizedField = normalizeFieldName(fieldName);
     const schema = documentType ? getSchema(documentType) : null;
     const schemaField = schema?.fields?.[fieldName] || schema?.fields?.[normalizedField] || null;
+    const fieldsCache = getFieldsCache();
+    const priors = fieldsCache?.size
+        ? getCachedPriors(fieldsCache, getVaultGeneration())
+        : null;
     const registry = getRegistry();
     const idToType = new Map();
     for (const [type, ids] of registry.entries()) {
@@ -101,16 +123,13 @@ function inferFieldRole(fieldName, options = {}) {
     const result = inferFieldRolePure(normalizedField, {
         documentType,
         schemaField,
-        knownTypes: new Set([
-            ...Array.from(getTypes()),
-            ...Array.from(FALLBACK_TYPE_CANDIDATES)
-        ]),
+        knownTypes: collectKnownTypes(),
         observedFields: buildObservedFields(),
         graphObservations: buildGraphObservations(options.idIndex || getIndex()),
         idToType,
         dateParser: normaliseDateInput,
-        statusLikeValues: DEFAULT_STATUS_LIKE_VALUES,
-        semanticRolePriors: DEFAULT_SEMANTIC_ROLE_PRIORS,
+        statusLikeValues: resolveStatusLikeValues(priors),
+        semanticRolePriors: resolveSemanticRolePriors(priors),
         inferenceConfidence: DEFAULT_INFERENCE_CONFIDENCE
     });
     // Cap name-only semantic role confidence at 0.40. Evidence-backed roles (date → 0.84,

@@ -158,7 +158,10 @@
                         direction: sorted.dataset.asc === 'false' ? 'desc' : 'asc'
                     } : null,
                     layout: panel.dataset.layout || 'table',
-                    matrixColType: panel.dataset.matrixColType || ''
+                    matrixColType: panel.dataset.matrixColType || '',
+                    scatterX: panel.dataset.scatterX || '',
+                    scatterY: panel.dataset.scatterY || '',
+                    barGroupBy: panel.dataset.barGroupBy || ''
                 });
             });
             const activeBtn = document.querySelector('.tab-btn.active');

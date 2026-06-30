@@ -5,6 +5,7 @@ const fs   = require('fs');
 const { getIndex, getFieldsCache } = require('../../core/indexService');
 const { parseViewQuery, runQuery } = require('../../engine/query');
 const fmt = require('../format');
+const { emitCliError, emitText } = require('../io');
 
 function unwikilink(value) {
     if (typeof value !== 'string') return value;
@@ -37,7 +38,7 @@ function toCSV(rows) {
     return lines.join('\n');
 }
 
-function run({ query, format, output, json }) {
+function run({ query, format, output, json, quiet }) {
     const idIndex    = getIndex();
     const fieldsCache = getFieldsCache();
 
@@ -47,11 +48,14 @@ function run({ query, format, output, json }) {
         if (!text.startsWith('!view ')) text = '!view * ' + text;
         const parsed = parseViewQuery(text);
         if (!parsed) {
-            console.error(fmt.err('Could not parse query: ' + query));
-            process.exit(1);
+            emitCliError({ json, error: 'Could not parse query: ' + query, code: 'QUERY_PARSE_ERROR', exitCode: 1 });
+            return;
         }
         const result = runQuery(parsed, new Date().toISOString().slice(0, 10));
-        if (!result?.success) { console.error(fmt.err('Query failed')); process.exit(1); }
+        if (!result?.success) {
+            emitCliError({ json, error: 'Query failed', code: 'QUERY_FAILED', exitCode: 2 });
+            return;
+        }
         rows = result.rows.map(r => flattenNote(r.id, r.fields || {}));
     } else {
         rows = [];
@@ -60,7 +64,7 @@ function run({ query, format, output, json }) {
         }
     }
 
-    const fmt2 = format || (json ? 'json' : 'json');
+    const fmt2 = format || 'json';
     let content;
     if (fmt2 === 'csv') {
         content = toCSV(rows);
@@ -69,10 +73,15 @@ function run({ query, format, output, json }) {
     }
 
     if (output) {
-        fs.writeFileSync(output, content, 'utf8');
-        console.log(fmt.ok('Exported ' + rows.length + ' note(s) to ' + output));
+        try {
+            fs.writeFileSync(output, content, 'utf8');
+        } catch (error) {
+            emitCliError({ json, error: 'Export failed: ' + error.message, code: 'INTERNAL_ERROR', exitCode: 2 });
+            return;
+        }
+        if (!quiet) console.log(fmt.ok('Exported ' + rows.length + ' note(s) to ' + output));
     } else {
-        process.stdout.write(content + '\n');
+        emitText(content + '\n');
     }
 }
 

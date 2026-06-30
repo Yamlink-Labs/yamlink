@@ -88,6 +88,7 @@ describe('tasks — parseTasksFromContent', () => {
     test('task id includes the fileId prefix', () => {
         const tasks = parseTasksFromContent(NOTE_PREFIX + '- [ ] Task', 'rico', '/vault/rico.md');
         assert.match(tasks[0].id, /^rico#/);
+        assert.match(tasks[0].blockId, /^t1-/);
     });
 
     test('collects indented body lines after task', () => {

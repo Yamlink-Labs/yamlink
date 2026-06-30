@@ -31,6 +31,7 @@ const SOURCE_WEIGHT = Object.freeze({
     calibration: 0.83,  // user accepted our prediction — high trust, accumulates over time
     implicit:    0.80,  // mutation log history — strong but not as strong as current vault state
     context:     0.75,  // same-note field pattern — supporting evidence, not primary
+    behavior:    0.75,  // recent session behavioral priors — specific but ephemeral
     prior:       0.70,
     default:     0.00
 });
@@ -68,7 +69,11 @@ function planFieldActions(classification, surface) {
     const { category, confidence, source, relationStrength = null } = classification;
     const vaultMaturity = classification.vaultMaturity ?? 1;
     const weight = SOURCE_WEIGHT[source] ?? 0.70;
-    const ec = confidence * weight; // effective confidence
+    let ec = confidence * weight; // effective confidence
+    // Behavioral-recovery fields earn a threshold reduction — recent session
+    // usage is strong evidence even when vault-wide statistics are sparse.
+    if (source === 'behavior') ec *= 1.18;
+    ec = Math.min(ec, 0.95);
     const isCertainRelation = relationStrength === RELATION_STRENGTH.CERTAIN;
     const isLikelyRelation = relationStrength === RELATION_STRENGTH.LIKELY;
     const isWeakRelation = relationStrength === RELATION_STRENGTH.WEAK;
@@ -87,6 +92,17 @@ function planFieldActions(classification, surface) {
             return _plan(LEVEL.QUICKFIX,
                 ['relationCompletion', 'fieldQuickfix', 'documentBundle', 'documentView', 'createNote'],
                 `RELATION confirmed (ec=${_pct(ec)} via ${source}${relationStrength ? `, ${relationStrength}` : ''})`,
+                classification,
+                ec,
+                weight);
+        }
+        // Vault-consensus path: vault-prior classified fields are capped at ec~0.52 by source
+        // weight (0.70), so they never reach the 0.72 bar even when 80%+ of same-type notes
+        // use the field as a relation. Treat LIKELY relation with decent evidence as QUICKFIX.
+        if (isLikelyRelation && ec >= _adjustedThreshold(0.48, vaultMaturity)) {
+            return _plan(LEVEL.QUICKFIX,
+                ['relationCompletion', 'fieldQuickfix', 'documentBundle', 'documentView', 'createNote'],
+                `RELATION vault-consensus (ec=${_pct(ec)} via ${source}, ${relationStrength}) — lightbulb allowed`,
                 classification,
                 ec,
                 weight);

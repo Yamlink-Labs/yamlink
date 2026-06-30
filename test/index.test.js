@@ -295,6 +295,31 @@ describe('wikilink edge extraction', () => {
         teardownVault();
     });
 
+    test('buildIndex resolves alias wikilinks to the canonical graph target', () => {
+        setupVault();
+        writeNode(
+            'andreas.md',
+            '---\n' +
+            'id: andreas-storms\n' +
+            'type: contact\n' +
+            'aliases: Andreas Storms\n' +
+            '---\n'
+        );
+        writeNode(
+            'meeting.md',
+            '---\n' +
+            'id: call-andreas\n' +
+            'type: meeting\n' +
+            '---\n' +
+            'Met with [[Andreas Storms]].\n'
+        );
+        buildIndex([{ uri: { fsPath: tmpDir } }]);
+        assert.deepEqual(require.cache.__stub_graph__.exports.getEdges('call-andreas'), [
+            { field: 'body', targetId: 'andreas-storms' }
+        ]);
+        teardownVault();
+    });
+
     test('buildIndex stores combined frontmatter and body tags in fields cache', () => {
         setupVault();
         writeNode(
@@ -397,7 +422,21 @@ describe('updateSingleFile', () => {
         bumpMtime(filePath);
         const result = updateSingleFile(filePath);
         assert.ok(result.mutationEvents.some((event) => event.type === 'field_added' && event.field === 'unit'));
-        assert.ok(result.mutationEvents.some((event) => event.type === 'relation_changed' && event.field === 'unit'));
+        // Adding a wikilink field where none existed → relation_added (not relation_changed)
+        assert.ok(result.mutationEvents.some((event) => event.type === 'relation_added' && event.field === 'unit'));
+        teardownVault();
+    });
+
+    test('body-only edit emits note_touched so history reflects real work', () => {
+        setupVault();
+        const filePath = writeNode('hero.md', '---\nid: hero\ntype: character\n---\n\nInitial body.\n');
+        buildIndex([{ uri: { fsPath: tmpDir } }]);
+        fs.writeFileSync(filePath, '---\nid: hero\ntype: character\n---\n\nInitial body.\n\nAdded another paragraph.\n', 'utf8');
+        bumpMtime(filePath);
+        const result = updateSingleFile(filePath);
+        assert.equal(result.changed, true);
+        assert.equal(result.needsFull, false);
+        assert.ok(result.mutationEvents.some((event) => event.type === 'note_touched' && event.noteId === 'hero'));
         teardownVault();
     });
 

@@ -1,14 +1,15 @@
 const vscode = require('vscode');
 const fs = require('fs');
-const { getIndex, getPathIndex } = require('../core/indexService');
+const { getIndex, getPathIndex, getFieldsCache } = require('../core/indexService');
 const { buildIndex, updateSingleFile, invalidateFileCache } = require('../core/index');
 const { parseAllViewQueries, parseViewQuery, runQuery } = require('../engine/query');
 const { writeFieldValue } = require('../core/writeField');
 const { extractCanonicalIdFromFrontmatter } = require('../core/id');
 const { buildViewExportModel, exportViewPdf } = require('../export/pdf');
 const { createViewPanelController } = require('./view/viewPanelController');
-const { appendMutationEvents } = require('../runtime/mutationEventLog');
+const { appendMutationEvents, withMutationContext } = require('../runtime/mutationEventLog');
 const { renderPanel, buildWarningBanner } = require('./view/viewPanelHtml');
+const { openNoteTarget } = require('./navigation/openNoteTarget');
 const {
     normaliseTableDisplayValue,
     buildTableEmptyStateTitle,
@@ -76,7 +77,20 @@ function appendTaskStatusMutationEvent(filePath, lineNumber, newDone) {
         noteId,
         field: `task:${lineNumber}`,
         oldValue: newDone ? 'open' : 'done',
-        newValue: newDone ? 'done' : 'open'
+        newValue: newDone ? 'done' : 'open',
+        source: 'vscode',
+        cause: 'viewpanel_task_toggle'
+    }, {
+        type: 'task_state_changed',
+        noteId,
+        field: `task:${lineNumber}`,
+        oldValue: newDone ? 'open' : 'done',
+        newValue: newDone ? 'done' : 'open',
+        source: 'vscode',
+        cause: 'viewpanel_task_toggle',
+        meta: {
+            line: Number(lineNumber)
+        }
     }]);
 }
 
@@ -87,24 +101,17 @@ function ensureIndexBuilt() {
 }
 
 async function openNode(noteId) {
-    const resolvedId = noteId && noteId.includes('#') ? noteId.split('#')[0] : noteId;
-    const fp = getIndex().get(resolvedId);
-    if (!fp) return;
     try {
-        const doc = await vscode.workspace.openTextDocument(fp);
-        await vscode.window.showTextDocument(doc, { viewColumn: vscode.ViewColumn.One, preview: false });
+        await openNoteTarget(noteId, { viewColumn: vscode.ViewColumn.One, preview: false });
     } catch (err) {
         console.error('Yamlink — openNode failed:', err.message);
     }
 }
 
 async function openReport(noteId) {
-    const resolvedId = noteId && noteId.includes('#') ? noteId.split('#')[0] : noteId;
-    const fp = getIndex().get(resolvedId);
-    if (!fp) return;
     try {
-        const doc = await vscode.workspace.openTextDocument(fp);
-        await vscode.window.showTextDocument(doc, { viewColumn: vscode.ViewColumn.One, preview: false });
+        const resolved = await openNoteTarget(noteId, { viewColumn: vscode.ViewColumn.One, preview: false });
+        if (!resolved) return;
         await vscode.commands.executeCommand('yamlink.openHub');
     } catch (err) {
         console.error('Yamlink — openReport failed:', err.message);
@@ -112,7 +119,23 @@ async function openReport(noteId) {
 }
 
 async function editCell(filePath, field, value) {
-    return writeFieldValue(filePath, field, value);
+    const noteId = getPathIndex().get(filePath);
+    const fieldsCache = getFieldsCache();
+    const oldRaw = noteId ? (fieldsCache.get(noteId)?.[field] ?? null) : null;
+    const oldValue = (oldRaw !== null && oldRaw !== undefined) ? String(oldRaw) : null;
+    const ok = await writeFieldValue(filePath, field, value);
+    if (ok && noteId) {
+        const newValue = (value !== null && value !== undefined && value !== '') ? String(value) : null;
+        appendMutationEvents(withMutationContext([{
+            type: 'field_changed',
+            noteId,
+            field,
+            oldValue,
+            newValue,
+            timestamp: new Date().toISOString()
+        }], { cause: 'viewpanel_cell_edit' }));
+    }
+    return ok;
 }
 
 async function refineQuery(sourceDocumentPath, queryIndex) {
@@ -204,6 +227,7 @@ module.exports = {
     setViewPanelStateListener: viewPanelController.setViewPanelStateListener,
     parseAllViewQueries,
     parseViewQuery,
+    editCell,
     writeFieldValue,
     toggleTaskCheckbox,
     normaliseTableDisplayValue,

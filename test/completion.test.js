@@ -1,6 +1,6 @@
 'use strict';
 
-const { test, describe } = require('node:test');
+const { test, describe, beforeEach } = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('fs');
 const os = require('os');
@@ -121,6 +121,7 @@ require.cache.__completion_schema_registry_stub__ = {
     filename: '__completion_schema_registry_stub__',
     loaded: true,
     exports: {
+        getSchemaTargets: () => new Set(['account', 'contact', 'unit', 'character', 'planet', 'soldier']),
         getSchema: (type) => type === 'contact'
             ? {
                 fields: {
@@ -193,8 +194,10 @@ Module._resolveFilename = function (request, parent, ...rest) {
 
 const {
     registerCompletion,
+    resolveFrontmatterFollowupState,
     buildDateShortcutItems,
     buildHeadingAnchorItems,
+    buildBlockReferenceItems,
     buildFootnoteReferenceItems,
     buildLongformBodyStructureItems,
     resolveFrontmatterRelationCandidates,
@@ -211,10 +214,14 @@ const {
     collectDriftMissingFieldSuggestions,
     collectLocalLinkedIds,
     rankCandidateIds,
+    rankScalarValues,
     buildFieldInferenceDetail,
     shouldOfferFrontmatterRelationCompletion,
     buildPreTypeBootstrapItems
 } = require('../src/features/completion');
+const { setMutationEventsProvider, resetVaultPriorsCache } = require('../src/intelligence/vaultPriors');
+const { resetObservedNoteIndexCache } = require('../src/intelligence/suggestionNoteIndex');
+const { clearActivationCache } = require('../src/intelligence/activationCache');
 
 function makeDocument(text) {
     const lines = text.split('\n');
@@ -227,6 +234,18 @@ function makeDocument(text) {
 }
 
 describe('frontmatter relation completion', () => {
+    beforeEach(() => {
+        resetVaultPriorsCache();
+        resetObservedNoteIndexCache();
+        clearActivationCache();
+    });
+    test('ranks scalar frontmatter values from vault usage so follow-up suggestions stay consistent', () => {
+        const rankedRanks = rankScalarValues('rank', 'character');
+        assert.ok(rankedRanks.length >= 1);
+        assert.equal(rankedRanks[0].value, 'lieutenant');
+        assert.equal(rankedRanks[0].count, 1);
+    });
+
     test('offers heading anchor completions for another note inside a wikilink', () => {
         const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'yamlink-heading-'));
         const sourcePath = path.join(tempDir, 'source-note.md');
@@ -267,6 +286,49 @@ describe('frontmatter relation completion', () => {
             'Ev'
         );
         assert.ok(items.some(item => item.label === 'Evidence'));
+    });
+
+    test('offers block-reference completions for another note inside a wikilink', () => {
+        const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'yamlink-block-'));
+        const sourcePath = path.join(tempDir, 'source-note.md');
+        fs.writeFileSync(sourcePath, [
+            '---',
+            'id: source-note',
+            '---',
+            '- [ ] Review recon logs',
+            '',
+            '> Training-yard line commonly associated with Rico.'
+        ].join('\n'), 'utf8');
+
+        const doc = makeDocument('See [[source-note^t');
+        const items = buildBlockReferenceItems(
+            doc,
+            { line: 0, character: 'See [[source-note^t'.length },
+            new Map([['source-note', sourcePath]]),
+            'source-note',
+            't'
+        );
+        assert.ok(items.length >= 1);
+        assert.match(String(items[0].label), /^t1-/);
+        assert.match(String(items[0].detail), /task block in source-note/i);
+        assert.match(String(items[0].insertText), /^t1-.*\]\]$/);
+    });
+
+    test('offers current-note block refs with [[^... syntax', () => {
+        const doc = makeDocument([
+            '- [ ] Review recon logs',
+            '',
+            'Jump to [[^t'
+        ].join('\n'));
+
+        const items = buildBlockReferenceItems(
+            doc,
+            { line: 2, character: 'Jump to [[^t'.length },
+            INDEX,
+            '',
+            't'
+        );
+        assert.ok(items.some(item => /^t1-/.test(String(item.label))));
     });
 
     test('offers current-note footnote references from existing definitions', () => {
@@ -1173,6 +1235,147 @@ describe('frontmatter relation completion', () => {
         assert.equal(roughnecksItem.label, 'roughnecks');
     });
 
+    test('generic frontmatter provider stays quiet for explicit [[ relation syntax so suggestions do not duplicate', () => {
+        REGISTERED_PROVIDERS.length = 0;
+        const context = { subscriptions: [] };
+        const unitIndex = new Map([
+            ['johnny-rico', '/vault/johnny-rico.md'],
+            ['carmen-ibanez', '/vault/carmen-ibanez.md'],
+            ['lt-rasczak', '/vault/lt-rasczak.md'],
+            ['roughnecks', '/vault/roughnecks.md']
+        ]);
+        registerCompletion(context, () => unitIndex);
+        const fieldProvider = REGISTERED_PROVIDERS.find((entry) => entry.triggerCharacters.length === 0);
+        assert.ok(fieldProvider, 'frontmatter provider should be registered');
+
+        const doc = makeDocument([
+            '---',
+            'id: carl-jenkins',
+            'type: character',
+            'name: Carl Jenkins',
+            'unit: [[r',
+            '---'
+        ].join('\n'));
+        doc.uri = { fsPath: '/vault/carl-jenkins.md' };
+
+        const items = fieldProvider.provider.provideCompletionItems(
+            doc,
+            { line: 4, character: 'unit: [[r'.length }
+        );
+
+        assert.equal(items, undefined);
+    });
+
+    test('provider path surfaces relation-aware completion for bare unit values on explicit invoke', () => {
+        REGISTERED_PROVIDERS.length = 0;
+        const context = { subscriptions: [] };
+        const unitIndex = new Map([
+            ['johnny-rico', '/vault/johnny-rico.md'],
+            ['carmen-ibanez', '/vault/carmen-ibanez.md'],
+            ['lt-rasczak', '/vault/lt-rasczak.md'],
+            ['roughnecks', '/vault/roughnecks.md']
+        ]);
+        registerCompletion(context, () => unitIndex);
+        const fieldProvider = REGISTERED_PROVIDERS.find((entry) => entry.triggerCharacters.length === 0);
+        assert.ok(fieldProvider, 'frontmatter provider should be registered');
+
+        const doc = makeDocument([
+            '---',
+            'id: carl-jenkins',
+            'type: character',
+            'name: Carl Jenkins',
+            'unit: ',
+            '---'
+        ].join('\n'));
+        doc.uri = { fsPath: '/vault/carl-jenkins.md' };
+
+        const items = fieldProvider.provider.provideCompletionItems(
+            doc,
+            { line: 4, character: 'unit: '.length }
+        );
+
+        assert.ok(Array.isArray(items));
+        assert.ok(items.some((item) => item.insertText === '[[roughnecks]]'));
+    });
+
+    test('provider path surfaces observed scalar values for bare rank fields', () => {
+        REGISTERED_PROVIDERS.length = 0;
+        const context = { subscriptions: [] };
+        registerCompletion(context, () => INDEX);
+        const fieldProvider = REGISTERED_PROVIDERS.find((entry) => entry.triggerCharacters.length === 0);
+        assert.ok(fieldProvider, 'frontmatter provider should be registered');
+
+        const doc = makeDocument([
+            '---',
+            'id: carl-jenkins',
+            'type: character',
+            'name: Carl Jenkins',
+            'rank: ',
+            '---'
+        ].join('\n'));
+        doc.uri = { fsPath: '/vault/carl-jenkins.md' };
+
+        const items = fieldProvider.provider.provideCompletionItems(
+            doc,
+            { line: 4, character: 'rank: '.length }
+        );
+
+        assert.ok(Array.isArray(items));
+        assert.ok(items.some((item) => item.insertText === 'lieutenant'));
+    });
+
+    test('follow-up intelligence detects bare relation fields without requiring explicit [[', () => {
+        const unitIndex = new Map([
+            ['johnny-rico', '/vault/johnny-rico.md'],
+            ['carmen-ibanez', '/vault/carmen-ibanez.md'],
+            ['lt-rasczak', '/vault/lt-rasczak.md'],
+            ['roughnecks', '/vault/roughnecks.md']
+        ]);
+        const doc = makeDocument([
+            '---',
+            'id: carl-jenkins',
+            'type: character',
+            'name: Carl Jenkins',
+            'unit: ',
+            '---'
+        ].join('\n'));
+        doc.uri = { fsPath: '/vault/carl-jenkins.md' };
+
+        const state = resolveFrontmatterFollowupState(
+            doc,
+            { line: 4, character: 'unit: '.length },
+            () => unitIndex
+        );
+
+        assert.ok(state);
+        assert.equal(state.kind, 'relation');
+        assert.equal(state.fieldName, 'unit');
+        assert.ok(state.candidateCount >= 1);
+    });
+
+    test('follow-up intelligence detects scalar fields with strong vault-learned values', () => {
+        const doc = makeDocument([
+            '---',
+            'id: carl-jenkins',
+            'type: character',
+            'name: Carl Jenkins',
+            'rank: ',
+            '---'
+        ].join('\n'));
+        doc.uri = { fsPath: '/vault/carl-jenkins.md' };
+
+        const state = resolveFrontmatterFollowupState(
+            doc,
+            { line: 4, character: 'rank: '.length },
+            () => INDEX
+        );
+
+        assert.ok(state);
+        assert.equal(state.kind, 'scalar');
+        assert.equal(state.fieldName, 'rank');
+        assert.ok(state.candidateCount >= 1);
+    });
+
     test('frontmatter key completion bootstraps note identity before type exists', () => {
         const doc = makeDocument([
             '---',
@@ -1285,6 +1488,62 @@ describe('frontmatter relation completion', () => {
         // the learned model is strictly better when it has data).
         if (hints.familyHint !== null) {
             assert.match(hints.familyHint, /character|planet/i);
+        }
+    });
+
+    test('recent mutation behavior biases relation ranking toward the current modeling pattern', () => {
+        try {
+            setMutationEventsProvider(() => ([
+                {
+                    type: 'relation_changed',
+                    noteId: 'johnny-rico',
+                    field: 'unit',
+                    newValue: '[[roughnecks]]',
+                    timestamp: new Date().toISOString()
+                },
+                {
+                    type: 'relation_changed',
+                    noteId: 'lt-rasczak',
+                    field: 'unit',
+                    newValue: '[[roughnecks]]',
+                    timestamp: new Date().toISOString()
+                }
+            ]));
+            resetVaultPriorsCache();
+
+            const unitIndex = new Map([
+                ['johnny-rico', '/vault/johnny-rico.md'],
+                ['carmen-ibanez', '/vault/carmen-ibanez.md'],
+                ['lt-rasczak', '/vault/lt-rasczak.md'],
+                ['roughnecks', '/vault/roughnecks.md']
+            ]);
+            const doc = makeDocument([
+                '---',
+                'id: ace-levy',
+                'type: character',
+                'unit: ',
+                '---'
+            ].join('\n'));
+            doc.uri = { fsPath: '/vault/ace-levy.md' };
+
+            const result = resolveFrontmatterRelationCandidates(doc, { line: 3, character: 'unit: '.length }, unitIndex);
+            assert.ok(result);
+            assert.ok(result.rankingHints);
+            assert.ok(result.rankingHints.behaviorHint);
+            assert.ok(result.rankingHints.behavioralPreferredIds.includes('roughnecks'));
+
+            const ranked = rankCandidateIds(
+                result.candidateIds,
+                result.partial,
+                result.preferredIds,
+                result.localLinkedIds,
+                result.observedIdScores,
+                result.rankingHints
+            );
+            assert.equal(ranked[0], 'roughnecks');
+        } finally {
+            setMutationEventsProvider(null);
+            resetVaultPriorsCache();
         }
     });
 });

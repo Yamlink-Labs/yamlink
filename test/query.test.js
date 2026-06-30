@@ -1234,6 +1234,7 @@ describe('parseSingleViewBlock — group by', () => {
 
 });
 
+
 describe('runQuery — forward — group by', () => {
 
     test('group by type returns grouped result shape', () => {
@@ -1359,5 +1360,6 @@ describe('buildQueryString — group by', () => {
         assert.ok(s.includes('group by type'));
         assert.ok(s.includes('sort count desc'));
     });
+
 
 });

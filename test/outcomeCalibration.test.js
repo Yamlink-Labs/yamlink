@@ -149,3 +149,71 @@ describe('getFieldCalibrationBoost', () => {
         assert.ok(reason.includes('3'));
     });
 });
+
+// ── signal decay ─────────────────────────────────────────────────────────────
+
+describe('outcomeCalibration — signal decay', () => {
+    const HALF_LIFE = 60;
+    const MS_PER_DAY = 86400000;
+
+    it('events with no timestamp get full decay weight (1.0 contribution)', () => {
+        const cal = buildOutcomeCalibration([
+            { type: 'completion_accepted', field: 'commander', noteId: 'n1' }
+        ]);
+        const count = cal.byField.get('commander');
+        assert.ok(Math.abs(count - 1.0) < 0.001,
+            `no-timestamp event should contribute 1.0, got ${count}`);
+    });
+
+    it('event at exactly half-life age contributes ~0.5', () => {
+        const nowMs = Date.now();
+        const cal = buildOutcomeCalibration([{
+            type: 'completion_accepted', field: 'faction', noteId: 'n1',
+            timestamp: new Date(nowMs - HALF_LIFE * MS_PER_DAY).toISOString()
+        }], nowMs);
+        const count = cal.byField.get('faction');
+        assert.ok(count !== undefined, 'faction must be present');
+        assert.ok(Math.abs(count - 0.5) < 0.01,
+            `count at half-life should be ~0.5, got ${count}`);
+    });
+
+    it('recent acceptance gives higher boost than stale acceptance at identical raw count', () => {
+        const nowMs = Date.now();
+        const recentCal = buildOutcomeCalibration([{
+            type: 'completion_accepted', field: 'commander', noteId: 'n1',
+            timestamp: new Date(nowMs).toISOString()
+        }], nowMs);
+        const staleCal = buildOutcomeCalibration([{
+            type: 'completion_accepted', field: 'commander', noteId: 'n1',
+            timestamp: new Date(nowMs - HALF_LIFE * 2 * MS_PER_DAY).toISOString()
+        }], nowMs);
+        const recentBoost = getFieldCalibrationBoost('commander', recentCal).boost;
+        const staleBoost  = getFieldCalibrationBoost('commander', staleCal).boost;
+        assert.ok(recentBoost > staleBoost,
+            `recent boost (${recentBoost}) should exceed stale boost (${staleBoost})`);
+    });
+
+    it('event older than 4× half-life decays below floor and gives zero boost', () => {
+        const nowMs = Date.now();
+        const cal = buildOutcomeCalibration([{
+            type: 'completion_accepted', field: 'commander', noteId: 'n1',
+            timestamp: new Date(nowMs - HALF_LIFE * 4 * MS_PER_DAY).toISOString()
+        }], nowMs);
+        const { boost } = getFieldCalibrationBoost('commander', cal);
+        assert.equal(boost, 0,
+            `event older than 4 half-lives (~${HALF_LIFE * 4}d) should give 0 boost`);
+    });
+
+    it('mix of recent and stale acceptances accumulates to decayed sum', () => {
+        const nowMs = Date.now();
+        const cal = buildOutcomeCalibration([
+            { type: 'completion_accepted', field: 'f', noteId: 'n1',
+              timestamp: new Date(nowMs).toISOString() },
+            { type: 'completion_accepted', field: 'f', noteId: 'n2',
+              timestamp: new Date(nowMs - HALF_LIFE * MS_PER_DAY).toISOString() }
+        ], nowMs);
+        const count = cal.byField.get('f');
+        // 1.0 (recent) + 0.5 (at half-life) = 1.5
+        assert.ok(Math.abs(count - 1.5) < 0.01, `expected ~1.5, got ${count}`);
+    });
+});

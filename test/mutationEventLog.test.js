@@ -9,14 +9,18 @@ const path = require('path');
 const {
     initMutationLog,
     appendMutationEvents,
+    emitOutcomeEvent,
     getMutationEvents,
-    clearMutationEvents
+    clearMutationEvents,
+    withMutationContext,
+    setDefaultMutationContextProvider
 } = require('../src/runtime/mutationEventLog');
 
 describe('mutation event log', () => {
     beforeEach(() => {
         initMutationLog(null);
         clearMutationEvents();
+        setDefaultMutationContextProvider(null);
     });
 
     test('appends and returns events in order', () => {
@@ -175,6 +179,95 @@ describe('mutation event log', () => {
             initMutationLog(null);
             try { fs.unlinkSync(tmpPath); } catch (_) {}
         }
+    });
+
+    test('withMutationContext applies source and cause without overwriting explicit event values', () => {
+        const events = withMutationContext([
+            { type: 'note_created', noteId: 'rico' },
+            { type: 'field_changed', noteId: 'carmen', field: 'status', newValue: 'active', source: 'cli' }
+        ], {
+            source: 'api',
+            cause: 'api_bulk_update_node'
+        });
+
+        assert.equal(events[0].source, 'api');
+        assert.equal(events[0].cause, 'api_bulk_update_node');
+        assert.equal(events[1].source, 'cli');
+        assert.equal(events[1].cause, 'api_bulk_update_node');
+    });
+
+    test('appendMutationEvents preserves source, cause, and sessionId fields', () => {
+        appendMutationEvents([{
+            type: 'field_changed',
+            noteId: 'rico',
+            field: 'status',
+            oldValue: 'draft',
+            newValue: 'active',
+            source: 'api',
+            cause: 'api_update_node',
+            sessionId: 'session-1'
+        }]);
+
+        const [event] = getMutationEvents();
+        assert.equal(event.source, 'api');
+        assert.equal(event.cause, 'api_update_node');
+        assert.equal(event.sessionId, 'session-1');
+    });
+
+    test('emitOutcomeEvent preserves source and cause on behavioral events', () => {
+        emitOutcomeEvent({
+            type: 'completion_accepted',
+            noteId: 'rico',
+            field: 'unit',
+            newValue: '[[roughnecks]]',
+            source: 'vscode',
+            cause: 'completion_accept'
+        });
+
+        const [event] = getMutationEvents();
+        assert.equal(event.type, 'completion_accepted');
+        assert.equal(event.source, 'vscode');
+        assert.equal(event.cause, 'completion_accept');
+    });
+
+    test('appendMutationEvents inherits default session context when provider is set', () => {
+        setDefaultMutationContextProvider(() => ({
+            source: 'vscode',
+            sessionId: 'session-auto-1',
+            meta: { sessionReason: 'mutation' }
+        }));
+
+        appendMutationEvents([{
+            type: 'field_changed',
+            noteId: 'rico',
+            field: 'rank',
+            newValue: 'lieutenant'
+        }]);
+
+        const [event] = getMutationEvents();
+        assert.equal(event.source, 'vscode');
+        assert.equal(event.sessionId, 'session-auto-1');
+        assert.equal(event.meta.sessionReason, 'mutation');
+    });
+
+    test('withMutationContext preserves provider defaults while allowing explicit context overrides', () => {
+        setDefaultMutationContextProvider(() => ({
+            source: 'vscode',
+            sessionId: 'session-auto-2',
+            meta: { sessionReason: 'mutation' }
+        }));
+
+        const [event] = withMutationContext([{
+            type: 'note_created',
+            noteId: 'carmen'
+        }], {
+            cause: 'workspace_index_mutation'
+        });
+
+        assert.equal(event.source, 'vscode');
+        assert.equal(event.sessionId, 'session-auto-2');
+        assert.equal(event.cause, 'workspace_index_mutation');
+        assert.equal(event.meta.sessionReason, 'mutation');
     });
 
     test('events from multiple appends accumulate in file', () => {

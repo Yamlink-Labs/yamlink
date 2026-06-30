@@ -7,13 +7,16 @@ const crypto = require('crypto');
 const HUB_CSS = fs.readFileSync(path.join(__dirname, 'entityHub.css'), 'utf8');
 const {
     buildActionSection,
+    buildBlockBacklinkSection,
     buildCompactRelationTableSection,
+    buildDocumentSection,
     buildEmptySection,
     buildEntityHubEmptyHtml,
     buildEntityHubErrorHtml,
     buildHistorySection,
     buildKeyValueSection,
     buildNoteArcSection,
+    buildStaleConnectedSection,
     buildSummarySection,
     buildTaskSection,
     buildTimelineSection,
@@ -41,8 +44,13 @@ function buildHubHtml({
     historyGroups,
     historyCount,
     historyArc,
+    historySessions,
+    historyEvolution,
     unlinkedMentions,
-    noteArc
+    noteArc,
+    documentData,
+    blockBacklinks,
+    staleConnectedNotes
 }) {
     const webview = host.webview;
     const scriptUri = webview.asWebviewUri(vscode.Uri.joinPath(extensionUri, 'src', 'features', 'entityHubScript.js'));
@@ -90,12 +98,15 @@ function buildHubHtml({
             ? buildCompactRelationTableSection('body mentions to this note', 'incoming-body-links', bodyIncomingGroups, false)
             : ''
     ].filter(Boolean).join('\n');
+    const blockBacklinkHtml = buildBlockBacklinkSection(blockBacklinks || []);
     const unlinkedMentionsHtml = buildUnlinkedMentionsSection(unlinkedMentions || []);
     const taskHtml = taskSections.length
         ? taskSections.map(section => buildTaskSection(section.label, section.rows)).join('\n')
         : buildEmptySection('tasks', 'No task activity tied to this note.', 'Add Markdown tasks in this note or mention this node from another task to track work here.');
     const timelineHtml = buildTimelineSection(timelineRows);
-    const historyHtml = buildHistorySection(historyGroups || [], historyCount || 0, historyArc || []);
+    const historyHtml = buildHistorySection(historyGroups || [], historyCount || 0, historyArc || [], historySessions || [], historyEvolution || null);
+    const documentHtml = buildDocumentSection(documentData);
+    const staleConnectedHtml = buildStaleConnectedSection(staleConnectedNotes || []);
 
     return `<!DOCTYPE html>
 <html lang="en"><head>
@@ -124,6 +135,7 @@ function buildHubHtml({
     <button class="hub-tab-btn" id="hub-tab-tasks" data-tab="tasks" role="tab" aria-controls="tab-tasks">Tasks</button>
     <button class="hub-tab-btn" id="hub-tab-views" data-tab="views" role="tab" aria-controls="tab-views">Views</button>
     <button class="hub-tab-btn" id="hub-tab-history" data-tab="history" role="tab" aria-controls="tab-history">History</button>
+    <button class="hub-tab-btn" id="hub-tab-document" data-tab="document" role="tab" aria-controls="tab-document">Document</button>
 </div>
 <div class="hub-body">
     <div class="hub-tab-pane" id="tab-overview" role="tabpanel" aria-labelledby="hub-tab-overview">
@@ -131,11 +143,13 @@ ${summarySection}
 ${noteArcSection}
 ${vaultPositionSection}
 ${vaultDiagnosticSection}
+${staleConnectedHtml}
     </div>
     <div class="hub-tab-pane" id="tab-links" role="tabpanel" aria-labelledby="hub-tab-links">
 ${outgoingSections}
 ${incomingSections}
 ${bodyMentionSections}
+${blockBacklinkHtml}
 ${unlinkedMentionsHtml}
     </div>
     <div class="hub-tab-pane" id="tab-tasks" role="tabpanel" aria-labelledby="hub-tab-tasks">
@@ -147,6 +161,9 @@ ${nextViewsSection}
     </div>
     <div class="hub-tab-pane" id="tab-history" role="tabpanel" aria-labelledby="hub-tab-history">
 ${historyHtml}
+    </div>
+    <div class="hub-tab-pane" id="tab-document" role="tabpanel" aria-labelledby="hub-tab-document">
+${documentHtml}
     </div>
 </div>
 <script nonce="${nonce}" src="${scriptUri}"></script>

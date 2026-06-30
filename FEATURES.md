@@ -34,7 +34,7 @@ Yamlink turns Markdown files into a structured graph:
 - **display aliases** — `[[id|Label]]` renders "Label" as the link text while the graph edge resolves to `id`
 - **vault aliases** — `[[victoria]]` resolves to the note that declares `aliases: [victoria]`
 - **embeds** — `![[id]]` is a full embed link: dimmed `!` decoration, Ctrl+Click navigation, broken-link diagnostics
-- heading anchors — `[[id#Section]]`
+- **heading anchors** — `[[id#Section]]`: Ctrl+Click navigates to the exact heading line; hovering shows the section content (heading + up to 8 lines). Pipe-aliased anchors (`[[id#Section|Label]]`) work correctly.
 - block refs — `[[id^blockid]]`
 - body/frontmatter link targets are canonicalized before graph indexing, so casing, spacing, aliases, and heading/block suffixes do not silently break graph edges
 
@@ -113,6 +113,13 @@ What you get from it:
 - **Vault-wide propagation** — saving a template notifies: `"Template 'character' has new fields. Apply to N notes?"`. **Apply** inserts the missing fields into every note of that type in the vault — open notes via VS Code's workspace edit, closed files directly on disk.
 - **Vault Health** — the Template Drift section lists all drifted notes by type with the specific fields they're missing.
 - **Template folder** — `_templates/` is excluded from vault indexing so templates never appear as graph nodes.
+- **Type-line schema action** — once a note has a meaningful `type:`, the lightbulb can surface an explicit type-aware setup action such as:
+  - `Use the character schema from Smart Templates`
+  - this is intentionally more specific than a generic "fill usual fields" action so the user can see Yamlink recognized the note family
+- **Smart follow-up handoff** — after Yamlink inserts the learned schema, the cursor moves to the first unresolved frontmatter field and can reopen completion automatically when the vault already provides strong evidence
+  - bare relation fields such as `unit:` can reopen ranked relation candidates even before `[[` is typed
+  - bare scalar fields such as `rank:` can reopen learned value vocabularies from similar notes
+  - this turns Smart Templates into a staged authoring flow instead of a one-shot scaffold drop
 
 ### Intelligence direction
 
@@ -125,6 +132,13 @@ Yamlink's intelligence layer is fully vault-derived — the vault teaches the sy
 **Cold-start:** A 3-note vault with one typed wikilink gets meaningful completion and lightbulb suggestions on the first note. Vault maturity (0–1) scales confidence thresholds — new vaults get lower bars, established vaults get full bars.
 
 **Sticky knowledge:** The mutation log tracks every wikilink assignment. Fields used as relations in the past stay known as relational even after vault restructuring.
+
+**Recent behavior memory:** The mutation engine now also tracks shorter-horizon relation behavior. Recent structural edits teach Yamlink:
+- which target types a field is being linked to lately
+- which concrete notes are recurring as relation targets
+- how that behavior changes by note type
+
+That memory now feeds live relation completion and sparse-field recovery, so ranking can reflect what the vault is actively modeling now, not only lifetime aggregates.
 
 **Honest silence:** When the vault has no evidence for something, the system stays quiet rather than guessing from a global template table.
 
@@ -165,17 +179,34 @@ This is the right escape hatch for archives, generated content, or mixed-use rep
 Run Yamlink capabilities from a terminal, CI pipeline, or build script — no VS Code required.
 
 ```bash
-yamlink build [--vault <path>]          # index vault, report broken links / duplicate IDs
-yamlink health [--vault <path>]         # lifecycle, drift, type distribution
-yamlink validate [--vault <path>]       # schema conformance (exits 1 if required fields missing)
-yamlink query "<query>" [--json]        # run a query, output table or JSON
-yamlink report <note-id> [--json]       # note report in terminal
-yamlink links <note-id> [--json]        # inbound + outbound links for a note
-yamlink serve [--port 3000]             # local HTTP API server
-yamlink export [--format json|csv]      # dump vault to JSON or CSV
+yamlink build [--vault <path>]                  # index vault, report broken links / duplicate IDs
+yamlink briefing [--vault <path>] [--json]      # vault pulse, overdue tasks, activity, arc predictions
+yamlink create <type> [--field key=value...]    # create a note non-interactively
+yamlink set <id> <field> <value> [--clear]      # set or remove a frontmatter field
+yamlink link <id> <field> <target> [--append]   # add a wikilink relation field
+yamlink search <query> [--type] [--json]        # search by id, name, title, or type
+yamlink status [--vault <path>] [--json]        # compact vault snapshot (notes, edges, broken links)
+yamlink health [--vault <path>] [--json]        # lifecycle, drift, type distribution
+yamlink validate [--vault <path>] [--json]      # schema conformance (exits 1 if required fields missing)
+yamlink query "<query>" [--json]                # run a query, output ASCII table or JSON
+yamlink report <note-id> [--json]               # note report in terminal
+yamlink links <note-id> [--json]                # inbound + outbound links for a note
+yamlink rename <old-id> <new-id> [--dry-run]    # vault-wide ID rename
+yamlink schema list|check <type> [--json]       # schema introspection and conformance
+yamlink graph [--only-types <types>] [--json]   # export vault graph as JSON
+yamlink serve [--port 3000]                     # local HTTP API server
+yamlink serve --lsp --vault <path>              # JSON-RPC 2.0 LSP server over stdio
+yamlink export [--format json|csv]              # dump vault to JSON or CSV
+yamlink watch [--vault <path>]                  # watch vault, rebuild on .md changes
+yamlink on <event> [--type <type>] -- <script>  # run a script on vault mutation events
+yamlink conduit                                 # terminal UI — auto-starts server if not already running
+yamlink init [path]                             # scaffold a new Yamlink vault
+yamlink completions bash|zsh                    # print shell completion script
 ```
 
-All commands accept `--vault <path>` (defaults to current directory) and `--json` for machine-readable output.
+All commands accept `--vault <path>` (defaults to current directory). Most accept `--json` for machine-readable output.
+
+`yamlink serve --lsp` runs the [LSP server](#lsp-server) — a persistent JSON-RPC 2.0 process for Neovim, Zed, Helix, and Emacs. See the LSP section below.
 
 ### serve endpoints
 
@@ -184,13 +215,21 @@ All commands accept `--vault <path>` (defaults to current directory) and `--json
 | Endpoint | Description |
 |---|---|
 | `GET /api/nodes` | All notes as JSON; optional `?type=contact` filter |
-| `GET /api/nodes/:id` | Single note with `_inbound` and `_outbound` link arrays |
+| `GET /api/nodes/:id` | Single note with `_inbound`, `_outbound`, `_filePath` |
+| `POST /api/nodes` | Create a new note from `{ type, fields? }` — returns `{ ok, id, filePath }` (201) |
+| `PATCH /api/nodes/:id` | Update frontmatter field(s); pass `null`/`""` to delete a field |
+| `DELETE /api/nodes/:id` | Remove the note file from disk and index |
 | `GET /api/query?q=<query>` | Run any Yamlink query, returns rows + columns |
 | `GET /api/graph` | All nodes and edges as `{ nodes, edges }` |
 | `GET /api/types` | Type distribution sorted by count |
 | `GET /api/health` | Broken link count + schema conformance |
+| `GET /api/tasks` | All vault tasks; filter by `?done=`, `?today=`, `?overdue=`, `?note=`, `?limit=` |
+| `GET /api/mutations` | Recent mutation events; filter by `?limit=`, `?since=`, `?type=` |
+| `GET /api/events` | Server-Sent Events stream; pushes `rebuild` events after every vault change |
+| `GET /api/intelligence/arc?id=` | Arc prediction — likely missing fields for a note |
+| `GET /api/intelligence/fieldCategory?id=&field=` | Field classification: category, confidence, source, reasons |
 
-CORS is enabled for all origins (`*`) so any local dev server can call the API directly.
+All responses include `X-Yamlink-Generation` (vault version integer) and `X-Yamlink-Api-Version: 1` headers. CORS is enabled for all origins (`*`). Full reference at `docs/api/README.md`.
 
 **Publishing use case:** `yamlink serve` → Next.js / Astro site reads vault at build time via API. Notes become pages, frontmatter becomes structured metadata, wikilinks resolve to relative URLs. Vault as CMS, files stay plain Markdown.
 
@@ -208,6 +247,55 @@ CORS is enabled for all origins (`*`) so any local dev server can call the API d
 
 ---
 
+## LSP Server
+
+`yamlink serve --lsp --vault <path>` starts a persistent JSON-RPC 2.0 Language Server Protocol server over stdio, enabling any LSP-capable editor — Neovim, Zed, Helix, Emacs — to use Yamlink intelligence without VS Code.
+
+The server is the headless Yamlink engine with a stdio shell around it. No build step. No third-party dependencies beyond the engine itself. Full reference: `docs/lsp/README-LSP.md`.
+
+### Capabilities
+
+| Method | What it does |
+|---|---|
+| `textDocument/completion` | `[[` → wikilink completions ranked by vault priors (up to 50); frontmatter keys ranked by type bundle; frontmatter values for `type:` and workflow fields |
+| `textDocument/hover` | Note card for `[[id]]` links: name, type, status, summary, inbound count |
+| `textDocument/definition` | Go-to-definition for `[[id]]` wikilinks |
+| `textDocument/prepareRename` | Validate rename position; returns current ID as placeholder (required by Zed, Helix) |
+| `textDocument/rename` | Vault-wide ID rename as `WorkspaceEdit`; rewrites `id:` and all `[[id]]`, `[[id\|alias]]`, `![[id]]` |
+| `textDocument/references` | All `[[id]]` occurrences vault-wide; optional declaration location |
+| `textDocument/documentSymbols` | Frontmatter fields (kind=8) + headings (kind=15) |
+| `textDocument/codeAction` | Quickfix: create stub note for broken `[[id]]` links |
+| `workspace/symbol` | Vault-wide ID/name/type search (up to 100 results) |
+
+### Server → client
+
+- `textDocument/publishDiagnostics` — broken wikilinks as severity=2 Warnings, pushed after every vault rebuild
+- `client/registerCapability` — registers `**/*.md` file watcher after `initialized`
+- `window/logMessage` — index rebuild notifications (note count, errors)
+
+### Transport
+
+```
+Content-Length: <byte-length>\r\n\r\n{"jsonrpc":"2.0",...}
+```
+
+stdin → editor messages · stdout → server messages · stderr → internal debug logs
+
+### Quick connect (Neovim)
+
+```lua
+configs.yamlink = {
+  default_config = {
+    cmd       = { 'yamlink', 'serve', '--lsp', '--vault', vim.fn.getcwd() },
+    filetypes = { 'markdown' },
+    root_dir  = lspconfig.util.root_pattern('.yamlinkignore', '.git'),
+  },
+}
+lspconfig.yamlink.setup({})
+```
+
+---
+
 ## Activity Stream (Home Panel)
 
 `yamlink.openHome` — opens the Home panel. Yamlink's home screen for your vault. Shows:
@@ -216,11 +304,32 @@ CORS is enabled for all origins (`*`) so any local dev server can call the API d
 - **Quick-action buttons** — "New note" (primary), "Today" (daily note), and per-vault type buttons for your top types (up to 4)
 - **Activity feed** — last 15 mutation events as a human-readable timeline, most recent first, each entry clickable to open the note
 - **Continue working** — your 5 most recently touched notes, clickable
+- **Task groups** — overdue, today, upcoming, and open / undated work pulled from the shared task engine
 - **Nudge cards** — broken links card (opens Problems panel), untyped notes card (opens a `!view where type is empty` query)
+- **Projection Snapshot** — a compact forecast card that summarizes where the vault seems to be heading next and links into full Vault Health detail
+
+The Home panel is the first operational task surface in Yamlink. It is where vault pressure should be visible before you even open Calendar or a note report.
 
 Auto-opens on first vault activation (once per vault, keyed by root path). Cold-start state: when a vault has fewer than 5 notes, the two-column body is replaced with an onboarding welcome screen showing 3 quick-start steps.
 
 **Quick access:** the `$(home)` button in the status bar (immediately right of the vault-health indicator) opens the Home panel from any file with a single click — no command palette needed.
+
+### Task notifications
+
+Yamlink can raise low-noise VS Code task notifications as a secondary signal layer:
+
+- overdue tasks trigger warning popups
+- due-today tasks trigger information popups
+- alerts are deduped by vault state so the same set does not keep re-firing on every refresh
+- popup actions let you review the first task, open Calendar, or open Home
+
+Per-vault settings:
+
+- `yamlink.taskNotifications.enabled`
+- `yamlink.taskNotifications.includeOverdue`
+- `yamlink.taskNotifications.includeDueToday`
+- `yamlink.taskNotifications.maxItemsPerAlert`
+- `yamlink.taskNotifications.reminderCooldownMinutes`
 
 ---
 
@@ -391,7 +500,7 @@ These map to task/date-oriented query flows.
 
 ## Query Builder
 
-Yamlink has a guided query builder built into the editor.
+Yamlink has a real visual query builder built into the editor.
 
 It helps you build:
 
@@ -400,13 +509,33 @@ It helps you build:
 - task and calendar views
 - query suggestions from Note Report context
 - refinements to existing `!view` blocks
+- grouped views with `group by`
+- live preview of the exact generated `!view` text before writing
 
 It's editor-native: you stay in VS Code, work in plain text, and the builder helps with structure rather than replacing it.
 
 ### Current query-builder behavior
 
-- guided starters when inserting a new `!view` block — suggestions based on the active note's context
-- quick presets for common patterns: type tables, task views, incoming/backlinks
+- `Yamlink: Query Builder` opens a dedicated side panel
+- uses a real `View -> Shape -> Preview` flow instead of a loose prompt chain
+- choose the view kind visually: table, incoming, or task preset
+- compact shaping flow for type, columns, layout, grouping, sorting, and limits
+- `Recommended / All fields / Custom` column modes for table queries
+- progressive disclosure via collapsible sections:
+  - `Result layout`
+  - `Filters`
+  - `Sort & limit`
+  - `Details`
+- layout modes shown with Yamlink iconography:
+  - Table
+  - Matrix
+  - Bar
+  - Scatter
+- live result summary and sample rows before insertion
+- sample rows rendered like actual result rows instead of raw field blobs
+- exact generated `!view` text shown in the panel at all times
+- preview status line reports when the query is ready to insert or needs review
+- if your cursor is already inside a `!view` block, the builder opens in replace/refine mode instead of only inserting a new block
 - contextual query recipes inside Note Report
 - **Open Yamlink Query Builder** lightbulb action on `!view` blocks
 - **Refine this view** action for existing queries
@@ -470,6 +599,14 @@ The task table `done` column shows five distinct states:
 | Due soon | amber | task date is 1–3 days from now |
 | Overdue | red | task date is in the past |
 | Not done | muted | no date, or date is 4+ days out |
+
+### Chart views
+
+Any `!view` result or Query Builder query can be rendered as a bar chart or scatter plot — not only as a table. Switch layouts using the toolbar toggle on any live result without changing the underlying query.
+
+- **Bar chart** — set `layout: bar` in the `!view` block, or click **Bar** in the Query Builder layout toggle. A **Group by** picker appears to select which field aggregates the bars. Queries already using `group by` render immediately. Bars are labeled and colored by the Apollo palette. Useful for category distributions: notes per status, missions per outcome, contacts per account, scores by type.
+- **Scatter plot** — set `layout: scatter` or click **Scatter**. Yamlink auto-selects the first two numeric or date fields as X/Y axes; axis dropdowns let you change them. The Scatter option is greyed out when the result set has no numeric or date fields.
+- **Matrix** — set `layout: matrix` or use the Table | Matrix toolbar toggle. A column type picker selects which vault note type populates the matrix columns; rows = query results, cells show ● for connected pairs. See supported table behaviors above.
 
 ### Table output behavior
 
@@ -564,7 +701,9 @@ Shows how this note has changed structurally over time.
 - `field_added` — blue, shows field name and new value (wikilinks unwrapped to bare IDs)
 - `field_changed` — amber, shows field name, old value strikethrough, and new value
 - `field_removed` — grey, shows field name
-- `relation_changed` — purple, shows relation field, old target strikethrough, and new target
+- `relation_added` — mint, shows relation field and the new target ("Linked")
+- `relation_changed` — purple, shows relation field, old target strikethrough, and new target ("Relinked")
+- `relation_removed` — muted, shows relation field and the cleared target ("Unlinked")
 
 Events are written to `.yamlink/mutation-log.ndjson` at the vault root and survive extension restarts (up to 200 events shown per note; 10,000 total across the vault). The `.yamlink/` folder is gitignored automatically.
 
@@ -599,6 +738,12 @@ It is vault-wide, not note-specific.
 - dated Markdown tasks
 - notes with `date:` or `created:` dates
 
+This means Calendar is already both a task surface and an activity surface:
+
+- a task with a due date appears on its due date
+- a note with `date:` appears as dated note activity
+- a note with only `created:` appears as created-note activity
+
 ### Capabilities
 
 - range switching
@@ -608,6 +753,48 @@ It is vault-wide, not note-specific.
   - `M` / `W` / `D` for month, week, and day mode
   - `[` and `]` to move backward and forward through the current range
   - `T` to jump to today
+
+---
+
+## Note Outline
+
+The Note Outline panel lives in the Yamlink sidebar (`yamlink.noteOutline` view). It shows the structural outline of the active Markdown note — headings with per-section metadata that VS Code's native Outline panel does not surface.
+
+### What it shows
+
+Each heading row displays:
+- **Heading text** and level with section-aware icons (active section, task-heavy section, linked section, and structural parent sections each get a different icon treatment)
+- **Anchor link count** — how many other notes link to this note at this specific heading (`[[id#section]]`) — e.g. `2 links`
+- **Task count** — how many `- [ ]` or `- [x]` task lines are inside this section — e.g. `3 tasks`
+- **Body mention count** — how many wikilink mentions appear inside that section body
+- **Word count** — approximate body word count between this heading and the next — e.g. `~240w`
+- **Section preview** — tooltip preview of the first meaningful line in the section
+
+Description line example: `now · 2l · 3t · 4m · ~240w`
+
+### Behavior
+
+- Follows the active editor automatically — refreshes on tab switch and on document change
+- Tracks cursor movement and marks the current section in the outline
+- Sticky current-section behavior keeps the active heading visible in the tree while you move through long notes
+- Only activates for Markdown files
+- Preserves heading hierarchy for long notes instead of flattening every heading into one list
+- Auto-collapses unrelated branches so the current section path stays expanded and easier to scan in large documents
+- Click any heading row to navigate to that line in the editor (`yamlink.revealOutlineLine`)
+- Jump between same-level sections with:
+  - `Yamlink: Next Sibling Section`
+  - `Yamlink: Previous Sibling Section`
+  - Default keys: `Ctrl+Alt+Down` / `Ctrl+Alt+Up` (`Cmd+Alt+Down` / `Cmd+Alt+Up` on macOS)
+- Search and filter controls are available from the Note Outline view title and command palette:
+  - search icon in the Note Outline title
+  - filter icon in the Note Outline title
+  - `Yamlink: Search Note Outline`
+  - `Yamlink: Note Outline Filters`
+  - `Yamlink: Clear Outline Filters`
+- Filters preserve parent headings when a child section matches, so search results stay readable instead of flattening the note structure
+- Sections with no metadata show only the heading name (no clutter on short or untitled sections)
+
+This panel is intentionally richer than VS Code's native Outline: task and anchor data are vault-derived signals, not just syntactic heading positions.
 
 ---
 
@@ -621,6 +808,8 @@ Tasks are a real workflow surface in Yamlink.
 - stable task block IDs
 - task visibility in Calendar
 - task visibility in Note Report
+- task visibility in the Home panel
+- optional VS Code notifications for overdue and due-today tasks
 - task-oriented shortcut queries
 - broader date handling in task and note text such as:
   - `Mar 26th 2026`
@@ -691,7 +880,25 @@ Three independent visual channels that stack additively:
 - **Hover** — shows node info card (label, section/type, lifecycle badge, link count); connected nodes highlight, non-connected nodes dim
 - **Click** — pins the focus on the selected node
 - **Search** — substring match on node labels, 120ms debounce; non-matching nodes dim, matching nodes get a yellow ring
-- **Filter** — `setFilter(Set<string>)` hides nodes by kind; edges to hidden nodes disappear
+- **Filter** — type filter chips pass exact vault type strings to `setFilter(Set<string>)` (e.g. `'contact'`, `'mission'`); only matching nodes are shown, edges to hidden nodes disappear
+
+#### Cluster shape and physics
+
+The layout engine produces a filled field of nodes with readable subclusters, not a ring:
+
+- **Fibonacci spiral seed** — cluster anchors start at golden-angle-spaced positions with varying radii; breaks radial symmetry before the simulation begins
+- **Topology mini-force** — a 32-iteration inter-cluster simulation runs after BFS: connected clusters pull toward each other, isolated ones drift outward, producing organic grouping
+- **Weight-aware center pull** — hub nodes are attracted 2.5× more strongly toward origin, creating a natural radial depth gradient; lighter peripheral notes form the outer shell
+- **Convergence detection** — the animation loop exits as soon as all nodes move < 0.2px/frame, preventing perpetual micro-jitter on settled layouts
+
+#### Cluster hull rendering
+
+Translucent shape overlays appear behind each cluster (zoom 0.12–1.80):
+
+- Graham scan convex hull computed for each cluster's node positions; vertices expanded 26 units outward from centroid
+- Smoothed via quadratic bezier curves (hull points as control points, edge midpoints as path endpoints) — produces rounded, organic shapes
+- Fill at 6% alpha, stroke at 13% alpha, both in the hub node's type color
+- **Focus-aware** — hovered/selected cluster brightens (10%/22%); all others dim (2.5%/6%)
 
 #### Performance architecture
 
@@ -699,8 +906,10 @@ The renderer is built to stay fast as vault size grows:
 
 - **Edge batching** — edges are bucketed by style (color, line width, dash pattern) and drawn with a single `stroke()` call per bucket. Base mode: 2 stroke calls per frame regardless of edge count. Semantic mode: ~6–12 buckets per frame.
 - **Frustum culling** — nodes and edges outside the current viewport are skipped entirely in every pass (draw loop, label pass, hit test prep)
-- **Label LOD** — label density adapts to zoom: all nodes labeled when zoomed in; only hub/selected nodes labeled at medium zoom; only selected node at low zoom. Prevents label overdraw from collapsing readability on large graphs.
-- **Web Worker layout** — D3-force runs in a Web Worker (`LayoutWorker`) so physics simulation never blocks the main thread. The worker posts position updates at ~60fps; the renderer applies them without blocking.
+- **Dot mode** — at zoom < 0.10 with > 200 nodes, node arcs are replaced with color-bucketed `fillRect` calls (~10× faster); hovered/selected nodes still get a proper circle
+- **Edge cutoff** — the entire edge pass is skipped below zoom 0.06 (nodes are sub-pixel; edges are invisible)
+- **Label LOD + fade** — label density adapts to zoom; labels fade in over a 0.05-zoom ramp instead of snapping on at the threshold
+- **Web Worker layout** — the force simulation runs in a Web Worker (`LayoutWorker`) so physics never blocks the main thread
 
 **Current practical ceiling**: ~2,000–3,000 nodes at 60fps. At ~5,000 nodes performance begins to degrade.
 
@@ -778,6 +987,14 @@ Vault Health gives a vault-wide quality snapshot.
 - lifecycle distribution
 - type-consistency score cards
 - need-attention drift pills for the most divergent notes
+- **vault projections** — a first-pass forward forecast across:
+  - growth by note type
+  - stale-note pressure
+  - structural direction (improving / steady / fragile)
+  - evidence-weighted confidence per lane
+  - type-specific leaders for stale pressure and structural fragility when the vault has enough data
+  - a recent 4-week trend memory layered over the same signals
+  - a scenario layer for “if cleanup pace holds”, “if cleanup improves”, and “if growth pace holds”
 - **schema conformance** — per-type coverage (% of notes with all required fields), list of non-conformant notes with their missing fields, advisories for types that have notes but no schema (only surfaces when ≥1 schema exists — schema amplifies, never gates), dangling relation warnings (schema references a target type with no vault notes)
 
 ### Navigation
@@ -791,6 +1008,7 @@ Vault Health sections are organized into tabs so you navigate directly to the se
 | Consistency | Type-consistency score cards and drift pills for divergent notes |
 | Schema | Per-type conformance coverage, non-conformant notes, dangling relation warnings |
 | Templates | Notes drifted from their `_templates/` definition (conditional — only when drift exists) |
+| Intelligence | Projection lanes for growth, stale pressure, and structure direction |
 | Types | Full entity type catalog with expandable note lists and View buttons |
 | Orphans | Unlinked notes (conditional — only when orphans exist) |
 
@@ -827,6 +1045,27 @@ Hover any Vault Health card to see a short tooltip that explains the stat in pla
 
 Vault Health is the operational quality surface for the vault — not just diagnostics, but a structural snapshot that makes health trends visible over time.
 
+### Vault projections
+
+Vault Projections are a first-pass forecasting layer built from the same local signals Yamlink already tracks:
+
+- mutation-log activity over the last 30 days
+- lifecycle distribution
+- current structural drift pressure
+- accepted completion behavior
+
+They do **not** pretend to predict the future perfectly. The goal is narrower and more useful:
+
+- show whether note growth is accelerating in specific types
+- show whether stale pressure is likely building
+- show whether the vault feels structurally healthier or more fragile than its recent baseline
+- show which note families are actually driving those reads
+- scale confidence down when the vault is too sparse to justify loud forecasts
+- show whether those directions are changing week over week rather than only reading one 30-day lump
+- let the user see what likely happens if current cleanup or growth behavior continues
+
+This makes Vault Health directional, not just descriptive.
+
 ---
 
 ## Diagnostics
@@ -844,6 +1083,8 @@ Yamlink currently surfaces diagnostics for:
 - query suggestions
 
 Diagnostics appear as hints, warnings, or advisory information depending on severity.
+
+**Tag pill decorations** — `#hashtag` tokens in the note body and values in `tags:` / `labels:` frontmatter fields are highlighted with a purple pill (background fill + rounded border). Works across all Markdown language mode variants (`markdown`, `markdown-extended`, etc.).
 
 **Broken link styling** — broken `[[wikilinks]]` in the editor are decorated with amber brackets and faded amber text instead of a yellow squiggle, keeping the reading experience intact while still making dead references visible. The diagnostic is downgraded to Hint severity; broken links remain visible in the Problems panel and in the Home panel nudge count.
 
@@ -880,6 +1121,7 @@ Yamlink’s autocomplete is not limited to raw ID completion.
 - if you mention `[[x]]` twice or more in the note body and it's not yet a frontmatter field, Yamlink offers "Add as field" in the lightbulb
 - relation completion starts before you type `[[` — suggestions appear based on the field name
 - relation suggestions are ranked by vault relevance, not just alphabetical order
+- Smart Templates can now hand off directly into ranked follow-up completion on the first empty field after schema insertion
 - smart starter actions for likely next steps when Yamlink has enough signal about the current note
 
 ---
@@ -998,7 +1240,7 @@ Templates and schemas are complementary. If both exist for a type, the template 
 
 ## CLI
 
-The `yamlink` command lets you query and inspect your vault from a terminal without VS Code open.
+The `yamlink` command provides full headless vault access. All commands support `--vault <path>` (default: current directory) and most support `--json` for machine-readable output.
 
 ### Setup
 
@@ -1011,26 +1253,41 @@ npm link
 
 | Command | What it does |
 |---|---|
-| `yamlink health` | Vault overview: note count, types, broken links, orphan nodes, lifecycle distribution |
-| `yamlink report <id>` | Full note report: type, lifecycle state, drift, and outbound/inbound links by field |
-| `yamlink query "<clause>"` | Run a query using the same language as `!view` blocks |
+| `yamlink build` | Index vault, report broken links / duplicate IDs (exits 1 on issues) |
+| `yamlink briefing` | Vault pulse, overdue tasks, recent activity, arc predictions for today's notes |
+| `yamlink create <type>` | Create a note non-interactively; accepts any number of `--field key=value` pairs |
+| `yamlink set <id> <field> <value>` | Write a frontmatter field on a note; `--clear` removes the field; emits mutation events |
+| `yamlink link <id> <field> <target>` | Add a `[[target]]` wikilink relation; `--append` adds to an existing multi-value field |
+| `yamlink search <query>` | Fast lookup by id, name, title, or type; `--type` narrows results |
+| `yamlink status` | Compact vault snapshot: notes, edges, types, broken links, generation |
+| `yamlink health` | Lifecycle, drift, type distribution |
+| `yamlink validate` | Schema conformance — exits 1 on required-field violations |
+| `yamlink query "<clause>"` | Run a query using the same language as `!view` blocks; outputs an ASCII table |
+| `yamlink report <id>` | Full note report: type, lifecycle, drift, and links by field |
 | `yamlink links <id>` | Outbound and inbound links for a note, with broken-link markers |
-
-### Options
-
-| Option | Effect |
-|---|---|
-| `--vault <path>` | Vault directory (default: current working directory) |
-| `--json` | Machine-readable JSON output |
+| `yamlink rename <old> <new>` | Vault-wide ID rename; `--dry-run` previews changes without writing |
+| `yamlink schema list` | All schema notes: type, required fields, note count |
+| `yamlink schema check <type>` | Conformance check for all notes of a type against its schema |
+| `yamlink graph` | Export vault graph as `{ nodes, edges }` JSON; `--only-types` to filter |
+| `yamlink serve` | Local HTTP API server (default port 3000) |
+| `yamlink serve --lsp` | JSON-RPC 2.0 LSP server over stdio for Neovim, Zed, Helix, Emacs |
+| `yamlink export` | Dump vault to JSON or CSV; `--format json\|csv` |
+| `yamlink watch` | Watch vault for `.md` changes, rebuild on every save |
+| `yamlink on <event> -- <script>` | Run a shell script when matching mutation events fire |
+| `yamlink conduit` | Terminal UI — 9 screens; auto-starts the API server if not already running |
+| `yamlink init [path]` | Scaffold a new vault with `.yamlink/`, `_templates/`, and `welcome.md` |
+| `yamlink completions bash\|zsh` | Print shell completion script; pipe into `.bashrc` / `.zshrc` |
 
 ### Examples
 
 ```bash
-yamlink health --vault ~/my-vault
+yamlink briefing --vault ~/my-vault
 yamlink report johnny-rico --vault sample
 yamlink query "where type = character" --vault sample
 yamlink query "!view mission select id, date, outcome sort date desc" --vault sample
 yamlink links johnny-rico --vault sample --json | jq '.inbound'
+yamlink on field_added --type contact -- ./scripts/notify.sh
+yamlink rename johnny-rico rico --dry-run
 ```
 
 ### Query syntax
@@ -1051,6 +1308,105 @@ Space-separated `select` fields are normalized to comma-separated automatically,
 - **CI/CD** — validate vault health in a CI step (`yamlink health --json`)
 - **Quick lookup** — check links or field data on any note without opening VS Code
 - **Export pipelines** — pipe `--json` output to downstream tools
+
+---
+
+## Conduit (Terminal UI)
+
+`yamlink conduit` (or bare `yamlink`) opens the terminal UI. Conduit auto-starts the API server if nothing is listening on the configured port — no separate `yamlink serve` needed.
+
+### Screens
+
+| Key | Screen | What it shows |
+|---|---|---|
+| `1` | Briefing | Vault pulse, overdue tasks, recent mutation activity |
+| `2` | Query | Live query runner — type a `!view` clause, see results as an ASCII table |
+| `3` | Navigator | Type filter + fuzzy search across all notes; `Enter` opens in `$EDITOR` |
+| `4` | Explorer | Two-pane browser (types → notes) with intelligence preview; full write capability |
+| `5` | Health | Schema coverage bars, advisories, dangling relations, vault health score |
+| `6` | Search | Free-text vault search |
+| `7` | Graph | Vault graph navigator |
+| `8` | Diff | Side-by-side note diff |
+| `9` | Radar | Relation radar — connections radiating from the current note |
+
+### Global key bindings
+
+| Key | Action |
+|---|---|
+| `1`–`9` | Switch to screen by number (applies to focused pane in split mode) |
+| `\|` | Toggle split view — two independent screens side by side |
+| `Tab` | Cycle panes in split mode (lit border = active) |
+| `?` | Open help overlay |
+| `:` | Open command palette |
+| `Esc` | Go back / close overlay |
+| `Ctrl+C` | Quit |
+
+### Explorer key bindings
+
+| Key | Action |
+|---|---|
+| `Tab` | Cycle panes (types ↔ notes) |
+| `j` / `k` | Move cursor (also arrow keys) |
+| `Enter` | Open note in `$EDITOR` |
+| `v` | **View note** — full Markdown reading view (NoteView) |
+| `p` | Peek note detail overlay |
+| `e` | Edit a frontmatter field in-place |
+| `n` | Create a new note (3-step form) |
+| `D` | Delete note (with confirmation) |
+| `l` | Create a link from a field to another note |
+| `/` | Filter notes by text |
+| `H` | Note mutation history |
+| `r` | Open Radar centered on selected note |
+| `g` | Open Graph focused on selected note |
+| `o` | Open note in `$EDITOR` |
+| `Space` | Toggle multi-select on current note |
+| `S` / `R` | Save / restore operational context |
+
+### Split view
+
+Press `|` from any screen to split Conduit horizontally. Each pane is an independent screen instance with its own navigation state. Both panes share the same SSE connection and vault data — no double polling. `Tab` cycles focus; `q` on the secondary pane closes split. The status bar shows the pane indicator when split is active.
+
+### Briefing — session context
+
+Every Conduit open shows what changed since your last session at the top of Briefing:
+
+> *since your last session (14h ago): 3 notes created, 2 missions updated, 1 broken link appeared*
+
+Powered by `GET /api/diff` scoped to the last-session timestamp in `.yamlink/conduit-last-session.json`. First run: no delta. Every subsequent open: the delta since you left.
+
+### Explorer — bulk operations
+
+Space bar places a `■` selection mark on a note. Build a multi-selection, then press Enter to open the bulk action menu:
+
+| Action | What it does |
+|---|---|
+| Set field on all | Write `{ field: value }` to all selected notes via `PATCH /api/nodes/bulk` |
+| Set status on all | Shorthand for the most common bulk edit |
+| Delete all | Remove all selected notes (with confirmation step) |
+
+Selection count is shown in the notes pane header throughout. Esc cancels at any step.
+
+### Explorer — intelligence in note detail
+
+The note detail pane (bottom of Explorer) shows lifecycle state, drift label, and top arc prediction inline — no `p` keypress required:
+
+```
+lifecycle: growing  drift: on-track  ↑ 4
+next: commander  (high)
+```
+
+### Note View (`v` key)
+
+Pressing `v` on any selected note in Explorer or Navigator opens the **NoteView** overlay — a full-screen Markdown reading experience rendered entirely in ANSI terminal output.
+
+- **Headings** — H1 in pink+bold with underline bar, H2 in lavender with `▸`, H3 in secondary with `›`
+- **Inline** — wikilinks in mint, backtick code in teal, bold/italic preserved
+- **Tasks** — `- [ ] …` as amber `☐`; `- [x] …` as muted `☑`
+- **Lists, blockquotes, code fences** — rendered with appropriate borders and colors
+- **Scroll** — `j`/`k` line-by-line, pageDown/pageUp half-page; scroll percentage in footer
+- **Heading navigation** — `]` next heading, `[` previous heading
+- **Intelligence footer** — lifecycle badge in header; high/medium arc gaps shown as `⚑ missing: …`
+- **Editor handoff** — `o` opens in `$EDITOR`; `Esc` returns to the previous screen
 
 ---
 

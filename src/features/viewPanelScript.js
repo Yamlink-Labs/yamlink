@@ -195,6 +195,23 @@
             if (!panel) return;
             panel.dataset.matrixColType = sel.value;
             vscode.postMessage({ command: 'requestRerender', state: viewRuntime.getState() });
+            return;
+        }
+        const axisSel = e.target.closest('[data-scatter-axis]');
+        if (axisSel) {
+            const panel = axisSel.closest('.tab-panel');
+            if (!panel) return;
+            if (axisSel.dataset.scatterAxis === 'x') panel.dataset.scatterX = axisSel.value;
+            if (axisSel.dataset.scatterAxis === 'y') panel.dataset.scatterY = axisSel.value;
+            vscode.postMessage({ command: 'requestRerender', state: viewRuntime.getState() });
+            return;
+        }
+        const barGroupSel = e.target.closest('[data-bar-group-select]');
+        if (barGroupSel) {
+            const panel = barGroupSel.closest('.tab-panel');
+            if (!panel) return;
+            panel.dataset.barGroupBy = barGroupSel.value;
+            vscode.postMessage({ command: 'requestRerender', state: viewRuntime.getState() });
         }
     });
 }());

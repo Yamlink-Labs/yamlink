@@ -1,6 +1,6 @@
 'use strict';
 
-const { test, describe } = require('node:test');
+const { test, describe, after } = require('node:test');
 const assert = require('node:assert/strict');
 const Module = require('module');
 
@@ -108,8 +108,16 @@ const {
     queryAlreadyExists,
     QUERY_SUGGESTION_THRESHOLD
 } = require('../src/engine/suggestions');
+const { resetVaultPriorsCache } = require('../src/intelligence/vaultPriors');
+const { resetObservedNoteIndexCache } = require('../src/intelligence/suggestionNoteIndex');
+const { clearActivationCache } = require('../src/intelligence/activationCache');
 
 describe('smart suggestions', () => {
+    after(() => {
+        resetVaultPriorsCache();
+        resetObservedNoteIndexCache();
+        clearActivationCache();
+    });
     test('repeated incoming pattern still emits canonical incoming query', () => {
         const results = computeSuggestionsForNode('johnny-rico', null);
         const canonical = results.find(r => r.queryText === '!view incoming mission\nvia commander');

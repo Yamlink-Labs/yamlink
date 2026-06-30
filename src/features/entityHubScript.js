@@ -6,6 +6,7 @@
     'use strict';
 
     var vscode = acquireVsCodeApi();
+    var noteId = (document.querySelector('.hub-node[data-id]') || {}).dataset?.id || '';
 
     // ── Click delegation ─────────────────────────────────────────────
     // Handles: hub-node (focal node header), cell-id, cell-rel, section toggle
@@ -65,6 +66,13 @@
             if (section) {
                 section.classList.toggle('open');
                 sectionHeader.setAttribute('aria-expanded', section.classList.contains('open') ? 'true' : 'false');
+                if (noteId) {
+                    var state = {};
+                    document.querySelectorAll('.hub-section[data-field]').forEach(function (s) {
+                        state[s.dataset.field] = s.classList.contains('open');
+                    });
+                    try { localStorage.setItem('yamlink.sections.' + noteId, JSON.stringify(state)); } catch (e) {}
+                }
                 applySearch();
             }
             return;
@@ -151,10 +159,12 @@
     }
 
     // ── Tab switching ─────────────────────────────────────────────────
-    var TAB_KEY  = 'yamlink.entityHubTab';
+    var TAB_KEY  = noteId ? 'yamlink.entityHubTab.' + noteId : 'yamlink.entityHubTab';
     var tabBtns  = Array.from(document.querySelectorAll('.hub-tab-btn'));
     var tabPanes = Array.from(document.querySelectorAll('.hub-tab-pane'));
     var tabIds   = tabBtns.map(function (b) { return b.dataset.tab; });
+    var hubBody = document.querySelector('.hub-body');
+    var scrollSaveTimer = null;
 
     function activateTab(tabId, focusButton) {
         if (tabIds.indexOf(tabId) === -1) tabId = tabIds[0] || 'overview';
@@ -171,6 +181,10 @@
             pane.hidden = !isActive;
         });
         try { localStorage.setItem(TAB_KEY, tabId); } catch (e) {}
+        try {
+            var savedScroll = parseInt(localStorage.getItem('yamlink.scroll.' + noteId + '.' + tabId) || '0', 10);
+            if (hubBody && savedScroll > 0) hubBody.scrollTop = savedScroll;
+        } catch (e) {}
         applySearch();
     }
 
@@ -206,5 +220,35 @@
     try { _savedTab = localStorage.getItem(TAB_KEY) || 'overview'; } catch (e) {}
     decorateInteractiveNodes();
     activateTab(_savedTab, false);
+
+    if (noteId) {
+        try {
+            var saved = JSON.parse(localStorage.getItem('yamlink.sections.' + noteId) || 'null');
+            if (saved && typeof saved === 'object') {
+                document.querySelectorAll('.hub-section[data-field]').forEach(function (section) {
+                    var field = section.dataset.field;
+                    if (Object.prototype.hasOwnProperty.call(saved, field)) {
+                        section.classList.toggle('open', saved[field]);
+                        var header = section.querySelector('.hub-section-header');
+                        if (header) header.setAttribute('aria-expanded', saved[field] ? 'true' : 'false');
+                    }
+                });
+            }
+        } catch (e) {}
+    }
+
+    if (hubBody) {
+        hubBody.addEventListener('scroll', function () {
+            if (!noteId) return;
+            clearTimeout(scrollSaveTimer);
+            scrollSaveTimer = setTimeout(function () {
+                var activeTab = tabBtns.find(function (button) { return button.classList.contains('active'); });
+                var currentTabId = activeTab ? activeTab.dataset.tab : 'overview';
+                try {
+                    localStorage.setItem('yamlink.scroll.' + noteId + '.' + currentTabId, String(hubBody.scrollTop));
+                } catch (e) {}
+            }, 200);
+        });
+    }
 
 }());

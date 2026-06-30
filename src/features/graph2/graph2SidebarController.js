@@ -61,6 +61,16 @@ function createGraph2SidebarController() {
         sidebarView.webview.postMessage({ type: 'graph2:update', payload });
     }
 
+    function syncSidebarCenterToNode(nodeId) {
+        if (!panelState || !nodeId) return false;
+        const stableScopes = new Set([GRAPH2_SCOPES.VAULT, GRAPH2_SCOPES.DOMAIN]);
+        if (stableScopes.has(panelState.scope)) return false;
+        const previousCenter = panelState.centerNodeId || null;
+        const previousSelected = panelState.selectedNodeId || null;
+        panelState = normalizeGraph2State({ ...panelState, centerNodeId: nodeId }, nodeId, panelState);
+        return previousCenter !== panelState.centerNodeId || previousSelected !== panelState.selectedNodeId;
+    }
+
     async function openNodeInEditor(nodeId) {
         if (!nodeId) return;
         const fp = getIndex().get(nodeId);
@@ -87,10 +97,11 @@ function createGraph2SidebarController() {
             break;
         case 'setScope': {
             const activeId = getPreferredActiveNodeId();
+            const nextScope = message.scope;
             panelState = normalizeGraph2State({
                 ...panelState,
-                scope: message.scope,
-                ...([GRAPH2_SCOPES.VAULT, GRAPH2_SCOPES.DOMAIN].includes(message.scope)
+                scope: nextScope,
+                ...([GRAPH2_SCOPES.VAULT, GRAPH2_SCOPES.DOMAIN].includes(nextScope)
                     ? { centerNodeId: null, selectedNodeId: null }
                     : {})
             }, activeId, panelState);
@@ -149,15 +160,15 @@ function createGraph2SidebarController() {
                     vscode.Uri.joinPath(context.extensionUri, 'graph', 'renderer', 'Canvas2DRenderer.js')
                 ).toString();
 
-                webviewView.webview.html = perfTracker.measureSync(
-                    'graph2.sidebar.buildBootHtml', null,
-                    () => buildGraph2SidebarBootHtml(webviewView.webview, context.extensionUri, rendererUri)
-                );
-
                 webviewView.webview.onDidReceiveMessage(
                     (msg) => handleMessage(msg),
                     null,
                     context.subscriptions
+                );
+
+                webviewView.webview.html = perfTracker.measureSync(
+                    'graph2.sidebar.buildBootHtml', null,
+                    () => buildGraph2SidebarBootHtml(webviewView.webview, context.extensionUri, rendererUri)
                 );
 
                 webviewView.onDidChangeVisibility(() => {
@@ -179,10 +190,7 @@ function createGraph2SidebarController() {
         vscode.window.onDidChangeActiveTextEditor((editor) => {
             const nextId = rememberMarkdownEditor(editor);
             if (!sidebarView || !panelState || !nextId) return;
-            const stableScopes = new Set([GRAPH2_SCOPES.VAULT, GRAPH2_SCOPES.DOMAIN]);
-            if (stableScopes.has(panelState.scope)) return;
-            panelState = normalizeGraph2State({ ...panelState, centerNodeId: nextId }, nextId, panelState);
-            pushUpdate();
+            if (syncSidebarCenterToNode(nextId)) pushUpdate();
         });
     }
 

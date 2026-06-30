@@ -7,6 +7,9 @@ unit: [fleet]
 commander: [[lt-rasczak]]
 outcome: objective-captured
 casualties: very-high
+casualty_count: 34
+duration: 4
+threat_level: 8
 bugs-encountered: [warrior, tanker, hopper]
 created: "2297-10-15"
 ---

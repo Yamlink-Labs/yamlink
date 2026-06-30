@@ -135,6 +135,19 @@ describe('graph — LOCAL scope node/edge structure', () => {
         vault.destroy();
     });
 
+    test('alias wikilinks resolve to the canonical node in graph topology', () => {
+        const vault = createVault({
+            'rico.md': NOTE('rico', 'contact', 'account: "[[Mobile Infantry]]"\n'),
+            'mi.md':   NOTE('mi', 'account', 'name: Mobile Infantry\naliases: Mobile Infantry\n')
+        });
+        const payload = vault.graph2('rico');
+        const edge = payload.model.elements.find(e => e.data && e.data.source);
+        assert.ok(edge, 'edge should exist');
+        assert.equal(edge.data.source, 'rico');
+        assert.equal(edge.data.target, 'mi');
+        vault.destroy();
+    });
+
     test('isolated note has 1 node and 0 edges in LOCAL scope', () => {
         const vault = createVault({
             'solo.md': NOTE('solo', 'note')

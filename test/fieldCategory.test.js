@@ -668,4 +668,24 @@ describe('fieldCategory — implicit history signal', () => {
         // status matches RE_WORKFLOW → WORKFLOW regardless; implicit boost is 0 for non-links
         assert.equal(result.category, CATEGORY.WORKFLOW);
     });
+
+    it('behavioral relation priors can recover relation intent before current vault statistics catch up', () => {
+        const behavioralRelationPriors = {
+            fieldTargetTypeScores: new Map([
+                ['unit', new Map([['unit', 2.4]])]
+            ]),
+            noteTypeFieldTargetTypeScores: new Map([
+                ['character', new Map([
+                    ['unit', new Map([['unit', 2.4]])]
+                ])]
+            ])
+        };
+        const result = classifyField('unit', {
+            noteType: 'character',
+            behavioralRelationPriors
+        });
+        assert.equal(result.category, CATEGORY.RELATION);
+        assert.equal(result.source, 'behavior');
+        assert.match(result.reasons[0], /recent character modeling/i);
+    });
 });

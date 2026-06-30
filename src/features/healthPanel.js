@@ -1,9 +1,9 @@
 const vscode = require('vscode');
 const crypto = require('crypto');
-const { getIndex } = require('../core/indexService');
 const { collectHealthStats } = require('./health/healthStats');
 const { buildHealthHtml } = require('./health/healthHtml');
 const { getPrimaryWorkspaceRoot } = require('../core/workspace');
+const { openNoteTarget } = require('./navigation/openNoteTarget');
 
 let panel = null;
 let _extensionUri = null;
@@ -28,17 +28,10 @@ function openHealthPanel(context) {
         }
     );
 
-    panel.webview.onDidReceiveMessage(message => {
-        const idIndex = getIndex();
-
+    panel.webview.onDidReceiveMessage(async (message) => {
         // Open a node file
         if (message.command === 'openNode') {
-            const filePath = idIndex.get(message.id);
-            if (filePath) {
-                vscode.workspace.openTextDocument(filePath).then(doc => {
-                    vscode.window.showTextDocument(doc, { preview: false });
-                });
-            }
+            openNoteTarget(message.id, { preview: false }).catch(() => {});
         }
 
         const { openViewPanel } = require('./viewPanel');
@@ -56,6 +49,18 @@ function openHealthPanel(context) {
         // Open !view * for all nodes
         if (message.command === 'openAllNodes') {
             openViewPanel(context, '# All Nodes\n\n!view *\n');
+        }
+
+        if (message.command === 'createSchemaFromCluster') {
+            let rawFields = [];
+            if (Array.isArray(message.fields)) {
+                rawFields = message.fields;
+            } else if (typeof message.fields === 'string') {
+                try { rawFields = JSON.parse(message.fields); } catch { rawFields = []; }
+            }
+            const fields = rawFields.map((f) => String(f || '').trim()).filter(Boolean);
+            const noteType = String(message.type || '').trim().toLowerCase() || null;
+            await createSchemaNote({ type: noteType, fields });
         }
 
     }, null, context.subscriptions);
@@ -77,4 +82,51 @@ function updatePanel() {
     panel.webview.html = buildHealthHtml(collectHealthStats({ workspaceRoot }), { scriptUri, nonce, csp });
 }
 
-module.exports = { openHealthPanel, updatePanel };
+/**
+ * Create a schema note for the given type and fields.
+ * If type is null, prompts the user via VS Code input box.
+ * Shared by the health panel webview button and the yamlink.proposeSchema command.
+ *
+ * @param {{ type: string|null, fields: string[] }} opts
+ * @returns {Promise<void>}
+ */
+async function createSchemaNote({ type, fields }) {
+    try {
+        const workspaceRoot = getPrimaryWorkspaceRoot(vscode.workspace.workspaceFolders);
+        if (!workspaceRoot) {
+            vscode.window.showErrorMessage('No workspace root available for schema creation.');
+            return;
+        }
+
+        let noteType = String(type || '').trim().toLowerCase();
+        if (!noteType) {
+            noteType = String(await vscode.window.showInputBox({
+                prompt: 'Type name for the new schema note',
+                placeHolder: 'contact'
+            }) || '').trim().toLowerCase();
+        }
+        if (!noteType) return;
+
+        const schemaId = `schema-${noteType}`;
+        const schemaBody = [
+            '---',
+            `id: ${schemaId}`,
+            'type: schema',
+            `for: ${noteType}`,
+            'fields:',
+            ...(fields.length ? fields.map((f) => `  - ${f}`) : ['  - name']),
+            '---',
+            ''
+        ].join('\n');
+
+        const targetUri = vscode.Uri.joinPath(vscode.Uri.file(workspaceRoot), `${schemaId}.md`);
+        await vscode.workspace.fs.writeFile(targetUri, Buffer.from(schemaBody, 'utf8'));
+        const document = await vscode.workspace.openTextDocument(targetUri);
+        await vscode.window.showTextDocument(document, { preview: false });
+        vscode.window.showInformationMessage(`Schema note created: ${schemaId}.md`);
+    } catch (error) {
+        vscode.window.showErrorMessage(`Failed to create schema note: ${error.message || String(error)}`);
+    }
+}
+
+module.exports = { openHealthPanel, updatePanel, createSchemaNote };

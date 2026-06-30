@@ -5,6 +5,7 @@ const { getEdges, getGraphStats } = require('../../core/graph');
 const { getRegistryStats } = require('../../registries/typeRegistry');
 const { getSchemaStats } = require('../../registries/schemaRegistry');
 const fmt = require('../format');
+const { emitCliSuccess } = require('../io');
 
 function run({ json, vaultPath }) {
     const idIndex    = getIndex();
@@ -38,7 +39,7 @@ function run({ json, vaultPath }) {
         ok:           brokenLinks.length === 0 && dupIds.length === 0,
     };
 
-    if (json) { console.log(JSON.stringify(data, null, 2)); process.exit(data.ok ? 0 : 1); return; }
+    if (json) { emitCliSuccess(data); process.exit(data.ok ? 0 : 1); return; }
 
     fmt.header('Build: ' + vaultPath);
     fmt.row('Notes',   data.notes);

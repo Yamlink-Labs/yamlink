@@ -110,6 +110,8 @@ require.cache.__qb_query__ = {
             const wheres = [];
             let sort = null;
             let via = null;
+            let limit = null;
+            let groupBy = null;
             for (const line of block.slice(1)) {
                 const trimmed = String(line || '').trim();
                 const viaMatch = trimmed.match(/^via\s+([\w-]+)$/i);
@@ -130,6 +132,14 @@ require.cache.__qb_query__ = {
                 if (sortMatch) {
                     sort = { field: sortMatch[1].toLowerCase(), desc: Boolean(sortMatch[2]) };
                 }
+                const limitMatch = trimmed.match(/^limit\s+(\d+)$/i);
+                if (limitMatch) {
+                    limit = Number(limitMatch[1]);
+                }
+                const groupMatch = trimmed.match(/^group\s+by\s+([\w-]+)$/i);
+                if (groupMatch) {
+                    groupBy = groupMatch[1].toLowerCase();
+                }
             }
             return {
                 type: resolvedType.toLowerCase(),
@@ -139,8 +149,9 @@ require.cache.__qb_query__ = {
                 wheres,
                 where: wheres[0] || null,
                 sort,
-                limit: null,
-                via
+                limit: limit || null,
+                via,
+                groupBy: groupBy || null
             };
         },
         buildQueryString(query) {
@@ -157,9 +168,27 @@ require.cache.__qb_query__ = {
                     }
                 }
             }
+            if (query.groupBy) text += `\ngroup by ${query.groupBy}`;
             if (query.sort) text += `\nsort ${query.sort.field}${query.sort.desc ? ' desc' : ''}`;
             if (query.limit) text += `\nlimit ${query.limit}`;
             return text;
+        },
+        runQuery(query) {
+            if (query.type !== 'contact') {
+                return { success: true, rows: [], columns: ['id'], warnings: [], error: null };
+            }
+            return {
+                success: true,
+                rows: [
+                    { id: 'contact-1', fields: { name: 'Alice', company: 'Acme', created: '2026-04-20' } },
+                    { id: 'contact-2', fields: { name: 'Bob', company: 'Globex', created: '2026-04-21' } }
+                ],
+                columns: ['id', 'name', 'company'],
+                warnings: [],
+                error: null,
+                groups: query.groupBy ? [{ key: 'Acme', count: 1 }, { key: 'Globex', count: 1 }] : null,
+                groupBy: query.groupBy || null
+            };
         }
     }
 };
@@ -231,6 +260,12 @@ const {
     refineParsedQuery,
     buildRefinedBlockText
 } = require('../src/actions/codeActions');
+const {
+    buildStateFromQuery,
+    buildQueryTextFromState,
+    buildPreviewFromState,
+    deriveKnownTypes
+} = require('../src/actions/queryBuilderModel');
 
 describe('query builder helpers', () => {
     test('buildTypeViewQuery emits smart schema-backed starter queries', () => {
@@ -249,6 +284,74 @@ describe('query builder helpers', () => {
     test('buildIncomingViewQuery emits canonical incoming queries', () => {
         assert.equal(buildIncomingViewQuery('contact', 'owner'), '!view incoming contact\nvia owner');
         assert.equal(buildIncomingViewQuery('*', '*'), '!view incoming *');
+    });
+
+    test('query builder model can round-trip a grouped table query', () => {
+        const state = buildStateFromQuery({
+            type: 'contact',
+            incoming: false,
+            label: 'Active contacts',
+            select: ['name', 'company'],
+            wheres: [{
+                field: 'status',
+                op: 'eq',
+                value: 'active',
+                valueSource: 'active',
+                valueKind: 'string'
+            }],
+            where: {
+                field: 'status',
+                op: 'eq',
+                value: 'active',
+                valueSource: 'active',
+                valueKind: 'string'
+            },
+            sort: { field: 'created', desc: true },
+            limit: 10,
+            groupBy: 'company'
+        });
+        const text = buildQueryTextFromState(state);
+        assert.equal(
+            text,
+            '!view contact | Active contacts\nselect name, company\nwhere status = active\ngroup by company\nsort created desc\nlimit 10'
+        );
+    });
+
+    test('query builder model can build incoming queries with relation field narrowing', () => {
+        const text = buildQueryTextFromState({
+            mode: 'incoming',
+            type: 'contact',
+            viaField: 'owner',
+            label: 'Contact backlinks',
+            sortField: 'created',
+            sortDirection: 'desc',
+            limit: 25
+        });
+        assert.equal(
+            text,
+            '!view incoming contact | Contact backlinks\nvia owner\nsort created desc\nlimit 25'
+        );
+    });
+
+    test('query builder preview returns result summary and sample rows', () => {
+        const preview = buildPreviewFromState({
+            mode: 'table',
+            type: 'contact',
+            selectMode: 'custom',
+            selectFields: ['name', 'company'],
+            sortField: 'created',
+            sortDirection: 'desc',
+            limit: 10
+        }, { contextNodeId: 'account-1' });
+        assert.equal(preview.summary.ok, true);
+        assert.equal(preview.summary.title, '2 rows');
+        assert.deepEqual(preview.summary.columns, ['id', 'name', 'company']);
+        assert.equal(preview.summary.sampleRows[0].id, 'contact-1');
+    });
+
+    test('query builder known types merge registry and vault types', () => {
+        const types = deriveKnownTypes();
+        assert.deepEqual(types, ['account', 'contact']);
     });
 
     test('appendQueryOptions adds label, filters, sorting, and limits', () => {

@@ -37,7 +37,14 @@ const vscodeStub = {
     },
     Uri: {
         file(fsPath) {
-            return { fsPath };
+            const makeUri = (fragment = '') => ({
+                fsPath,
+                fragment,
+                with(update) {
+                    return makeUri(update?.fragment || '');
+                }
+            });
+            return makeUri('');
         }
     },
     Position,
@@ -119,6 +126,7 @@ describe('wikilink document links', () => {
 
         assert.equal(headingLinks[0].target.fsPath, 'C:\\vault\\johnny-rico.md');
         assert.equal(blockLinks[0].target.fsPath, 'C:\\vault\\johnny-rico.md');
+        assert.equal(blockLinks[0].target.fragment, 'L12');
     });
 
     test('resolves embed links too', () => {
@@ -148,6 +156,20 @@ describe('wikilink document links', () => {
 const indexServiceStub = {
     getAliasIndex() {
         return new Map();
+    },
+    getBodyBlockIndex() {
+        return new Map([
+            ['johnny-rico', new Map([
+                ['note-block', {
+                    blockId: 'note-block',
+                    type: 'quote',
+                    line: 11,
+                    endLine: 11,
+                    label: 'Note block',
+                    text: 'Note block'
+                }]
+            ])]
+        ]);
     }
 };
 

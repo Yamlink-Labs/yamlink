@@ -5,18 +5,18 @@ const {
     getVisibleTaskColumns,
     extractRelations
 } = require('../entityHubModel');
-
-/* ── Lucide icon helpers ─────────────────────────────────────── */
-function _svgIcon(paths, size) {
-    return '<svg xmlns="http://www.w3.org/2000/svg" width="' + size + '" height="' + size + '" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" style="display:block;flex-shrink:0">' + paths + '</svg>';
-}
-const _CHEVRON_RIGHT = _svgIcon('<polyline points="9 18 15 12 9 6"/>', 11);
-const _ARC_ICONS = {
-    created:    _svgIcon('<path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="12" y1="18" x2="12" y2="12"/><line x1="9" y1="15" x2="15" y2="15"/>', 10),
-    typed:      _svgIcon('<path d="M20.59 13.41l-7.17 7.17a2 2 0 0 1-2.83 0L2 12V2h10l8.59 8.59a2 2 0 0 1 0 2.82z"/><line x1="7" y1="7" x2="7.01" y2="7"/>', 10),
-    connecting: _svgIcon('<path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/>', 10),
-    last:       _svgIcon('<circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/>', 10),
-};
+const {
+    _CHEVRON_RIGHT,
+    esc,
+    buildEmptySection,
+    buildSectionEmptyState,
+    buildEntityHubEmptyHtml,
+    buildEntityHubErrorHtml
+} = require('./entityHubSectionHtml');
+const {
+    buildHistorySection,
+    describeHistoryEvent
+} = require('./entityHubSectionHistory');
 
 function getRelationRowDisplayName(row) {
     return String(row?.fields?.name || row?.fields?.title || row?.sourceId || '').trim();
@@ -277,6 +277,40 @@ function buildCompactRelationTableSection(title, fieldName, groups, open = true)
     ].join('\n');
 }
 
+function buildBlockBacklinkSection(rows) {
+    if (!rows || !rows.length) return '';
+
+    const bodyRows = rows.map(function (row) {
+        const targetKind = String(row.targetKind || '');
+        const sourceType = String(row.sourceType || '');
+        return [
+            '<tr>',
+            `  <td data-sort-value="${esc(String(row.targetLabel || '').toLowerCase())}">${esc(row.targetLabel || row.targetBlockId || '-')}</td>`,
+            `  <td class="cell-id" data-id="${esc(row.sourceId)}" data-sort-value="${esc(String(row.sourceLabel || '').toLowerCase())}">${esc(row.sourceLabel || row.sourceId)}</td>`,
+            `  <td data-sort-value="${esc(targetKind.toLowerCase())}">${esc(targetKind || '-')}</td>`,
+            `  <td data-sort-value="${esc(String(row.kind || '').toLowerCase())}">${esc(row.kind || '-')}</td>`,
+            `  <td data-sort-value="${esc(sourceType.toLowerCase())}">${sourceType ? esc(sourceType) : '<span class="cell-empty">-</span>'}</td>`,
+            '</tr>'
+        ].join('');
+    }).join('');
+
+    return [
+        '<div class="hub-section" data-field="block-backlinks">',
+        '    <div class="hub-section-header">',
+        '        <span class="hub-chevron">' + _CHEVRON_RIGHT + '</span>',
+        '        <span class="hub-field">block backlinks</span>',
+        `        <span class="hub-count">${rows.length}</span>`,
+        '    </div>',
+        '    <div class="hub-section-body">',
+        '        <table>',
+        '            <thead><tr><th data-col="target">target <span class="sarr">↕</span></th><th data-col="source">source <span class="sarr">↕</span></th><th data-col="target-kind">target kind <span class="sarr">↕</span></th><th data-col="ref-kind">ref kind <span class="sarr">↕</span></th><th data-col="source-type">source type <span class="sarr">↕</span></th></tr></thead>',
+        `            <tbody>${bodyRows}</tbody>`,
+        '        </table>',
+        '    </div>',
+        '</div>'
+    ].join('\n');
+}
+
 function buildTaskSection(label, rows) {
     const columns = getVisibleTaskColumns(rows);
     const headerCells = columns
@@ -358,241 +392,6 @@ function buildTimelineSection(rows) {
     ].join('\n');
 }
 
-function buildEmptySection(title, emptyTitle, emptyCopy) {
-    return [
-        `<div class="hub-section" data-field="${esc(title)}">`,
-        '    <div class="hub-section-header">',
-        '        <span class="hub-chevron">' + _CHEVRON_RIGHT + '</span>',
-        `        <span class="hub-field">${esc(title)}</span>`,
-        '        <span class="hub-count">0</span>',
-        '    </div>',
-        '    <div class="hub-section-body">',
-        buildSectionEmptyState(emptyTitle, emptyCopy),
-        '    </div>',
-        '</div>'
-    ].join('\n');
-}
-
-function buildSectionEmptyState(title, copy) {
-    return `<div class="section-empty"><div class="section-empty-title">${title}</div><div class="section-empty-copy">${copy}</div></div>`;
-}
-
-const EMPTY_HINTS = {
-    '-':                                  { msg: 'Open a Yamlink note to see its report.', hint: '' },
-    'not a node':                         { msg: 'This file is not a Yamlink node.', hint: 'Add <code>id: your-note-id</code> to the frontmatter and save to index it.' },
-    'Select a Yamlink node to open its report': { msg: 'Open a note in the editor.', hint: 'The Note Report updates whenever you switch to an indexed Markdown file.' }
-};
-
-function buildEntityHubEmptyHtml(label) {
-    const hint = EMPTY_HINTS[label] || { msg: 'Nothing here yet.', hint: 'Link this node to others with <code>[[note-id]]</code> to build its report.' };
-    return [
-        '<!DOCTYPE html><html><head><meta charset="UTF-8">',
-        '<meta http-equiv="Content-Security-Policy" content="default-src \'none\'; style-src \'unsafe-inline\';">',
-        '<style>',
-        '*{margin:0;padding:0;box-sizing:border-box}',
-        'body{background:var(--vscode-editor-background,#141414);color:#888;font-family:\'Segoe UI\',system-ui,sans-serif;height:100vh;display:flex;flex-direction:column}',
-        '.hub-header{padding:11px 16px 10px;background:var(--vscode-sideBar-background,#1a1a1a);border-bottom:1px solid #2a2a2a;font-size:11px;color:#6f7781;letter-spacing:.08em;text-transform:uppercase}',
-        '.center{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:8px;padding:20px;text-align:center}',
-        '.msg{font-size:12px;color:#6f7781;line-height:1.5}',
-        '.hint{font-size:11px;color:#555;line-height:1.6}',
-        'code{background:#1e2126;padding:1px 5px;border-radius:4px;font-size:10px}',
-        '</style></head><body>',
-        `<div class="hub-header">${esc(label)}</div>`,
-        `<div class="center"><div class="msg">${hint.msg}</div>${hint.hint ? `<div class="hint">${hint.hint}</div>` : ''}</div>`,
-        '</body></html>'
-    ].join('\n');
-}
-
-function buildEntityHubErrorHtml(label, error) {
-    const detail = error && error.message ? error.message : String(error || 'Unknown error');
-    return [
-        '<!DOCTYPE html><html><head><meta charset="UTF-8">',
-        '<meta http-equiv="Content-Security-Policy" content="default-src \'none\'; style-src \'unsafe-inline\';">',
-        '<style>',
-        '*{margin:0;padding:0;box-sizing:border-box}',
-        'body{background:var(--vscode-editor-background,#141414);color:var(--vscode-editor-foreground,#c8c8c8);font-family:\'Segoe UI\',system-ui,sans-serif;height:100vh;display:flex;flex-direction:column}',
-        '.hdr{padding:11px 16px 10px;background:var(--vscode-sideBar-background,#1a1a1a);border-bottom:1px solid var(--vscode-panel-border,#2a2a2a);font-size:11px;color:#8b949e;letter-spacing:.08em;text-transform:uppercase}',
-        '.body{padding:16px;display:flex;flex-direction:column;gap:10px}',
-        '.err{color:#ff9b9b;font-size:13px;font-weight:600}',
-        '.detail{color:#8b949e;font-size:12px;line-height:1.45}',
-        '</style></head><body>',
-        `<div class="hdr">${esc(label)}</div>`,
-        '<div class="body">',
-        '<div class="err">Note Report hit a runtime error.</div>',
-        `<div class="detail">${esc(detail)}</div>`,
-        '</div></body></html>'
-    ].join('\n');
-}
-
-function esc(str) {
-    return String(str)
-        .replace(/&/g, '&amp;')
-        .replace(/"/g, '&quot;')
-        .replace(/</g, '&lt;')
-        .replace(/>/g, '&gt;');
-}
-
-function _truncateValue(raw, max) {
-    if (raw == null) return '';
-    const s = String(raw);
-    const limit = max || 32;
-    return s.length > limit ? s.slice(0, limit) + '…' : s;
-}
-
-function _extractRelationIds(rawValue) {
-    if (!rawValue) return [];
-    const matches = [...String(rawValue).matchAll(/\[\[([^\]]+)\]\]/g)];
-    return matches.map(function (m) { return m[1].split('|')[0].split('#')[0].split('^')[0].trim(); });
-}
-
-function _renderHistoryValue(raw) {
-    if (raw == null || raw === '') return '<em class="history-empty">—</em>';
-    const str = String(raw);
-    if (str.includes('[[')) {
-        const ids = _extractRelationIds(str);
-        if (ids.length) return ids.map(function (id) { return '<em>' + esc(id) + '</em>'; }).join(', ');
-    }
-    return '<em>' + esc(_truncateValue(str, 32)) + '</em>';
-}
-
-function _formatArcDate(isoTimestamp) {
-    if (!isoTimestamp) return '';
-    const d = new Date(isoTimestamp);
-    const now = new Date();
-    const diffDays = Math.floor((now.getTime() - d.getTime()) / 86400000);
-    if (diffDays === 0) return 'today';
-    if (diffDays === 1) return 'yesterday';
-    if (diffDays < 7) return diffDays + 'd ago';
-    if (diffDays < 30) return Math.floor(diffDays / 7) + 'w ago';
-    if (diffDays < 365) return Math.floor(diffDays / 30) + 'mo ago';
-    return Math.floor(diffDays / 365) + 'y ago';
-}
-
-// _ARC_ICONS defined at module top with Lucide SVGs
-
-function buildArcSection(arc) {
-    if (!arc || !arc.length) return '';
-    const phasesHtml = arc.map(function (phase, i) {
-        const icon = _ARC_ICONS[phase.kind] || '●';
-        const dateStr = _formatArcDate(phase.timestamp);
-        const detailHtml = phase.detail ? '<span class="arc-detail">' + esc(phase.detail) + '</span>' : '';
-        const isLast = i === arc.length - 1;
-        return [
-            '<div class="arc-phase' + (isLast ? ' arc-phase--last' : '') + '">',
-            '<div class="arc-spine">',
-            '<span class="arc-icon arc-icon--' + esc(phase.kind) + '">' + icon + '</span>',
-            isLast ? '' : '<div class="arc-line"></div>',
-            '</div>',
-            '<div class="arc-content">',
-            '<span class="arc-label">' + esc(phase.label) + '</span>',
-            dateStr ? '<span class="arc-date">' + esc(dateStr) + '</span>' : '',
-            detailHtml,
-            '</div>',
-            '</div>'
-        ].filter(Boolean).join('');
-    }).join('');
-    return '<div class="arc-section"><div class="arc-phases">' + phasesHtml + '</div></div>';
-}
-
-function describeHistoryEvent(event) {
-    switch (event.type) {
-        case 'note_created':
-            return 'Note created';
-        case 'note_deleted':
-            return 'Note deleted';
-        case 'type_set':
-            return event.newValue
-                ? 'Type set to <em>' + esc(String(event.newValue)) + '</em>'
-                : 'Type set';
-        case 'field_added':
-            return event.field
-                ? '<strong>' + esc(event.field) + '</strong> added: ' + _renderHistoryValue(event.newValue)
-                : 'Field added';
-        case 'field_changed': {
-            if (event.field) {
-                const oldPart = event.oldValue != null
-                    ? '<span class="history-old">' + _renderHistoryValue(event.oldValue) + '</span> → '
-                    : '';
-                return '<strong>' + esc(event.field) + '</strong>: ' + oldPart + _renderHistoryValue(event.newValue);
-            }
-            return 'Field changed';
-        }
-        case 'field_removed':
-            return event.field
-                ? '<strong>' + esc(event.field) + '</strong> removed'
-                : 'Field removed';
-        case 'relation_changed': {
-            if (event.field) {
-                const oldPart = event.oldValue != null
-                    ? '<span class="history-old">' + _renderHistoryValue(event.oldValue) + '</span> → '
-                    : '';
-                return 'Relation <strong>' + esc(event.field) + '</strong>: ' + oldPart + _renderHistoryValue(event.newValue);
-            }
-            return 'Relation changed';
-        }
-        case 'task_status_changed':
-            return event.newValue === 'done'
-                ? 'Task marked <em>done</em>'
-                : event.newValue === 'open'
-                    ? 'Task reopened'
-                    : 'Task status changed';
-        default:
-            return esc(event.type || 'event');
-    }
-}
-
-function buildHistorySection(groups, totalCount, arc) {
-    const arcHtml = buildArcSection(arc);
-
-    if (!groups || !groups.length) {
-        return [
-            '<div class="hub-section" data-field="history">',
-            '    <div class="hub-section-header">',
-            '        <span class="hub-chevron">' + _CHEVRON_RIGHT + '</span>',
-            '        <span class="hub-field">history</span>',
-            '        <span class="hub-count">0</span>',
-            '    </div>',
-            '    <div class="hub-section-body">',
-            arcHtml ? '        ' + arcHtml : '',
-            buildSectionEmptyState('No history yet.', 'Field changes, new links, and type assignments appear here as you edit this note.'),
-            '    </div>',
-            '</div>'
-        ].filter(Boolean).join('\n');
-    }
-
-    const groupsHtml = groups.map(function (group) {
-        const eventsHtml = group.events.map(function (event) {
-            return [
-                '<div class="history-event">',
-                '  <span class="history-dot history-dot--' + esc(event.type || '') + '"></span>',
-                '  <span class="history-desc">' + describeHistoryEvent(event) + '</span>',
-                '  <span class="history-time">' + esc(event.timeStr || '') + '</span>',
-                '</div>'
-            ].join('');
-        }).join('');
-        return [
-            '<div class="history-group">',
-            '  <div class="history-group-label">' + esc(group.label) + '</div>',
-            '  <div class="history-timeline">' + eventsHtml + '</div>',
-            '</div>'
-        ].join('');
-    }).join('');
-
-    return [
-        '<div class="hub-section open" data-field="history">',
-        '    <div class="hub-section-header">',
-        '        <span class="hub-chevron">' + _CHEVRON_RIGHT + '</span>',
-        '        <span class="hub-field">history</span>',
-        '        <span class="hub-count">' + totalCount + '</span>',
-        '    </div>',
-        '    <div class="hub-section-body">',
-        arcHtml ? '        ' + arcHtml : '',
-        '        ' + groupsHtml,
-        '    </div>',
-        '</div>'
-    ].filter(Boolean).join('\n');
-}
-
 /**
  * Render the unlinked mentions section for the Links tab.
  * Each entry is a note whose body mentions this note's name/id without a wikilink.
@@ -641,23 +440,32 @@ function buildUnlinkedMentionsSection(mentions) {
 function buildNoteArcSection(noteArc) {
     if (!noteArc || !noteArc.missingFields || !noteArc.missingFields.length) return '';
     const { inferredType, missingFields } = noteArc;
+    const isColdStart = missingFields.length > 0 && missingFields[0].coldStart === true;
 
-    const rows = missingFields.map(({ field, ratio, calibrationCount, isRelation }) => {
-        const pct = Math.round(ratio * 100);
+    const rows = missingFields.map(({ field, ratio, calibrationCount, isRelation, coldStart }) => {
         const relBadge = isRelation ? ' <span class="arc-missing-rel">relation</span>' : '';
         const calNote = calibrationCount > 0
             ? ` <span class="arc-missing-cal" title="Accepted ${calibrationCount}× as a suggestion">✓${calibrationCount}</span>`
             : '';
+        const pctLabel = coldStart
+            ? '<span class="arc-missing-pct arc-missing-pct--starter">starter</span>'
+            : `<span class="arc-missing-pct">${Math.round(ratio * 100)}% of ${esc(inferredType || '')} notes</span>`;
         return [
             '<div class="arc-missing-row">',
             `  <span class="arc-missing-field">${esc(field)}</span>`,
             relBadge,
             calNote,
-            `  <span class="arc-missing-pct">${pct}% of ${esc(inferredType || '')} notes</span>`,
+            `  ${pctLabel}`,
             `  <button class="arc-add-btn" data-add-field="${esc(field)}" data-is-relation="${isRelation}" aria-label="Add ${esc(field)} field" title="Add field to this note">+</button>`,
             '</div>'
         ].join('');
     }).join('\n');
+
+    const hintText = isColdStart
+        ? (inferredType
+            ? `Your vault has no other <strong>${esc(inferredType)}</strong> notes yet. These are universally useful fields to consider adding.`
+            : 'Useful starter fields for any new note. Add what fits, skip what doesn\'t.')
+        : `Fields common on <strong>${esc(inferredType || '')}</strong> notes in your vault that this note doesn't have yet.`;
 
     return [
         '<div class="hub-section open" data-field="note-arc">',
@@ -667,7 +475,101 @@ function buildNoteArcSection(noteArc) {
         `    <span class="hub-count">${missingFields.length}</span>`,
         '  </div>',
         '  <div class="hub-section-body">',
-        `    <p class="arc-missing-hint">Fields common on <strong>${esc(inferredType || '')}</strong> notes in your vault that this note doesn't have yet.</p>`,
+        `    <p class="arc-missing-hint">${hintText}</p>`,
+        rows,
+        '  </div>',
+        '</div>'
+    ].join('\n');
+}
+
+function buildDocumentSection(documentData) {
+    const data = documentData || {};
+    const blocks = [];
+
+    if (Number(data.wordCount || 0) > 0) {
+        blocks.push(buildKeyValueSection('word count', 'document-words', [{ key: 'Words', value: String(data.wordCount) }], true));
+    }
+
+    if (Array.isArray(data.entityMentions) && data.entityMentions.length) {
+        blocks.push(buildKeyValueSection(
+            'entity mentions',
+            'document-mentions',
+            data.entityMentions.map(function (entry) {
+                return { key: entry.id, value: String(entry.count) };
+            }),
+            true
+        ));
+    }
+
+    if (Array.isArray(data.headings) && data.headings.length) {
+        blocks.push(buildKeyValueSection(
+            'headings',
+            'document-headings',
+            data.headings.map(function (heading, index) {
+                return { key: String(index + 1), value: heading };
+            }),
+            true
+        ));
+    }
+
+    if (Array.isArray(data.callouts) && data.callouts.length) {
+        const calloutCounts = new Map();
+        for (const callout of data.callouts) {
+            const type = String(callout?.type || '').trim();
+            if (!type) continue;
+            calloutCounts.set(type, (calloutCounts.get(type) || 0) + 1);
+        }
+        if (calloutCounts.size) {
+            blocks.push(buildKeyValueSection(
+                'callouts',
+                'document-callouts',
+                [...calloutCounts.entries()].map(function ([type, count]) {
+                    return { key: type, value: String(count) };
+                }),
+                true
+            ));
+        }
+    }
+
+    if (Number(data.footnoteCount || 0) > 0) {
+        blocks.push(buildKeyValueSection('footnotes', 'document-footnotes', [{ key: 'Footnote definitions', value: String(data.footnoteCount) }], true));
+    }
+
+    if (!blocks.length) {
+        return '<p class="hub-empty">No body content to analyse.</p>';
+    }
+
+    return blocks.join('\n');
+}
+
+/**
+ * @param {Array<{id:string,label:string,type:string,daysSince:number}>} notes
+ * @returns {string}
+ */
+function buildStaleConnectedSection(notes) {
+    if (!notes || !notes.length) return '';
+    const rows = notes.map(n => {
+        const ageLabel = n.daysSince === 1 ? '1 day ago' : `${n.daysSince} days ago`;
+        const typeLabel = n.type ? ` <span class="node-pill">${esc(n.type)}</span>` : '';
+        return [
+            '<div class="hub-relation-row" data-opennode="true"',
+            `     data-node-id="${esc(n.id)}" style="cursor:pointer">`,
+            `  <span class="hub-relation-id cell-id" data-id="${esc(n.id)}">${esc(n.label)}</span>`,
+            typeLabel,
+            `  <span class="hub-relation-meta">${esc(ageLabel)}</span>`,
+            '</div>'
+        ].join('');
+    }).join('\n');
+
+    return [
+        '<div class="hub-section open" data-field="stale-connected">',
+        '  <div class="hub-section-header">',
+        '    <span class="hub-chevron">' + _CHEVRON_RIGHT + '</span>',
+        '    <span class="hub-field">Stale connected notes</span>',
+        `    <span class="hub-count">${notes.length}</span>`,
+        '  </div>',
+        '  <div class="hub-section-body">',
+        '    <p class="hub-hint">Connected notes not updated in 60+ days.</p>',
         rows,
         '  </div>',
         '</div>'
@@ -681,6 +583,7 @@ module.exports = {
     buildActionSection,
     buildRelationSection,
     buildCompactRelationTableSection,
+    buildBlockBacklinkSection,
     buildTaskSection,
     buildTimelineSection,
     buildEmptySection,
@@ -688,8 +591,10 @@ module.exports = {
     buildEntityHubEmptyHtml,
     buildEntityHubErrorHtml,
     buildHistorySection,
+    buildStaleConnectedSection,
     buildUnlinkedMentionsSection,
     buildNoteArcSection,
+    buildDocumentSection,
     describeHistoryEvent,
     esc
 };

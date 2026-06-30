@@ -5,16 +5,25 @@ const { getEdges, getBacklinks } = require('../../core/graph');
 const { getCachedPriors } = require('../../intelligence/vaultPriors');
 const { inferLifecycleState } = require('../../intelligence/lifecycleState');
 const { computeNoteDrift } = require('../../intelligence/driftDetector');
+const { getMutationEvents } = require('../../runtime/mutationEventLog');
+const { buildNoteEvolution } = require('../../intelligence/noteEvolution');
 const fmt = require('../format');
+const { captureOutput, emitCliError, emitCliSuccess, emitText } = require('../io');
 
-function run({ id, json }) {
+function run({ id, json, output, history = false }) {
     const idIndex     = getIndex();
     const fieldsCache = getFieldsCache();
 
     if (!idIndex.has(id)) {
-        console.error(fmt.err('Note not found: ' + id));
-        console.error('Run ' + fmt.c.bold('yamlink health') + ' to see all indexed IDs.');
-        process.exit(1);
+        emitCliError({
+            json,
+            outputPath: output,
+            error: 'Note not found: ' + id,
+            code: 'NOT_FOUND',
+            details: { id },
+            exitCode: 1
+        });
+        return;
     }
 
     const noteFields   = fieldsCache.get(id) || {};
@@ -42,7 +51,7 @@ function run({ id, json }) {
 
         const drift = computeNoteDrift(id, noteFields, fieldsCache, priors);
         if (drift && !drift.insufficientData && drift.driftLabel && drift.driftLabel !== 'on-track') {
-            driftState = drift.driftLabel;
+            driftState = drift.driftLabelHuman || drift.driftLabel;
         }
     } catch (_) {}
 
@@ -70,34 +79,53 @@ function run({ id, json }) {
         fields:        Object.fromEntries(
             Object.entries(noteFields).filter(([k]) => !k.startsWith('__'))
         ),
+        evolution: history ? buildNoteEvolution(id, getMutationEvents({ noteId: id, limit: 500 })) : null
     };
 
-    if (json) { console.log(JSON.stringify(data, null, 2)); return; }
-
-    fmt.header('Note Report: ' + id);
-    if (data.type)      fmt.row('Type',           data.type);
-    if (lifecycleState) fmt.row('Lifecycle',       lifecycleState);
-    if (driftState)     fmt.row('Drift',           fmt.warn(driftState));
-    fmt.row('Outbound links', data.outboundCount);
-    fmt.row('Inbound links',  data.inboundCount);
-
-    if (Object.keys(outboundByField).length) {
-        fmt.blank();
-        fmt.subheader('Outbound');
-        for (const [field, targets] of Object.entries(outboundByField)) {
-            fmt.row('  ' + field, targets.join(', '));
-        }
+    if (json) {
+        emitCliSuccess(data, output);
+        return;
     }
 
-    if (Object.keys(inboundByField).length) {
-        fmt.blank();
-        fmt.subheader('Inbound');
-        for (const [field, sources] of Object.entries(inboundByField)) {
-            fmt.row('  ' + field, sources.join(', '));
-        }
-    }
+    emitText(captureOutput(() => {
+        fmt.header('Note Report: ' + id);
+        if (data.type)      fmt.row('Type',           data.type);
+        if (lifecycleState) fmt.row('Lifecycle',       lifecycleState);
+        if (driftState)     fmt.row('Drift',           fmt.warn(driftState));
+        fmt.row('Outbound links', data.outboundCount);
+        fmt.row('Inbound links',  data.inboundCount);
 
-    fmt.blank();
+        if (Object.keys(outboundByField).length) {
+            fmt.blank();
+            fmt.subheader('Outbound');
+            for (const [field, targets] of Object.entries(outboundByField)) {
+                fmt.row('  ' + field, targets.join(', '));
+            }
+        }
+
+        if (Object.keys(inboundByField).length) {
+            fmt.blank();
+            fmt.subheader('Inbound');
+            for (const [field, sources] of Object.entries(inboundByField)) {
+                fmt.row('  ' + field, sources.join(', '));
+            }
+        }
+
+        if (history && data.evolution) {
+            fmt.blank();
+            fmt.subheader('History');
+            fmt.row('Created', data.evolution.created || '—');
+            fmt.row('First type', data.evolution.typeSet || '—');
+            fmt.row('First fields', data.evolution.firstFields.join(', ') || '—');
+            fmt.row('Stable fields', data.evolution.stableFields.join(', ') || '—');
+            fmt.row('Unstable fields', data.evolution.unstableFields.map((item) => `${item.field} (${item.changeCount})`).join(', ') || '—');
+            fmt.row('Relations formed', data.evolution.relationsFormed.map((item) => `${item.field} → ${item.target}`).join(', ') || '—');
+            fmt.row('Total edits', data.evolution.totalEdits);
+            fmt.row('Last activity', data.evolution.lastActivity || '—');
+        }
+
+        fmt.blank();
+    }), output);
 }
 
 module.exports = { run };

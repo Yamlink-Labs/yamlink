@@ -17,26 +17,26 @@ const { normalizeFieldName } = require('./fieldRolesCore');
  */
 
 const DEFAULT_NOTE_ROLE_PRIORS = {
-    person: ['person', 'contact', 'lead', 'prospect', 'customer', 'character', 'author', 'member', 'employee', 'user', 'stakeholder'],
-    container: ['account', 'company', 'client', 'partner', 'organization', 'org', 'team', 'unit', 'group', 'department', 'workspace'],
-    event: ['meeting', 'call', 'appointment', 'session', 'scene', 'mission', 'event', 'interview'],
-    artifact: ['product', 'component', 'feature', 'repo', 'repository', 'service', 'machine', 'device', 'document', 'spec'],
-    concept: ['concept', 'topic', 'idea', 'theme', 'technology', 'capability', 'knowledge'],
-    project: ['project', 'initiative', 'epic', 'milestone', 'sprint', 'roadmap', 'release'],
-    task: ['task', 'todo', 'issue', 'bug', 'ticket', 'work-item', 'action-item'],
+    person: ['person', 'contact', 'lead', 'character', 'member'],
+    container: ['account', 'company', 'client', 'partner', 'team', 'unit', 'workspace'],
+    event: ['meeting', 'call', 'mission', 'event'],
+    artifact: ['product', 'component', 'feature', 'repo', 'service'],
+    concept: ['concept', 'topic', 'idea'],
+    project: ['project', 'initiative', 'milestone', 'roadmap', 'release'],
+    task: ['task', 'todo', 'issue', 'bug', 'work-item'],
     place: ['location', 'place', 'region', 'site'],
     record: ['note', 'entry', 'source', 'memo', 'log', 'dashboard', 'planner', 'lab', 'hub', 'index', 'overview', 'home']
 };
 
 const NOTE_ROLE_FIELD_HINTS = {
-    person: ['email', 'phone', 'account', 'owner', 'city', 'contact', 'contacts', 'manager'],
-    container: ['contacts', 'industry', 'website', 'domain', 'stage', 'account', 'accounts', 'client', 'partner', 'location'],
-    event: ['date', 'participants', 'purpose', 'agenda', 'location', 'account', 'contacts', 'contact'],
-    artifact: ['product', 'products', 'component', 'components', 'feature', 'repo', 'repository', 'machine', 'device', 'concept', 'concepts'],
-    concept: ['concept', 'concepts', 'theme', 'technology', 'summary', 'related', 'products', 'topics'],
-    project: ['milestone', 'sprint', 'repo', 'repository', 'owner', 'status', 'deadline'],
-    task: ['status', 'owner', 'assignee', 'priority', 'date', 'due', 'deadline', 'project', 'repo', 'reporter'],
-    place: ['region', 'site', 'location', 'address', 'country'],
+    person: ['email', 'phone', 'account', 'contact', 'manager'],
+    container: ['contacts', 'industry', 'website', 'domain', 'account', 'partner'],
+    event: ['date', 'participants', 'agenda', 'location'],
+    artifact: ['product', 'component', 'feature', 'repo', 'service'],
+    concept: ['concept', 'theme', 'summary', 'related'],
+    project: ['milestone', 'repo', 'owner', 'status', 'deadline'],
+    task: ['status', 'owner', 'assignee', 'priority', 'date', 'deadline', 'reporter'],
+    place: ['region', 'site', 'location', 'address'],
     record: ['summary', 'notes', 'source', 'references']
 };
 
@@ -88,7 +88,21 @@ function collectRoleMatches(candidates = [], priors = {}) {
     return matches;
 }
 
-function pickSpecificRoleLabel(nodeFields = {}, broadRole, titleHints = []) {
+function mergeRolePriorMaps(primary = {}, fallback = {}) {
+    const merged = {};
+    const roles = new Set([...Object.keys(fallback || {}), ...Object.keys(primary || {})]);
+    for (const role of roles) {
+        merged[role] = [
+            ...new Set([
+                ...(Array.isArray(primary?.[role]) ? primary[role] : []),
+                ...(Array.isArray(fallback?.[role]) ? fallback[role] : [])
+            ])
+        ];
+    }
+    return merged;
+}
+
+function pickSpecificRoleLabel(nodeFields = {}, broadRole, titleHints = [], roleNamePriors = DEFAULT_NOTE_ROLE_PRIORS) {
     const type = normalizeFieldName(nodeFields.type || '');
     const candidates = [
         type,
@@ -101,8 +115,8 @@ function pickSpecificRoleLabel(nodeFields = {}, broadRole, titleHints = []) {
         if (candidate === 'note' || candidate === 'entry' || candidate === 'record') continue;
         const parts = candidate.split('-').filter(Boolean);
         const variants = [candidate, ...parts];
-        if (broadRole && (DEFAULT_NOTE_ROLE_PRIORS[broadRole] || []).some((name) => variants.includes(name))) {
-            return variants.find((name) => (DEFAULT_NOTE_ROLE_PRIORS[broadRole] || []).includes(name)) || candidate;
+        if (broadRole && (roleNamePriors[broadRole] || []).some((name) => variants.includes(name))) {
+            return variants.find((name) => (roleNamePriors[broadRole] || []).includes(name)) || candidate;
         }
     }
 
@@ -125,13 +139,13 @@ function pickSpecificRoleLabel(nodeFields = {}, broadRole, titleHints = []) {
     return NOTE_ROLE_DISPLAY[broadRole] || broadRole || 'note';
 }
 
-function withHumanizedRole(result, nodeFields = {}, titleHints = []) {
+function withHumanizedRole(result, nodeFields = {}, titleHints = [], roleNamePriors = DEFAULT_NOTE_ROLE_PRIORS) {
     if (!result || !result.noteRole) return result;
-    const roleLabel = pickSpecificRoleLabel(nodeFields, result.noteRole, titleHints);
+    const roleLabel = pickSpecificRoleLabel(nodeFields, result.noteRole, titleHints, roleNamePriors);
     const secondaryRoles = Array.isArray(result.secondaryRoles)
         ? result.secondaryRoles.filter((role) => role && role !== result.noteRole)
         : [];
-    const secondaryRoleLabels = secondaryRoles.map((role) => pickSpecificRoleLabel(nodeFields, role, titleHints));
+    const secondaryRoleLabels = secondaryRoles.map((role) => pickSpecificRoleLabel(nodeFields, role, titleHints, roleNamePriors));
     return {
         ...result,
         roleLabel,
@@ -150,6 +164,7 @@ function withHumanizedRole(result, nodeFields = {}, titleHints = []) {
  * @param {Record<string, any>} [nodeFields]
  * @param {{
  *   noteRolePriors?: Record<string, string[]>,
+ *   noteRoleFieldHints?: Record<string, string[]>,
  *   titleHints?: string[],
  *   fieldRoleResults?: Array<Record<string, any>>,
  *   typeRoleMap?: Map<string, {role: string, confidence: number, inboundRatio: number, relCount: number, dateCount: number, workflowCount: number}>
@@ -157,24 +172,30 @@ function withHumanizedRole(result, nodeFields = {}, titleHints = []) {
  * @returns {NoteRoleResult}
  */
 function inferNoteRole(nodeFields = {}, options = {}) {
-    const priors = options.noteRolePriors || DEFAULT_NOTE_ROLE_PRIORS;
+    const learnedNamePriors = options.noteRolePriors || {};
+    const learnedFieldHints = options.noteRoleFieldHints || {};
+    const priors = mergeRolePriorMaps(learnedNamePriors, DEFAULT_NOTE_ROLE_PRIORS);
+    const fieldHintPriors = mergeRolePriorMaps(learnedFieldHints, NOTE_ROLE_FIELD_HINTS);
     const typeRoleMap = options.typeRoleMap || null;
     const type = normalizeFieldName(nodeFields.type || '');
     const signals = [];
     const weights = emptyRoleWeights();
-    const genericTypeHints = new Set(DEFAULT_NOTE_ROLE_PRIORS.record || []);
+    const genericTypeHints = new Set(priors.record || []);
     const titleHints = Array.isArray(options.titleHints) ? options.titleHints : [];
     const fieldRoleResults = Array.isArray(options.fieldRoleResults) ? options.fieldRoleResults : [];
 
     function finalize(result) {
-        return withHumanizedRole(result, nodeFields, titleHints);
+        return withHumanizedRole(result, nodeFields, titleHints, priors);
     }
 
     // 1. Vault-derived structural role — no hardcoded type names.
     // The vault has analyzed its own field patterns and inferred what role each
     // type plays structurally. This is authoritative: if the vault says "fighter"
     // is a person-type based on field patterns, that's what we use.
-    if (type && typeRoleMap) {
+    // Skip for generic types (note, entry, memo, …): these are used as catch-all
+    // buckets for diverse notes, so the aggregate vault role for the type is
+    // misleading. Per-note field analysis at step 3+ is more accurate.
+    if (type && typeRoleMap && !genericTypeHints.has(type)) {
         const vaultRole = typeRoleMap.get(type);
         if (vaultRole) {
             return finalize({
@@ -192,16 +213,27 @@ function inferNoteRole(nodeFields = {}, options = {}) {
     // Confidence is 0.65, not 0.92 — this is a convention-based guess,
     // not vault-derived truth. As the vault grows, the vault-derived role above
     // replaces this completely.
-    if (type) {
-        for (const [role, names] of Object.entries(priors)) {
-            if (names.includes(type)) {
-                if (role === 'record' && genericTypeHints.has(type)) {
-                    break;
-                }
+    if (type && !genericTypeHints.has(type)) {
+        for (const [role, names] of Object.entries(learnedNamePriors)) {
+            if (Array.isArray(names) && names.includes(type)) {
                 return finalize({
                     noteRole: role,
-                    confidence: 0.65,
-                    reasons: [`"${type}" conventionally maps to the ${role} role (vault learning pending — role will improve with more notes)`],
+                    confidence: 0.61,
+                    reasons: [`"${type}" behaves like a ${role} type elsewhere in this vault`],
+                    supportingSignals: [`vault-learned: "${type}" clusters with other ${role} notes in this vault`],
+                    conflictingSignals: []
+                });
+            }
+        }
+    }
+
+    if (type && !genericTypeHints.has(type)) {
+        for (const [role, names] of Object.entries(DEFAULT_NOTE_ROLE_PRIORS)) {
+            if (names.includes(type)) {
+                return finalize({
+                    noteRole: role,
+                    confidence: 0.52,
+                    reasons: [`"${type}" conventionally maps to the ${role} role (fallback only; vault learning will replace this)`],
                     supportingSignals: [`prior: "${type}" matches known ${role}-type names`],
                     conflictingSignals: []
                 });
@@ -227,7 +259,8 @@ function inferNoteRole(nodeFields = {}, options = {}) {
     }
 
     const titleMatches = collectRoleMatches(titleHints, priors);
-    const fieldMatches = collectRoleMatches(fieldNames, NOTE_ROLE_FIELD_HINTS);
+    const learnedFieldMatches = collectRoleMatches(fieldNames, learnedFieldHints);
+    const fieldMatches = collectRoleMatches(fieldNames, fieldHintPriors);
     const projectFieldMatches = fieldNames.filter((field) => [
         'project',
         'projects',
@@ -251,14 +284,19 @@ function inferNoteRole(nodeFields = {}, options = {}) {
         );
     }
     for (const [role, count] of fieldMatches.entries()) {
+        const learnedBoost = learnedFieldMatches.get(role) || 0;
         addRoleSignal(
             signals,
             weights,
             role,
-            0.9 + (count * 0.35),
-            count >= 2
-                ? `multiple structured fields resemble the ${role} role`
-                : `structured fields resemble the ${role} role`
+            (learnedBoost ? 1.05 : 0.82) + (count * (learnedBoost ? 0.40 : 0.28)),
+            learnedBoost
+                ? (count >= 2
+                    ? `multiple structured fields match ${role} patterns learned from this vault`
+                    : `structured fields match a ${role} pattern learned from this vault`)
+                : (count >= 2
+                    ? `multiple structured fields resemble the ${role} role`
+                    : `structured fields resemble the ${role} role`)
         );
     }
     if (projectFieldMatches.length) {

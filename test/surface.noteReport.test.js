@@ -9,6 +9,7 @@
 const { test, describe } = require('node:test');
 const assert = require('node:assert/strict');
 const { createVault } = require('./lib/vaultSim');
+const { buildQuoteBlockId } = require('../src/core/bodyBlocks');
 
 // ── Fixtures ──────────────────────────────────────────────────────────────────
 
@@ -118,6 +119,20 @@ describe('noteReport — diagnostic rows', () => {
         assert.ok(String(row.value).includes('a (2)'));
         vault.destroy();
     });
+
+    test('diagnostic rows include planner-backed authoring signals for relation fields', () => {
+        const vault = createVault(CRM);
+        const model = vault.noteReport('rico');
+        const summaryRow = model.vaultDiagnosticRows.find(r => r.key === 'authoring signal');
+        const detailRow = model.vaultDiagnosticRows.find(r => r.key === 'field signals');
+
+        assert.ok(summaryRow, 'expected authoring signal row');
+        assert.ok(detailRow, 'expected field signals row');
+        assert.match(String(summaryRow.value), /account/i);
+        assert.match(String(detailRow.value), /account/i);
+
+        vault.destroy();
+    });
 });
 
 // ── Recipes ───────────────────────────────────────────────────────────────────
@@ -187,6 +202,109 @@ describe('noteReport — task sections', () => {
         const ownSection = model.taskSections.find(s => s.label?.includes('this note'));
         assert.ok(ownSection && ownSection.rows.length === 2,
             `expected 2 tasks, got ${ownSection?.rows.length}`);
+        vault.destroy();
+    });
+});
+
+describe('noteReport — document tab data', () => {
+    test('documentData captures headings, callouts, body mentions, and footnotes', () => {
+        const files = {
+            'johnny-rico.md': [
+                '---',
+                'id: johnny-rico',
+                'type: contact',
+                '---',
+                '',
+                '# Background',
+                'Johnny Rico coordinates with [[carl-jenkins]] on strategy.',
+                '',
+                '## Operations',
+                '> [!SOURCE] ref',
+                '[[carl-jenkins]] confirmed the unit handoff to [[roughnecks]].',
+                '',
+                'Reference the archive.[^1]',
+                '',
+                '[^1]: Archive dossier'
+            ].join('\n'),
+            'carl-jenkins.md': NOTE('carl-jenkins', 'contact'),
+            'roughnecks.md': NOTE('roughnecks', 'unit')
+        };
+        const vault = createVault(files);
+        const model = vault.noteReport('johnny-rico');
+
+        assert.ok(model.documentData.wordCount > 0);
+        assert.ok(model.documentData.entityMentions.some((entry) => entry.id === 'carl-jenkins' && entry.count === 2));
+        assert.equal(model.documentData.headings.length, 2);
+        assert.ok(model.documentData.callouts.some((entry) => entry.type === 'SOURCE'));
+        assert.ok(model.documentData.footnoteCount >= 1);
+
+        vault.destroy();
+    });
+});
+
+describe('noteReport — block backlinks', () => {
+    test('captures incoming section refs to headings in this note', () => {
+        const files = {
+            'target.md': [
+                '---',
+                'id: target',
+                'type: dossier',
+                '---',
+                '',
+                '## Evidence',
+                'Witness summary.'
+            ].join('\n'),
+            'source.md': [
+                '---',
+                'id: source',
+                'type: note',
+                '---',
+                '',
+                'See [[target#Evidence]] for the witness summary.'
+            ].join('\n')
+        };
+        const vault = createVault(files);
+        const model = vault.noteReport('target');
+
+        assert.ok(Array.isArray(model.blockBacklinks));
+        assert.ok(model.blockBacklinks.some((row) =>
+            row.targetLabel === 'Evidence'
+            && row.sourceId === 'source'
+            && row.kind === 'section ref'
+        ));
+
+        vault.destroy();
+    });
+
+    test('captures incoming block refs to quotes in this note', () => {
+        const quoteBlockId = buildQuoteBlockId(1, 'Training-yard line commonly associated with Jean Rasczak.');
+        const files = {
+            'target.md': [
+                '---',
+                'id: target',
+                'type: dossier',
+                '---',
+                '',
+                '> Training-yard line commonly associated with Jean Rasczak.'
+            ].join('\n'),
+            'source.md': [
+                '---',
+                'id: source',
+                'type: note',
+                '---',
+                '',
+                `Reference [[target^${quoteBlockId}]] in the report.`
+            ].join('\n')
+        };
+        const vault = createVault(files);
+        const model = vault.noteReport('target');
+
+        assert.ok(model.blockBacklinks.some((row) =>
+            row.sourceId === 'source'
+            && row.targetKind === 'quote'
+            && row.kind === 'block ref'
+        ));
+
         vault.destroy();
     });
 });

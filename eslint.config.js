@@ -56,6 +56,7 @@ module.exports = [
             'media/**',
             'sample/**',
             'src/features/vendor/**',
+            'src/features/view/vendor/**',
             'node_modules/**'
         ]
     },

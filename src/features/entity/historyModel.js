@@ -1,18 +1,22 @@
 'use strict';
 
 const { getMutationEvents } = require('../../runtime/mutationEventLog');
+const { getFieldsCache } = require('../../core/indexService');
+const { buildSessionNarratives } = require('../../runtime/mutationNarratives');
+const { buildNoteEvolution } = require('../../intelligence/noteEvolution');
 
 const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
 const DAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
 
 /**
  * @param {string} noteId
- * @returns {{ groups: { label: string, events: object[] }[], totalCount: number, arc: object[] }}
+ * @returns {{ groups: { label: string, events: object[] }[], totalCount: number, arc: object[], sessions: object[], evolution: object|null }}
  */
 function buildHistoryModel(noteId) {
     const events = getMutationEvents({ noteId, limit: 200 });
     const totalCount = events.length;
-    if (!totalCount) return { groups: [], totalCount: 0, arc: [] };
+    if (!totalCount) return { groups: [], totalCount: 0, arc: [], sessions: [], evolution: null };
+    const fieldsCache = getFieldsCache();
 
     const now = new Date();
     const todayStr = _localDateStr(now);
@@ -50,8 +54,88 @@ function buildHistoryModel(noteId) {
     return {
         groups: [...grouped.entries()].map(([label, evts]) => ({ label, events: evts })),
         totalCount,
-        arc: buildNoteArc(events)
+        arc: buildNoteArc(events),
+        sessions: buildHistorySessions(events, fieldsCache),
+        evolution: buildNoteEvolution(noteId, events)
     };
+}
+
+/**
+ * Group note events into compact authoring sessions.
+ * @param {object[]} events
+ * @returns {{ sessionId: string, label: string, count: number, startedAt: string, endedAt: string, durationMinutes: number, topTypes: string[], sources: string[] }[]}
+ */
+function buildHistorySessions(events, fieldsCache = null) {
+    if (!Array.isArray(events) || !events.length) return [];
+    const buckets = new Map();
+
+    for (const event of events) {
+        const sessionId = String(event?.sessionId || '').trim();
+        if (!sessionId) continue;
+        if (!buckets.has(sessionId)) buckets.set(sessionId, []);
+        buckets.get(sessionId).push(event);
+    }
+
+    return [...buckets.entries()]
+        .map(([sessionId, sessionEvents]) => buildSessionSummary(sessionId, sessionEvents, fieldsCache))
+        .filter(Boolean)
+        .sort((a, b) => b.endedAt.localeCompare(a.endedAt))
+        .slice(0, 5);
+}
+
+function buildSessionSummary(sessionId, sessionEvents, fieldsCache = null) {
+    const sorted = [...(sessionEvents || [])].sort((a, b) => a.timestamp.localeCompare(b.timestamp));
+    if (!sorted.length) return null;
+    const startedAt = sorted[0].timestamp;
+    const endedAt = sorted[sorted.length - 1].timestamp;
+    const durationMinutes = Math.max(
+        0,
+        Math.round((new Date(endedAt).getTime() - new Date(startedAt).getTime()) / 60000)
+    );
+    const typeCounts = new Map();
+    const sources = new Set();
+    for (const event of sorted) {
+        if (event?.type) typeCounts.set(event.type, (typeCounts.get(event.type) || 0) + 1);
+        if (event?.source) sources.add(String(event.source));
+    }
+    const topTypes = [...typeCounts.entries()]
+        .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
+        .slice(0, 3)
+        .map(([type]) => type);
+    const narrative = buildSessionNarratives(sorted, fieldsCache || getFieldsCache(), { limit: 1, requireSessionId: false })[0] || null;
+
+    return {
+        sessionId,
+        label: buildSessionLabel(sorted),
+        count: sorted.length,
+        startedAt,
+        endedAt,
+        durationMinutes,
+        topTypes,
+        sources: [...sources],
+        family: narrative?.family || 'authoring',
+        familyLabel: narrative?.familyLabel || 'Authoring',
+        familyStrength: narrative?.familyStrength || 'low',
+        outcome: narrative?.outcome || 'observed',
+        outcomeLabel: narrative?.outcomeLabel || 'Observed',
+        summary: narrative?.summary || '',
+        focusFields: narrative?.focusFields || [],
+        impactedTargets: narrative?.impactedTargets || [],
+        sessionReason: narrative?.sessionReason || ''
+    };
+}
+
+function buildSessionLabel(events) {
+    const latest = events?.[events.length - 1];
+    if (!latest?.timestamp) return 'Recent session';
+    const diffMs = Date.now() - new Date(latest.timestamp).getTime();
+    const diffMinutes = Math.max(0, Math.floor(diffMs / 60000));
+    if (diffMinutes < 60) return diffMinutes <= 1 ? 'Current session' : `${diffMinutes}m ago`;
+    const diffHours = Math.floor(diffMinutes / 60);
+    if (diffHours < 24) return `${diffHours}h ago`;
+    const diffDays = Math.floor(diffHours / 24);
+    if (diffDays < 7) return `${diffDays}d ago`;
+    return 'Earlier session';
 }
 
 /**
@@ -80,7 +164,7 @@ function buildNoteArc(events) {
     }
 
     const connecting = sorted.find(e =>
-        (e.type === 'field_added' || e.type === 'relation_changed') &&
+        (e.type === 'field_added' || e.type === 'relation_added' || e.type === 'relation_changed') &&
         e.newValue && String(e.newValue).includes('[[')
     );
     if (connecting) {
@@ -105,10 +189,13 @@ function _extractRelationIds(rawValue) {
 
 function _describeArcEvent(event) {
     switch (event.type) {
+        case 'note_touched': return 'Note updated';
         case 'field_changed': return event.field ? event.field + ' updated' : 'Field updated';
         case 'field_added': return event.field ? event.field + ' added' : 'Field added';
         case 'field_removed': return event.field ? event.field + ' removed' : 'Field removed';
-        case 'relation_changed': return event.field ? event.field + ' changed' : 'Relation changed';
+        case 'relation_added': return event.field ? event.field + ' linked' : 'Relation linked';
+        case 'relation_removed': return event.field ? event.field + ' unlinked' : 'Relation removed';
+        case 'relation_changed': return event.field ? event.field + ' relinked' : 'Relation updated';
         case 'type_set': return 'Type updated';
         case 'note_created': return 'Note created';
         default: return 'Last activity';
@@ -126,4 +213,4 @@ function _localTimeStr(d) {
         + String(d.getMinutes()).padStart(2, '0');
 }
 
-module.exports = { buildHistoryModel, buildNoteArc };
+module.exports = { buildHistoryModel, buildNoteArc, buildHistorySessions };

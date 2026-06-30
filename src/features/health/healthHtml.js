@@ -92,6 +92,279 @@ function buildSchemaSectionHtml(stats, escapeFn) {
     </div>`;
 }
 
+/** @param {object} intel  result of buildIntelligenceHealth() @param {function} e  esc fn */
+function buildIntelligenceHealthHtml(intel, e) {
+    if (!intel) return '';
+
+    const { systemConfidence, vaultMaturityPct, lifecycle, drift, arc, calibration, mutationBehavior, projections } = intel;
+
+    const confColor = systemConfidence >= 70 ? 'var(--accent)' : systemConfidence >= 40 ? 'var(--accent3)' : 'var(--danger)';
+    const confLabel = systemConfidence >= 70 ? 'System has strong vault evidence to work with.'
+        : systemConfidence >= 40 ? 'System is learning — more notes and accepted completions will sharpen it.'
+        : 'Vault is sparse. Intelligence features will become more accurate as you build it out.';
+
+    // Lifecycle card
+    const lifecycleFlag = lifecycle.staleFlag
+        ? `<div class="intel-flag intel-flag--warn">⚠ ${Math.round(lifecycle.staleRate * 100)}% of notes are stale — stale threshold may be too loose for this vault's activity pace.</div>`
+        : lifecycle.sparseFlag
+            ? `<div class="intel-flag intel-flag--dim">Too few notes for lifecycle states to be meaningful yet.</div>`
+            : lifecycle.consolidatedRate > 0.5
+                ? `<div class="intel-flag intel-flag--ok">Over half of notes look structurally complete for their type.</div>`
+                : '';
+
+    // Drift card
+    const driftFlag = drift.noisyFlag
+        ? `<div class="intel-flag intel-flag--warn">⚠ ${Math.round(drift.problematicRate * 100)}% of measurable notes are drifting — vault may have structural inconsistency or detector thresholds are too strict.</div>`
+        : drift.insufficientCount > drift.total
+            ? `<div class="intel-flag intel-flag--dim">Most typed notes don't have enough type-peers for drift to measure yet (need ≥3 notes per type).</div>`
+            : drift.total > 0 && drift.drifting === 0 && drift.outliers === 0
+                ? `<div class="intel-flag intel-flag--ok">All measurable notes are on-track for their type.</div>`
+                : '';
+    const driftPills = drift.topDriftingNotes.map(n =>
+        `<span class="node-pill ${n.driftLabel === 'outlier' ? 'outlier-pill' : 'drift-pill'}" data-id="${e(n.noteId)}" title="score: ${n.driftScore}">${e(n.noteId)}</span>`
+    ).join('');
+
+    // Arc card
+    const arcFlag = arc.eligible === 0
+        ? `<div class="intel-flag intel-flag--dim">No typed notes with bundle data yet — arc predictions require at least one other note of the same type.</div>`
+        : arc.coverageRate < 0.3
+            ? `<div class="intel-flag intel-flag--ok">Most notes look complete relative to their type's field bundle.</div>`
+            : `<div class="intel-flag intel-flag--dim">${Math.round(arc.coverageRate * 100)}% of sampled notes have at least one likely-missing field surfaced.</div>`;
+    const topFieldsHtml = arc.topMissingFields.length
+        ? `<div style="margin-top:6px;font-size:11px;color:var(--mid)">Most commonly predicted missing: ${arc.topMissingFields.map(f => `<code>${e(f.field)}</code>`).join(', ')}</div>`
+        : '';
+    const behaviorCard = mutationBehavior ? `
+            <div class="intel-card">
+                <div class="intel-card-title">Mutation Behavior</div>
+                <div class="intel-card-stats">
+                    <span class="intel-stat"><strong>${mutationBehavior.totalSessions}</strong> sessions</span>
+                    <span class="intel-stat"><strong>${e(mutationBehavior.dominantFamily)}</strong> dominant lane</span>
+                    <span class="intel-stat"><strong>${Math.round((mutationBehavior.coherenceScore || 0) * 100)}%</strong> coherence</span>
+                    <span class="intel-stat"><strong>${Math.round((mutationBehavior.appliedRate || 0) * 100)}%</strong> applied</span>
+                </div>
+                <div class="intel-flag intel-flag--dim">${e(mutationBehavior.summary)}</div>
+                ${mutationBehavior.evolution ? `<div style="margin-top:6px;font-size:11px;color:var(--mid)">${e(mutationBehavior.evolution.summary)}</div>` : ''}
+                ${mutationBehavior.streaks && mutationBehavior.streaks.length ? `<div style="margin-top:6px;font-size:11px;color:var(--mid)">Top streak: <code>${e(mutationBehavior.streaks[0].family)}</code> · ${e(mutationBehavior.streaks[0].mode)} × ${mutationBehavior.streaks[0].count}</div>` : ''}
+            </div>
+    ` : '';
+
+    const growthTypeHtml = projections?.growth?.topTypes?.length
+        ? `<div style="margin-top:6px;font-size:11px;color:var(--mid)">${projections.growth.topTypes.map((entry) => `<code>${e(entry.type)}</code> +${entry.createdLast30d} / 30d → ~${entry.projected90} (${e(entry.confidence)})`).join(' · ')}</div>`
+        : '';
+    const staleTypeHtml = projections?.stale?.topTypes?.length
+        ? `<div style="margin-top:6px;font-size:11px;color:var(--mid)">Most exposed types: ${projections.stale.topTypes.map((entry) => `<code>${e(entry.type)}</code> ${Math.round(entry.staleRate * 100)}% stale`).join(' · ')}</div>`
+        : '';
+    const structureTypeHtml = projections?.structure?.topTypes?.length
+        ? `<div style="margin-top:6px;font-size:11px;color:var(--mid)">Most fragile types: ${projections.structure.topTypes.map((entry) => `<code>${e(entry.type)}</code> ${Math.round(entry.problematicRate * 100)}% problematic`).join(' · ')}</div>`
+        : '';
+    const scenarios = projections?.scenarios || null;
+    const scenarioCards = scenarios ? `
+        <div style="margin-top:14px">
+            <div style="font-size:10px;color:var(--dim);text-transform:uppercase;letter-spacing:.08em;margin-bottom:8px">Scenario layer (${scenarios.horizonDays} days)</div>
+            <div class="intel-grid">
+                <div class="intel-card">
+                    <div class="intel-card-title">If cleanup pace holds</div>
+                    <div class="intel-card-stats">
+                        <span class="intel-stat"><strong>${e(scenarios.cleanupHold.confidence)}</strong> confidence</span>
+                        <span class="intel-stat"><strong>${Math.round((scenarios.cleanupHold.projectedStaleShare || 0) * 100)}%</strong> projected stale</span>
+                        <span class="intel-stat"><strong>${scenarios.cleanupHold.projectedProblematic}</strong> projected problematic</span>
+                    </div>
+                    <div class="intel-flag intel-flag--dim">${e(scenarios.cleanupHold.summary)}</div>
+                </div>
+                <div class="intel-card">
+                    <div class="intel-card-title">If cleanup improves</div>
+                    <div class="intel-card-stats">
+                        <span class="intel-stat"><strong>${e(scenarios.cleanupLift.confidence)}</strong> confidence</span>
+                        <span class="intel-stat"><strong>${Math.round((scenarios.cleanupLift.projectedStaleShare || 0) * 100)}%</strong> projected stale</span>
+                        <span class="intel-stat"><strong>${scenarios.cleanupLift.projectedProblematic}</strong> projected problematic</span>
+                    </div>
+                    <div class="intel-flag intel-flag--ok">${e(scenarios.cleanupLift.summary)}</div>
+                </div>
+                <div class="intel-card">
+                    <div class="intel-card-title">If growth pace holds</div>
+                    <div class="intel-card-stats">
+                        <span class="intel-stat"><strong>${e(scenarios.growthHold.confidence)}</strong> confidence</span>
+                        <span class="intel-stat"><strong>${(scenarios.growthHold.topTypes || []).length}</strong> active lane${(scenarios.growthHold.topTypes || []).length === 1 ? '' : 's'}</span>
+                    </div>
+                    <div class="intel-flag intel-flag--dim">${e(scenarios.growthHold.summary)}</div>
+                </div>
+            </div>
+        </div>
+    ` : '';
+    const weeklyBuckets = projections?.history?.buckets || [];
+    const bucketMax = weeklyBuckets.reduce((max, bucket) => Math.max(max, bucket.created, bucket.touches, bucket.structure + bucket.completions), 1);
+    const historyStrip = weeklyBuckets.length
+        ? `<div style="margin-top:10px">
+            <div style="font-size:10px;color:var(--dim);text-transform:uppercase;letter-spacing:.08em;margin-bottom:6px">Recent 4-week pattern</div>
+            <div style="display:grid;grid-template-columns:repeat(${weeklyBuckets.length},minmax(0,1fr));gap:8px">
+                ${weeklyBuckets.map((bucket) => {
+                    const createdH = Math.max(6, Math.round((bucket.created / bucketMax) * 28));
+                    const touchH = Math.max(6, Math.round((bucket.touches / bucketMax) * 28));
+                    const structureH = Math.max(6, Math.round(((bucket.structure + bucket.completions) / bucketMax) * 28));
+                    return `<div title="${e(bucket.label)} · ${bucket.created} created · ${bucket.touches} touches · ${bucket.structure + bucket.completions} structural" style="display:flex;flex-direction:column;gap:5px">
+                        <div style="display:flex;align-items:flex-end;gap:3px;height:30px">
+                            <span style="display:block;flex:1;height:${createdH}px;border-radius:999px;background:rgba(94,207,190,.65)"></span>
+                            <span style="display:block;flex:1;height:${touchH}px;border-radius:999px;background:rgba(231,168,90,.55)"></span>
+                            <span style="display:block;flex:1;height:${structureH}px;border-radius:999px;background:rgba(196,155,240,.6)"></span>
+                        </div>
+                        <div style="font-size:10px;color:var(--dim)">${e(bucket.label)}</div>
+                    </div>`;
+                }).join('')}
+            </div>
+        </div>`
+        : '';
+
+    const projectionCards = projections ? `
+        <div class="intel-card" style="grid-column:1 / -1">
+            <div class="intel-card-title">Vault Projections</div>
+            <div class="intel-confidence-sub" style="margin-bottom:10px">Forward-looking structural forecasts based on the last ${projections.windowDays} days of observable vault behavior. These are scenario projections, not certainty claims.</div>
+            <div class="intel-grid">
+                <div class="intel-card">
+                    <div class="intel-card-title">Growth</div>
+                    <div class="intel-card-stats">
+                        <span class="intel-stat"><strong>${e(projections.growth.confidence)}</strong> confidence</span>
+                        <span class="intel-stat"><strong>${Math.round((projections.growth.evidenceScore || 0) * 100)}%</strong> evidence</span>
+                        <span class="intel-stat"><strong>${e(projections.growth.trend || 'steady')}</strong> trend</span>
+                        <span class="intel-stat"><strong>${projections.growth.topTypes.length}</strong> active growth lane${projections.growth.topTypes.length === 1 ? '' : 's'}</span>
+                    </div>
+                    <div class="intel-flag intel-flag--dim">${e(projections.growth.summary)}</div>
+                    ${growthTypeHtml}
+                </div>
+                <div class="intel-card">
+                    <div class="intel-card-title">Stale Pressure</div>
+                    <div class="intel-card-stats">
+                        <span class="intel-stat"><strong>${e(projections.stale.confidence)}</strong> confidence</span>
+                        <span class="intel-stat"><strong>${Math.round((projections.stale.evidenceScore || 0) * 100)}%</strong> evidence</span>
+                        <span class="intel-stat"><strong>${e(projections.stale.trend || 'steady')}</strong> trend</span>
+                        <span class="intel-stat"><strong>${Math.round((projections.stale.staleRate || 0) * 100)}%</strong> stale share</span>
+                        <span class="intel-stat"><strong>${e(projections.stale.pressure)}</strong> pressure</span>
+                    </div>
+                    <div class="intel-flag ${projections.stale.pressure === 'high' ? 'intel-flag--warn' : projections.stale.pressure === 'low' ? 'intel-flag--ok' : 'intel-flag--dim'}">${e(projections.stale.summary)}</div>
+                    <div style="margin-top:6px;font-size:11px;color:var(--mid)">${projections.stale.touchEventsRecent} recent touch event${projections.stale.touchEventsRecent === 1 ? '' : 's'}</div>
+                    ${staleTypeHtml}
+                </div>
+                <div class="intel-card">
+                    <div class="intel-card-title">Structure Direction</div>
+                    <div class="intel-card-stats">
+                        <span class="intel-stat"><strong>${e(projections.structure.confidence)}</strong> confidence</span>
+                        <span class="intel-stat"><strong>${Math.round((projections.structure.evidenceScore || 0) * 100)}%</strong> evidence</span>
+                        <span class="intel-stat"><strong>${e(projections.structure.trend || 'steady')}</strong> trend</span>
+                        <span class="intel-stat"><strong>${e(projections.structure.direction)}</strong> direction</span>
+                        <span class="intel-stat"><strong>${projections.structure.problematic}</strong> problematic notes</span>
+                    </div>
+                    <div class="intel-flag ${projections.structure.direction === 'improving' ? 'intel-flag--ok' : projections.structure.direction === 'fragile' ? 'intel-flag--warn' : 'intel-flag--dim'}">${e(projections.structure.summary)}</div>
+                    <div style="margin-top:6px;font-size:11px;color:var(--mid)">${projections.structure.acceptedCompletionsRecent} accepted completion${projections.structure.acceptedCompletionsRecent === 1 ? '' : 's'} · ${projections.structure.structureEventsRecent} structural events</div>
+                    ${structureTypeHtml}
+                </div>
+            </div>
+            ${historyStrip}
+            ${scenarioCards}
+        </div>
+    ` : '';
+
+    return `
+    <div class="section" id="section-intelligence">
+        <div class="section-header">
+            <span class="section-title">Intelligence Health</span>
+            <span class="section-count" style="color:${confColor}">Confidence ${systemConfidence}%</span>
+        </div>
+
+        <div class="intel-confidence">
+            <div class="intel-score" style="color:${confColor}">${systemConfidence}<span class="intel-score-pct">%</span></div>
+            <div class="intel-confidence-body">
+                <div class="intel-confidence-label">System Confidence</div>
+                <div class="intel-confidence-sub">${e(confLabel)}</div>
+                <div class="intel-meta-row">
+                    <span class="intel-meta-item">Vault maturity <strong>${vaultMaturityPct}%</strong></span>
+                    <span class="intel-meta-item">Accepted completions <strong>${calibration.totalAccepted}</strong></span>
+                    <span class="intel-meta-item">Fields calibrated <strong>${calibration.uniqueFields}</strong></span>
+                </div>
+            </div>
+        </div>
+
+        <div class="intel-grid">
+            <div class="intel-card">
+                <div class="intel-card-title">Lifecycle Detection</div>
+                <div class="intel-card-stats">
+                    <span class="intel-stat"><strong>${lifecycle.total}</strong> notes measured</span>
+                    <span class="intel-stat"><strong>${Math.round(lifecycle.consolidatedRate * 100)}%</strong> consolidated</span>
+                    <span class="intel-stat intel-stat--warn"><strong>${Math.round(lifecycle.staleRate * 100)}%</strong> stale</span>
+                    <span class="intel-stat"><strong>${Math.round(lifecycle.draftRate * 100)}%</strong> draft</span>
+                </div>
+                ${lifecycleFlag}
+            </div>
+
+            <div class="intel-card">
+                <div class="intel-card-title">Structural Drift</div>
+                <div class="intel-card-stats">
+                    <span class="intel-stat"><strong>${drift.onTrack}</strong> on-track</span>
+                    <span class="intel-stat"><strong>${drift.minorDrift}</strong> minor drift</span>
+                    <span class="intel-stat intel-stat--warn"><strong>${drift.drifting}</strong> drifting</span>
+                    <span class="intel-stat intel-stat--danger"><strong>${drift.outliers}</strong> outliers</span>
+                </div>
+                ${drift.insufficientCount > 0 ? `<div style="font-size:10px;color:var(--dim);margin-top:4px">${drift.insufficientCount} note${drift.insufficientCount !== 1 ? 's' : ''} skipped — type too sparse to measure</div>` : ''}
+                ${driftFlag}
+                ${driftPills ? `<div class="node-pills" style="margin-top:6px">${driftPills}</div>` : ''}
+            </div>
+
+            <div class="intel-card">
+                <div class="intel-card-title">Arc Predictions</div>
+                <div class="intel-card-stats">
+                    <span class="intel-stat"><strong>${arc.eligible}</strong> notes eligible</span>
+                    <span class="intel-stat"><strong>${arc.withPredictions}</strong> with predictions</span>
+                    <span class="intel-stat"><strong>${Math.round(arc.coverageRate * 100)}%</strong> coverage</span>
+                </div>
+                ${arcFlag}
+                ${topFieldsHtml}
+            </div>
+
+            ${behaviorCard}
+            ${projectionCards}
+        </div>
+    </div>`;
+}
+
+/** @param {object} stats @param {function} escapeFn @returns {string} */
+function buildEmergingPatternsHtml(stats, escapeFn) {
+    const e = escapeFn;
+    const clusters = Array.isArray(stats.emergingClusters) ? stats.emergingClusters : [];
+    if (!clusters.length) return '';
+
+    return `
+    <div class="section" id="section-emerging-patterns">
+        <div class="section-header">
+            <span class="section-title">Emerging Patterns</span>
+            <span class="section-count">${clusters.length} cluster${clusters.length === 1 ? '' : 's'}</span>
+        </div>
+        <div class="intel-grid">
+            ${clusters.map((cluster) => `
+                <div class="intel-card">
+                    <div class="intel-card-title">${cluster.noteCount} note${cluster.noteCount === 1 ? '' : 's'} share this shape</div>
+                    <div class="intel-card-stats">
+                        ${cluster.dominantType ? `<span class="intel-stat"><strong>mostly:</strong> ${e(cluster.dominantType)}</span>` : ''}
+                        <span class="intel-stat"><strong>confidence:</strong> ${e(String(cluster.confidence || '').toUpperCase())}</span>
+                    </div>
+                    <div class="node-pills" style="margin-top:8px">
+                        ${cluster.fields.map((field) => `<span class="node-pill">${e(field)}</span>`).join('')}
+                    </div>
+                    <div style="margin-top:10px;font-size:11px;color:var(--mid)">
+                        ${cluster.noteIds.slice(0, 4).map((noteId) => `<code>${e(noteId)}</code>`).join(' · ')}
+                        ${cluster.noteIds.length > 4 ? ` · +${cluster.noteIds.length - 4} more` : ''}
+                    </div>
+                    <div style="margin-top:10px">
+                        <button
+                            class="view-btn"
+                            data-action="createSchemaFromCluster"
+                            data-fields='${e(JSON.stringify(cluster.fields))}'
+                            data-type="${e(cluster.dominantType || '')}"
+                        >Create schema from cluster →</button>
+                    </div>
+                </div>
+            `).join('')}
+        </div>
+    </div>`;
+}
+
 /** @param {object} stats @param {{ scriptUri?: string, nonce?: string, csp?: string }} [webview] */
 function buildHealthHtml(stats, { scriptUri, nonce, csp } = {}) {
     if (stats.nodes === 0) {
@@ -179,7 +452,7 @@ function buildHealthHtml(stats, { scriptUri, nonce, csp } = {}) {
         const tooltip = missing
             ? `missing: ${missing} · score: ${note.driftScore}`
             : `score: ${note.driftScore}`;
-        return `<span class="${cls}" data-id="${esc(note.noteId)}" title="${esc(tooltip)}">${esc(note.noteId)} · ${esc(note.driftLabel)}</span>`;
+        return `<span class="${cls}" data-id="${esc(note.noteId)}" title="${esc(tooltip)}">${esc(note.noteId)} · ${esc(note.driftLabelHuman || note.driftLabel)}</span>`;
     }).join('');
 
     const lifecycleCounts = stats.lifecycle?.counts || {};
@@ -196,11 +469,27 @@ function buildHealthHtml(stats, { scriptUri, nonce, csp } = {}) {
         </div>
     `).join('');
     const todayActivity = stats.todayActivity || [];
+    const todaySessions = stats.todaySessions || [];
     const activityHtml = todayActivity.length > 0
         ? `<div class="activity-list">${todayActivity.map(({ noteId, count }) =>
             `<div class="activity-row" data-id="${esc(noteId)}"><span class="activity-id">${esc(noteId)}</span><span class="activity-count">${count} change${count === 1 ? '' : 's'}</span></div>`
         ).join('')}</div>`
         : `<div class="empty-section"><div class="empty-title">No mutations recorded today.</div><div class="empty-copy">Edit and save notes to start tracking today's vault activity here.</div></div>`;
+    const sessionHtml = todaySessions.length > 0
+        ? `<div class="session-list">${todaySessions.map((session) =>
+            `<div class="session-row"${session.primaryNoteId ? ` data-id="${esc(session.primaryNoteId)}"` : ''}>
+                <div class="session-main">
+                    <div class="session-summary">${esc(session.summary)}</div>
+                    <div class="session-meta">
+                        ${session.primaryTypeName ? `<span class="session-chip">${esc(session.primaryTypeName)}</span>` : ''}
+                        <span class="session-chip">${esc(String(session.count || 0))} event${session.count === 1 ? '' : 's'}</span>
+                        ${session.noteCount > 1 ? `<span class="session-chip">${esc(String(session.noteCount))} notes</span>` : ''}
+                    </div>
+                </div>
+                <div class="session-time">${esc(session.relativeTime || '')}</div>
+            </div>`
+        ).join('')}</div>`
+        : '';
 
     const lifecycleHighlights = (stats.lifecycle?.notes || [])
         .filter((note) => note.state === 'stale' || note.state === 'hub')
@@ -212,12 +501,13 @@ function buildHealthHtml(stats, { scriptUri, nonce, csp } = {}) {
     const hasOrphans   = stats.orphans.length > 0;
 
     const tabNav = [
-        { id: 'activity',    label: 'Activity' },
-        { id: 'lifecycle',   label: 'Lifecycle' },
-        { id: 'consistency', label: 'Consistency' },
-        { id: 'schema',      label: 'Schema' },
+        { id: 'activity',      label: 'Activity' },
+        { id: 'lifecycle',     label: 'Lifecycle' },
+        { id: 'consistency',   label: 'Consistency' },
+        { id: 'schema',        label: 'Schema' },
+        { id: 'intelligence',  label: 'Intelligence' },
         ...(hasTemplates ? [{ id: 'templates', label: 'Templates' }] : []),
-        { id: 'types',       label: 'Types' },
+        { id: 'types',         label: 'Types' },
         ...(hasOrphans   ? [{ id: 'orphans',   label: 'Orphans'   }] : []),
     ].map((t, i) =>
         `<button class="tab-btn${i === 0 ? ' active' : ''}" data-tab="${t.id}">${t.label}</button>`
@@ -302,14 +592,14 @@ function buildHealthHtml(stats, { scriptUri, nonce, csp } = {}) {
         <div class="stat-hint">${stats.density} avg per node</div>
     </div>
     <div class="stat-cell clickable ${stats.broken > 0 ? 'has-warning' : ''}" data-action="openProblems" title="Links that point to IDs that do not exist in the vault. Click to open Problems.">
-        <div class="stat-num ${stats.broken > 0 ? 'danger' : 'good'}">${stats.broken}</div>
+        <div class="stat-num ${stats.broken > 0 ? 'danger' : 'good'}">${stats.broken}${stats.healthTrend?.brokenTrend === 'up' ? '<span class="trend-arrow trend-bad" title="More broken links than last week">↑</span>' : stats.healthTrend?.brokenTrend === 'down' ? '<span class="trend-arrow trend-good" title="Fewer broken links than last week">↓</span>' : ''}</div>
         <div class="stat-lbl">Broken Links</div>
         ${stats.broken > 0
         ? '<div class="stat-hint">Open diagnostics to fix</div><div class="stat-action">Open Problems →</div>'
         : '<div class="stat-hint">All links resolve</div>'}
     </div>
     <div class="stat-cell clickable ${hasOrphans ? 'has-caution' : ''}" data-action="switchOrphans" title="Indexed notes with no inbound or outbound connections. Click to jump to the Orphans tab.">
-        <div class="stat-num ${hasOrphans ? 'warn' : 'good'}">${stats.orphans.length}</div>
+        <div class="stat-num ${hasOrphans ? 'warn' : 'good'}">${stats.orphans.length}${stats.healthTrend?.orphanTrend === 'up' ? '<span class="trend-arrow trend-bad" title="More orphans than last week">↑</span>' : stats.healthTrend?.orphanTrend === 'down' ? '<span class="trend-arrow trend-good" title="Fewer orphans than last week">↓</span>' : ''}</div>
         <div class="stat-lbl">Orphan Nodes</div>
         ${hasOrphans
         ? '<div class="stat-hint">Nodes with no connections</div><div class="stat-action">View orphans →</div>'
@@ -339,6 +629,10 @@ function buildHealthHtml(stats, { scriptUri, nonce, csp } = {}) {
                 <span class="section-count">${todayActivity.length} note${todayActivity.length !== 1 ? 's' : ''} changed</span>
             </div>
             ${activityHtml}
+            ${sessionHtml ? `<div class="section-header" style="margin-top:16px">
+                <span class="section-title">Session Memory</span>
+                <span class="section-count">${todaySessions.length} session${todaySessions.length === 1 ? '' : 's'}</span>
+            </div>${sessionHtml}` : ''}
         </div>
     </div>
 
@@ -374,6 +668,11 @@ function buildHealthHtml(stats, { scriptUri, nonce, csp } = {}) {
         ${buildSchemaSectionHtml(stats, esc)}
     </div>
 
+    <div class="tab-panel tab-panel--hidden" data-tab="intelligence" id="section-intelligence">
+        ${buildIntelligenceHealthHtml(stats.intelligenceHealth, esc)}
+        ${buildEmergingPatternsHtml(stats, esc)}
+    </div>
+
     ${hasTemplates ? `
     <div class="tab-panel tab-panel--hidden" data-tab="templates" id="section-template-drift">
         <div class="section">${templateDriftHtml}</div>
@@ -402,6 +701,19 @@ function buildHealthHtml(stats, { scriptUri, nonce, csp } = {}) {
 
 </div>
 
+<script nonce="${nonce}">
+document.addEventListener('click', function (event) {
+    const button = event.target.closest('[data-action="createSchemaFromCluster"]');
+    if (!button) return;
+    const fields = JSON.parse(button.dataset.fields || '[]');
+    const type = button.dataset.type || '';
+    acquireVsCodeApi().postMessage({
+        command: 'createSchemaFromCluster',
+        fields,
+        type
+    });
+});
+</script>
 <script nonce="${nonce}" src="${scriptUri}"></script>
 
 </body>

@@ -6,6 +6,7 @@ const {
     buildFieldTargetTypes,
     getDominantTargetType,
     buildTypeFieldBundles,
+    buildTypeBundleTotals,
     getCommonFieldsForType,
     buildFieldAmbiguity,
     buildNoteRoleTypePriors,
@@ -142,6 +143,36 @@ describe('vaultPriors — buildTypeFieldBundles', () => {
     });
 });
 
+// ─── buildTypeBundleTotals ────────────────────────────────────────────────
+
+describe('vaultPriors — buildTypeBundleTotals', () => {
+    it('counts notes per type', () => {
+        const cache = new Map([
+            ['a', { type: 'contact', name: 'Alice' }],
+            ['b', { type: 'contact', name: 'Bob' }],
+            ['c', { type: 'unit',    name: 'Alpha Squad' }],
+        ]);
+        const totals = buildTypeBundleTotals(cache);
+        assert.equal(totals.get('contact'), 2);
+        assert.equal(totals.get('unit'), 1);
+    });
+
+    it('skips notes with no type', () => {
+        const cache = new Map([
+            ['x', { name: 'Untyped' }],
+            ['y', { type: 'contact', name: 'Alice' }],
+        ]);
+        const totals = buildTypeBundleTotals(cache);
+        assert.equal(totals.size, 1);
+        assert.equal(totals.get('contact'), 1);
+    });
+
+    it('returns empty map for empty vault', () => {
+        const totals = buildTypeBundleTotals(new Map());
+        assert.equal(totals.size, 0);
+    });
+});
+
 // ─── getCommonFieldsForType ───────────────────────────────────────────────
 
 describe('vaultPriors — getCommonFieldsForType', () => {
@@ -163,6 +194,59 @@ describe('vaultPriors — getCommonFieldsForType', () => {
         const bundles = new Map();
         const fields = getCommonFieldsForType('nonexistent', bundles, new Map());
         assert.equal(fields.length, 0);
+    });
+
+    it('each entry includes adjustedRatio between 0 and 1', () => {
+        const cache = new Map([
+            ['a', { type: 'dossier', subject: 'x', status: 'active' }],
+            ['b', { type: 'dossier', subject: 'y', status: 'closed' }],
+            ['c', { type: 'dossier', subject: 'z' }],
+        ]);
+        const bundles = buildTypeFieldBundles(cache);
+        const fields = getCommonFieldsForType('dossier', bundles, cache, { minRatio: 0.30 });
+        assert.ok(fields.length > 0);
+        for (const f of fields) {
+            assert.ok(typeof f.adjustedRatio === 'number', 'adjustedRatio must be a number');
+            assert.ok(f.adjustedRatio >= 0 && f.adjustedRatio <= 1, `adjustedRatio ${f.adjustedRatio} out of range`);
+            assert.ok(f.adjustedRatio <= f.ratio + 1e-9, 'adjustedRatio cannot exceed raw ratio');
+        }
+    });
+
+    it('adjustedRatio is lower for small samples than reliable samples', () => {
+        // Small vault: 2 notes — sampleWeight = 2/8 = 0.25
+        const small = new Map([
+            ['a', { type: 'contact', company: 'Acme' }],
+            ['b', { type: 'contact', company: 'Corp' }],
+        ]);
+        // Large vault: 10 notes — sampleWeight = 1.0
+        const large = new Map(
+            Array.from({ length: 10 }, (_, i) => [`n${i}`, { type: 'contact', company: `Co${i}` }])
+        );
+        const smallBundles = buildTypeFieldBundles(small);
+        const largeBundles = buildTypeFieldBundles(large);
+        const smallFields = getCommonFieldsForType('contact', smallBundles, small);
+        const largeFields = getCommonFieldsForType('contact', largeBundles, large);
+        const sc = smallFields.find(f => f.field === 'company');
+        const lc = largeFields.find(f => f.field === 'company');
+        assert.ok(sc && lc, 'company must appear in both results');
+        assert.ok(sc.ratio === lc.ratio, 'raw ratio should be identical (1.0)');
+        assert.ok(sc.adjustedRatio < lc.adjustedRatio, 'small vault adjusted score must be lower');
+    });
+
+    it('typeBundleTotals avoids fieldsCache scan and produces same results', () => {
+        const cache = new Map([
+            ['a', { type: 'dossier', subject: 'x', status: 'active' }],
+            ['b', { type: 'dossier', subject: 'y', status: 'closed' }],
+            ['c', { type: 'dossier', subject: 'z' }],
+        ]);
+        const bundles = buildTypeFieldBundles(cache);
+        const totals  = buildTypeBundleTotals(cache);
+        const withScan    = getCommonFieldsForType('dossier', bundles, cache, { minRatio: 0.30 });
+        const withTotals  = getCommonFieldsForType('dossier', bundles, cache, { minRatio: 0.30 }, totals);
+        assert.deepEqual(
+            withScan.map(f => ({ field: f.field, ratio: f.ratio, adjustedRatio: f.adjustedRatio })),
+            withTotals.map(f => ({ field: f.field, ratio: f.ratio, adjustedRatio: f.adjustedRatio }))
+        );
     });
 });
 
@@ -209,6 +293,7 @@ describe('vaultPriors — getCachedPriors', () => {
         const priors = getCachedPriors(cache, 1);
         assert.ok(priors.fieldTargetTypes instanceof Map);
         assert.ok(priors.typeFieldBundles instanceof Map);
+        assert.ok(priors.typeBundleTotals instanceof Map, 'typeBundleTotals must be present in priors');
         assert.ok(priors.fieldAmbiguity instanceof Map);
         assert.ok(priors.fieldTargetTypes.has('subject'));
     });
@@ -535,5 +620,7 @@ describe('vaultPriors — buildTypeRoleMap', () => {
         assert.ok(priors.typeRoleMap instanceof Map);
         assert.ok(priors.workflowFields instanceof Map);
         assert.ok(priors.valuePatterns instanceof Map);
+        assert.equal(typeof priors.noteRoleNamePriors, 'object');
+        assert.equal(typeof priors.noteRoleFieldHints, 'object');
     });
 });

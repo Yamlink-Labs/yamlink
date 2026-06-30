@@ -30,3 +30,10 @@ First rule of Mobile Infantry: everyone fights, nobody quits.
 where commander = [[johnny-rico]]
 sort date desc
 select name, date, unit, commander, outcome
+
+
+## Follow up
+
+First rule of Mobile Infantry: everyone fights, nobody quits. Let's put this to the test
+
+### Testing
