@@ -105,7 +105,8 @@ function lsp(vaultDir, frames) {
 }
 
 function rootUri(dir) {
-    return 'file:///' + dir.split(path.sep).join('/');
+    const normalized = dir.replace(/\\/g, '/');
+    return normalized.startsWith('/') ? 'file://' + normalized : 'file:///' + normalized;
 }
 
 // ── Fixture ──────────────────────────────────────────────────────────────────
