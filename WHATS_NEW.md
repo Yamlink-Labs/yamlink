@@ -1,4 +1,4 @@
-# Yamlink 0.7.0 — Sugar *(in development)*
+# Yamlink 0.7.0 — Sugar
 
 Sugar is the platform release. It makes Yamlink usable as a full local data platform — not just a VS Code extension — while deepening the authoring experience inside the editor.
 
