@@ -8,6 +8,7 @@ node_modules/
 .github/copilot-instructions.md
 CLAUDE.md
 CODEX.md
+AGENTS.md
 CONTRIBUTING.md
 TESTING.md
 
