@@ -2,7 +2,28 @@
 
 ---
 
-## [0.7.0] — "Sugar" *(in progress)*
+## [0.7.3] — Hotfix
+
+- **Sample-vault race condition** — installing the extension while multiple VS Code project windows were already open could activate it in all of them near-simultaneously; a check-then-set race on a machine-wide first-run flag meant every open project could get the sample vault's Markdown files silently copied in. Replaced with a per-workspace, opt-in prompt ("Add a sample Yamlink vault here to explore its features?") — nothing is written to disk without explicit consent, and the check is now scoped per workspace so it can't race across windows.
+- **Graph renderer fixes** — `_isConnectedTo` (used for hover/focus dimming) was an O(edges-per-node) array scan; now an O(1) adjacency-set lookup. Pan-and-release momentum decay was frame-rate dependent (decayed twice as fast at 120Hz vs. 60Hz); now normalized to real elapsed time between frames. A cached hit-test target for the zoomed-out cluster-bubble view could go stale under certain zoom transitions; now invalidated every frame it isn't in use. Cluster boundary hull outlines — a Sugar-era visual feature that had been fully implemented but had its call site dropped in a later refactor — are wired back in, visible in semantic layer mode.
+- Sample "sandbox" content removed from this repo; now maintained in its own separate repository.
+
+---
+
+## [0.7.2] — Hotfix
+
+- Fixed the `rootUri` helper generating an incorrect four-slash file URI on Linux.
+- Replaced the activity bar icon with an SVG for correct rendering across themes.
+
+---
+
+## [0.7.1] — Hotfix
+
+- Fixed CI `lint-and-test` failing on `npm run typecheck` after the Sugar push — ~70 latent JSDoc/type errors had accumulated because typecheck wasn't wired into local dev scripts. Annotated types across 15 files. Three were genuine production bugs caught in the process: `entityHub.js` was silently dropping `historySessions`/`historyEvolution`/`blockBacklinks` from the Note Report panel; `vaultPriors.js`'s structural cache type never declared `noteRoleNamePriors`/`noteRoleFieldHints`; `intelligenceSnapshots.js` checked a nonexistent `arc.coldStart` property instead of deriving it from `arc.missingFields`.
+
+---
+
+## [0.7.0] — "Sugar" *(shipped)*
 
 ### Conduit
 
