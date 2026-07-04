@@ -53,8 +53,8 @@ async function showWhatsNew(context) {
 
     context.globalState.update('yamlink.lastSeenVersion', current);
 
-    // First install already shows welcome.md — skip the release notes there.
-    const isFirstInstall = !context.globalState.get('yamlink.welcomeShown', false);
+    // First install already shows the sample-vault prompt — skip the release notes there.
+    const isFirstInstall = !context.globalState.get('yamlink.hasActivatedBefore', false);
     if (isFirstInstall) return;
 
     const notesPath = path.join(context.extensionPath, 'WHATS_NEW.md');
@@ -64,29 +64,53 @@ async function showWhatsNew(context) {
 }
 
 // ─────────────────────────────────────────────────────────────────
-// First-run setup
+// First-run setup — opt-in, per-workspace, no silent writes.
 //
-// Fires once per machine, tracked via globalState.
-// Copies sample/ files into the user's workspace root (never
-// overwrites anything that already exists), then opens welcome.md.
+// Previously this silently copied sample/ into whatever workspace
+// happened to be open on first activation, guarded by a single
+// machine-wide globalState flag. That had two bugs: (1) installing
+// while multiple project windows were already open activated the
+// extension in all of them at once, and the async check-then-set on
+// globalState raced — every window read the flag as unset before any
+// of them persisted it, so every open project got sample files copied
+// in; (2) even without the race, "whichever workspace happens to be
+// open first" is not a safe proxy for "this workspace wants a sample
+// vault" — plenty of users have unrelated projects open when they
+// install an extension.
 //
-// After the first run this returns immediately on every activation.
-// The user can delete the sample files whenever they want — they are
-// just regular Markdown files in their vault after the copy.
+// Fix: ask, per workspace, before writing anything. The prompt-shown
+// flag lives in workspaceState, which VS Code scopes per workspace
+// identity — two different workspaces can never race each other's
+// flag the way the old global flag did.
 // ─────────────────────────────────────────────────────────────────
-async function runFirstTimeSetup(context) {
-    const hasSeenWelcome = context.globalState.get('yamlink.welcomeShown', false);
-    if (hasSeenWelcome) return;
+async function maybeOfferSampleVault(context) {
+    // Machine-wide "has this extension ever run before" flag — used only
+    // by showWhatsNew to skip the changelog on a true first install.
+    if (!context.globalState.get('yamlink.hasActivatedBefore', false)) {
+        context.globalState.update('yamlink.hasActivatedBefore', true);
+    }
+
+    const alreadyPrompted = context.workspaceState.get('yamlink.sampleVaultPrompted', false);
+    if (alreadyPrompted) return;
 
     if (!vscode.workspace.workspaceFolders) return;
-
     const workspaceRoot = getPrimaryWorkspaceRoot(vscode.workspace.workspaceFolders);
     if (!workspaceRoot) return;
-    const sampleSrcDir  = path.join(context.extensionPath, 'sample');
 
+    // Mark as prompted immediately (not after the answer) so a slow response,
+    // a second window on the same workspace, or a reload can't re-trigger it.
+    context.workspaceState.update('yamlink.sampleVaultPrompted', true);
+
+    const choice = await vscode.window.showInformationMessage(
+        'Add a sample Yamlink vault here to explore its features?',
+        'Add Sample Vault',
+        'No Thanks'
+    );
+    if (choice !== 'Add Sample Vault') return;
+
+    const sampleSrcDir = path.join(context.extensionPath, 'sample');
     if (!fs.existsSync(sampleSrcDir)) {
-        console.warn('Yamlink — sample/ folder not found in extension. Skipping first-run.');
-        context.globalState.update('yamlink.welcomeShown', true);
+        console.warn('Yamlink — sample/ folder not found in extension. Skipping.');
         return;
     }
 
@@ -94,10 +118,8 @@ async function runFirstTimeSetup(context) {
         copySampleFiles(sampleSrcDir, workspaceRoot);
     } catch (e) {
         console.error('Yamlink — Error copying sample files:', e.message);
+        return;
     }
-
-    // Mark done before opening the file to avoid re-triggering
-    context.globalState.update('yamlink.welcomeShown', true);
 
     const welcomePath = path.join(workspaceRoot, 'welcome.md');
     if (fs.existsSync(welcomePath)) {
@@ -393,7 +415,7 @@ async function activate(context) {
 
     // ── First-run setup ──────────────────────────────────────────────────────
     // Non-blocking — errors are caught so they never crash activation.
-    runFirstTimeSetup(context).catch(e => {
+    maybeOfferSampleVault(context).catch(e => {
         console.error('Yamlink — First-run setup error:', e.message);
     });
 
