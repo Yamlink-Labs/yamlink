@@ -116,9 +116,15 @@ export class Canvas2DRenderer {
     this._edges = graphData.edges;
     // Degree map — used for edge density culling at medium zoom on large graphs
     this._nodeDegree = new Map();
+    // Adjacency sets — O(1) "is this node connected to X" lookups (focus dimming)
+    this._connectedIds = new Map();
     for (const e of graphData.edges) {
       this._nodeDegree.set(e.source, (this._nodeDegree.get(e.source) || 0) + 1);
       this._nodeDegree.set(e.target, (this._nodeDegree.get(e.target) || 0) + 1);
+      if (!this._connectedIds.has(e.source)) this._connectedIds.set(e.source, new Set());
+      if (!this._connectedIds.has(e.target)) this._connectedIds.set(e.target, new Set());
+      this._connectedIds.get(e.source).add(e.target);
+      this._connectedIds.get(e.target).add(e.source);
     }
     this._rebuildFilterCache();
     this._rebuildSpatialIndex();
@@ -252,12 +258,15 @@ export class Canvas2DRenderer {
 
   _loop() {
     this._animId = requestAnimationFrame(() => this._loop());
+    const now = performance.now();
+    const dt = this._lastFrameTime ? (now - this._lastFrameTime) : 16.67;
+    this._lastFrameTime = now;
     if (this._camTween) {
-      this._stepCameraTween(performance.now());
+      this._stepCameraTween(now);
       this._dirty = true;
     }
     if (this._panMomentum) {
-      this._stepPanMomentum();
+      this._stepPanMomentum(dt);
       this._dirty = true;
     }
     if (!this._dirty) return;
@@ -290,6 +299,7 @@ export class Canvas2DRenderer {
     if (zoom < 0.22 && this._nodeMap.size >= 400) {
       this._drawClusterSuperNodes(ctx, zoom, focusId);
       ctx.restore();
+      // (cache populated by the call above; safe for this frame's hit-testing)
       // Hint overlay in screen-space (after restoring world transform)
       ctx.save();
       ctx.scale(this._dpr, this._dpr);
@@ -300,6 +310,19 @@ export class Canvas2DRenderer {
       ctx.fillText('Zoom in to explore individual notes  ·  Click a bubble to zoom in', w / 2, h - 12);
       ctx.restore();
       return;
+    }
+    // Not in cluster-super-node view this frame — invalidate the cache so a
+    // stray click can never hit-test against stale bubble positions from a
+    // previous cluster-view frame.
+    this._superNodeCache = null;
+
+    // ── Cluster hulls (semantic layer only) ───────────────────────────────────
+    // Soft convex-hull outlines around clusters, drawn behind edges/nodes.
+    // Reuses the semantic-layer toggle rather than a dedicated one — this was
+    // shipped as part of the Sugar physics/visual overhaul but the call site
+    // was dropped in a later refactor; the geometry itself was always complete.
+    if (this._layers.semantic && zoom >= 0.06) {
+      this._drawClusterHulls(ctx, zoom, focusId, hasFocus);
     }
 
     // ── Edge pass (batched by style bucket) ──────────────────────────────────
@@ -956,12 +979,15 @@ export class Canvas2DRenderer {
     this._camTween = null;
   }
 
-  _stepPanMomentum() {
+  _stepPanMomentum(dt = 16.67) {
     if (!this._panMomentum) return;
     this._cam.x += this._panMomentum.vx;
     this._cam.y += this._panMomentum.vy;
-    this._panMomentum.vx *= 0.88;
-    this._panMomentum.vy *= 0.88;
+    // Decay is a per-16.67ms-frame factor; normalize to actual elapsed time so
+    // momentum doesn't decay faster on higher refresh-rate displays.
+    const decay = Math.pow(0.88, dt / 16.67);
+    this._panMomentum.vx *= decay;
+    this._panMomentum.vy *= decay;
     if (Math.abs(this._panMomentum.vx) < 0.05 && Math.abs(this._panMomentum.vy) < 0.05) {
       this._panMomentum = null;
     }
@@ -1029,8 +1055,7 @@ export class Canvas2DRenderer {
   }
 
   _isConnectedTo(id, focusId) {
-    const node = this._nodeMap.get(id);
-    return node?.edges?.some(e => e.target === focusId || e.source === focusId) ?? false;
+    return this._connectedIds.get(id)?.has(focusId) ?? false;
   }
 
   _isVisible(id) {
