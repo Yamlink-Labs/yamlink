@@ -25,7 +25,12 @@ describe('live note model', () => {
             'select date, outcome'
         ].join('\n');
 
-        const model = buildLiveNoteModel(text, 'C:\\vault\\johnny-rico.md', 'johnny-rico');
+        // Forward slashes, not a Windows-style backslash path: path.basename()/
+        // path.dirname() are platform-native (backslash isn't a separator on
+        // POSIX), so a hardcoded 'C:\\...' path here would parse correctly on
+        // Windows but produce a garbage title on Linux CI. Forward slashes are
+        // valid path separators on both platforms.
+        const model = buildLiveNoteModel(text, '/vault/johnny-rico.md', 'johnny-rico');
 
         assert.equal(model.title, 'johnny-rico');
         assert.equal(model.noteId, 'johnny-rico');
