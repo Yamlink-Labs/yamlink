@@ -5,6 +5,7 @@ const assert = require('node:assert/strict');
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
+const { pathToFileURL } = require('url');
 
 const {
     renderNotePreview,
@@ -153,9 +154,18 @@ describe('preview renderer — rewriteImageSrcs', () => {
     });
 
     test('converts a file:// URI src back to a plain fs path before calling the resolver', () => {
-        const html = '<img src="file:///C:/Users/test/vault/photo.png">';
+        // fileURLToPath() is platform-dependent (backslashes on win32, forward
+        // slashes on POSIX) — build the file:// URL from a real platform-native
+        // absolute path via pathToFileURL() rather than hardcoding one platform's
+        // expected output, so this test is honest about what it's actually proving
+        // (a correct round trip) regardless of which OS runs it.
+        const samplePath = process.platform === 'win32'
+            ? 'C:\\Users\\test\\vault\\photo.png'
+            : '/Users/test/vault/photo.png';
+        const fileUrl = pathToFileURL(samplePath).href;
+        const html = `<img src="${fileUrl}">`;
         let receivedPath = null;
         rewriteImageSrcs(html, (p) => { receivedPath = p; return 'ok'; });
-        assert.equal(receivedPath, 'C:\\Users\\test\\vault\\photo.png');
+        assert.equal(receivedPath, samplePath);
     });
 });
