@@ -12,7 +12,19 @@ function pluralize(count, singular, plural = `${singular}s`) {
     return `${count} ${count === 1 ? singular : plural}`;
 }
 
+// Mirrors src/features/taskCenter.js's PRIORITY_RANK — kept as a separate
+// literal rather than a shared import, since this module intentionally has
+// no dependency on the VS-Code-only taskCenter.js (it's registered from
+// extension.js independently and needs to stay usable headless-adjacent).
+const PRIORITY_RANK = { urgent: 0, medium: 1, low: 2 };
+function priorityRank(task) {
+    const rank = PRIORITY_RANK[task?.priority];
+    return rank === undefined ? 3 : rank;
+}
+
 function compareTasks(a, b) {
+    const priorityCompare = priorityRank(a) - priorityRank(b);
+    if (priorityCompare !== 0) return priorityCompare;
     const dateA = String(a.date || '');
     const dateB = String(b.date || '');
     if (dateA !== dateB) return dateA.localeCompare(dateB);
@@ -54,11 +66,18 @@ function summarizeTaskNotifications(taskRows, todayIso, options = {}) {
 
     const candidates = [...overdue, ...dueToday];
     const items = candidates.slice(0, config.maxItemsPerAlert);
-    const severity = overdue.length > 0 ? 'warning' : (dueToday.length > 0 ? 'info' : 'silent');
+    // Urgent-priority overdue tasks escalate past the normal warning —
+    // real, explicit user-set urgency slipping past its due date is a
+    // stronger signal than an ordinary overdue task.
+    const urgentOverdueCount = overdue.filter((row) => row.priority === 'urgent').length;
+    const severity = urgentOverdueCount > 0
+        ? 'critical'
+        : overdue.length > 0 ? 'warning' : (dueToday.length > 0 ? 'info' : 'silent');
+    const urgentClause = urgentOverdueCount > 0 ? ` (${pluralize(urgentOverdueCount, 'urgent')})` : '';
     const message = overdue.length > 0 && dueToday.length > 0
-        ? `Yamlink: ${pluralize(overdue.length, 'overdue task')} and ${pluralize(dueToday.length, 'task')} due today.`
+        ? `Yamlink: ${pluralize(overdue.length, 'overdue task')}${urgentClause} and ${pluralize(dueToday.length, 'task')} due today.`
         : overdue.length > 0
-            ? `Yamlink: ${pluralize(overdue.length, 'overdue task')}.`
+            ? `Yamlink: ${pluralize(overdue.length, 'overdue task')}${urgentClause}.`
             : dueToday.length > 0
                 ? `Yamlink: ${pluralize(dueToday.length, 'task')} due today.`
                 : '';
@@ -66,6 +85,7 @@ function summarizeTaskNotifications(taskRows, todayIso, options = {}) {
     return {
         overdueCount: overdue.length,
         dueTodayCount: dueToday.length,
+        urgentOverdueCount,
         items,
         severity,
         shouldNotify: items.length > 0,
@@ -75,8 +95,8 @@ function summarizeTaskNotifications(taskRows, todayIso, options = {}) {
 
 function buildNotificationFingerprint(summary) {
     if (!summary || !summary.shouldNotify) return 'silent';
-    const itemBits = (summary.items || []).map((item) => `${item.id}@${item.date}`).join('|');
-    return `o:${summary.overdueCount}|t:${summary.dueTodayCount}|${itemBits}`;
+    const itemBits = (summary.items || []).map((item) => `${item.id}@${item.date}@${item.priority || ''}`).join('|');
+    return `o:${summary.overdueCount}|t:${summary.dueTodayCount}|u:${summary.urgentOverdueCount || 0}|${itemBits}`;
 }
 
 function createTaskNotificationRuntime(context, services) {
@@ -140,9 +160,11 @@ function createTaskNotificationRuntime(context, services) {
         if (withinCooldown) return;
 
         const actions = ['Review first task', 'Open Calendar', 'Open Home'];
-        const showMessage = summary.severity === 'warning'
-            ? vscode.window.showWarningMessage
-            : vscode.window.showInformationMessage;
+        const showMessage = summary.severity === 'critical'
+            ? vscode.window.showErrorMessage
+            : summary.severity === 'warning'
+                ? vscode.window.showWarningMessage
+                : vscode.window.showInformationMessage;
         const choice = await showMessage(summary.message, ...actions);
 
         lastFingerprint = fingerprint;

@@ -15,6 +15,7 @@ This guide gets you from zero to a working vault, then covers queries, graph, CL
    - `Yamlink: Open Calendar`
    - `Yamlink: Open Vault Health`
    - `Yamlink: Open Graph Workspace`
+4. Run `Yamlink: Start Guided Tour` for an interactive walkthrough covering Home, Calendar, Vault Health, Graph, and Task Center — this doc covers the same ground in more depth.
 
 ---
 
@@ -37,6 +38,8 @@ Three things matter here:
 - `id:` is the stable identity Yamlink uses for renames, graph edges, and queries. Names change; IDs don't.
 - `type:` tells Yamlink what family this note belongs to. Powers completions, Note Report, Vault Health, and query filters.
 - `[[roughnecks]]` is a real relation, not just text. Yamlink indexes it as a directed graph edge immediately.
+
+Hover any `[[wikilink]]` to see the target note's `type` and `status` as colored badges, plus clickable links for its own relations and body mentions.
 
 ---
 
@@ -189,14 +192,29 @@ Three distinct reference levels:
 | `[[johnny-rico#After Klendathu]]` | links a specific heading |
 | `[[johnny-rico^block-id]]` | links a specific task, quote, or footnote |
 
-Getting the right reference without memorizing IDs:
+Right-click anywhere in a Markdown note (or open the Command Palette) to reach all of these under **Yamlink** — grouped into four sections in the order they appear:
 
-- `Yamlink: Copy Section Reference` — pick from headings in the active note
-- `Yamlink: Insert Section Reference` — insert directly into the editor
-- `Yamlink: Copy Block Reference` — pick from tasks, quotes, footnotes
-- `Yamlink: Insert Block Reference` — insert directly
+**Note actions** — work on the whole note, not a specific reference:
 
-Go-to-definition works on all three: the editor lands on the exact heading or block line.
+| Command | What it does |
+|---|---|
+| `Yamlink: Copy Note ID` | copies `[[note-id]]` for the whole active note — the fastest way to link back to it from anywhere |
+| `Yamlink: Extract Selection to New Note` | select some text first — it becomes the seed/title for a brand-new note (goes through the normal Template → Schema → vault-inference flow), and the original selection is replaced with a plain `[[new-id]]` link |
+| `Yamlink: Split Note Body` | select some text first — it's moved verbatim into a new note's body (with `source: [[original-note]]` auto-set), and the original selection is replaced with an embed `![[new-id]]` so it still renders inline. Use this over "Extract Selection" when you want the moved content to keep showing in place, not just link to it |
+
+**Copy a reference** — puts the reference on your clipboard to paste wherever you need it:
+
+| Command | What it does |
+|---|---|
+| `Yamlink: Copy Scoped Reference` | pick *any* heading, task, quote, or footnote from the active note — the general-purpose picker, figures out the right reference format for whatever you choose |
+| `Yamlink: Copy Section Reference` | pick from headings only |
+| `Yamlink: Copy Block Reference` | pick from tasks, quotes, footnotes only (no headings) |
+
+**Insert a reference** — same three pickers, but insert directly into the editor at your cursor instead of the clipboard: `Yamlink: Insert Scoped Reference`, `Yamlink: Insert Section Reference`, `Yamlink: Insert Block Reference`.
+
+**Export** — `Yamlink: Export Active Note to PDF` renders the active note (frontmatter, body, callouts, tasks) to a PDF file.
+
+Go-to-definition works on every section/block reference: the editor lands on the exact heading or block line.
 
 ---
 
@@ -223,14 +241,30 @@ Open `Yamlink: Open Calendar` for date-driven vault activity.
 
 ### Vault Health
 
-Open `Yamlink: Open Vault Health` for a vault-wide structural audit.
+Open `Yamlink: Open Vault Health` for a vault-wide structural audit — a health checkup for the whole vault, not just one note. It's organized into tabs, each answering a different question. Hover the small **?** next to any section title in the panel itself for a one-line reminder of what it means; here's the fuller picture.
 
-- broken links and duplicate IDs
-- lifecycle distribution across the vault
-- drift and consistency signals
-- schema coverage and conformance
-- Vault Projections: 90-day Growth, Stale Pressure, and Structure Direction forecast
-- Emerging Patterns: clusters of notes that share identical field signatures, with schema creation shortcuts
+- **Activity** — what happened today: notes created, fields added, relations formed, plus a "session memory" recap that groups your recent edits into plain-language sentences ("Added 3 fields to `mission-briefing`, then linked it to 2 contacts"). If you touch 3+ notes the same way within a minute, you'll also see a workflow-burst callout — a sign you just did a batch edit or import.
+- **Lifecycle** — every note gets bucketed into where it is in its life: **Draft** (barely started), **Growing** (taking shape but not done), **Established** (looks complete and typical for its type), **Hub** (a lot of other notes link to it), or **Stale** (hasn't been touched in a while and may need a look). This isn't a judgment — a Draft note isn't "bad," it's just new.
+- **Consistency** — compares each note against others of the same `type:` and flags ones that look structurally unusual, most often because they're missing a field that similar notes almost always have. Needs at least 3 notes of a type before it has enough to compare against.
+- **Schema** — if you've defined any `type: schema` notes, this shows how many matching notes actually have every field the schema expects, plus which note types don't have a schema yet. This is also where Emerging Patterns lives (see below).
+- **Intelligence** — a status readout of Yamlink's own suggestion engine: how much real vault data it has to learn from right now, and how confident it currently is in lifecycle/drift/missing-field predictions. It gets sharper the more you use the vault and accept its suggestions — this tab is where you can watch that happen. Also shows **Most-Reinforced Connections**: the links in your vault with the strongest evidence behind them, either because more than one field points at the same note, or because you've set that same relationship more than once over time.
+- **Projections** (once there's enough history) — where your vault is likely headed over the next 90 days: growth pace, stale-note pressure, and structural direction, all extrapolated from your own vault's real trend, not a generic guess.
+- **Templates** (if you use `_templates/`) — notes created from a template that are missing one or more fields the template defines.
+- **Types** — every note category in your vault and how many notes use it, one click away from a full list.
+- **Orphans** (if any exist) — notes with no incoming or outgoing links at all. Not necessarily wrong, but usually worth a look — either they should be connected to something, or they're safe to ignore.
+
+#### Emerging Patterns — the vault writes its own schema
+
+You never have to declare a schema before you start writing. If you create enough notes that happen to share the same fields — say, 15 notes that all ended up with `id`, `type`, `status`, `owner`, and `due_date` even though nobody ever defined a `mission` type — Yamlink notices. That's what the **Emerging Patterns** section is: clusters of notes sharing an identical field shape, ranked by confidence (low: 4–6 matching notes, medium: 7–12, high: 13+).
+
+When a cluster reaches medium or high confidence, a **"Create schema from cluster →"** button appears. The same flow is also reachable from the Command Palette as **Yamlink: Propose Schema from Cluster**, which works even without opening Vault Health — it lists any detected clusters in a picker, or lets you name a type manually if none exist yet.
+
+Choosing a cluster does two things:
+
+1. **Creates a real schema note** (`schema-<type>.md`) capturing the field pattern you've actually been using — not a guess, the fields your own notes already share.
+2. **Offers to back-fill those fields onto the notes that inspired it.** If some cluster members are missing one or two of the newly-formalized fields, you'll get a prompt — *"Also add the '`<type>`' schema's fields to the N notes that inspired it?"* — before anything is written. Nothing happens without that confirmation; declining leaves every note untouched.
+
+This is the full loop: the vault teaches the system through how you actually write, and once a pattern is real enough to trust, one command turns it into a durable, reusable schema — and closes the loop by making sure the notes that earned that schema actually have it.
 
 ### Note Outline
 
@@ -240,6 +274,15 @@ Expand **Note Outline** in the Yamlink sidebar when working in a long note.
 - current-section tracking as you scroll
 - search and filter for large notes
 - `Ctrl+Alt+↑/↓` to jump to sibling sections
+
+### Task Center
+
+Expand **Tasks** in the Yamlink sidebar for every task in the vault in one place, not just a per-note preview.
+
+- grouped into Overdue / Today / Upcoming / Undated / Done, with no cap on how many show per bucket
+- native checkboxes mark a task done or open right from the sidebar — the file's `- [ ]`/`- [x]` line updates immediately
+- clicking a task jumps straight to its exact line
+- write `#urgent`, `#medium`, or `#low` in a task line for a real priority signal — a colored dot on the task, sorted to the top of its bucket, and an escalated notification when an urgent task goes overdue
 
 ### Home
 
@@ -288,6 +331,24 @@ yamlink link johnny-rico unit roughnecks        # set a relation field
 yamlink rename johnny-rico rico                 # vault-wide ID rename
 ```
 
+**Everyday inspection:**
+
+```bash
+yamlink ls                          # every note, real aligned table by default
+yamlink grep "quarterly"            # full-text search across note bodies
+yamlink find --type contact         # filter by type/field
+yamlink ls --quiet                  # revert to plain tab-separated output for shell pipelines
+```
+
+**Time travel:**
+
+```bash
+yamlink cat johnny-rico --at 2026-01-01     # reconstructed frontmatter as of that date
+yamlink story --since 2026-01-01            # vault growth story: then vs. now, fastest-growing types
+```
+
+`--at` is also supported on `report`, `links`, and `graph`.
+
 **Automation:**
 
 ```bash
@@ -301,7 +362,7 @@ yamlink completions bash >> ~/.bashrc           # enable shell tab completions
 yamlink init ~/Documents/MyVault               # scaffold .yamlink/, _templates/, welcome.md
 ```
 
-**All 24 commands** with `--json`, `--dry-run`, and `--vault <path>` support. Full reference: [docs/cli/README-CLI.md](./docs/cli/README-CLI.md)
+**All 37 commands** with `--json`, `--dry-run`, and `--vault <path>` support. Full reference: [docs/cli/README-CLI.md](./docs/cli/README-CLI.md)
 
 ---
 
@@ -331,7 +392,7 @@ Press a number key to switch screens:
 | `4` | Explorer | Full note management: browse, read, edit, create, link |
 | `5` | Health | Live vault health with emerging patterns |
 | `6` | Search | Full-text and frontmatter search |
-| `7` | Graph | Vault graph visualization in the terminal |
+| `7` | Graph | Vault graph visualization in the terminal — press `v` to toggle a live spatial "constellation" layout: the focused note centered with labeled, type-colored connection lanes, updating live as relations change |
 | `8` | Diff | Compare two notes field by field |
 | `9` | Radar | Unlinked references and orphan detection |
 
@@ -487,7 +548,7 @@ Yamlink excludes those files and folders from indexing, graphing, health analysi
 ## 12. Where to go next
 
 - [README.md](./README.md) — full product surface overview
-- [docs/cli/README-CLI.md](./docs/cli/README-CLI.md) — complete CLI reference (24 commands)
+- [docs/cli/README-CLI.md](./docs/cli/README-CLI.md) — complete CLI reference (37 commands)
 - [docs/tui/README-TUI.md](./docs/tui/README-TUI.md) — full Conduit reference with key binding tables
 - [docs/api/README-API.md](./docs/api/README-API.md) — local HTTP API reference (21 endpoints)
 

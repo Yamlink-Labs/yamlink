@@ -16,6 +16,14 @@ const {
     summariseInferenceReasons
 } = require('./completionContextHelpers');
 
+/**
+ * Duck-typed document contract shared by VS Code and the LSP server — only
+ * needs getText()/.uri.fsPath (lineAt() when line-level context is used), not
+ * the full vscode.TextDocument surface. See CLAUDE.md's completion helpers note.
+ * @typedef {{ getText: () => string, lineAt?: (n: number) => {text: string}, uri?: {fsPath?: string} }} DocumentLike
+ * @typedef {{ line: number, character: number }} PositionLike
+ */
+
 /** @param {string} id @returns {string|null} */
 function getHumanLabel(id) {
     const fieldsCache = getFieldsCache();
@@ -69,7 +77,7 @@ function collectIdsForType(candidateIds, targetType) {
     return canonicalizeCandidateIds(candidateIds).filter((id) => String(fieldsCache.get(String(id || '').trim().toLowerCase())?.type || '').trim().toLowerCase() === normalizedType);
 }
 
-/** @param {import('vscode').TextDocument} document @param {Map<string,string>} idIndex @returns {string[]} */
+/** @param {DocumentLike} document @param {Map<string,string>} idIndex @returns {string[]} */
 function collectLocalLinkedIds(document, idIndex) {
     const text = document.getText();
     const ids = [];
@@ -257,7 +265,7 @@ function buildRelationRankingHints(fieldName, targetType, preferredIds = [], obs
     };
 }
 
-/** @param {import('vscode').TextDocument} document @param {import('vscode').Position} position @param {Map<string,string>} idIndex @returns {Record<string,any>|null} */
+/** @param {DocumentLike} document @param {PositionLike} position @param {Map<string,string>} idIndex @returns {Record<string,any>|null} */
 function resolveFrontmatterRelationCandidates(document, position, idIndex) {
     if (!isPositionInFrontmatter(document, position.line)) return null;
 
@@ -364,7 +372,7 @@ function resolveQueryRelationCandidates(fieldName, queryType, partial, idIndex, 
     };
 }
 
-/** @param {import('vscode').TextDocument} document @param {import('vscode').Position} position @returns {Record<string,any>|null} */
+/** @param {DocumentLike} document @param {import('vscode').Position} position @returns {Record<string,any>|null} */
 function getViewBlockContext(document, position) {
     const lines = document.getText().split('\n');
     let start = position.line;

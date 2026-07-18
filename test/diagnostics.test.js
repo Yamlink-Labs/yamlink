@@ -3,6 +3,9 @@
 const { test, describe } = require('node:test');
 const assert = require('node:assert/strict');
 const Module = require('module');
+const fs = require('fs');
+const path = require('path');
+const os = require('os');
 
 // ── VS Code stub ──────────────────────────────────────────────────────────────
 class FakeRange {
@@ -223,6 +226,39 @@ describe('validateDocument', () => {
         const doc = makeDoc('---\nid: alpha\n---\n\nSee [[What is Yamlink?]] and [[johnny-rico]] and [[what is yamlink#intro]].\n');
         const diags = runValidate(doc, idIndex);
         assert.ok(!diags.some(d => d.code === 'yamlink.brokenLink'));
+    });
+
+    test('no brokenLink for a ![[photo.png]] embed that resolves to a real image file', () => {
+        resetState();
+        const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'yamlink-diag-img-'));
+        try {
+            fs.writeFileSync(path.join(dir, 'photo.png'), Buffer.alloc(10));
+            const notePath = path.join(dir, 'a.md');
+            const text = '---\nid: alpha\n---\n\nSee ![[photo.png]] embedded here.\n';
+            fs.writeFileSync(notePath, text);
+            const doc = makeDoc(text);
+            doc.uri.fsPath = notePath;
+            const diags = runValidate(doc, new Map([['alpha', {}]]));
+            assert.ok(!diags.some(d => d.code === 'yamlink.brokenLink'), 'image embed should not be flagged as a broken link');
+        } finally {
+            fs.rmSync(dir, { recursive: true, force: true });
+        }
+    });
+
+    test('brokenLink still fires for a ![[missing.png]] embed that does not resolve to a real file', () => {
+        resetState();
+        const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'yamlink-diag-img-'));
+        try {
+            const notePath = path.join(dir, 'a.md');
+            const text = '---\nid: alpha\n---\n\nSee ![[missing.png]] embedded here.\n';
+            fs.writeFileSync(notePath, text);
+            const doc = makeDoc(text);
+            doc.uri.fsPath = notePath;
+            const diags = runValidate(doc, new Map([['alpha', {}]]));
+            assert.ok(diags.some(d => d.code === 'yamlink.brokenLink'), 'a non-existent image embed should still be flagged');
+        } finally {
+            fs.rmSync(dir, { recursive: true, force: true });
+        }
     });
 
     test('brokenRelation for unknown wikilink in frontmatter', () => {

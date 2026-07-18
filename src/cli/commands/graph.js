@@ -1,11 +1,42 @@
 'use strict';
 
-const { getIndex, getFieldsCache } = require('../../core/indexService');
+const { getIndex, getFieldsCache, getAliasIndex, getBodyLinksCache, extractAndResolveRelationTargets } = require('../../core/indexService');
 const { getEdges, getBacklinks } = require('../../core/graph');
 const { inferLifecycleState } = require('../../intelligence/lifecycleState');
-const { emitCliSuccess } = require('../io');
+const { reconstructVaultAtTime, buildHistoricalGraph } = require('../../core/timeEngine');
+const { getMutationEvents } = require('../../runtime/mutationEventLog');
+const { emitCliError, emitCliSuccess } = require('../io');
 
-function run({ typeFilter, output }) {
+function run({ typeFilter, output, at }) {
+    if (at) {
+        const parsedMs = Date.parse(at);
+        if (!Number.isFinite(parsedMs)) {
+            emitCliError({ json: true, outputPath: output, error: `Invalid date: ${at}`, code: 'INVALID_PARAM', exitCode: 1 });
+            return;
+        }
+        const sinceIso = new Date(parsedMs).toISOString();
+        const idIndex = getIndex();
+        const aliasIndex = getAliasIndex();
+        const reconstructed = reconstructVaultAtTime(sinceIso, {
+            fieldsCache: getFieldsCache(),
+            mutationEvents: getMutationEvents(),
+            bodyLinksCache: getBodyLinksCache()
+        });
+        const { nodes, edges } = buildHistoricalGraph(
+            reconstructed,
+            (value) => extractAndResolveRelationTargets(value, idIndex, aliasIndex)
+        );
+        const types = new Set(nodes.map((node) => node.type).filter(Boolean));
+        const incomplete = nodes.filter((node) => !node.complete).length;
+        emitCliSuccess({
+            at: sinceIso,
+            nodes,
+            edges,
+            stats: { nodes: nodes.length, edges: edges.length, types: types.size, incomplete }
+        }, output);
+        return;
+    }
+
     const idIndex = getIndex();
     const fieldsCache = getFieldsCache();
     const includedTypes = Array.isArray(typeFilter) && typeFilter.length

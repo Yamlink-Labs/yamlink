@@ -172,6 +172,7 @@ const {
     removeFileFromIndex,
     getIndex,
     getFieldsCache,
+    getBodyLinksCache,
     extractEdgesFromFrontmatter,
     extractBodyLinks
 } = require('../src/core/index.js');
@@ -248,6 +249,14 @@ describe('parseFrontmatter', () => {
     test('empty frontmatter block returns null', () => {
         assert.equal(parseFrontmatter('---\n---\n'), null);
     });
+
+    // NOTE: this file stubs js-yaml with a simplified hand-written fake (see
+    // the Module._resolveFilename override above) that doesn't replicate real
+    // js-yaml's flow-sequence array parsing — so the "[[wikilink]] scalar
+    // parses as a nested array" ambiguity this stub can't reproduce is tested
+    // with the REAL js-yaml library instead, in
+    // test/parseFrontmatterWikilinkAmbiguity.test.js (via createVault(), real
+    // file writes, real buildIndex()).
 });
 
 describe('wikilink edge extraction', () => {
@@ -437,6 +446,48 @@ describe('updateSingleFile', () => {
         assert.equal(result.changed, true);
         assert.equal(result.needsFull, false);
         assert.ok(result.mutationEvents.some((event) => event.type === 'note_touched' && event.noteId === 'hero'));
+        teardownVault();
+    });
+
+    test('a body-text wikilink mention added to prose emits a field_added event for the synthetic body-links field, not just note_touched', () => {
+        // Real engine change: the mutation log has never recorded body text
+        // before this — only frontmatter field deltas. This is what lets
+        // x-graph time-lapse's mutation-log fallback path show body-mention
+        // growth going forward, for vaults with no git history to fall back on.
+        setupVault();
+        const filePath = writeNode('hero.md', '---\nid: hero\ntype: character\n---\n\nNo mentions yet.\n');
+        buildIndex([{ uri: { fsPath: tmpDir } }]);
+        fs.writeFileSync(filePath, '---\nid: hero\ntype: character\n---\n\nNow mentions [[roughnecks]] in prose.\n', 'utf8');
+        bumpMtime(filePath);
+        const result = updateSingleFile(filePath);
+        const bodyLinkEvent = result.mutationEvents.find((event) => event.field === '__body_links__');
+        assert.ok(bodyLinkEvent, 'expected a mutation event for the synthetic body-links field');
+        assert.equal(bodyLinkEvent.type, 'field_added');
+        assert.equal(bodyLinkEvent.newValue, '[[roughnecks]]');
+        assert.equal(getBodyLinksCache().get('hero'), '[[roughnecks]]');
+        teardownVault();
+    });
+
+    test('removing the only body-text mention emits a field_removed event', () => {
+        setupVault();
+        const filePath = writeNode('hero.md', '---\nid: hero\ntype: character\n---\n\nMentions [[roughnecks]] here.\n');
+        buildIndex([{ uri: { fsPath: tmpDir } }]);
+        assert.equal(getBodyLinksCache().get('hero'), '[[roughnecks]]');
+        fs.writeFileSync(filePath, '---\nid: hero\ntype: character\n---\n\nNo more mentions.\n', 'utf8');
+        bumpMtime(filePath);
+        const result = updateSingleFile(filePath);
+        const bodyLinkEvent = result.mutationEvents.find((event) => event.field === '__body_links__');
+        assert.ok(bodyLinkEvent);
+        assert.equal(bodyLinkEvent.type, 'field_removed');
+        assert.equal(getBodyLinksCache().get('hero'), '');
+        teardownVault();
+    });
+
+    test('a duplicate body-text mention of the same target does not inflate the tracked value', () => {
+        setupVault();
+        writeNode('hero.md', '---\nid: hero\ntype: character\n---\n\n[[roughnecks]] and [[roughnecks]] again.\n');
+        buildIndex([{ uri: { fsPath: tmpDir } }]);
+        assert.equal(getBodyLinksCache().get('hero'), '[[roughnecks]]');
         teardownVault();
     });
 

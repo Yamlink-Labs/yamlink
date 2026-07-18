@@ -52,6 +52,7 @@ const p = {
     bold: (t) => colorize(C.primary, t, { bold: true }),
     section: (t) => colorize(C.mint, '▸ ') + colorize(C.secondary, String(t ?? '').toUpperCase()),
     num: (t) => colorize(C.primary, t, { bold: true }),
+    hex: (color, t) => colorize(color, t),
 };
 
 function eventTone(type) {

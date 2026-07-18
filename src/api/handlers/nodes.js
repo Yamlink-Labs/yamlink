@@ -2,10 +2,11 @@
 
 const fs = require('fs');
 
-const { getIndex, getFieldsCache, getVaultGeneration } = require('../../core/indexService');
+const { getIndex, getFieldsCache, getVaultGeneration, extractRelationTargets } = require('../../core/indexService');
 const { getEdges, getBacklinks } = require('../../core/graph');
 const { getMutationEvents } = require('../../runtime/mutationEventLog');
 const { buildNoteIntelligenceSnapshot } = require('../../intelligence/intelligenceSnapshots');
+const { reconstructNoteAtTime } = require('../../core/timeEngine');
 const { json, errorJson, badRequest, methodNotAllowed, readBody, coercePositiveInt, notFound } = require('../http');
 const { writeNoteFile, applyFieldUpdates } = require('../write');
 const { appendMutationEvents, withMutationContext } = require('../../runtime/mutationEventLog');
@@ -134,8 +135,53 @@ async function listNodes(req, res, url) {
     });
 }
 
+/** @param {Record<string, any>} fields @returns {Array<{field: string, to: string}>} */
+function buildHistoricalOutbound(fields) {
+    const outbound = [];
+    for (const [field, value] of Object.entries(fields || {})) {
+        if (!field || field === 'id' || field === 'type' || field.startsWith('__')) continue;
+        for (const targetId of extractRelationTargets(value)) outbound.push({ field, to: targetId });
+    }
+    return outbound;
+}
+
 async function getNode(req, res, id, url, context) {
     if (req.method !== 'GET') { methodNotAllowed(res); return; }
+
+    const at = String(url?.searchParams?.get('at') || '').trim();
+    if (at) {
+        if (!Number.isFinite(Date.parse(at))) {
+            badRequest(res, 'Invalid "at" timestamp — expected ISO-8601', 'INVALID_PARAM');
+            return;
+        }
+        const idIndex = getIndex();
+        const fieldsCache = getFieldsCache();
+        const currentFields = idIndex.has(id) ? (fieldsCache.get(id) || {}) : null;
+        const events = getMutationEvents({ noteId: id });
+        const result = reconstructNoteAtTime(id, at, currentFields, events);
+
+        if (!result.exists) {
+            errorJson(res, 'NOT_FOUND', 'Note did not exist at ' + at, {
+                reason: result.reason,
+                earliestReconstructableTimestamp: result.earliestReconstructableTimestamp
+            });
+            return;
+        }
+
+        json(res, {
+            id,
+            at,
+            exists: true,
+            fields: result.fields,
+            _outbound: result.fields ? buildHistoricalOutbound(result.fields) : [],
+            complete: result.complete,
+            earliestReconstructableTimestamp: result.earliestReconstructableTimestamp,
+            ...(result.reason ? { reason: result.reason } : {}),
+            ...(result.deletedAt ? { deletedAt: result.deletedAt } : {})
+        });
+        return;
+    }
+
     const minGeneration = coercePositiveInt(url.searchParams.get('minGeneration'), null, 0);
     if (minGeneration !== null && context && context.eventBus && typeof context.eventBus.waitForGeneration === 'function') {
         await context.eventBus.waitForGeneration(minGeneration, 3000);

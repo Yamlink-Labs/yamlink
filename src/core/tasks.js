@@ -16,8 +16,9 @@ const { buildTaskBlockId } = require('./bodyBlocks');
  *   body: string,
  *   done: boolean,
  *   date: string|null,
+ *   priority: 'urgent'|'medium'|'low'|null,
  *   links: string[],
- *   fields: { text: string, done: string, date: string|null, file: string, line: string },
+ *   fields: { text: string, done: string, date: string|null, priority: string, file: string, line: string },
  *   nodeType: string
  * }} TaskRow
  */
@@ -39,6 +40,35 @@ function stripDateMarkers(text) {
   return text.replace(DATE_MARKER_RE, '').replace(/\s{2,}/g, ' ').trim();
 }
 
+// Priority markers — a small closed vocabulary, explicit opt-in only. Never
+// inferred from task wording (e.g. a task that merely *sounds* urgent stays
+// unprioritized) — the same "honest signal, not a guess" discipline the rest
+// of the intelligence layer follows. Reuses the `#word` token shape the
+// existing vault-wide tag extractor (tagSignals.js) already recognizes, but
+// is parsed independently and scoped to this one task line, not the whole
+// note — a single #urgent task shouldn't make tagSignals.js think the entire
+// note is urgent.
+const PRIORITY_MARKER_RE = /(^|[\s(])#(urgent|high|medium-priority|medium|med|low)\b/i;
+const PRIORITY_ALIASES = {
+  urgent: 'urgent',
+  high: 'urgent',
+  'medium-priority': 'medium',
+  medium: 'medium',
+  med: 'medium',
+  low: 'low'
+};
+
+/** @param {string} text @returns {'urgent'|'medium'|'low'|null} */
+function extractPriority(text) {
+  const match = String(text || '').match(PRIORITY_MARKER_RE);
+  if (!match) return null;
+  return PRIORITY_ALIASES[match[2].toLowerCase()] || null;
+}
+
+function stripPriorityMarker(text) {
+  return text.replace(PRIORITY_MARKER_RE, '$1').replace(/\s{2,}/g, ' ').trim();
+}
+
 /** @param {string} content @param {string} fileId @param {string} filePath @param {string|null} [referenceDate] @returns {TaskRow[]} */
 function parseTasksFromContent(content, fileId, filePath, referenceDate = null) {
   const body = stripFrontmatter(normalizeText(content));
@@ -57,7 +87,8 @@ function parseTasksFromContent(content, fileId, filePath, referenceDate = null) 
     const done = match[2].toLowerCase() === 'x';
     const rawText = match[3].trim();
     const date = extractDateFromText(rawText, referenceDate);
-    const displayText = stripDateMarkers(rawText) || rawText;
+    const priority = extractPriority(rawText);
+    const displayText = stripDateMarkers(stripPriorityMarker(rawText)) || rawText;
     const linkMatches = [...rawText.matchAll(/\[\[([^\]]+)\]\]/g)].map(m => m[1].trim());
     const localBlockId = buildTaskBlockId(taskNumber, rawText);
     const blockId = `${fileId}#${localBlockId}`;
@@ -91,11 +122,13 @@ function parseTasksFromContent(content, fileId, filePath, referenceDate = null) 
       body: bodyLines.join(' '),
       done,
       date,
+      priority,
       links: linkMatches,
       fields: {
         text: rawText,
         done: String(done),
         date,
+        priority: priority || '',
         file: fileId,
         line: String(i + 1)
       },
@@ -128,4 +161,4 @@ function buildTaskRows(index, vaultGeneration) {
   return rows;
 }
 
-module.exports = { parseTasksFromContent, buildTaskRows };
+module.exports = { parseTasksFromContent, buildTaskRows, extractPriority };

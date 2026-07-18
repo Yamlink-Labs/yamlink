@@ -25,6 +25,58 @@ const Module = require('module');
 // ─── VS Code stub (installed once, before any real require) ──────────────────
 
 const _originalResolve = Module._resolveFilename.bind(Module);
+const _infoMessageQueue = [];
+const _inputBoxQueue = [];
+
+function _dequeueOrUndefined(queue) {
+    return queue.length ? queue.shift() : undefined;
+}
+
+function _resetVscodeStubState() {
+    _infoMessageQueue.length = 0;
+    _inputBoxQueue.length = 0;
+    _vscodeStub.workspace.textDocuments.length = 0;
+    _vscodeStub.workspace.workspaceFolders = [];
+}
+
+function queueInformationMessageResponses(...responses) {
+    _infoMessageQueue.push(...responses);
+}
+
+function queueInputBoxResponses(...responses) {
+    _inputBoxQueue.push(...responses);
+}
+
+function requireWithVscodeStub(modulePath, parentRequire = require) {
+    Module._resolveFilename = _vscodeResolveFilename;
+    return parentRequire(modulePath);
+}
+
+function _applyTextInsert(text, pos, insertedText) {
+    const lines = text.split('\n');
+    const lineIndex = pos?.line ?? 0;
+    const charIndex = pos?.character ?? 0;
+    const targetLine = lines[lineIndex] ?? '';
+    lines[lineIndex] = targetLine.slice(0, charIndex) + insertedText + targetLine.slice(charIndex);
+    return lines.join('\n');
+}
+
+function _createTextDocument(uri) {
+    const document = {
+        uri,
+        isDirty: false,
+        _text: fs.readFileSync(uri.fsPath, 'utf8'),
+        getText() {
+            return this._text;
+        },
+        async save() {
+            fs.writeFileSync(this.uri.fsPath, this._text, 'utf8');
+            this.isDirty = false;
+            return true;
+        }
+    };
+    return document;
+}
 
 const _vscodeStub = {
     MarkdownString: class MarkdownString {
@@ -43,12 +95,39 @@ const _vscodeStub = {
         createOutputChannel: () => ({ appendLine: () => {}, show: () => {}, clear: () => {}, dispose: () => {} }),
         onDidChangeActiveTextEditor: () => ({ dispose: () => {} }),
         showWarningMessage:          async () => undefined,
-        showInformationMessage:      async () => undefined,
-        showErrorMessage:            async () => undefined
+        showInformationMessage:      async () => _dequeueOrUndefined(_infoMessageQueue),
+        showInputBox:                async () => _dequeueOrUndefined(_inputBoxQueue),
+        showErrorMessage:            async () => undefined,
+        showTextDocument:            async (document) => ({ document })
     },
     workspace: {
         textDocuments: [],
-        applyEdit:                  async () => true,
+        workspaceFolders:          [],
+        fs: {
+            writeFile: async (uri, data) => {
+                fs.mkdirSync(path.dirname(uri.fsPath), { recursive: true });
+                fs.writeFileSync(uri.fsPath, Buffer.from(data));
+            }
+        },
+        async openTextDocument(uri) {
+            const existing = this.textDocuments.find((doc) => doc.uri.fsPath === uri.fsPath);
+            if (existing) return existing;
+            const document = _createTextDocument(uri);
+            this.textDocuments.push(document);
+            return document;
+        },
+        applyEdit:                  async (edit) => {
+            if (!edit || !Array.isArray(edit._edits)) return true;
+            for (const change of edit._edits) {
+                const document = _vscodeStub.workspace.textDocuments.find((doc) => doc.uri.fsPath === change.uri?.fsPath);
+                if (!document) continue;
+                if (change.pos) {
+                    document._text = _applyTextInsert(document._text, change.pos, change.text);
+                    document.isDirty = true;
+                }
+            }
+            return true;
+        },
         onDidChangeTextDocument:    () => ({ dispose: () => {} }),
         onDidSaveTextDocument:      () => ({ dispose: () => {} }),
         onDidCreateFiles:           () => ({ dispose: () => {} }),
@@ -110,10 +189,11 @@ require.cache.__vs_vaultSim__ = {
     exports: _vscodeStub
 };
 
-Module._resolveFilename = (request, parent, ...rest) => {
+const _vscodeResolveFilename = (request, parent, ...rest) => {
     if (request === 'vscode') return '__vs_vaultSim__';
     return _originalResolve(request, parent, ...rest);
 };
+Module._resolveFilename = _vscodeResolveFilename;
 
 // ─── Load real implementations ───────────────────────────────────────────────
 
@@ -133,16 +213,24 @@ const frontmatterIntMod = require('../../src/intelligence/frontmatterIntelligenc
 const { buildObservedFields, buildObservedNoteIndex, resetObservedNoteIndexCache } = require('../../src/intelligence/suggestionCore');
 const { clearIntelligenceCache } = require('../../src/intelligence/intelligenceCache');
 const schemaRegistryMod = require('../../src/registries/schemaRegistry');
+const { getMutationEvents: _getRuntimeMutationEvents } = require('../../src/runtime/mutationEventLog');
 require('../../src/features/view/viewPanelHtml');
 
-// Restore resolver after all modules are cached
-Module._resolveFilename = _originalResolve;
+// Both extension.js (VS Code activation) and src/cli/index.js wire vaultPriors
+// to the real mutation log via setMutationEventsProvider so relationshipGravity
+// and implicitWeights get real mutation-history signal, not just structural
+// weight — without this, the test harness silently diverges from both real
+// surfaces (every mutation-log-derived prior would be empty here even with
+// events appended via appendMutationEvents()).
+vaultPriorsMod.setMutationEventsProvider(_getRuntimeMutationEvents);
 
 // ─── VaultInstance ────────────────────────────────────────────────────────────
 
 class VaultInstance {
     constructor(dir) {
         this.dir = dir;
+        _resetVscodeStubState();
+        _vscodeStub.workspace.workspaceFolders = [{ uri: { fsPath: this.dir } }];
         this._rebuild();
     }
 
@@ -289,8 +377,14 @@ class VaultInstance {
         this._rebuild();
     }
 
+    async openDocument(filename) {
+        const uri = _vscodeStub.Uri.file(path.join(this.dir, filename));
+        return _vscodeStub.workspace.openTextDocument(uri);
+    }
+
     // ── Cleanup ───────────────────────────────────────────────────────────────
     destroy() {
+        _resetVscodeStubState();
         try { fs.rmSync(this.dir, { recursive: true, force: true }); } catch { /* ignore */ }
     }
 
@@ -338,4 +432,11 @@ function createVault(files = {}) {
     return new VaultInstance(dir);
 }
 
-module.exports = { createVault, VaultInstance };
+module.exports = {
+    createVault,
+    VaultInstance,
+    queueInformationMessageResponses,
+    queueInputBoxResponses,
+    resetVscodeStubState: _resetVscodeStubState,
+    requireWithVscodeStub
+};

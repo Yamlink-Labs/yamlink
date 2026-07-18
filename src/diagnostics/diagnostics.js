@@ -7,6 +7,7 @@ const { getDuplicateIds, getFieldsCache, getAliasIndex } = require('../core/inde
 const { getBacklinks } = require('../core/graph');
 const { computeSuggestionsForNode, QUERY_SUGGESTION_THRESHOLD } = require('../engine/suggestions');
 const { extractCanonicalIdFromFrontmatter, resolveLinkedTarget } = require('../core/id');
+const { resolveImageEmbed } = require('../core/imageEmbed');
 const { getTemplateForType, extractTemplateFields, extractTemplateType, TEMPLATES_DIR } = require('../core/templateRegistry');
 const { getPrimaryWorkspaceRoot } = require('../core/workspace');
 const { initializeIgnoredDiagnostics, isDiagnosticIgnored } = require('./ignoredDiagnostics');
@@ -251,8 +252,17 @@ function validateDocument(document, getIndex) {
         const rawTarget       = match[1].trim();
         const id              = rawTarget.split('|')[0].trim();
         const isInFrontmatter = frontmatterEnd > 0 && match.index < frontmatterEnd;
+        // The regex doesn't capture a leading `!` (embed marker) — check the
+        // preceding character directly so ![[photo.png]] can be recognized
+        // as an image embed, not just a note wikilink.
+        const isEmbed = match.index > 0 && text[match.index - 1] === '!';
 
-        if (!resolveLinkedTarget(rawTarget, idIndex, aliasIndex)) {
+        const resolvedNote = resolveLinkedTarget(rawTarget, idIndex, aliasIndex);
+        const resolvedImage = !resolvedNote && isEmbed && document.uri.fsPath
+            ? resolveImageEmbed(rawTarget, path.dirname(document.uri.fsPath))
+            : null;
+
+        if (!resolvedNote && !resolvedImage) {
             const range = new vscode.Range(
                 document.positionAt(match.index),
                 document.positionAt(match.index + match[0].length)

@@ -172,7 +172,10 @@ function buildLiveNoteModel(documentText, fsPath, contextNodeId) {
         noteType,
         frontmatter,
         metrics: buildMetricChips(doc, body),
-        renderedHtml: decorateRenderedHtml(renderNotePreview(documentText, contextNodeId || null), targets)
+        renderedHtml: decorateRenderedHtml(
+            renderNotePreview(documentText, contextNodeId || null, fsPath ? path.dirname(fsPath) : null),
+            targets
+        )
     };
 }
 

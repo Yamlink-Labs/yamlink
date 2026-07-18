@@ -50,7 +50,7 @@ async function handleNoteIntelligence(req, res, url) {
 
 async function handleClusters(req, res) {
     if (req.method !== 'GET') { methodNotAllowed(res); return; }
-    json(res, detectClusters(getIndex(), getFieldsCache()));
+    json(res, detectClusters(getFieldsCache()));
 }
 
 module.exports = {

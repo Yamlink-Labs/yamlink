@@ -72,7 +72,9 @@ async function handleInitialize(msg, state) {
                     COMMANDS.NOTE_ARC,
                     COMMANDS.FIELD_CATEGORY,
                     COMMANDS.ADD_MISSING_FIELDS,
-                    COMMANDS.SCAFFOLD_IDENTITY
+                    COMMANDS.SCAFFOLD_IDENTITY,
+                    COMMANDS.NORMALIZE_FRONTMATTER,
+                    COMMANDS.CONVERT_RELATIONS
                 ]
             }
         },

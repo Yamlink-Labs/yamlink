@@ -525,9 +525,12 @@ describe('fieldCategory — vault evidence overrides name patterns', () => {
         const { buildValuePatterns, buildWorkflowFields } = require('../src/intelligence/vaultPriors');
         const fieldsCache = new Map([
             ['n1', { type: 'mission', disposition: 'active' }],
-            ['n2', { type: 'mission', disposition: 'standby' }],
-            ['n3', { type: 'mission', disposition: 'complete' }],
-            ['n4', { type: 'mission', disposition: 'active' }],
+            ['n2', { type: 'mission', disposition: 'active' }],
+            ['n3', { type: 'mission', disposition: 'active' }],
+            ['n4', { type: 'mission', disposition: 'standby' }],
+            ['n5', { type: 'mission', disposition: 'standby' }],
+            ['n6', { type: 'mission', disposition: 'complete' }],
+            ['n7', { type: 'mission', disposition: 'complete' }],
         ]);
         const vp = buildValuePatterns(fieldsCache);
         const wf = buildWorkflowFields(vp);
@@ -687,5 +690,50 @@ describe('fieldCategory — implicit history signal', () => {
         assert.equal(result.category, CATEGORY.RELATION);
         assert.equal(result.source, 'behavior');
         assert.match(result.reasons[0], /recent character modeling/i);
+    });
+});
+
+describe('fieldCategory — temporal confidence from mutation volatility', () => {
+    const fieldsCache = new Map([
+        ['dossier-a', { type: 'dossier', subject: '[[char-a]]' }],
+        ['dossier-b', { type: 'dossier', subject: '[[char-b]]' }],
+        ['dossier-c', { type: 'dossier', subject: '[[char-c]]' }],
+        ['char-a', { type: 'character' }],
+        ['char-b', { type: 'character' }],
+        ['char-c', { type: 'character' }],
+    ]);
+    const fieldTargetTypes = new Map([['subject', new Map([['character', 6]])]]);
+    const fieldAmbiguity = new Map([['subject', { linkCount: 6, scalarCount: 0, total: 6, linkRatio: 1.0 }]]);
+
+    it('lowers confidence and recomputes relationStrength for a frequently-revised field', () => {
+        const fieldVolatility = new Map([
+            ['subject', { added: 1, changed: 3, total: 4, volatilityScore: 0.75 }]
+        ]);
+        const stable   = classifyField('subject', { fieldsCache, fieldTargetTypes, fieldAmbiguity });
+        const volatile = classifyField('subject', { fieldsCache, fieldTargetTypes, fieldAmbiguity, fieldVolatility });
+
+        assert.equal(stable.category, CATEGORY.RELATION);
+        assert.equal(volatile.category, CATEGORY.RELATION);
+        assert.ok(volatile.confidence < stable.confidence, 'volatile field should carry lower confidence');
+        assert.ok(volatile.reasons.some((r) => r.includes('revised often')));
+    });
+
+    it('raises confidence for a write-once, stable field', () => {
+        const fieldVolatility = new Map([
+            ['subject', { added: 3, changed: 0, total: 3, volatilityScore: 0 }]
+        ]);
+        const plain  = classifyField('subject', { fieldsCache, fieldTargetTypes, fieldAmbiguity });
+        const stable = classifyField('subject', { fieldsCache, fieldTargetTypes, fieldAmbiguity, fieldVolatility });
+
+        assert.ok(stable.confidence > plain.confidence, 'stable field should carry higher confidence');
+        assert.ok(stable.reasons.some((r) => r.includes('stayed stable')));
+    });
+
+    it('is a no-op when no volatility evidence exists for the field', () => {
+        const plain = classifyField('subject', { fieldsCache, fieldTargetTypes, fieldAmbiguity });
+        const withEmptyVolatility = classifyField('subject', {
+            fieldsCache, fieldTargetTypes, fieldAmbiguity, fieldVolatility: new Map()
+        });
+        assert.equal(withEmptyVolatility.confidence, plain.confidence);
     });
 });

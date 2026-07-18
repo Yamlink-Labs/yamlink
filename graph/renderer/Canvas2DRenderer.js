@@ -49,7 +49,11 @@ const DRIFT_RING_COLORS = {
   'outlier':     '#ff6b6b',
 };
 
-const BG        = '#0d0d14';
+// Apollo's `bg-base` — the same neutral dark used for editor/terminal/panel
+// backgrounds everywhere else. The previous value (#0d0d14) had a noticeably
+// blue-shifted tint (B channel higher than R/G) and didn't match this same
+// webview's own page-background CSS variable either — true off-black instead.
+const BG        = '#151617';
 const DIM_ALPHA = 0.12;
 
 export class Canvas2DRenderer {
@@ -83,6 +87,15 @@ export class Canvas2DRenderer {
     this._positions = {};
     this._spatialIndex = new Map();
     this._spatialCellSize = 140;
+    // id -> alpha in [0,1], multiplied into the node fill's normal alpha.
+    // Used by the x-graph time-lapse feature to fade newly-appeared nodes in
+    // rather than having them pop in at full opacity mid-transition.
+    this._nodeAlphaOverrides = new Map();
+    // "source|target|field" -> alpha in [0,1], same idea for newly-appeared
+    // edges. Forces an unbatched (per-edge) draw path while any override is
+    // active — time-lapse graphs are small, so the batching this bypasses
+    // was never needed there anyway.
+    this._edgeAlphaOverrides = new Map();
 
     // Interaction
     this._hoveredId   = null;
@@ -98,6 +111,10 @@ export class Canvas2DRenderer {
     this._filterKinds      = null;   // null = show all; Set<string>
     this._filteredIdsCache = null;   // null = no filter active
     this._searchQuery      = '';
+    // 'auto' = existing LOD density system (default, unchanged behavior);
+    // 'all' = force every legible-at-this-zoom label to render, bypassing
+    // the weight/hashStride density filtering; 'none' = hide all labels.
+    this._labelMode         = 'auto';
 
     // Render
     this._animId = null;
@@ -191,6 +208,21 @@ export class Canvas2DRenderer {
   }
 
   /**
+   * Sets node-label visibility mode: 'auto' (default LOD density system),
+   * 'all' (force every legible label to render, ignoring density/weight
+   * filtering), or 'none' (hide all labels). Any other value falls back to
+   * 'auto'.
+   */
+  setLabelMode(mode) {
+    this._labelMode = (mode === 'all' || mode === 'none') ? mode : 'auto';
+    this._dirty = true;
+  }
+
+  getLabelMode() {
+    return this._labelMode;
+  }
+
+  /**
    * Show only nodes whose .group (exact type name) is in the provided Set.
    * Pass null to clear the filter and show all nodes.
    * @param {Set<string>|null} types
@@ -215,6 +247,28 @@ export class Canvas2DRenderer {
     cancelAnimationFrame(this._animId);
     this._camTween = null;
     this._canvas.remove();
+  }
+
+  /**
+   * Sets per-node fill-alpha multipliers (id -> [0,1]). Pass an empty Map (or
+   * omit ids) to clear an override. Used to fade newly-appeared nodes in
+   * during x-graph time-lapse transitions instead of having them pop in.
+   * @param {Map<string, number>} overrides
+   */
+  setNodeAlphaOverrides(overrides) {
+    this._nodeAlphaOverrides = overrides instanceof Map ? overrides : new Map();
+    this._dirty = true;
+  }
+
+  /**
+   * Sets per-edge alpha multipliers, keyed by "source|target|field" (or just
+   * "source|target" if you don't track field). Same fade-in purpose as
+   * setNodeAlphaOverrides(), for edges.
+   * @param {Map<string, number>} overrides
+   */
+  setEdgeAlphaOverrides(overrides) {
+    this._edgeAlphaOverrides = overrides instanceof Map ? overrides : new Map();
+    this._dirty = true;
   }
 
   /** Zoom by a factor, centred on the canvas centre. */
@@ -342,16 +396,22 @@ export class Canvas2DRenderer {
       for (const [id, node] of this._nodeMap) {
         const pos = this._positions[id];
         if (!pos || !this._isVisible(id) || !this._isInView(pos, 3 / zoom, zoom)) continue;
+        const fadeOverride = this._nodeAlphaOverrides.size ? this._nodeAlphaOverrides.get(id) : undefined;
+        const nodeFade = fadeOverride == null ? 1 : fadeOverride;
+        if (nodeFade <= 0.001) continue;
         const dimmed = this._isDimmed(id, focusId, hasFocus, hasSearch);
         const ck = dimmed ? '__dim' : (KIND_COLORS[node.kind] ?? KIND_COLORS.default);
         if (!dotBuckets.has(ck)) dotBuckets.set(ck, []);
-        dotBuckets.get(ck).push(pos);
+        dotBuckets.get(ck).push({ pos, fade: nodeFade });
       }
       const dotR = 1.6 / zoom;
       for (const [ck, pts] of dotBuckets) {
         ctx.fillStyle   = ck === '__dim' ? 'rgba(136,153,170,0.15)' : ck;
-        ctx.globalAlpha = ck === '__dim' ? DIM_ALPHA : 0.75;
-        for (const p of pts) ctx.fillRect(p.x - dotR, p.y - dotR, dotR * 2, dotR * 2);
+        for (const item of pts) {
+          ctx.globalAlpha = (ck === '__dim' ? DIM_ALPHA : 0.75) * item.fade;
+          const p = item.pos;
+          ctx.fillRect(p.x - dotR, p.y - dotR, dotR * 2, dotR * 2);
+        }
       }
       ctx.globalAlpha = 1;
       // Hovered / selected still gets a proper circle even in dot mode
@@ -384,26 +444,35 @@ export class Canvas2DRenderer {
       const isActive   = isHovered || isSelected;
       const dimmed     = this._isDimmed(id, focusId, hasFocus, hasSearch);
       const color      = KIND_COLORS[node.kind] ?? KIND_COLORS.default;
+      const fadeOverride = this._nodeAlphaOverrides.size ? this._nodeAlphaOverrides.get(id) : undefined;
+      const nodeFade = fadeOverride == null ? 1 : fadeOverride;
+      if (nodeFade <= 0.001) continue;
 
       // Health ring — drawn first so it sits behind the node circle
       if (this._layers.health && !dimmed) {
+        ctx.save();
+        ctx.globalAlpha *= nodeFade;
         this._drawHealthRing(ctx, node, pos, r, zoom);
+        ctx.restore();
       }
 
       // Hover / selection glow
       if (isActive) {
+        ctx.save();
+        ctx.globalAlpha *= nodeFade;
         ctx.beginPath();
         ctx.arc(pos.x, pos.y, r + 5 / zoom, 0, Math.PI * 2);
         ctx.strokeStyle = isSelected ? 'rgba(196,155,240,0.5)' : 'rgba(255,255,255,0.3)';
         ctx.lineWidth   = 1.5 / zoom;
         ctx.stroke();
+        ctx.restore();
       }
 
       // Node fill
       ctx.beginPath();
       ctx.arc(pos.x, pos.y, r, 0, Math.PI * 2);
       ctx.fillStyle   = dimmed ? 'rgba(136,153,170,0.15)' : color;
-      ctx.globalAlpha = dimmed ? DIM_ALPHA : (isActive ? 1 : 0.85);
+      ctx.globalAlpha = (dimmed ? DIM_ALPHA : (isActive ? 1 : 0.85)) * nodeFade;
       ctx.fill();
       ctx.globalAlpha = 1;
 
@@ -412,7 +481,9 @@ export class Canvas2DRenderer {
         ctx.arc(pos.x, pos.y, r + 4 / zoom, 0, Math.PI * 2);
         ctx.strokeStyle = 'rgba(255,255,255,0.18)';
         ctx.lineWidth = 1 / zoom;
+        ctx.globalAlpha = nodeFade;
         ctx.stroke();
+        ctx.globalAlpha = 1;
       }
 
       // Hub accent dot
@@ -420,7 +491,9 @@ export class Canvas2DRenderer {
         ctx.beginPath();
         ctx.arc(pos.x, pos.y, 3 / zoom, 0, Math.PI * 2);
         ctx.fillStyle = 'rgba(255,255,255,0.55)';
+        ctx.globalAlpha = nodeFade;
         ctx.fill();
+        ctx.globalAlpha = 1;
       }
 
       if (zoom < 0.58 && (node.bridgeScore ?? 0) > 0.2 && !dimmed) {
@@ -428,7 +501,9 @@ export class Canvas2DRenderer {
         ctx.arc(pos.x, pos.y, r + (5 / zoom), 0, Math.PI * 2);
         ctx.strokeStyle = 'rgba(231,168,90,0.24)';
         ctx.lineWidth = ((node.bridgeScore ?? 0) > 0.55 ? 1.4 : 1) / zoom;
+        ctx.globalAlpha = nodeFade;
         ctx.stroke();
+        ctx.globalAlpha = 1;
       }
 
       // Search match ring
@@ -447,7 +522,7 @@ export class Canvas2DRenderer {
     // ── Label pass (LOD — density drops at low zoom) ──────────────────────────
     const labelProfile = this._labelProfile(zoom);
     const zoomFade     = Math.min(1, Math.max(0, (zoom - labelProfile.minZoom) / 0.05));
-    if (zoomFade > 0) {
+    if (zoomFade > 0 && this._labelMode !== 'none') {
       ctx.textAlign    = 'center';
       ctx.textBaseline = 'bottom';
       ctx.font         = `${11 / zoom}px Inter, system-ui, sans-serif`;
@@ -460,14 +535,15 @@ export class Canvas2DRenderer {
         const isActive = id === this._hoveredId || id === this._selectedId;
         const dimmed   = this._isDimmed(id, focusId, hasFocus, hasSearch);
         if (dimmed && !isActive) continue;
-        if (!this._shouldRenderLabel(node, id, zoom, isActive, hasFocus, hasSearch, labelProfile)) continue;
-        const alpha = this._labelAlpha(node, id, zoom, focusId, hasFocus, hasSearch) * zoomFade;
+        if (this._labelMode !== 'all' && !this._shouldRenderLabel(node, id, zoom, isActive, hasFocus, hasSearch, labelProfile)) continue;
+        const fadeOverride = this._nodeAlphaOverrides.size ? this._nodeAlphaOverrides.get(id) : undefined;
+        const alpha = this._labelAlpha(node, id, zoom, focusId, hasFocus, hasSearch) * zoomFade * (fadeOverride == null ? 1 : fadeOverride);
         if (alpha <= 0) continue;
 
         const r     = this._nodeRadiusForZoom(node, zoom);
         const label = this._truncate(node.label || id, labelProfile.maxLabelLength);
 
-        ctx.fillStyle   = isActive ? `rgba(255,255,255,${zoomFade.toFixed(3)})` : `rgba(200,210,220,${alpha.toFixed(3)})`;
+        ctx.fillStyle   = isActive ? `rgba(255,255,255,${alpha.toFixed(3)})` : `rgba(200,210,220,${alpha.toFixed(3)})`;
         ctx.shadowColor = '#000';
         ctx.shadowBlur  = 4;
         ctx.fillText(label, pos.x, pos.y - r - 4 / zoom);
@@ -483,7 +559,39 @@ export class Canvas2DRenderer {
   /**
    * Base mode: bucket edges into active / inactive — 2 stroke() calls total.
    */
+  _edgeKey(edge) {
+    return edge.source + '|' + edge.target + '|' + (edge.field || '');
+  }
+
+  /**
+   * Unbatched per-edge draw path used only while _edgeAlphaOverrides has
+   * entries (x-graph time-lapse transitions) — small graphs, correctness
+   * over the batching the normal path optimizes for.
+   */
+  _drawEdgesUnbatchedWithFade(ctx, zoom, focusId, hasFocus) {
+    for (const edge of this._edges) {
+      const sp = this._positions[edge.source];
+      const tp = this._positions[edge.target];
+      if (!sp || !tp) continue;
+      if (!this._isVisible(edge.source) || !this._isVisible(edge.target)) continue;
+      if (!this._isInView(sp, 2, zoom) && !this._isInView(tp, 2, zoom)) continue;
+
+      const isActive = hasFocus && (edge.source === focusId || edge.target === focusId);
+      const fade = this._edgeAlphaOverrides.get(this._edgeKey(edge));
+      const baseAlpha = isActive ? 0.5 : (hasFocus ? 0.04 : 0.2);
+      ctx.beginPath();
+      ctx.moveTo(sp.x, sp.y);
+      ctx.lineTo(tp.x, tp.y);
+      ctx.strokeStyle = isActive ? 'rgba(197,255,191,1)' : 'rgba(136,153,170,1)';
+      ctx.lineWidth   = (isActive ? 1.5 : 0.8) / zoom;
+      ctx.globalAlpha = fade == null ? baseAlpha : baseAlpha * fade;
+      ctx.stroke();
+    }
+    ctx.globalAlpha = 1;
+  }
+
   _drawEdgesBatchedBase(ctx, zoom, focusId, hasFocus) {
+    if (this._edgeAlphaOverrides.size) return this._drawEdgesUnbatchedWithFade(ctx, zoom, focusId, hasFocus);
     // Two buckets: active (highlight) and inactive
     const activePts   = [];
     const inactivePts = [];
@@ -551,6 +659,7 @@ export class Canvas2DRenderer {
    * Arrowheads are per-edge fills drawn after the line batches.
    */
   _drawEdgesBatchedSemantic(ctx, zoom, focusId, hasFocus) {
+    if (this._edgeAlphaOverrides.size) return this._drawEdgesUnbatchedWithFade(ctx, zoom, focusId, hasFocus);
     // lineBuckets: key → { color, lw, isDashed, alpha, segments[] }
     const lineBuckets = new Map();
     // arrowQueue: entries for directed arrowheads

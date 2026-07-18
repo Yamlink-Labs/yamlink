@@ -19,21 +19,81 @@ const { getCommonFieldsForType } = require('./vaultPriors');
 const SKIP_FIELDS = new Set(['id', 'type', 'created', 'modified', 'updated']);
 
 // Universal starter fields shown on cold-start (new type, sparse vault).
-// Ordered by how broadly useful they are across any domain.
+// Ordered by how broadly useful they are across any domain. Last-resort
+// fallback — only used when no emergent cluster match is found below.
 const COLD_START_FIELDS = ['name', 'status', 'date', 'summary', 'tags', 'owner', 'link'];
+
+const CLUSTER_CONFIDENCE_SCORE = { high: 0.55, medium: 0.35, low: 0.20 };
+
+/**
+ * Find the best emergent cluster whose field signature is a strict superset
+ * of the note's current fields — i.e. this note's fields so far are
+ * consistent with a real, repeated pattern elsewhere in the vault, and the
+ * cluster has more fields to suggest. Prefers higher-confidence clusters,
+ * then larger ones. Requires at least one current field: an entirely blank
+ * note matches every cluster trivially, which would be a guess, not a match.
+ * @param {Set<string>} currentFields
+ * @param {Array<{fields: string[], noteCount: number, confidence: 'low'|'medium'|'high'}>|null} emergentClusters
+ * @returns {{fields: string[], noteCount: number, confidence: string}|null}
+ */
+function _matchEmergentCluster(currentFields, emergentClusters) {
+    if (!Array.isArray(emergentClusters) || !emergentClusters.length || !currentFields.size) return null;
+    const rank = { high: 3, medium: 2, low: 1 };
+    let best = null;
+    for (const cluster of emergentClusters) {
+        const clusterFields = new Set(cluster.fields);
+        if (clusterFields.size <= currentFields.size) continue;
+        let isSubset = true;
+        for (const f of currentFields) {
+            if (!clusterFields.has(f)) { isSubset = false; break; }
+        }
+        if (!isSubset) continue;
+        if (!best
+            || rank[cluster.confidence] > rank[best.confidence]
+            || (rank[cluster.confidence] === rank[best.confidence] && cluster.noteCount > best.noteCount)
+        ) {
+            best = cluster;
+        }
+    }
+    return best;
+}
 
 /**
  * Cold-start arc: no vault bundle yet for this type (or too few peers to trust).
- * Returns universally useful fields the note is currently missing, with low confidence.
+ * Checks for a matching emergent cluster first — a real, vault-taught pattern
+ * beats a hardcoded universal guess whenever one applies. Falls back to
+ * universally useful fields, at low confidence, when no cluster matches.
  */
 function _buildColdStartArc(nt, noteFields, opts = {}) {
-    const { limit = 5 } = opts;
+    const { limit = 5, emergentClusters = null } = opts;
     const currentFields = new Set();
     for (const [key, raw] of Object.entries(noteFields || {})) {
         const norm = _norm(key);
         if (!norm || SKIP_FIELDS.has(norm)) continue;
         const vals = Array.isArray(raw) ? raw : [raw];
         if (vals.some(v => String(v || '').trim())) currentFields.add(norm);
+    }
+
+    const matchedCluster = _matchEmergentCluster(currentFields, emergentClusters);
+    if (matchedCluster) {
+        /** @type {ArcField[]} */
+        const clusterMissingFields = matchedCluster.fields
+            .filter((f) => !currentFields.has(f) && !SKIP_FIELDS.has(f))
+            .slice(0, limit)
+            .map((field) => ({
+                field,
+                ratio:            0,
+                adjustedRatio:    0,
+                calibrationCount: 0,
+                score:            CLUSTER_CONFIDENCE_SCORE[matchedCluster.confidence] || 0.20,
+                confidenceLabel:  /** @type {'high'|'medium'|'low'} */ (matchedCluster.confidence),
+                isRelation:       false,
+                coldStart:        true,
+                emergentCluster:  true
+            }));
+        if (clusterMissingFields.length) {
+            return { inferredType: nt || null, missingFields: clusterMissingFields };
+        }
     }
 
     /** @type {ArcField[]} */
@@ -65,7 +125,8 @@ function _norm(s) { return String(s || '').trim().toLowerCase(); }
  *   score: number,
  *   confidenceLabel: 'high' | 'medium' | 'low',
  *   isRelation: boolean,
- *   coldStart?: boolean
+ *   coldStart?: boolean,
+ *   emergentCluster?: boolean
  * }} ArcField
  *
  * @typedef {{
@@ -89,7 +150,7 @@ function _norm(s) { return String(s || '').trim().toLowerCase(); }
  * @param {Map<string,Map<string,number>>} typeFieldBundles
  * @param {Map<string,Map<string,number>>} fieldTargetTypes
  * @param {import('./outcomeCalibration').OutcomeCalibration|null} [outcomeCalibration]
- * @param {{ limit?: number, minRatio?: number, typeBundleTotals?: Map<string, number>|null }} [opts]
+ * @param {{ limit?: number, minRatio?: number, typeBundleTotals?: Map<string, number>|null, emergentClusters?: Array<{fields: string[], noteIds: string[], noteCount: number, dominantType: string|null, confidence: 'low'|'medium'|'high'}>|null }} [opts]
  * @returns {NoteArc}
  */
 function buildNoteArc(noteFields, noteType, fieldsCache, typeFieldBundles, fieldTargetTypes, outcomeCalibration, opts = {}) {

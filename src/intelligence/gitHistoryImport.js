@@ -84,10 +84,17 @@ function getGitLog(root, relPath, limit) {
 }
 
 function getFileAtCommit(root, hash, relPath) {
+    // `git show <hash>:<path>` always resolves <path> relative to the repo
+    // root, never to -C's cwd — a bare pathspec silently fails (or worse,
+    // matches an unrelated file at the same relative path elsewhere in the
+    // repo) whenever `root` is a subdirectory of a larger git repository,
+    // not the repo root itself. A leading "./" disambiguates it to mean
+    // "relative to the current directory" (i.e. -C's root), matching what
+    // every caller here actually means by relPath.
     try {
         return execFileSync('git', [
             '-C', root,
-            'show', `${hash}:${relPath.replace(/\\/g, '/')}`
+            'show', `${hash}:./${relPath.replace(/\\/g, '/')}`
         ], { stdio: 'pipe', encoding: 'utf8', timeout: 5000 });
     } catch (_) {
         return null;

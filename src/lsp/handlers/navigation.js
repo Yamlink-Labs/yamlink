@@ -1,10 +1,12 @@
 'use strict';
 
 const fs = require('fs');
+const path = require('path');
 
 const { getIndex, getAliasIndex, getBodyBlockIndex, getFieldsCache } = require('../../core/indexService');
 const { resolveLinkedTarget, parseLinkedTargetParts, canonicalizeLinkedTarget } = require('../../core/id');
 const { findBlockLine }                          = require('../../core/bodyBlocks');
+const { resolveImageEmbed }                      = require('../../core/imageEmbed');
 const { respond, respondImmediate }              = require('../transport');
 const { getDocumentText }                        = require('../documentState');
 const { cancellationCheckpoint, isRequestCancelled } = require('../cancellation');
@@ -12,12 +14,20 @@ const { beginWorkDone, reportWorkDone, endWorkDone, reportPartialResult } = requ
 const {
     wikilinkMatchAtPosition,
     pathToUri,
+    uriToPath,
     WIKILINK_RE,
     getLinkedOccurrences,
     collectLinkedCandidateFiles,
     findAnchorLine,
     normalizeAnchorText
 } = require('../utils');
+
+// True when the wikilink match at `matchStart` in `line` is an embed
+// (`![[...]]`) rather than a plain reference (`[[...]]`) — WIKILINK_RE itself
+// doesn't capture the leading `!`, so this checks the preceding character.
+function isEmbedMatch(line, matchStart) {
+    return matchStart > 0 && line[matchStart - 1] === '!';
+}
 
 function resolveTargetLocation(rawTarget, idIndex, aliasIndex) {
     const resolvedId = resolveLinkedTarget(rawTarget, idIndex, aliasIndex);
@@ -45,9 +55,10 @@ function resolveTargetLocation(rawTarget, idIndex, aliasIndex) {
     };
 }
 
-function buildDocumentLinks(content, idIndex, aliasIndex) {
+function buildDocumentLinks(content, idIndex, aliasIndex, docPath) {
     const links = [];
     const lines = String(content || '').split('\n');
+    const docDir = docPath ? path.dirname(docPath) : null;
 
     for (let lineIdx = 0; lineIdx < lines.length; lineIdx++) {
         const line = lines[lineIdx];
@@ -56,7 +67,26 @@ function buildDocumentLinks(content, idIndex, aliasIndex) {
         while ((match = WIKILINK_RE.exec(line)) !== null) {
             const rawTarget = match[1].trim();
             const location = resolveTargetLocation(rawTarget, idIndex, aliasIndex);
-            if (!location) continue;
+            if (!location) {
+                // Same image-embed fallback as handleDefinition above — a
+                // ![[photo.png]] link with no resolvable note target should
+                // still produce a real, clickable document link when it
+                // resolves to a real image file.
+                if (docDir && isEmbedMatch(line, match.index)) {
+                    const imagePath = resolveImageEmbed(rawTarget, docDir);
+                    if (imagePath) {
+                        links.push({
+                            range: {
+                                start: { line: lineIdx, character: match.index },
+                                end: { line: lineIdx, character: match.index + match[0].length }
+                            },
+                            target: pathToUri(imagePath),
+                            tooltip: rawTarget
+                        });
+                    }
+                }
+                continue;
+            }
 
             let target = pathToUri(location.filePath);
             if (location.targetLine > 0 || location.parts.anchor || location.parts.blockId) {
@@ -91,7 +121,26 @@ function handleDefinition(msg, state) {
     const idIndex  = getIndex();
     const aliasIndex = getAliasIndex();
     const location = resolveTargetLocation(linkMatch.rawTarget, idIndex, aliasIndex);
-    if (!location) { respond(msg.id, null); return; }
+    if (!location) {
+        // ![[photo.png]] isn't a note — go-to-definition should still work if
+        // it resolves to a real image file, otherwise this looks like a
+        // working link (semantic tokens/document link both already parse it)
+        // without go-to-definition actually doing anything. Same fix VS
+        // Code's definition.js already has; this was the LSP-side gap.
+        if (isEmbedMatch(line, linkMatch.start)) {
+            const docPath = uriToPath(textDocument.uri);
+            const imagePath = docPath ? resolveImageEmbed(linkMatch.rawTarget, path.dirname(docPath)) : null;
+            if (imagePath) {
+                respond(msg.id, {
+                    uri: pathToUri(imagePath),
+                    range: { start: { line: 0, character: 0 }, end: { line: 0, character: 0 } }
+                });
+                return;
+            }
+        }
+        respond(msg.id, null);
+        return;
+    }
 
     respond(msg.id, {
         uri:   pathToUri(location.filePath),
@@ -109,7 +158,7 @@ function handleDocumentLink(msg, state) {
     const content = getDocumentText(state, textDocument.uri);
     const idIndex = getIndex();
     const aliasIndex = getAliasIndex();
-    respond(msg.id, buildDocumentLinks(content, idIndex, aliasIndex));
+    respond(msg.id, buildDocumentLinks(content, idIndex, aliasIndex, uriToPath(textDocument.uri)));
 }
 
 function handleDocumentHighlight(msg, state) {

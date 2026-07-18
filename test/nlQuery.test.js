@@ -8,7 +8,7 @@ const VOCAB = {
     types: ['contact', 'project', 'mission', 'task', 'starship'],
     fields: ['status', 'company', 'commander', 'faction', 'due', 'created'],
     workflowFields: new Map([
-        ['status', { values: ['active', 'inactive', 'done', 'pending', 'deployed'] }]
+        ['status', { values: ['active', 'inactive', 'done', 'pending', 'deployed', 'failed', 'archived'] }]
     ]),
     noteIds: ['johnny-rico', 'roughnecks', 'acme-corp', 'project-alpha']
 };
@@ -143,6 +143,7 @@ describe('parseNaturalQuery — result shape', () => {
     it('returns query, explanation, confidence', () => {
         const r = parseNaturalQuery('active projects', VOCAB);
         assert.ok(r);
+        assert.equal(r.kind, 'read');
         assert.ok(typeof r.query === 'string');
         assert.ok(r.query.startsWith('!view'));
         assert.ok(typeof r.explanation === 'string');
@@ -153,6 +154,51 @@ describe('parseNaturalQuery — result shape', () => {
     });
     it('returns null when no vocab matches', () => {
         assert.equal(parseNaturalQuery('purple elephant dancing', VOCAB), null);
+    });
+});
+
+describe('parseNaturalQuery — write intents', () => {
+    it('"archive all X with status Y" returns a bulk-update intent', () => {
+        const r = parseNaturalQuery('archive all missions with status failed', VOCAB);
+        assert.ok(r);
+        assert.equal(r.kind, 'write');
+        assert.equal(r.mutation, 'bulkUpdate');
+        assert.deepEqual(r.selection, {
+            type: 'mission',
+            where: [{ field: 'status', op: '=', value: 'failed' }]
+        });
+        assert.deepEqual(r.patch, {
+            fields: { status: 'archived' }
+        });
+        assert.match(r.explanation, /archived/i);
+        assert.equal(r.confidence, 'high');
+    });
+
+    it('"mark all X as Y" returns a bulk-update intent', () => {
+        const r = parseNaturalQuery('mark all tasks as done', VOCAB);
+        assert.ok(r);
+        assert.equal(r.kind, 'write');
+        assert.equal(r.mutation, 'bulkUpdate');
+        assert.deepEqual(r.selection, {
+            type: 'task',
+            where: []
+        });
+        assert.deepEqual(r.patch, {
+            fields: { status: 'done' }
+        });
+        assert.match(r.explanation, /all task notes/i);
+    });
+
+    it('keeps existing read patterns ahead of write parsing when phrasing matches a read query', () => {
+        const r = parseNaturalQuery('active projects', VOCAB);
+        assert.ok(r);
+        assert.equal(r.kind, 'read');
+        assert.ok(r.query.includes('status = active'));
+    });
+
+    it('returns null for unsupported write phrasing instead of guessing', () => {
+        assert.equal(parseNaturalQuery('archive all missions with status impossible', VOCAB), null);
+        assert.equal(parseNaturalQuery('mark all unicorns as done', VOCAB), null);
     });
 });
 

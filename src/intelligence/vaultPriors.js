@@ -18,7 +18,9 @@
 //   9. typeRoleMap          — structural role inference per type (no hardcoded type names)
 //  10. outcomeCalibration   — user feedback: which field relation suggestions were accepted
 
-const { buildImplicitFieldWeights, buildBehavioralRelationPriors } = require('./implicitWeights');
+const { buildImplicitFieldWeights, buildBehavioralRelationPriors, buildFieldVolatility } = require('./implicitWeights');
+const { buildRelationshipGravity } = require('./relationshipGravity');
+const { detectClusters } = require('./clusterEmergence');
 const { buildOutcomeCalibration } = require('./outcomeCalibration');
 const {
     buildFieldTargetTypes,
@@ -83,7 +85,10 @@ function setMutationEventsProvider(fn) {
  *     noteTypeFieldTargetTypeScores: Map<string, Map<string, Map<string, number>>>,
  *     noteTypeFieldTargetIdScores: Map<string, Map<string, Map<string, number>>>
  *   },
- *   outcomeCalibration: import('./outcomeCalibration').OutcomeCalibration
+ *   outcomeCalibration: import('./outcomeCalibration').OutcomeCalibration,
+ *   fieldVolatility: Map<string, {added: number, changed: number, total: number, volatilityScore: number}>,
+ *   relationshipGravity: Map<string, Map<string, Map<string, {score: number, structuralWeight: number, decayedMutationWeight: number, repetition: number}>>>,
+ *   emergentClusters: Array<{fields: string[], noteIds: string[], noteCount: number, dominantType: string|null, confidence: 'low'|'medium'|'high'}>
  * }} VaultPriors
  */
 
@@ -129,6 +134,9 @@ function getCachedPriors(fieldsCache, generation) {
             vaultMaturity:        getVaultMaturity(fieldsCache),
             implicitFieldWeights: buildImplicitFieldWeights(mutationEvents),
             behavioralRelationPriors: buildBehavioralRelationPriors(mutationEvents, fieldsCache),
+            fieldVolatility:      buildFieldVolatility(mutationEvents),
+            relationshipGravity: buildRelationshipGravity(mutationEvents, fieldsCache),
+            emergentClusters:    detectClusters(fieldsCache).clusters,
             valuePatterns,
             workflowFields:       buildWorkflowFields(valuePatterns),
             typeRoleMap,

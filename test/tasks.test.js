@@ -62,6 +62,53 @@ describe('tasks — parseTasksFromContent', () => {
         assert.ok(!tasks[0].date, `expected falsy, got "${tasks[0].date}"`);
     });
 
+    test('extracts #urgent as urgent priority and strips it from displayText', () => {
+        const tasks = parse('- [ ] Fix the bug #urgent');
+        assert.equal(tasks[0].priority, 'urgent');
+        assert.doesNotMatch(tasks[0].displayText, /#urgent/);
+        assert.match(tasks[0].displayText, /Fix the bug/);
+    });
+
+    test('#high is a synonym for urgent priority', () => {
+        const tasks = parse('- [ ] Ship the release #high');
+        assert.equal(tasks[0].priority, 'urgent');
+    });
+
+    test('#medium and #medium-priority both map to medium priority', () => {
+        assert.equal(parse('- [ ] Review PR #medium')[0].priority, 'medium');
+        assert.equal(parse('- [ ] Review PR #medium-priority')[0].priority, 'medium');
+    });
+
+    test('#low maps to low priority', () => {
+        const tasks = parse('- [ ] Read the changelog #low');
+        assert.equal(tasks[0].priority, 'low');
+    });
+
+    test('task with no priority marker has a null priority', () => {
+        const tasks = parse('- [ ] Untagged task');
+        assert.equal(tasks[0].priority, null);
+    });
+
+    test('priority marker coexists with a date marker, both stripped from displayText', () => {
+        const tasks = parse('- [ ] Deploy the fix #urgent @2026-06-15');
+        assert.equal(tasks[0].priority, 'urgent');
+        assert.equal(tasks[0].date, '2026-06-15');
+        assert.doesNotMatch(tasks[0].displayText, /#urgent/);
+        assert.doesNotMatch(tasks[0].displayText, /2026-06-15/);
+        assert.match(tasks[0].displayText, /Deploy the fix/);
+    });
+
+    test('priority is exposed on the queryable fields object', () => {
+        const tasks = parse('- [ ] Fix the bug #urgent');
+        assert.equal(tasks[0].fields.priority, 'urgent');
+        assert.equal(parse('- [ ] Untagged task')[0].fields.priority, '');
+    });
+
+    test('an unrecognized #tag is not mistaken for a priority marker', () => {
+        const tasks = parse('- [ ] Follow up #someday');
+        assert.equal(tasks[0].priority, null);
+    });
+
     test('extracts wikilinks from task text', () => {
         const tasks = parse('- [ ] Meet with [[carmen-ibanez]] about [[mission-klendathu]]');
         assert.deepEqual(tasks[0].links, ['carmen-ibanez', 'mission-klendathu']);

@@ -64,6 +64,8 @@ Definitions for every term used across Yamlink's surfaces, commands, and documen
 
 **Health layer** — a graph overlay that draws colored rings around nodes to encode lifecycle state and structural drift.
 
+**Time-lapse** — a play/pause/rewind control in both graph surfaces that animates the vault's graph growing over time, driven by repeated reconstructions from `?at=<timestamp>`-style historical snapshots (see Time Engine). Two reconstruction paths: if the vault is a git repository, checkpoints are read from real historical file content at the nearest commit (frontmatter and body-text mentions both reconstruct); otherwise the mutation log is used, which tracks frontmatter changes always and body-text mention changes going forward from when that tracking shipped (2026-07-15). New nodes and edges fade in rather than appearing instantly; the first frame is always genuinely empty.
+
 ---
 
 ## Query Language
@@ -134,6 +136,12 @@ Definitions for every term used across Yamlink's surfaces, commands, and documen
 
 **Implicit field weights** — knowledge derived from the mutation log about which fields you've historically used as relations. A field used as a wikilink relation in the past stays classified as relational even if the vault has since been restructured and those links removed. The system's knowledge of field vocabulary is sticky.
 
+**Relationship gravity** — a score for how much weight a specific `(source, field, target)` edge carries, beyond the binary fact that it exists. Combines structural corroboration (how many distinct fields on the source note point at the same target) with decayed mutation-log repetition (how many times, and how recently, that exact relationship was set or reaffirmed). Never gates anything — pure ranking signal. Drives Note Report's relation-list ordering and Vault Health's vault-wide "Most-Reinforced Connections" card, which surfaces only edges with real corroboration, excluding single-instance links.
+
+**Session summary** — a plain-count recap of a set of mutation events (notes created, fields added, relations formed/changed, tasks changed, completions accepted, templates applied). Powers Vault Health's Activity tab "today at a glance" strip and the CLI's `yamlink session` command.
+
+**Workflow burst** — a detected cluster of 3+ notes touched by the same mutation-event type within a 60-second window — a signal for bulk edits, imports, or batch operations rather than steady incremental editing. Surfaced as a callout on Vault Health's Activity tab.
+
 ---
 
 ## Surfaces
@@ -145,6 +153,10 @@ Definitions for every term used across Yamlink's surfaces, commands, and documen
 **View Panel** — the interactive table surface that renders `!view` query results. Supports inline cell editing, column sorting, search, type filters, column value filters, pagination (for large result sets), and PDF export.
 
 **Calendar** — a date-aware panel showing notes with `date:`, `created:`, or task due dates in month / week / day views, with keyboard navigation.
+
+**Task Center** — a sidebar tree view (added 2026-07-16, alongside Graph/Note Report/Calendar/Note Outline) listing every task in the vault, grouped into Overdue/Today/Upcoming/Undated/Done. Real native checkboxes mark a task done, writing back to the `- [ ]`/`- [x]` line directly; clicking a task jumps to its exact line. See Task priority, below.
+
+**Task priority** — an explicit, opt-in `#urgent`/`#medium`/`#low` marker written directly in a task line (`#high` and `#medium-priority` also recognized as synonyms). A closed vocabulary, never inferred from task wording. Shown as a colored circle in Task Center (🔴/🟡/⚪) and sorts a task to the top of its status bucket — priority orders *within* a bucket, it never overrides which bucket (Overdue/Today/etc.) a task lands in. An overdue task marked urgent also escalates Yamlink's task notification to VS Code's error level.
 
 **Graph workspace** — see Graph, above.
 
@@ -232,7 +244,7 @@ Definitions for every term used across Yamlink's surfaces, commands, and documen
 
 ## CLI
 
-**`yamlink` CLI** — a standalone terminal tool (`npm link` from the project folder) for querying, inspecting, and mutating a vault without VS Code. Every command supports `--vault <path>` (default: current directory) and `--json` for machine-readable output.
+**`yamlink` CLI** — a standalone terminal tool (`npm link` from the project folder) for querying, inspecting, and mutating a vault without VS Code. 37 commands. Every command supports `--vault <path>` (default: current directory) and `--json` for machine-readable output.
 
 | Command | Description |
 |---|---|
@@ -243,22 +255,55 @@ Definitions for every term used across Yamlink's surfaces, commands, and documen
 | `yamlink validate` | Schema conformance check; exits 1 on required-field violations. `--check schema|broken-links|duplicates` |
 | `yamlink doctor` | Deep integrity audit: broken links, duplicates, arc gaps, stale notes, schema violations |
 | `yamlink status` | Fast machine-readable vault snapshot for scripts (`{ notes, types, edges, brokenLinks, generation }`) |
+| `yamlink ls` | List notes with unix-style filtering (`--type`) and sorting (`--sort`) |
+| `yamlink cat <id>` | Frontmatter snapshot + body. `--at <date>` reconstructs historical frontmatter (no body) |
+| `yamlink grep <text>` | Search frontmatter values for matching text. `--type`, `--field` to narrow |
+| `yamlink find` | Structural search by present/missing fields. `--has`, `--missing`, `--type` |
 | `yamlink query "<clause>"` | Run a query using the same language as `!view` blocks; ASCII table or `--json` |
 | `yamlink search <query>` | Fast ID/name/title/type lookup. `--type`, `--field` to narrow |
-| `yamlink report <id>` | Full note report: type, lifecycle state, drift, and all links |
-| `yamlink links <id>` | Outbound and inbound links, with broken-link markers |
-| `yamlink diff <id-a> <id-b>` | Compare two notes' frontmatter field sets |
+| `yamlink report <id>` | Full note report: type, lifecycle state, drift, and all links. `--at <date>` for a historical report (fields + outbound only) |
+| `yamlink links <id>` | Outbound and inbound links, with broken-link markers. `--at <date>` for outbound-only historical links |
+| `yamlink diff <id-a> <id-b>` | Compare two notes' frontmatter field sets, or `--since <date>` for vault-wide field changes |
+| `yamlink story --since <date>` | Vault growth story via the Time Engine: note/type-count deltas, activity, busiest notes |
 | `yamlink mutations` | Show recent mutation events. `--limit`, `--since`, `--type` to filter |
+| `yamlink session` | Summarize recent or explicit mutation sessions. `--id` |
+| `yamlink lenses` | Vault-wide change lenses over mutation history (most-edited, fastest-growing types) |
+| `yamlink suggest <id>` | Field/relation suggestions for a specific note (CLI-side arc/completion parity) |
+| `yamlink drift` | Notes structurally drifting from their type's learned bundle. `--type`, `--limit` |
+| `yamlink stale` | Notes in a stale lifecycle state. `--type`, `--limit` |
+| `yamlink orphans` | Notes with no inbound or outbound links. `--type`, `--limit` |
+| `yamlink pressure` | Knowledge pressure: load-bearing drafts, stale hubs, orphans |
 | `yamlink set <id> <field> <value>` | Set or remove a frontmatter field. `--clear`, `--dry-run`, emits mutation events |
 | `yamlink link <id> <field> <target>` | Add a `[[wikilink]]` relation field. `--append` for multi-value fields |
 | `yamlink create <type>` | Create a note non-interactively. `--field key=value` for any frontmatter field |
 | `yamlink rename <old> <new>` | Vault-wide ID rename + wikilink rewrite. `--dry-run`, `--rename-file` |
-| `yamlink graph` | Export full vault graph as `{ nodes, edges }` JSON. `--only-types` to filter |
+| `yamlink graph` | Export full vault graph as `{ nodes, edges }` JSON. `--only-types` to filter, `--at <date>` for a historical reconstruction |
 | `yamlink schema list` | List all schema notes with governed types and note counts |
 | `yamlink schema check <type>` | Check schema conformance for all notes of a type. `--all` for every schema |
 | `yamlink export` | Export vault as JSON or CSV. `--query` to filter, `--output` to write to file |
+| `yamlink env` | Export shell variables for the current vault. `--shell bash|zsh|fish` |
 | `yamlink watch` | Persistent watcher — rebuilds on `.md` saves, prints timestamped one-liners |
 | `yamlink on <event> -- <script>` | Automation hooks: execute a script on matching mutation events. `--type` to filter |
 | `yamlink completions bash\|zsh` | Print shell completion script for tab-completion |
-| `yamlink serve` | Local HTTP API server (default port 3000). Full reference: `docs/api/README-API.md` |
+| `yamlink serve` | Local HTTP API server (default port 3000). Full reference: `docs/api/README-API.md`, `docs/api/CONTRACT.md` |
 | `yamlink conduit` | Open the Conduit terminal UI. Requires `yamlink serve` running on the same port |
+
+---
+
+## Time Engine
+
+**Time Engine** — Yamlink's historical-state reconstruction system (`src/core/timeEngine.js`). Since the mutation log only ever records *deltas* (`note_created`/`note_deleted` carry no field snapshot), reconstruction works backward: starting from a note's real current fields, it undoes every recorded mutation newer than a target timestamp using each event's `oldValue`.
+
+**`reconstructNoteAtTime(id, timestamp)`** — reconstructs a single note's fields as of a past moment. Returns `exists`, `fields`, `complete`, and `earliestReconstructableTimestamp`.
+
+**`reconstructVaultAtTime(timestamp)`** — reconstructs every note in the vault at once, including "ghost" entries for notes that existed then but have since been deleted (honestly `fields: null` — deletion never captured a snapshot).
+
+**`buildNoteTimeline` / `buildFieldTimeline`** — the multi-point layer: forward-replays from a known-good anchor state across a note's full mutation history, producing a sequence of checkpoints (e.g. `status: draft (Jan 3) → growing (Feb 1) → consolidated (Mar 15)`).
+
+**`complete` / `earliestReconstructableTimestamp`** — the honesty contract every reconstruction result carries. `complete: true` means the reconstruction is provably exact back to the note's real birth (its creation event is still within the mutation log's 10,000-event retention window). `complete: false` means it's only guaranteed accurate back to `earliestReconstructableTimestamp` — reported rather than silently presenting a partial answer as certain.
+
+**`?at=<timestamp>`** — the API query param exposing time travel on `GET /api/nodes/:id` and `GET /api/graph`.
+
+**`--at <date>`** — the CLI flag exposing the same on `cat`, `report`, `links`, and `graph`. Each command scopes down to what it can actually reconstruct (no note body, no live-vault-priors inferences like lifecycle/drift, outbound-only where inbound would need a full-vault reconstruction).
+
+**`yamlink story --since <date>`** — the CLI's narrative consumer: reconstructs the vault at a past date and reports note/type-count growth, mutation-log activity since then, and the busiest notes by edit count.

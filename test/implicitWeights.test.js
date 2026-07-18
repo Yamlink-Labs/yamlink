@@ -5,7 +5,9 @@ const assert = require('node:assert/strict');
 const {
     buildImplicitFieldWeights,
     buildBehavioralRelationPriors,
-    getImplicitBoost
+    getImplicitBoost,
+    buildFieldVolatility,
+    getTemporalConfidenceAdjustment
 } = require('../src/intelligence/implicitWeights');
 
 // ─── buildImplicitFieldWeights ────────────────────────────────────────────
@@ -234,5 +236,97 @@ describe('implicitWeights — behavioral relation priors', () => {
         assert.equal(priors.fieldTargetIdScores.get('unit').get('roughnecks') > 0, true);
         assert.equal(priors.noteTypeFieldTargetTypeScores.get('character').get('unit').get('unit') > 0, true);
         assert.equal(priors.noteTypeFieldTargetIdScores.get('character').get('unit').get('roughnecks') > 0, true);
+    });
+});
+
+// ─── buildFieldVolatility / getTemporalConfidenceAdjustment ────────────────
+
+describe('implicitWeights — buildFieldVolatility', () => {
+    it('returns empty map for no events', () => {
+        assert.equal(buildFieldVolatility([]).size, 0);
+        assert.equal(buildFieldVolatility(null).size, 0);
+    });
+
+    it('ignores fields under the minimum sample size', () => {
+        const events = [
+            { type: 'field_added', field: 'status' },
+            { type: 'field_changed', field: 'status' }
+        ];
+        assert.equal(buildFieldVolatility(events).has('status'), false);
+    });
+
+    it('computes a high volatility score for a frequently-revised field', () => {
+        const events = [
+            { type: 'field_added', field: 'status' },
+            { type: 'field_changed', field: 'status' },
+            { type: 'field_changed', field: 'status' },
+            { type: 'field_changed', field: 'status' }
+        ];
+        const v = buildFieldVolatility(events).get('status');
+        assert.equal(v.added, 1);
+        assert.equal(v.changed, 3);
+        assert.equal(v.total, 4);
+        assert.equal(v.volatilityScore, 0.75);
+    });
+
+    it('computes a low volatility score for a write-once field', () => {
+        const events = [
+            { type: 'field_added', field: 'commander' },
+            { type: 'field_added', field: 'commander' },
+            { type: 'field_added', field: 'commander' }
+        ];
+        const v = buildFieldVolatility(events).get('commander');
+        assert.equal(v.volatilityScore, 0);
+    });
+
+    it('ignores id and type fields', () => {
+        const events = [
+            { type: 'field_changed', field: 'id' },
+            { type: 'field_changed', field: 'id' },
+            { type: 'field_changed', field: 'id' },
+            { type: 'field_changed', field: 'type' },
+            { type: 'field_changed', field: 'type' },
+            { type: 'field_changed', field: 'type' }
+        ];
+        assert.equal(buildFieldVolatility(events).size, 0);
+    });
+});
+
+describe('implicitWeights — getTemporalConfidenceAdjustment', () => {
+    it('is a no-op with no volatility map', () => {
+        assert.deepEqual(getTemporalConfidenceAdjustment('status', null), { multiplier: 1, reason: null });
+        assert.deepEqual(getTemporalConfidenceAdjustment('status', new Map()), { multiplier: 1, reason: null });
+    });
+
+    it('is a no-op for a field with no volatility entry', () => {
+        const volatility = buildFieldVolatility([
+            { type: 'field_added', field: 'commander' },
+            { type: 'field_changed', field: 'commander' },
+            { type: 'field_changed', field: 'commander' }
+        ]);
+        assert.deepEqual(getTemporalConfidenceAdjustment('unrelated-field', volatility), { multiplier: 1, reason: null });
+    });
+
+    it('penalizes a high-volatility field below 1', () => {
+        const volatility = buildFieldVolatility([
+            { type: 'field_added', field: 'status' },
+            { type: 'field_changed', field: 'status' },
+            { type: 'field_changed', field: 'status' },
+            { type: 'field_changed', field: 'status' }
+        ]);
+        const { multiplier, reason } = getTemporalConfidenceAdjustment('status', volatility);
+        assert.ok(multiplier < 1);
+        assert.match(reason, /revised often/);
+    });
+
+    it('boosts a stable, write-once field above 1', () => {
+        const volatility = buildFieldVolatility([
+            { type: 'field_added', field: 'commander' },
+            { type: 'field_added', field: 'commander' },
+            { type: 'field_added', field: 'commander' }
+        ]);
+        const { multiplier, reason } = getTemporalConfidenceAdjustment('commander', volatility);
+        assert.ok(multiplier > 1);
+        assert.match(reason, /stayed stable/);
     });
 });

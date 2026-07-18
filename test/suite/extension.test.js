@@ -25,6 +25,8 @@ suite('Yamlink extension host', () => {
     test('registers the main public commands', async () => {
         const commands = await vscode.commands.getCommands(true);
         const expected = [
+            'yamlink.startGuidedTour',
+            'yamlink.addSampleVault',
             'yamlink.openHub',
             'yamlink.openCalendar',
             'yamlink.runGraph',

@@ -333,3 +333,87 @@ describe('noteReport — outbound link edge correctness', () => {
         vault.destroy();
     });
 });
+
+// ── Relationship gravity ordering ───────────────────────────────────────────────
+
+describe('noteReport — incoming/outgoing groups ordered by relationship gravity', () => {
+    test('an incoming row corroborated by a second field to the same target outranks a single-field row in the same group', () => {
+        const files = {
+            'acme.md': NOTE('acme', 'account', 'name: Acme Corp\n'),
+            // contact-1 points at acme via BOTH employer and client — structurally
+            // corroborated (gravity structuralWeight 2 for this source/target pair).
+            'contact-1.md': NOTE('contact-1', 'contact', 'name: Ada\nemployer: "[[acme]]"\nclient: "[[acme]]"\n'),
+            // contact-2 and contact-3 only ever point at acme once each.
+            'contact-2.md': NOTE('contact-2', 'contact', 'name: Bea\nemployer: "[[acme]]"\n'),
+            'contact-3.md': NOTE('contact-3', 'contact', 'name: Cy\nemployer: "[[acme]]"\n')
+        };
+        const vault = createVault(files);
+        try {
+            const model = vault.noteReport('acme');
+            const employerGroup = model.incomingGroups.find(g => g.field === 'employer');
+            assert.ok(employerGroup, 'expected an "employer" incoming group');
+            assert.equal(employerGroup.rows.length, 3);
+            assert.equal(employerGroup.rows[0].sourceId, 'contact-1', 'the corroborated edge should sort first');
+        } finally {
+            vault.destroy();
+        }
+    });
+
+    test('rows with equal gravity fall back to deterministic alphabetical order, not arbitrary insertion order', () => {
+        const files = {
+            'acme.md': NOTE('acme', 'account', 'name: Acme Corp\n'),
+            'contact-z.md': NOTE('contact-z', 'contact', 'name: Zed\nemployer: "[[acme]]"\n'),
+            'contact-a.md': NOTE('contact-a', 'contact', 'name: Ada\nemployer: "[[acme]]"\n')
+        };
+        const vault = createVault(files);
+        try {
+            const model = vault.noteReport('acme');
+            const employerGroup = model.incomingGroups.find(g => g.field === 'employer');
+            assert.deepEqual(employerGroup.rows.map(r => r.sourceId), ['contact-a', 'contact-z']);
+        } finally {
+            vault.destroy();
+        }
+    });
+
+    test('an outgoing row corroborated by a second field outranks a single-field row in the same group', () => {
+        const files = {
+            'rico.md': NOTE('rico', 'character', 'name: Rico\n'),
+            'carmen.md': NOTE('carmen', 'character', 'name: Carmen\n'),
+            // note-a's "commander" field points at both — rico is also
+            // corroborated via a second field ("mentor"), carmen is not.
+            'note-a.md': NOTE('note-a', 'mission', 'commander: "[[rico]]"\nmentor: "[[rico]]"\ndeputy: "[[carmen]]"\n')
+        };
+        const vault = createVault(files);
+        try {
+            const model = vault.noteReport('note-a');
+            const commanderGroup = model.outgoingGroups.find(g => g.field === 'commander');
+            assert.ok(commanderGroup, 'expected a "commander" outgoing group');
+            assert.equal(commanderGroup.rows[0].sourceId, 'rico');
+        } finally {
+            vault.destroy();
+        }
+    });
+});
+
+// ── Pre-schema field emergence ──────────────────────────────────────────────────
+
+describe('noteReport — cold-start arc suggests emergent-cluster fields over the hardcoded starter list', () => {
+    test('an untyped note matching a real repeated field pattern gets that pattern\'s fields, not the generic starter list', () => {
+        const files = {};
+        for (let i = 0; i < 6; i++) {
+            files[`acct-${i}.md`] = NOTE(`acct-${i}`, 'account', 'company: "[[acme]]"\nstatus: active\n');
+        }
+        // Untyped note, already has status set — matches the emergent cluster's
+        // signature (company + status), which should outrank the generic
+        // hardcoded cold-start list (name/status/date/summary/tags/owner/link).
+        files['draft.md'] = '---\nid: draft\nstatus: active\n---\n';
+        const vault = createVault(files);
+        try {
+            const model = vault.noteReport('draft');
+            assert.deepEqual(model.noteArc.missingFields.map((f) => f.field), ['company']);
+            assert.equal(model.noteArc.missingFields[0].emergentCluster, true);
+        } finally {
+            vault.destroy();
+        }
+    });
+});

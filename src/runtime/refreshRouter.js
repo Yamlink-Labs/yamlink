@@ -28,7 +28,10 @@ function createRefreshRouter(services) {
         if (full || dirty.has('decorations')) services.refreshDecorations();
         if (full || dirty.has('status')) services.refreshStatusBar();
         if (full || dirty.has('health')) services.refreshHealthPanel();
-        if (full || dirty.has('home') || full) { if (services.refreshHome) services.refreshHome(); }
+        if (full || dirty.has('home')) {
+            if (services.refreshHome) services.refreshHome();
+            if (services.refreshTaskCenter) services.refreshTaskCenter();
+        }
         if (full || dirty.has('views')) services.refreshViews();
         if (full || dirty.has('graph')) { services.refreshGraph(); if (services.refreshGraphSidebar) services.refreshGraphSidebar(); }
         if (full || dirty.has('entityHub')) services.refreshEntityHub(changedId);

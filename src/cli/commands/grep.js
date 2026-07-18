@@ -1,7 +1,8 @@
 'use strict';
 
 const { getIndex, getFieldsCache } = require('../../core/indexService');
-const { emitCliError, emitJson, emitText } = require('../io');
+const fmt = require('../format');
+const { captureOutput, emitCliError, emitJson, emitText } = require('../io');
 
 function serialiseValue(value) {
     if (value === null || value === undefined) return '';
@@ -9,7 +10,7 @@ function serialiseValue(value) {
     return JSON.stringify(value);
 }
 
-function run({ text, typeFilter, field, json }) {
+function run({ text, typeFilter, field, json, quiet }) {
     const query = String(text || '').trim().toLowerCase();
     if (!query) {
         emitCliError({ json, error: 'Usage: yamlink grep <text>', code: 'USAGE', exitCode: 1 });
@@ -48,7 +49,27 @@ function run({ text, typeFilter, field, json }) {
         return;
     }
 
-    emitText(results.map((entry) => `${entry.id}\t${entry.field}\t${entry.value}`).join('\n') + (results.length ? '\n' : ''));
+    if (!results.length) {
+        emitText('(no results)\n');
+        return;
+    }
+
+    if (quiet) {
+        emitText(results.map((entry) => `${entry.id}\t${entry.field}\t${entry.value}`).join('\n') + '\n');
+        return;
+    }
+
+    emitText(captureOutput(() => {
+        fmt.table(results.map((entry) => ({
+            id: entry.id,
+            field: entry.field,
+            value: entry.value
+        })), [
+            { key: 'id', label: 'id' },
+            { key: 'field', label: 'field' },
+            { key: 'value', label: 'value' }
+        ]);
+    }));
 }
 
 module.exports = { run };

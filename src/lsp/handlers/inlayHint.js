@@ -96,7 +96,7 @@ function _arcHint(noteFields, noteType, priors, fieldsCache) {
             priors.typeFieldBundles,
             priors.fieldTargetTypes,
             priors.outcomeCalibration,
-            { typeBundleTotals: priors.typeBundleTotals, limit: 5 }
+            { typeBundleTotals: priors.typeBundleTotals, limit: 5, emergentClusters: priors.emergentClusters }
         );
         const ranked = (arc.missingFields || []).filter(Boolean);
         const missing = ranked

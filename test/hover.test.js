@@ -5,6 +5,7 @@ const assert = require('node:assert/strict');
 const Module = require('module');
 const fs = require('fs');
 const path = require('path');
+const os = require('os');
 
 const originalResolve = Module._resolveFilename.bind(Module);
 let HOVER_FIELDS_CACHE = new Map([
@@ -36,7 +37,11 @@ require.cache.__hover_vscode__ = {
         },
         Uri: {
             file(fsPath) {
-                return { fsPath, scheme: 'file', path: fsPath };
+                const normalized = String(fsPath).replace(/\\/g, '/');
+                return {
+                    fsPath, scheme: 'file', path: fsPath,
+                    toString() { return `file:///${normalized.replace(/^\//, '')}`; }
+                };
             }
         }
     }
@@ -66,6 +71,9 @@ require.cache.__hover_index__ = {
         },
         getVaultGeneration() {
             return 0;
+        },
+        getAliasIndex() {
+            return null;
         }
     }
 };
@@ -173,7 +181,13 @@ Module._resolveFilename = function (request, parent, ...rest) {
     return originalResolve(request, parent, ...rest);
 };
 
-const { buildHoverIntelligenceSummary, buildHoverContent, buildQueryPreview, isPositionInsideWikilink } = require('../src/features/hover');
+const {
+    buildHoverIntelligenceSummary, buildHoverContent, buildQueryPreview, isPositionInsideWikilink,
+    buildHoverBadgeSvg, buildHoverBadgeDataUri, buildHoverBadgeMarkdown,
+    renderInlineWikilinks,
+    _buildImagePreviewHover
+} = require('../src/features/hover');
+const { resolveImageEmbed: _resolveImageEmbed } = require('../src/core/imageEmbed');
 const { createVault } = require('./lib/vaultSim');
 const { buildQuoteBlockId } = require('../src/core/bodyBlocks');
 
@@ -204,10 +218,13 @@ describe('hover intelligence summary', () => {
 
         assert.ok(previewIndex >= 0);
         assert.match(markdown, /Primary account contact for Kyocera\\\./i);
-        assert.match(markdown, /\*\*account:\*\* \\\[\\\[kyocera\\\]\\\]/i);
+        // Relation-field values render as their clean resolved name, not raw
+        // bracket syntax — no idIndex is passed here, so it's plain text, not
+        // a link (see the "clickable" test below for the linked case).
+        assert.match(markdown, /\*\*account:\*\* kyocera/i);
+        assert.doesNotMatch(markdown, /\[\[kyocera\]\]/);
         assert.match(markdown, /\*\*email:\*\* carlos@kyocera\\\.com/i);
         assert.doesNotMatch(markdown, /Yamlink hints/i);
-        assert.match(markdown, /\\\[\\\[kyocera\\\]\\\]/);
         assert.doesNotMatch(markdown, /\!view|\bwhere\b|\bselect\b|\bsort\b/i);
         assert.doesNotMatch(markdown, /\[Open\]|\[Open Report\]|command:/i);
     });
@@ -587,6 +604,211 @@ describe('hover anchor previews', () => {
         assert.match(hover.value, /Quote/);
         assert.match(hover.value, /Training\\-yard line/i);
         assert.doesNotMatch(hover.value, /Review recon logs/i);
+    });
+});
+
+describe('hover custom badge rendering', () => {
+    test('buildHoverBadgeSvg renders one rect+text pair per label', () => {
+        const svg = buildHoverBadgeSvg([{ text: 'contact', bg: '#C49BF0', fg: '#151617' }]);
+        assert.match(svg, /^<svg /);
+        assert.match(svg, /<rect[^>]*fill="#C49BF0"/);
+        assert.match(svg, /<text[^>]*fill="#151617"[^>]*>contact<\/text>/);
+    });
+
+    test('buildHoverBadgeSvg escapes XML-sensitive characters in label text', () => {
+        const svg = buildHoverBadgeSvg([{ text: '<script>&"test"', bg: '#000', fg: '#fff' }]);
+        assert.doesNotMatch(svg, /<script>/);
+        assert.match(svg, /&lt;script&gt;/);
+        assert.match(svg, /&amp;/);
+        assert.match(svg, /&quot;/);
+    });
+
+    test('buildHoverBadgeSvg places multiple labels side by side with growing width', () => {
+        const svg = buildHoverBadgeSvg([
+            { text: 'contact', bg: '#C49BF0', fg: '#151617' },
+            { text: 'active', bg: '#5ECFBE', fg: '#151617' }
+        ]);
+        const widthMatch = svg.match(/width="(\d+)"/);
+        assert.ok(widthMatch, 'expected a width attribute on the outer svg');
+        assert.ok(Number(widthMatch[1]) > 100, 'two labels should produce a wider badge than one');
+        assert.equal((svg.match(/<rect/g) || []).length, 2);
+    });
+
+    test('buildHoverBadgeDataUri returns a valid base64 SVG data URI that decodes back to the same markup', () => {
+        const labels = [{ text: 'contact', bg: '#C49BF0', fg: '#151617' }];
+        const uri = buildHoverBadgeDataUri(labels);
+        assert.match(uri, /^data:image\/svg\+xml;base64,/);
+        const base64 = uri.replace('data:image/svg+xml;base64,', '');
+        const decoded = Buffer.from(base64, 'base64').toString('utf8');
+        assert.equal(decoded, buildHoverBadgeSvg(labels));
+    });
+
+    test('buildHoverBadgeMarkdown returns markdown image syntax for type and status', () => {
+        const markdown = buildHoverBadgeMarkdown({ type: 'contact', status: 'active' });
+        assert.match(markdown, /^!\[\]\(data:image\/svg\+xml;base64,/);
+    });
+
+    test('buildHoverBadgeMarkdown returns empty string when neither type nor status is set', () => {
+        assert.equal(buildHoverBadgeMarkdown({}), '');
+        assert.equal(buildHoverBadgeMarkdown({ summary: 'no type or status here' }), '');
+    });
+
+    test('buildHoverContent embeds the badge markdown for a note with type and status', () => {
+        const content = '---\nid: a\ntype: contact\nstatus: active\n---\n\nBody text.\n';
+        const hover = buildHoverContent('a', content);
+        assert.match(hover.value, /!\[\]\(data:image\/svg\+xml;base64,/);
+    });
+});
+
+describe('hover clickable wikilinks', () => {
+    test('relation-field values with a resolvable target render as a command:vscode.open link', () => {
+        const vault = createVault({
+            'kyocera.md': '---\nid: kyocera\ntype: company\nname: Kyocera\n---\n',
+            'carlos-evert.md': [
+                '---',
+                'id: carlos-evert',
+                'type: contact',
+                'account: [[kyocera]]',
+                '---',
+                '',
+                'Body text.'
+            ].join('\n')
+        });
+        try {
+            const content = fs.readFileSync(path.join(vault.dir, 'carlos-evert.md'), 'utf8');
+            const hover = buildHoverContent('carlos-evert', content, path.join(vault.dir, 'carlos-evert.md'), vault.idIndex);
+            assert.match(hover.value, /\*\*account:\*\* \[kyocera\]\(command:vscode\.open\?/);
+            assert.doesNotMatch(hover.value, /\[\[kyocera\]\]/);
+        } finally {
+            vault.destroy();
+        }
+    });
+
+    test('relation-field values with an unresolvable target fall back to plain escaped bracket text, not a broken link', () => {
+        const vault = createVault({
+            'carlos-evert.md': [
+                '---',
+                'id: carlos-evert',
+                'type: contact',
+                'account: "[[does-not-exist]]"',
+                '---'
+            ].join('\n')
+        });
+        try {
+            const content = fs.readFileSync(path.join(vault.dir, 'carlos-evert.md'), 'utf8');
+            const hover = buildHoverContent('carlos-evert', content, path.join(vault.dir, 'carlos-evert.md'), vault.idIndex);
+            assert.doesNotMatch(hover.value, /command:vscode\.open/);
+        } finally {
+            vault.destroy();
+        }
+    });
+
+    test('body preview wikilinks render as clickable links, with plain text around them still escaped', () => {
+        const vault = createVault({
+            'rico.md': '---\nid: rico\ntype: character\nname: Rico\n---\n',
+            'a.md': [
+                '---',
+                'id: a',
+                'type: note',
+                '---',
+                '',
+                'Trained alongside [[rico]] before the war (see notes).'
+            ].join('\n')
+        });
+        try {
+            const content = fs.readFileSync(path.join(vault.dir, 'a.md'), 'utf8');
+            const hover = buildHoverContent('a', content, path.join(vault.dir, 'a.md'), vault.idIndex);
+            assert.match(hover.value, /Trained alongside \[rico\]\(command:vscode\.open\?/);
+            assert.match(hover.value, /before the war \\\(see notes\\\)/);
+        } finally {
+            vault.destroy();
+        }
+    });
+
+    test('renderInlineWikilinks with a null idIndex escapes everything and links nothing', () => {
+        const out = renderInlineWikilinks('see [[rico]] and *emphasis*', null);
+        assert.doesNotMatch(out, /command:/);
+        assert.match(out, /\\\[\\\[rico\\\]\\\]/);
+        assert.match(out, /\\\*emphasis\\\*/);
+    });
+
+    test('renderInlineWikilinks resolves an alias label as the link text', () => {
+        const vault = createVault({
+            'rico.md': '---\nid: rico\ntype: character\n---\n'
+        });
+        try {
+            const out = renderInlineWikilinks('see [[rico|Johnny Rico]]', vault.idIndex);
+            assert.match(out, /\[Johnny Rico\]\(command:vscode\.open\?/);
+        } finally {
+            vault.destroy();
+        }
+    });
+});
+
+describe('hover image embed preview', () => {
+    function withTempDir(fn) {
+        const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'yamlink-hover-img-'));
+        try {
+            return fn(dir);
+        } finally {
+            fs.rmSync(dir, { recursive: true, force: true });
+        }
+    }
+
+    test('resolves an image embed relative to the note\'s own directory', () => {
+        withTempDir((dir) => {
+            fs.writeFileSync(path.join(dir, 'photo.png'), Buffer.from([0x89, 0x50, 0x4e, 0x47]));
+            const resolved = _resolveImageEmbed('photo.png', dir);
+            assert.equal(resolved, path.join(dir, 'photo.png'));
+        });
+    });
+
+    test('returns null for a target that does not look like an image extension', () => {
+        withTempDir((dir) => {
+            fs.writeFileSync(path.join(dir, 'other-note.md'), '---\nid: other-note\n---\n');
+            assert.equal(_resolveImageEmbed('other-note.md', dir), null);
+        });
+    });
+
+    test('returns null when the image file does not actually exist, rather than guessing', () => {
+        withTempDir((dir) => {
+            assert.equal(_resolveImageEmbed('does-not-exist.png', dir), null);
+        });
+    });
+
+    test('strips an alias segment before resolving, same as note wikilinks', () => {
+        withTempDir((dir) => {
+            fs.writeFileSync(path.join(dir, 'diagram.svg'), '<svg></svg>');
+            const resolved = _resolveImageEmbed('diagram.svg|My Diagram', dir);
+            assert.equal(resolved, path.join(dir, 'diagram.svg'));
+        });
+    });
+
+    test('builds a hover with a real file:// image reference and a size label', () => {
+        withTempDir((dir) => {
+            const imagePath = path.join(dir, 'photo.png');
+            fs.writeFileSync(imagePath, Buffer.alloc(2048));
+            const hover = _buildImagePreviewHover(imagePath);
+            assert.match(hover.value, /!\[photo\\\.png\]\(file:\/\/\//);
+            assert.match(hover.value, /photo\\\.png · 2\.0 KB/);
+        });
+    });
+
+    test('buildHoverContent shows a real image preview for a ![[photo.png]] embed that is not a note', () => {
+        withTempDir((dir) => {
+            fs.writeFileSync(path.join(dir, 'photo.png'), Buffer.alloc(100));
+            const notePath = path.join(dir, 'a.md');
+            const content = 'Body text with an embed: ![[photo.png]]';
+            fs.writeFileSync(notePath, content);
+
+            // Simulate the registerHover provider's own resolution path directly,
+            // since buildHoverContent itself only handles the resolved-note case.
+            const resolved = _resolveImageEmbed('photo.png', path.dirname(notePath));
+            assert.ok(resolved, 'image embed should resolve to a real file');
+            const hover = _buildImagePreviewHover(resolved);
+            assert.doesNotMatch(hover.value, /could not find/i);
+            assert.match(hover.value, /!\[photo\\\.png\]/);
+        });
     });
 });
 

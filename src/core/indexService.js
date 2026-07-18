@@ -12,9 +12,19 @@ const {
     getFieldsCache,
     getAliasIndex,
     getBodyBlockIndex,
+    getBodyLinksCache,
     getDuplicateIds,
+    getMalformedFiles,
     getVaultGeneration,
-    parseFrontmatter
+    parseFrontmatter,
+    extractRelationTargets,
+    extractAndResolveRelationTargets,
+    extractEdgesFromFrontmatterRaw,
+    extractBodyLinksRaw,
+    extractBodyLinksFieldValue,
+    extractAliasesFromFields,
+    resolveRawEdges,
+    BODY_LINKS_FIELD
 } = require('./index');
 
 module.exports = {
@@ -23,7 +33,17 @@ module.exports = {
     getFieldsCache,
     getAliasIndex,
     getBodyBlockIndex,
+    getBodyLinksCache,
     getDuplicateIds,
+    getMalformedFiles,
     getVaultGeneration,
-    parseFrontmatter
+    parseFrontmatter,
+    extractRelationTargets,
+    extractAndResolveRelationTargets,
+    extractEdgesFromFrontmatterRaw,
+    extractBodyLinksRaw,
+    extractBodyLinksFieldValue,
+    extractAliasesFromFields,
+    resolveRawEdges,
+    BODY_LINKS_FIELD
 };

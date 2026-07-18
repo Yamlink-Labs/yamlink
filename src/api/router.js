@@ -21,6 +21,81 @@ const { handleSchema } = require('./handlers/schema');
 const { handleSearch } = require('./handlers/search');
 const { handleDiff } = require('./handlers/diff');
 
+/**
+ * Declarative route table. Each entry is tried in order; the first entry whose
+ * path pattern AND method match wins. `method: 'ANY'` means the router doesn't
+ * gate on method at all — the handler itself checks `req.method` and answers
+ * 405 (this is the convention nearly every handler in `./handlers/` already
+ * follows). Entries with an explicit method are for paths that dispatch to a
+ * *different handler function* per method (e.g. GET/PATCH/DELETE on the same
+ * `/api/nodes/:id`) — order among same-path entries doesn't matter since each
+ * only matches its own method, but more specific *paths* (`/api/nodes/bulk`)
+ * must still be listed before more general ones (`/api/nodes/:id`) that would
+ * otherwise also match them.
+ *
+ * @typedef {{ method: string, path: string, handler: (req: import('http').IncomingMessage, res: import('http').ServerResponse, params: Record<string,string>, url: URL, context: object) => any }} RouteDef
+ * @type {RouteDef[]}
+ */
+const routeDefs = [
+    { method: 'ANY', path: '/api/events', handler: (req, res, _p, _url, context) => handleEvents(req, res, context) },
+
+    { method: 'POST', path: '/api/nodes/bulk', handler: (req, res, _p, _url, context) => nodes.bulkCreate(req, res, context) },
+    { method: 'PATCH', path: '/api/nodes/bulk', handler: (req, res, _p, _url, context) => nodes.bulkUpdate(req, res, context) },
+
+    { method: 'GET', path: '/api/nodes', handler: (req, res, _p, url) => nodes.listNodes(req, res, url) },
+    { method: 'POST', path: '/api/nodes', handler: (req, res, _p, _url, context) => nodes.createNode(req, res, context) },
+
+    { method: 'GET', path: '/api/nodes/:id', handler: (req, res, p, url, context) => nodes.getNode(req, res, p.id, url, context) },
+    { method: 'PATCH', path: '/api/nodes/:id', handler: (req, res, p, _url, context) => nodes.updateNode(req, res, p.id, context) },
+    { method: 'DELETE', path: '/api/nodes/:id', handler: (req, res, p, _url, context) => nodes.deleteNode(req, res, p.id, context) },
+
+    { method: 'ANY', path: '/api/nodes/:id/outbound', handler: (req, res, p) => handleOutbound(req, res, p.id) },
+    { method: 'ANY', path: '/api/nodes/:id/inbound', handler: (req, res, p) => handleInbound(req, res, p.id) },
+    { method: 'ANY', path: '/api/nodes/:id/neighborhood', handler: (req, res, p, url) => handleNeighborhood(req, res, p.id, url) },
+    { method: 'ANY', path: '/api/nodes/:id/history', handler: (req, res, p) => handleNodeHistory(req, res, p.id) },
+    { method: 'ANY', path: '/api/nodes/:id/evolution', handler: (req, res, p) => handleNodeEvolution(req, res, p.id) },
+    { method: 'ANY', path: '/api/nodes/:id/archaeology', handler: (req, res, p, url) => handleNodeArchaeology(req, res, p.id, url) },
+
+    { method: 'ANY', path: '/api/search', handler: (req, res, _p, url) => handleSearch(req, res, url) },
+    { method: 'ANY', path: '/api/schema', handler: (req, res, _p, url) => handleSchema(req, res, url) },
+    { method: 'ANY', path: '/api/session/summary', handler: (req, res, _p, url) => handleSessionSummary(req, res, url) },
+    { method: 'ANY', path: '/api/diff', handler: (req, res, _p, url) => handleDiff(req, res, url) },
+    { method: 'ANY', path: '/api/query', handler: (req, res, _p, url) => handleQuery(req, res, url) },
+    { method: 'ANY', path: '/api/graph', handler: (req, res, _p, url) => handleGraph(req, res, url) },
+    { method: 'ANY', path: '/api/types', handler: (req, res) => handleTypes(req, res) },
+    { method: 'ANY', path: '/api/tasks', handler: (req, res, _p, url) => handleTasks(req, res, url) },
+    { method: 'ANY', path: '/api/mutations', handler: (req, res, _p, url, context) => handleMutations(req, res, url, context) },
+    { method: 'ANY', path: '/api/health', handler: (req, res, _p, _url, context) => handleHealth(req, res, context) },
+    { method: 'ANY', path: '/api/intelligence/arc', handler: (req, res, _p, url) => handleArc(req, res, url) },
+    { method: 'ANY', path: '/api/intelligence/fieldCategory', handler: (req, res, _p, url) => handleFieldCategory(req, res, url) },
+    { method: 'ANY', path: '/api/intelligence/note', handler: (req, res, _p, url) => handleNoteIntelligence(req, res, url) },
+    { method: 'ANY', path: '/api/intelligence/clusters', handler: (req, res) => handleClusters(req, res) },
+    { method: 'ANY', path: '/api/intelligence/lenses', handler: (req, res) => handleVaultLenses(req, res) },
+];
+
+/**
+ * Compiles a `/api/nodes/:id/outbound`-style path into a matching regex plus
+ * the ordered list of named params it captures.
+ * @param {string} path
+ * @returns {{ regex: RegExp, paramNames: string[] }}
+ */
+function compilePath(path) {
+    const paramNames = [];
+    const pattern = path
+        .split('/')
+        .map((segment) => {
+            if (segment.startsWith(':')) {
+                paramNames.push(segment.slice(1));
+                return '([^/]+)';
+            }
+            return segment.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+        })
+        .join('/');
+    return { regex: new RegExp('^' + pattern + '$'), paramNames };
+}
+
+const compiledRoutes = routeDefs.map((route) => ({ ...route, ...compilePath(route.path) }));
+
 function createRouter(vaultPath, workspaceFolders, _buildIndex = buildIndex, existingVaultService) {
     const vaultService = existingVaultService || new VaultService({
         buildIndex: _buildIndex,
@@ -44,67 +119,16 @@ function createRouter(vaultPath, workspaceFolders, _buildIndex = buildIndex, exi
             return;
         }
 
-        if (pathname === '/api/events') return handleEvents(req, res, context);
-        if (pathname === '/api/nodes/bulk' && req.method === 'POST') return nodes.bulkCreate(req, res, context);
-        if (pathname === '/api/nodes/bulk' && req.method === 'PATCH') return nodes.bulkUpdate(req, res, context);
-        if (pathname === '/api/nodes') {
-            if (req.method === 'GET') return nodes.listNodes(req, res, url);
-            if (req.method === 'POST') return nodes.createNode(req, res, context);
-        }
+        for (const route of compiledRoutes) {
+            const match = pathname.match(route.regex);
+            if (!match) continue;
+            if (route.method !== 'ANY' && route.method !== req.method) continue;
 
-        const nodeMatch = pathname.match(/^\/api\/nodes\/([^/]+)$/);
-        if (nodeMatch) {
-            const id = decodeURIComponent(nodeMatch[1]);
-            if (req.method === 'GET') return nodes.getNode(req, res, id, url, context);
-            if (req.method === 'PATCH') return nodes.updateNode(req, res, id, context);
-            if (req.method === 'DELETE') return nodes.deleteNode(req, res, id, context);
+            /** @type {Record<string, string>} */
+            const params = {};
+            route.paramNames.forEach((name, i) => { params[name] = decodeURIComponent(match[i + 1]); });
+            return route.handler(req, res, params, url, context);
         }
-
-        const nodeOutboundMatch = pathname.match(/^\/api\/nodes\/([^/]+)\/outbound$/);
-        if (nodeOutboundMatch) {
-            return handleOutbound(req, res, decodeURIComponent(nodeOutboundMatch[1]));
-        }
-
-        const nodeInboundMatch = pathname.match(/^\/api\/nodes\/([^/]+)\/inbound$/);
-        if (nodeInboundMatch) {
-            return handleInbound(req, res, decodeURIComponent(nodeInboundMatch[1]));
-        }
-
-        const nodeNeighborhoodMatch = pathname.match(/^\/api\/nodes\/([^/]+)\/neighborhood$/);
-        if (nodeNeighborhoodMatch) {
-            return handleNeighborhood(req, res, decodeURIComponent(nodeNeighborhoodMatch[1]), url);
-        }
-
-        const nodeHistoryMatch = pathname.match(/^\/api\/nodes\/([^/]+)\/history$/);
-        if (nodeHistoryMatch) {
-            return handleNodeHistory(req, res, decodeURIComponent(nodeHistoryMatch[1]));
-        }
-
-        const nodeEvolutionMatch = pathname.match(/^\/api\/nodes\/([^/]+)\/evolution$/);
-        if (nodeEvolutionMatch) {
-            return handleNodeEvolution(req, res, decodeURIComponent(nodeEvolutionMatch[1]));
-        }
-
-        const nodeArchaeologyMatch = pathname.match(/^\/api\/nodes\/([^/]+)\/archaeology$/);
-        if (nodeArchaeologyMatch) {
-            return handleNodeArchaeology(req, res, decodeURIComponent(nodeArchaeologyMatch[1]), url);
-        }
-
-        if (pathname === '/api/search') return handleSearch(req, res, url);
-        if (pathname === '/api/schema') return handleSchema(req, res, url);
-        if (pathname === '/api/session/summary') return handleSessionSummary(req, res, url);
-        if (pathname === '/api/diff') return handleDiff(req, res, url);
-        if (pathname === '/api/query') return handleQuery(req, res, url);
-        if (pathname === '/api/graph') return handleGraph(req, res);
-        if (pathname === '/api/types') return handleTypes(req, res);
-        if (pathname === '/api/tasks') return handleTasks(req, res, url);
-        if (pathname === '/api/mutations') return handleMutations(req, res, url, context);
-        if (pathname === '/api/health') return handleHealth(req, res);
-        if (pathname === '/api/intelligence/arc') return handleArc(req, res, url);
-        if (pathname === '/api/intelligence/fieldCategory') return handleFieldCategory(req, res, url);
-        if (pathname === '/api/intelligence/note') return handleNoteIntelligence(req, res, url);
-        if (pathname === '/api/intelligence/clusters') return handleClusters(req, res);
-        if (pathname === '/api/intelligence/lenses') return handleVaultLenses(req, res);
 
         notFound(res, 'Unknown endpoint: ' + pathname);
     };
@@ -115,4 +139,4 @@ function createRouter(vaultPath, workspaceFolders, _buildIndex = buildIndex, exi
     return handleRequest;
 }
 
-module.exports = { createRouter };
+module.exports = { createRouter, compilePath, routeDefs };

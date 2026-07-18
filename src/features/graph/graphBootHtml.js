@@ -4,6 +4,15 @@ const crypto = require('crypto');
 const { GRAPH_BOOT_STYLES } = require('./graphBootStyles');
 const { buildGraphClientXGraphScript } = require('./graphClientXGraphScript');
 
+// Real inline SVG icons for the time-lapse transport controls, replacing the
+// previous emoji (⏱ ⏪ ▶ ⏸) -- emoji rendering is inconsistent across OS/font
+// stacks and reads as unpolished next to the rest of this panel's plain-glyph
+// buttons (+ / − / ⊙ / ✕). `currentColor` fill/stroke follows the button's
+// own text color automatically.
+const ICON_TIMELAPSE = '<svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><circle cx="8" cy="8" r="6.3"/><path d="M8 4.6 V8.2 L10.6 9.8" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+const ICON_PLAY = '<svg width="10" height="10" viewBox="0 0 10 10" fill="currentColor"><path d="M1 0.6 L9 5 L1 9.4 Z"/></svg>';
+const ICON_REWIND = '<svg width="12" height="10" viewBox="0 0 12 10" fill="currentColor"><path d="M6 0.4 L0.4 5 L6 9.6 Z"/><path d="M11.6 0.4 L6 5 L11.6 9.6 Z"/></svg>';
+
 /**
  * @param {import('vscode').Webview} webview
  * @param {import('vscode').Uri}     extensionUri
@@ -60,10 +69,22 @@ function buildBootHtml(webview, extensionUri, rendererUri) {
       <span class="t-sep toolbar-advanced"></span>
       <button id="btnReveal" class="btn toolbar-advanced" type="button" title="Switch to Local mode and centre the graph on your currently open note">↺ Current Note</button>
       <span class="t-sep"></span>
-      <button id="btnSemantic" class="layer-btn" type="button" title="Toggle semantic edge colouring by relation type">Semantic</button>
-      <button id="btnHealth"   class="layer-btn" type="button" title="Toggle lifecycle and drift health rings on nodes">Health</button>
+      <button id="btnSemantic" class="layer-btn" type="button">Semantic <span class="help-tip" title="Colors each connection line by its relation type (unit, homeworld, mention, etc.) instead of one flat color, and draws soft outlines around detected note clusters.">?</span></button>
+      <button id="btnHealth"   class="layer-btn" type="button">Health <span class="help-tip" title="Draws a colored ring around each note: its lifecycle stage (draft / growing / consolidated / hub / stale) normally, or its drift state (minor drift / drifting / outlier) instead if the note has drifted from its type's usual pattern -- drift always wins when both apply.">?</span></button>
+      <span class="t-sep"></span>
+      <button id="btnLabels" class="layer-btn" type="button" title="Cycle node label visibility: Auto (smart density, hides labels as the graph gets crowded) -> All (show every visible label) -> Off (hide all labels).">Labels: Auto</button>
+      <span class="t-sep"></span>
+      <button id="btnTimelapse" class="layer-btn" type="button" title="Play back how this graph grew over time. Reconstructed from git history when available (includes body-text links); frontmatter relations only otherwise.">${ICON_TIMELAPSE} Time-lapse</button>
     </div>
     <div id="modeHelp" class="mode-help" role="status" aria-live="polite">Local shows the current note, then adds one layer of linked notes around it.</div>
+
+    <div id="timelapseBar" class="timelapse-bar" style="display:none" role="group" aria-label="Time-lapse controls">
+      <button id="btnTimelapseRewind" class="btn sq" type="button" aria-label="Play time-lapse backward" title="Play backward">${ICON_REWIND}</button>
+      <button id="btnTimelapsePlay" class="btn sq" type="button" aria-label="Play time-lapse">${ICON_PLAY}</button>
+      <input id="timelapseScrub" class="timelapse-range" type="range" min="0" max="0" value="0" step="1" aria-label="Scrub through vault history">
+      <span id="timelapseLabel" class="timelapse-label">Reconstructing history…</span>
+      <button id="btnTimelapseExit" class="btn sq" type="button" aria-label="Exit time-lapse" title="Return to the live graph">✕</button>
+    </div>
 
     <div class="zoom-wrap">
       <button id="btnZoomIn"  class="btn sq" type="button" title="Zoom in"       aria-label="Zoom in">+</button>
@@ -111,7 +132,7 @@ function buildBootHtml(webview, extensionUri, rendererUri) {
         <div id="typeChips" class="chips"></div>
       </div>
       <div class="card">
-        <div class="card-hd">Themes</div>
+        <div class="card-hd">Themes <span class="help-tip" title="The most repeated #tags among the notes currently visible in this view -- a quick read on recurring topics in this neighborhood, not just this one note.">?</span></div>
         <div id="tagList" class="chips"></div>
       </div>
       <div class="card">
@@ -119,7 +140,7 @@ function buildBootHtml(webview, extensionUri, rendererUri) {
         <div id="topNodes" class="nlist"></div>
       </div>
       <div class="card">
-        <div class="card-hd">Relations</div>
+        <div class="card-hd">Relations <span class="help-tip" title="Every distinct relation field (unit, mentor, mention, etc.) used by the connections currently visible, ranked by total connection weight -- which kinds of relationships carry the most weight in this view, not just which are most common.">?</span></div>
         <div id="relList" class="rlist"></div>
       </div>
     </div>

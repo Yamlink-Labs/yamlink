@@ -14,7 +14,7 @@ const {
 } = require('../src/intelligence/bodySignals');
 const {
     extractNoteRoleHints
-} = require('../src/features/completionContextHelpers');
+} = require('../src/intelligence/completionContextHelpers');
 
 function makeDocument(text) {
     return {

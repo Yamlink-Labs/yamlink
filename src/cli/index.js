@@ -5,7 +5,9 @@ const fs   = require('fs');
 const http = require('http');
 const { emitCliError } = require('./io');
 const { VaultService } = require('../core/vaultService');
-const { buildIndex } = require('../core/index');
+const { setMutationEventsProvider: setVaultPriorsMutationEventsProvider } = require('../intelligence/vaultPriors');
+const { setMutationEventsProvider: setIntelligenceSnapshotMutationEventsProvider } = require('../intelligence/intelligenceSnapshots');
+const { buildIndex, getFieldsCache } = require('../core/index');
 
 function resolveVaultPath(args) {
     const i = args.indexOf('--vault');
@@ -24,11 +26,12 @@ function printHelp() {
         '  build                   Index vault and report broken links / duplicate IDs (CI-safe: exits 1 on issues)',
         '  briefing                Vault pulse, tasks due today/overdue, recent activity',
         '  ls                      List notes with unix-style filtering and sorting',
-        '  cat <id>                Print a note frontmatter snapshot and body',
+        '  cat <id>                Print a note frontmatter snapshot and body (--at <date> for a historical snapshot)',
         '  grep <text>             Search frontmatter values for matching text',
         '  find                    Structural note search by present/missing fields',
         '  create <type>           Create a new note with optional --field pairs',
         '  diff <id1> <id2>        Compare frontmatter fields between two notes, or use --since for recent changes',
+        '  story --since <date>    Vault growth story — then vs now, using the Time Engine (--quarterly for a calendar-quarter review)',
         '  doctor                  Comprehensive vault health and integrity pass',
         '  init [path]             Initialize a new Yamlink vault',
         '  rename <old-id> <new-id> Rename a note id and rewrite wikilinks vault-wide',
@@ -41,9 +44,9 @@ function printHelp() {
         '  schema list|check <type> Schema introspection',
         '  validate                Schema conformance check — required fields, dangling relations (exits 1 on failures)',
         '  query "<query>"         Run a Yamlink query and print results',
-        '  report <id>             Note report — type, lifecycle, drift, links for a given ID',
-        '  links <id>              Inbound and outbound links for a note',
-        '  graph                   Export the vault graph as JSON',
+        '  report <id>             Note report — type, lifecycle, drift, links for a given ID (--at <date> for a historical snapshot)',
+        '  links <id>              Inbound and outbound links for a note (--at <date> for outbound-only historical links)',
+        '  graph                   Export the vault graph as JSON (--at <date> for a historical graph reconstruction)',
         '  serve                   Start a local HTTP API server for the vault (--lsp for LSP mode)',
         '  watch                   Watch vault for changes and rebuild index on save',
         '  suggest <id>            Intelligence — suggest fields likely missing from a note',
@@ -78,6 +81,8 @@ function printHelp() {
         '  --has <field>           Require a field to be present (repeatable)',
         '  --missing <field>       Require a field to be absent (repeatable)',
         '  --only-types <a,b>      Limit graph export to specific note types',
+        '  --at <date>             Reconstruct historical state as of a date (cat, report, links, graph)',
+        '  --quarterly             Since the start of the current calendar quarter (story)',
         '  --type <type>           Type filter for on command',
         '  --shell bash|zsh|fish   Shell format for env command',
         '  --stream                Stream live NDJSON output where supported',
@@ -94,6 +99,10 @@ function printHelp() {
         '  yamlink doctor --json',
         '  yamlink diff johnny-rico carl-jenkins --json',
         '  yamlink diff --since 2026-06-01T00:00:00.000Z',
+        '  yamlink story --since 2026-01-01',
+        '  yamlink story --since 2026-01-01 --json',
+        '  yamlink story --quarterly            # since the start of the current calendar quarter',
+        '  yamlink story --quarterly --json',
         '  yamlink init ~/notes',
         '  yamlink rename old-id new-id --dry-run --rename-file',
         '  yamlink search "rico" --type contact',
@@ -108,8 +117,12 @@ function printHelp() {
         '  yamlink query "where type = contact"',
         '  yamlink query "!view contact select id, name, status"',
         '  yamlink report johnny-rico',
+        '  yamlink report johnny-rico --at 2026-01-01',
         '  yamlink links johnny-rico --json',
+        '  yamlink links johnny-rico --at 2026-01-01',
+        '  yamlink cat johnny-rico --at 2026-01-01',
         '  yamlink graph --only-types contact,unit',
+        '  yamlink graph --at 2026-01-01',
         '  yamlink serve --port 4000',
         '  yamlink serve --lsp --vault ~/notes',
         '  yamlink watch --vault ~/vault',
@@ -136,12 +149,26 @@ function printHelp() {
 }
 
 function buildIndexQuietly(workspaceFolders) {
+    // buildIndex() logs build-time diagnostics (duplicate ids, malformed
+    // frontmatter, the summary line) via console.log/warn/error — meant for
+    // the VS Code extension host console, not a CLI report. Every one of
+    // these is already surfaced structurally by commands that care (doctor's
+    // duplicateIds/malformedFiles rows), so raw console noise here is pure
+    // duplication, not information — previously only console.log was
+    // stubbed, so warn/error still leaked straight into every command's
+    // output ahead of its actual formatted report.
     const originalLog = console.log;
+    const originalWarn = console.warn;
+    const originalError = console.error;
     console.log = () => {};
+    console.warn = () => {};
+    console.error = () => {};
     try {
         buildIndex(workspaceFolders);
     } finally {
         console.log = originalLog;
+        console.warn = originalWarn;
+        console.error = originalError;
     }
 }
 
@@ -162,20 +189,52 @@ function failCli({ json, error, code = 'USER_ERROR', exitCode = 1, details }) {
  * Returns true if something is already listening on host:port.
  * Times out after 800ms so startup isn't blocked for long.
  */
+/**
+ * Probes whether a server is already answering at host:port, and if so, which
+ * vault it's actually serving (via /api/health's `vaultPath` field). Returns
+ * `null` if nothing responds — distinct from `{ vaultPath: null }`, which
+ * means something responded but couldn't identify its vault (e.g. a much
+ * older server build, or a non-Yamlink process squatting the port).
+ * @param {string} host
+ * @param {number} port
+ * @returns {Promise<{ vaultPath: string|null } | null>}
+ */
 function probeServer(host, port) {
     return new Promise((resolve) => {
-        const req = http.get(`http://${host}:${port}/api/types`, { timeout: 800 }, (res) => {
-            res.resume();
-            resolve(true);
+        const req = http.get(`http://${host}:${port}/api/health`, { timeout: 800 }, (res) => {
+            const chunks = [];
+            res.on('data', (chunk) => chunks.push(chunk));
+            res.on('end', () => {
+                try {
+                    const body = JSON.parse(Buffer.concat(chunks).toString('utf8'));
+                    resolve({ vaultPath: typeof body.vaultPath === 'string' ? body.vaultPath : null });
+                } catch (_) {
+                    resolve({ vaultPath: null });
+                }
+            });
         });
-        req.on('error', () => resolve(false));
-        req.on('timeout', () => { req.destroy(); resolve(false); });
+        req.on('error', () => resolve(null));
+        req.on('timeout', () => { req.destroy(); resolve(null); });
     });
 }
 
 /**
  * Launch Conduit, starting the API server in-process if none is already running.
  * Called both from the no-args path and from `yamlink conduit`.
+ *
+ * Never touches, and never silently trusts, a server it didn't start. If
+ * something's already answering on the requested host:port:
+ *   - same vault  → reuse it (the intended fast-path: you already ran
+ *     `yamlink serve` yourself, or a previous `yamlink conduit` for this
+ *     same vault is still up).
+ *   - different vault, or a server too old to say which vault it's
+ *     serving  → never attach. A user with an unrelated vault's server
+ *     already running elsewhere on that port (a real, hit-live scenario —
+ *     nothing tells you what else on your machine happens to be listening
+ *     on 3000) should never be shown someone else's vault with no warning,
+ *     and shouldn't have to go kill that other process just to use a
+ *     second vault. Starts an entirely separate, freshly-owned server on
+ *     an OS-assigned free port instead, for the vault actually requested.
  */
 async function launchConduit(args) {
     const flagVal = (flag) => {
@@ -183,19 +242,32 @@ async function launchConduit(args) {
         return i !== -1 && args[i + 1] ? args[i + 1] : null;
     };
     const host = flagVal('--host') || '127.0.0.1';
-    const port = parseInt(flagVal('--port') || '3000', 10);
+    const requestedPort = parseInt(flagVal('--port') || '3000', 10);
     const vaultPath = resolveVaultPath(args);
 
-    const alreadyRunning = await probeServer(host, port);
+    if (!fs.existsSync(vaultPath)) {
+        process.stderr.write(`yamlink: vault not found at ${vaultPath}\n`);
+        process.exit(1);
+        return;
+    }
+
+    const running = await probeServer(host, requestedPort);
+    const sameVault = running && running.vaultPath && path.resolve(running.vaultPath) === vaultPath;
+
+    let port = requestedPort;
     let ownedServer = null;
 
-    if (!alreadyRunning) {
-        if (!fs.existsSync(vaultPath)) {
-            process.stderr.write(`yamlink: vault not found at ${vaultPath}\n`);
-            process.exit(1);
-            return;
-        }
-        process.stderr.write(`Starting server on http://${host}:${port}...\n`);
+    if (running && !sameVault) {
+        process.stderr.write(
+            running.vaultPath
+                ? `yamlink: ${host}:${requestedPort} is already serving a different vault (${running.vaultPath}) — starting a separate server for this one instead.\n`
+                : `yamlink: something is already answering on ${host}:${requestedPort} but couldn't identify which vault it's serving — starting a separate server for this one instead.\n`
+        );
+        port = 0; // OS-assigned free port; startServer() reports back whichever one it actually bound.
+    }
+
+    if (!running || !sameVault) {
+        process.stderr.write(`Starting server for ${vaultPath}...\n`);
         try {
             const { startServer } = require('./commands/serve');
             ownedServer = await startServer({
@@ -203,6 +275,8 @@ async function launchConduit(args) {
                 vaultPath,
                 workspaceFolders: [{ uri: { fsPath: vaultPath } }]
             });
+            port = ownedServer.port;
+            process.stderr.write(`Serving on http://${host}:${port}\n`);
         } catch (err) {
             process.stderr.write(`yamlink: failed to start server — ${err && err.message ? err.message : String(err)}\n`);
             process.exit(2);
@@ -244,7 +318,7 @@ async function main() {
     for (let i = 0; i < args.length && (ddIdx === -1 || i < ddIdx); i++) {
         if (args[i] === '--vault' || args[i] === '--port' || args[i] === '--host' || args[i] === '--format' ||
             args[i] === '--output' || args[i] === '--query' || args[i] === '--field' || args[i] === '--type' ||
-            args[i] === '--only-types' || args[i] === '--check' || args[i] === '--since' ||
+            args[i] === '--only-types' || args[i] === '--check' || args[i] === '--since' || args[i] === '--at' ||
             args[i] === '--limit' || args[i] === '--id' || args[i] === '--sort' ||
             args[i] === '--has' || args[i] === '--missing' || args[i] === '--max-broken-links' ||
             args[i] === '--schema-coverage' || args[i] === '--max-stale-days' ||
@@ -296,6 +370,9 @@ async function main() {
     try {
         const mutLog = require('../runtime/mutationEventLog');
         mutLog.initMutationLog(path.join(vaultPath, '.yamlink', 'mutation-log.ndjson'));
+        mutLog.setSnapshotFieldsCacheProvider(() => getFieldsCache());
+        setVaultPriorsMutationEventsProvider(mutLog.getMutationEvents);
+        setIntelligenceSnapshotMutationEventsProvider(mutLog.getMutationEvents);
         const stamp = new Date().toISOString().replace(/[-:.TZ]/g, '').slice(0, 14);
         const nonce = Math.random().toString(36).slice(2, 8);
         const cliSessionId = `cli-${stamp}-${nonce}`;
@@ -384,14 +461,15 @@ async function main() {
         require('./commands/ls').run({
             typeFilter: flagVal('--type'),
             sortBy: flagVal('--sort'),
-            json
+            json,
+            quiet
         });
         break;
 
     case 'cat': {
         const id = pos[1];
         if (!id) { failCli({ json, error: 'Usage: yamlink cat <id>', code: 'USAGE', exitCode: 1 }); }
-        require('./commands/cat').run({ id, json });
+        require('./commands/cat').run({ id, json, at: flagVal('--at') });
         break;
     }
 
@@ -402,7 +480,8 @@ async function main() {
             text: searchText,
             typeFilter: flagVal('--type'),
             field: flagVal('--field'),
-            json
+            json,
+            quiet
         });
         break;
     }
@@ -412,7 +491,8 @@ async function main() {
             hasFields: flagVals('--has'),
             missingFields: flagVals('--missing'),
             typeFilter: flagVal('--type'),
-            json
+            json,
+            quiet
         });
         break;
 
@@ -426,6 +506,10 @@ async function main() {
 
     case 'diff':
         require('./commands/diff').run({ id1: pos[1], id2: pos[2], since: flagVal('--since'), json, quiet, output: flagVal('--output') });
+        break;
+
+    case 'story':
+        require('./commands/story').run({ since: flagVal('--since'), quarterly: args.includes('--quarterly'), json, output: flagVal('--output') });
         break;
 
     case 'rename':
@@ -505,7 +589,7 @@ async function main() {
     case 'report': {
         const id = pos[1];
         if (!id) { failCli({ json, error: 'Usage: yamlink report <id>', code: 'USAGE', exitCode: 1 }); }
-        require('./commands/report').run({ id, json, output: flagVal('--output'), history: args.includes('--history') });
+        require('./commands/report').run({ id, json, output: flagVal('--output'), history: args.includes('--history'), at: flagVal('--at') });
         break;
     }
 
@@ -519,14 +603,15 @@ async function main() {
     case 'links': {
         const id = pos[1];
         if (!id) { failCli({ json, error: 'Usage: yamlink links <id>', code: 'USAGE', exitCode: 1 }); }
-        require('./commands/links').run({ id, json, output: flagVal('--output') });
+        require('./commands/links').run({ id, json, output: flagVal('--output'), at: flagVal('--at') });
         break;
     }
 
     case 'graph':
         require('./commands/graph').run({
             output: flagVal('--output'),
-            typeFilter: flagVal('--only-types') ? flagVal('--only-types').split(',').map((value) => value.trim()).filter(Boolean) : null
+            typeFilter: flagVal('--only-types') ? flagVal('--only-types').split(',').map((value) => value.trim()).filter(Boolean) : null,
+            at: flagVal('--at')
         });
         break;
 

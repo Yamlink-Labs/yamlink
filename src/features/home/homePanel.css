@@ -154,15 +154,17 @@ body {
 
 /* ── Tab bar ────────────────────────────────────────────────────────── */
 .tab-bar {
-    display: flex; align-items: center;
-    padding: 0 14px;
+    display: flex; align-items: center; justify-content: space-between; gap: 12px;
+    padding: 0 12px;
     border-bottom: 1px solid var(--vscode-panel-border, #454545);
     background: var(--vscode-sideBar-background, var(--vscode-editor-background, #252526));
     flex-shrink: 0;
 }
+.tab-bar-tabs { display: flex; align-items: center; min-width: 0; }
+.tab-bar-actions { display: flex; align-items: center; margin-left: auto; flex-shrink: 0; }
 .tab-btn {
     display: inline-flex; align-items: center; gap: 5px;
-    padding: 7px 12px;
+    padding: 6px 11px;
     background: none; border: none;
     border-bottom: 2px solid transparent;
     color: var(--vscode-descriptionForeground, #9d9d9d);
@@ -178,6 +180,20 @@ body {
 .tab-content.active { display: flex; }
 .tab-content--home { overflow: hidden; }
 .tab-content--stats { overflow-y: auto; }
+.tab-content--projections { overflow: hidden; }
+
+/* ── Projections tab (full-space Vault Projections card) ────────────── */
+.projections-tab-body {
+    flex: 1;
+    min-height: 0;
+    overflow: hidden;
+    padding: 0 12px 12px;
+    display: flex;
+    flex-direction: column;
+    gap: 0;
+}
+.projections-tab-body .intel-grid { flex: 1; min-height: 0; align-items: stretch; }
+.tab-bar-actions .action-chip { padding: 3px 10px; }
 
 /* ── Home 3-column no-scroll grid ──────────────────────────────────── */
 .home-grid {
@@ -210,29 +226,38 @@ body {
     color: var(--vscode-descriptionForeground, #9d9d9d); font-style: italic;
 }
 
-/* ── Projection strip (compact, below grid on Home tab) ─────────────── */
-.projection-strip {
-    display: flex; align-items: center; gap: 10px;
+/* ── Projection snapshot (compact, below grid on Home tab) ──────────── */
+.projection-snapshot {
+    display: flex; flex-direction: column; gap: 4px;
     padding: 6px 14px;
     border-top: 1px solid var(--vscode-panel-border, #454545);
     background: var(--vscode-sideBar-background, var(--vscode-editor-background, #252526));
     flex-shrink: 0; cursor: pointer; transition: background .1s;
 }
-.projection-strip:hover { background: var(--vscode-list-hoverBackground, rgba(255,255,255,.04)); }
-.proj-item { font-size: 10px; color: var(--vscode-descriptionForeground, #9d9d9d); display: flex; align-items: center; gap: 5px; }
-.proj-sep { font-size: 10px; color: rgba(156,156,156,0.35); }
-.proj-badge {
-    font-size: 8px; text-transform: uppercase; letter-spacing: .07em;
-    border-radius: 999px; padding: 1px 5px;
-    border: 1px solid transparent; font-weight: 600;
+.projection-snapshot:hover { background: var(--vscode-list-hoverBackground, rgba(255,255,255,.04)); }
+.projection-snapshot-row { display: flex; align-items: center; gap: 10px; }
+.projection-snapshot-title {
+    font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: .08em;
+    color: var(--vscode-descriptionForeground, #9d9d9d); white-space: nowrap;
 }
-.proj-badge--low,
-.proj-badge--steady   { color: rgba(156,156,156,0.8); background: rgba(255,255,255,.04); border-color: rgba(255,255,255,.08); }
-.proj-badge--medium   { color: var(--ym-amber, #E7A85A); background: rgba(231,168,90,0.10); border-color: rgba(231,168,90,0.18); }
-.proj-badge--high,
-.proj-badge--improving{ color: var(--ym-teal, #5ECFBE);  background: rgba(94,207,190,0.10); border-color: rgba(94,207,190,0.18); }
-.proj-badge--fragile  { color: var(--ym-orange, #E67D61); background: rgba(230,125,97,0.10); border-color: rgba(230,125,97,0.18); }
 .proj-link { font-size: 10px; color: var(--ym-lavender, #C49BF0); margin-left: auto; white-space: nowrap; }
+
+/* Mini 4-week trend strip — created/touches/structure per week, hover reveals the breakdown */
+.projection-trend-strip { display: flex; align-items: flex-end; gap: 3px; height: 22px; flex-shrink: 0; }
+.proj-trend-col { display: flex; align-items: flex-end; gap: 1px; height: 100%; cursor: help; }
+.proj-trend-bar { display: inline-block; width: 3px; border-radius: 1px; align-self: flex-end; }
+.proj-trend-bar--created   { background: var(--ym-mint, #C5FFBF); opacity: .85; }
+.proj-trend-bar--touches   { background: var(--ym-lavender, #C49BF0); opacity: .85; }
+.proj-trend-bar--structure { background: var(--ym-teal, #5ECFBE); opacity: .85; }
+
+/* Plain-language snapshot lines — one real sentence per metric that has
+   enough signal to say something, named with concrete numbers (never a
+   bare percentage or an internal confidence score). A metric with too
+   little signal is simply not shown here, rather than shown with a
+   misleading confident badge — silence over a wrong-looking guess. */
+.proj-snapshot-lines { display: flex; flex-direction: column; gap: 3px; padding: 2px 0; }
+.proj-snapshot-line { font-size: 11px; line-height: 1.4; color: var(--vscode-editor-foreground, #cccccc); }
+.proj-snapshot-line code { font-family: var(--vscode-editor-font-family, monospace); font-size: 10.5px; color: var(--ym-lavender, #C49BF0); }
 
 /* ── Recent items ───────────────────────────────────────────────────── */
 .recent-item {
@@ -290,6 +315,9 @@ body {
     background: rgba(196,155,240,0.08);
     color: var(--vscode-descriptionForeground, #9d9d9d);
     font-size: 9px; letter-spacing: .04em; text-transform: uppercase;
+}
+.feed-chip--outcome {
+    border-color: rgba(94,207,190,0.30); background: rgba(94,207,190,0.10); color: var(--ym-teal, #5ECFBE);
 }
 .feed-text code {
     font-family: var(--vscode-editor-font-family, monospace); font-size: 10px;
@@ -463,4 +491,6 @@ body {
     .topbar { flex-direction: column; }
     .topbar .pulse-bar { border-right: none; border-bottom: 1px solid var(--vscode-panel-border, #454545); }
     .welcome-steps { display: none; }
+    .tab-bar { flex-wrap: wrap; align-items: flex-end; }
+    .tab-bar-actions { width: 100%; justify-content: flex-end; padding: 0 0 6px; }
 }

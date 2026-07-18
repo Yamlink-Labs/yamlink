@@ -15,9 +15,11 @@ function buildFieldTargetTypes(fieldsCache) {
             if (!fn || fn === 'id' || fn === 'type') continue;
             const values = Array.isArray(rawValue) ? rawValue : [rawValue];
             for (const v of values) {
-                const m = WIKILINK_RE.exec(String(v || '').trim());
-                if (!m) continue;
-                const targetId = _norm(m[1]);
+                const raw = String(v || '').trim();
+                if (!raw) continue;
+                const m = WIKILINK_RE.exec(raw);
+                const targetId = m ? _norm(m[1]) : _norm(raw);
+                if (!targetId || !fieldsCache.has(targetId)) continue;
                 const targetType = _norm(fieldsCache.get(targetId)?.type);
                 if (!targetType) continue;
                 if (!result.has(fn)) result.set(fn, new Map());
@@ -260,14 +262,29 @@ function buildValuePatterns(fieldsCache) {
     return patterns;
 }
 
+// A "workflow field" (status, priority, etc.) is one with a genuinely closed,
+// recurring vocabulary — not just a field that happens to have few distinct
+// values because the vault itself is small. On a young/small vault, almost
+// any short scalar field looks "closed" by accident (few notes -> few values,
+// regardless of whether the field is actually enum-shaped). Two extra gates
+// beyond distinct-count bounds guard against that: a minimum sample size
+// (MIN_SAMPLES) so we're not judging from a handful of notes, and a minimum
+// average-repeat ratio (MIN_AVG_REPEAT) so at least some values are genuinely
+// reused, not just "every note happened to write something slightly different."
+const WORKFLOW_FIELD_MIN_SAMPLES = 6;
+const WORKFLOW_FIELD_MIN_AVG_REPEAT = 2;
+
 function buildWorkflowFields(valuePatterns) {
     const result = new Map();
     for (const [fn, p] of valuePatterns) {
         const total = p.wikilinkCount + p.shortScalarCount + p.longScalarCount + p.dateCount;
-        if (total < 2) continue;
+        if (total < WORKFLOW_FIELD_MIN_SAMPLES) continue;
         const scalarRatio = p.shortScalarCount / total;
         const distinctCount = p.distinctScalars.size;
-        if (scalarRatio >= 0.60 && distinctCount >= 2 && distinctCount <= 15 && p.wikilinkCount === 0 && p.dateCount === 0) {
+        const avgRepeat = distinctCount > 0 ? total / distinctCount : 0;
+        if (scalarRatio >= 0.60 && distinctCount >= 2 && distinctCount <= 15
+            && avgRepeat >= WORKFLOW_FIELD_MIN_AVG_REPEAT
+            && p.wikilinkCount === 0 && p.dateCount === 0) {
             result.set(fn, { values: [...p.distinctScalars], count: p.shortScalarCount });
         }
     }

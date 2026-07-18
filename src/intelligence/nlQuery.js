@@ -17,7 +17,12 @@
 
 /**
  * @typedef {{ types: string[], fields: string[], workflowFields: Map<string,{values:string[]}>, noteIds: string[] }} NlVocab
- * @typedef {{ query: string, explanation: string, confidence: 'high'|'medium' }} NlResult
+ * @typedef {{ kind: 'read', query: string, explanation: string, confidence: 'high'|'medium' }} NlReadResult
+ * @typedef {{ field: string, op: '=' | 'exists' | 'is empty', value?: string }} NlWriteFilter
+ * @typedef {{ type: string, where: NlWriteFilter[] }} NlWriteSelection
+ * @typedef {{ fields: Record<string, string|null> }} NlWritePatch
+ * @typedef {{ kind: 'write', mutation: 'bulkUpdate', selection: NlWriteSelection, patch: NlWritePatch, explanation: string, confidence: 'high'|'medium' }} NlWriteResult
+ * @typedef {NlReadResult | NlWriteResult} NlResult
  */
 
 // ── Vocabulary matching ────────────────────────────────────────────────────
@@ -96,7 +101,7 @@ function normalise(input) {
 // Tried in order — most specific patterns first.
 
 /** @type {Array<{re: RegExp, build: (m: RegExpExecArray, v: NlVocab) => NlResult|null}>} */
-const PATTERNS = [
+const READ_PATTERNS = [
 
     // "stale X" / "old X" (no date specified → 30 days)
     {
@@ -104,7 +109,7 @@ const PATTERNS = [
         build([, tok], v) {
             const type = matchVocab(tok, v.types);
             if (!type) return null;
-            return { query: `!view ${type}\nwhere file.modified < days-ago(30)`, explanation: `${type} notes not modified in 30 days`, confidence: 'high' };
+            return { kind: 'read', query: `!view ${type}\nwhere file.modified < days-ago(30)`, explanation: `${type} notes not modified in 30 days`, confidence: 'high' };
         }
     },
 
@@ -114,7 +119,7 @@ const PATTERNS = [
         build([, tok], v) {
             const type = matchVocab(tok, v.types);
             if (!type) return null;
-            return { query: `!view ${type}\nwhere due < today()`, explanation: `${type} notes that are overdue`, confidence: 'high' };
+            return { kind: 'read', query: `!view ${type}\nwhere due < today()`, explanation: `${type} notes that are overdue`, confidence: 'high' };
         }
     },
 
@@ -124,9 +129,9 @@ const PATTERNS = [
         build([, tok, when], v) {
             const type = matchVocab(tok, v.types);
             if (!type) return null;
-            if (when === 'today')          return { query: `!view ${type}\nwhere due = today()`,              explanation: `${type} notes due today`,          confidence: 'high' };
-            if (when.includes('month'))    return { query: `!view ${type}\nwhere due < days-from-now(30)`,   explanation: `${type} notes due this month`,      confidence: 'high' };
-            return                                { query: `!view ${type}\nwhere due < days-from-now(7)`,    explanation: `${type} notes due this week`,       confidence: 'high' };
+            if (when === 'today')          return { kind: 'read', query: `!view ${type}\nwhere due = today()`,            explanation: `${type} notes due today`,     confidence: 'high' };
+            if (when.includes('month'))    return { kind: 'read', query: `!view ${type}\nwhere due < days-from-now(30)`, explanation: `${type} notes due this month`, confidence: 'high' };
+            return                                { kind: 'read', query: `!view ${type}\nwhere due < days-from-now(7)`,  explanation: `${type} notes due this week`,  confidence: 'high' };
         }
     },
 
@@ -136,7 +141,7 @@ const PATTERNS = [
         build([, tok, days], v) {
             const type = matchVocab(tok, v.types);
             if (!type) return null;
-            return { query: `!view ${type}\nwhere file.modified < days-ago(${days})`, explanation: `${type} notes not modified in ${days} days`, confidence: 'high' };
+            return { kind: 'read', query: `!view ${type}\nwhere file.modified < days-ago(${days})`, explanation: `${type} notes not modified in ${days} days`, confidence: 'high' };
         }
     },
 
@@ -147,7 +152,7 @@ const PATTERNS = [
             const type   = matchVocab(typeTok, v.types);
             const noteId = matchNoteId(idTok, v.noteIds);
             if (!type || !noteId) return null;
-            return { query: `!view ${type}\nvia ${noteId}`, explanation: `${type} notes linked to "${noteId}"`, confidence: 'high' };
+            return { kind: 'read', query: `!view ${type}\nvia ${noteId}`, explanation: `${type} notes linked to "${noteId}"`, confidence: 'high' };
         }
     },
 
@@ -158,7 +163,7 @@ const PATTERNS = [
             const type  = matchVocab(typeTok, v.types);
             const field = matchVocab(fieldTok, v.fields);
             if (!type || !field) return null;
-            return { query: `!view ${type}\nwhere ${field} is empty`, explanation: `${type} notes missing "${field}"`, confidence: 'high' };
+            return { kind: 'read', query: `!view ${type}\nwhere ${field} is empty`, explanation: `${type} notes missing "${field}"`, confidence: 'high' };
         }
     },
 
@@ -169,7 +174,7 @@ const PATTERNS = [
             const type  = matchVocab(typeTok, v.types);
             const field = matchVocab(fieldTok, v.fields);
             if (!type || !field) return null;
-            return { query: `!view ${type}\nwhere ${field} exists`, explanation: `${type} notes with "${field}" set`, confidence: 'high' };
+            return { kind: 'read', query: `!view ${type}\nwhere ${field} exists`, explanation: `${type} notes with "${field}" set`, confidence: 'high' };
         }
     },
 
@@ -180,7 +185,7 @@ const PATTERNS = [
             const type  = matchVocab(typeTok, v.types);
             const field = matchVocab(fieldTok, v.fields);
             if (!type || !field) return null;
-            return { query: `!view ${type}\ngroup by ${field}`, explanation: `${type} notes grouped by "${field}"`, confidence: 'high' };
+            return { kind: 'read', query: `!view ${type}\ngroup by ${field}`, explanation: `${type} notes grouped by "${field}"`, confidence: 'high' };
         }
     },
 
@@ -190,7 +195,7 @@ const PATTERNS = [
         build([, tok1, tok2], v) {
             const type = matchVocab(tok1 || tok2, v.types);
             if (!type) return null;
-            return { query: `!view ${type}\nwhere file.modified > days-ago(7)\nsort file.modified desc`, explanation: `${type} notes from the last 7 days`, confidence: 'high' };
+            return { kind: 'read', query: `!view ${type}\nwhere file.modified > days-ago(7)\nsort file.modified desc`, explanation: `${type} notes from the last 7 days`, confidence: 'high' };
         }
     },
 
@@ -210,9 +215,9 @@ const PATTERNS = [
             const type = matchVocab(typeTok, v.types);
             if (!type) return null;
             const status = matchStatus(sv, v.workflowFields);
-            if (status) return { query: `!view ${type}\nwhere status = ${status}`, explanation: `${type} notes with status "${status}"`, confidence: 'high' };
+            if (status) return { kind: 'read', query: `!view ${type}\nwhere status = ${status}`, explanation: `${type} notes with status "${status}"`, confidence: 'high' };
             const field = matchVocab(sv, v.fields);
-            if (field) return { query: `!view ${type}\nwhere ${field} exists`, explanation: `${type} notes with "${field}" set`, confidence: 'medium' };
+            if (field) return { kind: 'read', query: `!view ${type}\nwhere ${field} exists`, explanation: `${type} notes with "${field}" set`, confidence: 'medium' };
             return null;
         }
     },
@@ -224,9 +229,9 @@ const PATTERNS = [
             const type    = matchVocab(tok2, v.types);
             if (!type) return null;
             const status  = matchStatus(tok1, v.workflowFields);
-            if (status)   return { query: `!view ${type}\nwhere status = ${status}`, explanation: `${type} notes with status "${status}"`, confidence: 'high' };
+            if (status)   return { kind: 'read', query: `!view ${type}\nwhere status = ${status}`, explanation: `${type} notes with status "${status}"`, confidence: 'high' };
             const field   = matchVocab(tok1, v.fields);
-            if (field)    return { query: `!view ${type}\nwhere ${field} exists`, explanation: `${type} notes with "${field}" set`, confidence: 'medium' };
+            if (field)    return { kind: 'read', query: `!view ${type}\nwhere ${field} exists`, explanation: `${type} notes with "${field}" set`, confidence: 'medium' };
             return null;
         }
     },
@@ -237,9 +242,59 @@ const PATTERNS = [
         build([, tok], v) {
             const type = matchVocab(tok, v.types);
             if (!type) return null;
-            return { query: `!view ${type}`, explanation: `All ${type} notes`, confidence: 'medium' };
+            return { kind: 'read', query: `!view ${type}`, explanation: `All ${type} notes`, confidence: 'medium' };
         }
     },
+];
+
+/** @type {Array<{re: RegExp, build: (m: RegExpExecArray, v: NlVocab) => NlWriteResult|null}>} */
+const WRITE_PATTERNS = [
+
+    // "archive all X with status Y"
+    {
+        re: /^archive\s+(?:all\s+)?(\w[\w-]*)s?\s+with\s+status\s+([\w-]+)$/,
+        build([, typeTok, statusTok], v) {
+            const type = matchVocab(typeTok, v.types);
+            const status = matchStatus(statusTok, v.workflowFields);
+            if (!type || !status) return null;
+            return {
+                kind: 'write',
+                mutation: 'bulkUpdate',
+                selection: {
+                    type,
+                    where: [{ field: 'status', op: '=', value: status }]
+                },
+                patch: {
+                    fields: { status: 'archived' }
+                },
+                explanation: `Set status to "archived" on ${type} notes where status = "${status}"`,
+                confidence: 'high'
+            };
+        }
+    },
+
+    // "mark all X as Y" / "mark X as Y"
+    {
+        re: /^mark\s+(?:all\s+)?(\w[\w-]*)s?\s+as\s+([\w-]+)$/,
+        build([, typeTok, statusTok], v) {
+            const type = matchVocab(typeTok, v.types);
+            const status = matchStatus(statusTok, v.workflowFields);
+            if (!type || !status) return null;
+            return {
+                kind: 'write',
+                mutation: 'bulkUpdate',
+                selection: {
+                    type,
+                    where: []
+                },
+                patch: {
+                    fields: { status }
+                },
+                explanation: `Set status to "${status}" on all ${type} notes`,
+                confidence: 'high'
+            };
+        }
+    }
 ];
 
 // ── Public API ─────────────────────────────────────────────────────────────
@@ -264,7 +319,16 @@ function parseNaturalQuery(input, vocab) {
     // Also try: remove filler words so "show me all active projects" → "active projects"
     const stripped = norm.split(' ').filter(t => !FILLER.test(t)).join(' ');
 
-    for (const p of PATTERNS) {
+    for (const p of READ_PATTERNS) {
+        for (const candidate of [norm, stripped]) {
+            const m = p.re.exec(candidate);
+            if (!m) continue;
+            const result = p.build(m, vocab);
+            if (result) return result;
+        }
+    }
+
+    for (const p of WRITE_PATTERNS) {
         for (const candidate of [norm, stripped]) {
             const m = p.re.exec(candidate);
             if (!m) continue;
@@ -279,7 +343,7 @@ function parseNaturalQuery(input, vocab) {
         for (const tok of tokens) {
             const type = matchVocab(tok, vocab.types);
             if (type) {
-                return { query: `!view ${type}\nwhere file.modified = today()`, explanation: `${type} notes modified today`, confidence: 'medium' };
+                return { kind: 'read', query: `!view ${type}\nwhere file.modified = today()`, explanation: `${type} notes modified today`, confidence: 'medium' };
             }
         }
     }

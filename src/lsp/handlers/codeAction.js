@@ -1,9 +1,16 @@
 'use strict';
 
 const { getFieldsCache, getVaultGeneration, getIndex, getAliasIndex } = require('../../core/indexService');
-const { getCachedPriors } = require('../../intelligence/vaultPriors');
+const { getCachedPriors, getCommonFieldsForType } = require('../../intelligence/vaultPriors');
+const {
+    resolveFrontmatterRelationCandidates,
+    rankCandidateIds,
+    rankScalarValues
+} = require('../../intelligence/completionRelationHelpers');
+const { getSchema } = require('../../registries/schemaRegistry');
 const { CONTENT_MODIFIED, isStaleDocumentRequest, getDocumentText } = require('../documentState');
 const { respond, respondError } = require('../transport');
+const { uriToPath } = require('../utils');
 const {
     buildCreateNoteEdit,
     buildScaffoldIdentityEdit,
@@ -18,6 +25,94 @@ const {
     buildConvertRelationFieldsEdit,
     extractDocumentNoteId
 } = require('../documentHelpers');
+
+// Direct port of viewLightbulb.js's buildTypedEmptyFieldFallbackActions — the
+// bounded, testable slice of VS Code's adaptive-frontmatter lightbulb (the
+// full feature is a much larger webview-adjacent UI system not being ported).
+// For an empty field on a typed note that's either schema-required or
+// commonly used for that type, offers "Use X for field?" quickfixes using
+// the same candidate-ranking logic as completion.
+function buildEmptyFieldQuickfixes(textDocument, range, state) {
+    if (!range || typeof range.start?.line !== 'number') return [];
+    const content = getDocumentText(state, textDocument.uri);
+    const lines = content.split('\n');
+    const lineIndex = range.start.line;
+    const lineText = lines[lineIndex] || '';
+    const emptyMatch = /^\s*([\w-]+):\s*$/.exec(lineText);
+    if (!emptyMatch) return [];
+    const fieldName = emptyMatch[1].trim().toLowerCase();
+    if (fieldName === 'id' || fieldName === 'type') return [];
+
+    let noteType = null;
+    let seenOpeningFence = false;
+    for (const l of lines) {
+        if (l.trim() === '---') {
+            if (!seenOpeningFence) { seenOpeningFence = true; continue; }
+            break;
+        }
+        const typeMatch = /^type:\s+(\S+)/.exec(l);
+        if (typeMatch && !noteType) noteType = typeMatch[1];
+    }
+    const normalizedType = noteType ? String(noteType).trim().toLowerCase() : null;
+    if (!normalizedType) return [];
+
+    const fieldsCache = getFieldsCache();
+    const priors = getCachedPriors(fieldsCache, getVaultGeneration());
+    const schema = getSchema(normalizedType);
+    const schemaField = schema?.fields?.[fieldName] || schema?.fields?.[fieldName.replace(/-/g, '_')] || null;
+    const commonFields = getCommonFieldsForType(normalizedType, priors.typeFieldBundles, fieldsCache, { limit: 8, minRatio: 0.25 });
+    const isExpectedField = Boolean(schemaField) || commonFields.some((entry) => String(entry.field || '').trim().toLowerCase() === fieldName);
+    if (!isExpectedField) return [];
+
+    const isRelation = String(schemaField?.type || '').trim().toLowerCase() === 'relation';
+    const actions = [];
+
+    if (isRelation) {
+        const idIndex = getIndex();
+        const documentAdapter = {
+            getText: () => content,
+            lineAt: (n) => ({ text: lines[n] || '' }),
+            uri: { fsPath: uriToPath(textDocument.uri) }
+        };
+        const relationState = resolveFrontmatterRelationCandidates(
+            documentAdapter, { line: lineIndex, character: lineText.length }, idIndex
+        );
+        if (relationState) {
+            const ranked = rankCandidateIds(
+                relationState.candidateIds,
+                relationState.partial,
+                relationState.preferredIds,
+                relationState.localLinkedIds,
+                relationState.observedIdScores,
+                relationState.rankingHints
+            ).slice(0, 2);
+            for (const id of ranked) {
+                const edit = replaceFrontmatterFieldValue(textDocument.uri, content, fieldName, `[[${id}]]`);
+                if (!edit) continue;
+                actions.push({
+                    title: `Use ${id} for ${fieldName}?`,
+                    kind: 'quickfix',
+                    isPreferred: actions.length === 0,
+                    edit
+                });
+            }
+        }
+    } else {
+        const rankedValues = rankScalarValues(fieldName, normalizedType).slice(0, 3);
+        for (const { value } of rankedValues) {
+            const edit = replaceFrontmatterFieldValue(textDocument.uri, content, fieldName, value);
+            if (!edit) continue;
+            actions.push({
+                title: `Use ${value} for ${fieldName}?`,
+                kind: 'quickfix',
+                isPreferred: actions.length === 0,
+                edit
+            });
+        }
+    }
+
+    return actions;
+}
 
 function buildQuickFixesForDocument(textDocument, diagnostics, state, options = {}) {
     const content = getDocumentText(state, textDocument.uri);
@@ -185,7 +280,7 @@ function buildRefactorActionsForDocument(textDocument, state) {
 }
 
 function handleCodeAction(msg, state) {
-    const { textDocument, context } = msg.params || {};
+    const { textDocument, range, context } = msg.params || {};
     if (!textDocument) { respond(msg.id, []); return; }
     if (isStaleDocumentRequest(state, textDocument.uri, textDocument?.version)) {
         respondError(msg.id, CONTENT_MODIFIED, 'Content modified');
@@ -198,6 +293,7 @@ function handleCodeAction(msg, state) {
     const actions = [];
     if (wantsQuickFix) {
         actions.push(...buildQuickFixesForDocument(textDocument, (context && context.diagnostics) || [], state));
+        actions.push(...buildEmptyFieldQuickfixes(textDocument, range, state));
     }
     if (wantsRefactorRewrite) {
         actions.push(...buildRefactorActionsForDocument(textDocument, state));

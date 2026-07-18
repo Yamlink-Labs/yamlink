@@ -63,7 +63,16 @@ function route(msg, state) {
     if (method === 'shutdown')     { state.shutdownReceived = true; respond(id, null); return; }
     if (method === 'exit') {
         const code = state.shutdownReceived ? 0 : 1;
-        setImmediate(() => process.stdout.end(() => process.exit(code)));
+        // A watched-file rebuild is debounced (notifyFileChange) and may still be
+        // pending when exit arrives — waiting for it here (rather than exiting
+        // immediately) is what guarantees whatever it triggers (e.g. republishing
+        // diagnostics for open documents) isn't silently dropped by a fast exit
+        // racing ahead of the debounce timer.
+        Promise.resolve(state.vaultService.flushPendingRebuild())
+            .catch(() => {})
+            .then(() => {
+                setImmediate(() => process.stdout.end(() => process.exit(code)));
+            });
         return;
     }
 
@@ -91,7 +100,7 @@ function route(msg, state) {
     if (method === 'textDocument/selectionRange')       { handleSelectionRange(msg, state);        return; }
     if (method === 'textDocument/foldingRange')         { handleFoldingRange(msg, state);          return; }
     if (method === 'textDocument/codeAction')           { handleCodeAction(msg, state);            return; }
-    if (method === 'textDocument/diagnostic')           { handleTextDocumentDiagnostic(msg, state); return; }
+    if (method === 'textDocument/diagnostic')           { return handleTextDocumentDiagnostic(msg, state); }
     if (method === 'workspace/symbol')                  { return handleWorkspaceSymbol(msg, state); }
     if (method === 'workspace/diagnostic')              { return handleWorkspaceDiagnostic(msg, state); }
     if (method === 'workspace/codeAction')              { handleWorkspaceCodeAction(msg, state);   return; }

@@ -1,18 +1,84 @@
 'use strict';
 
-const { getIndex, getFieldsCache, getVaultGeneration } = require('../../core/indexService');
+const { getIndex, getFieldsCache, getVaultGeneration, extractRelationTargets } = require('../../core/indexService');
 const { getEdges, getBacklinks } = require('../../core/graph');
 const { getCachedPriors } = require('../../intelligence/vaultPriors');
 const { inferLifecycleState } = require('../../intelligence/lifecycleState');
 const { computeNoteDrift } = require('../../intelligence/driftDetector');
 const { getMutationEvents } = require('../../runtime/mutationEventLog');
 const { buildNoteEvolution } = require('../../intelligence/noteEvolution');
+const { reconstructNoteAtTime } = require('../../core/timeEngine');
 const fmt = require('../format');
 const { captureOutput, emitCliError, emitCliSuccess, emitText } = require('../io');
 
-function run({ id, json, output, history = false }) {
+function run({ id, json, output, history = false, at }) {
     const idIndex     = getIndex();
     const fieldsCache = getFieldsCache();
+
+    if (at) {
+        const parsedMs = Date.parse(at);
+        if (!Number.isFinite(parsedMs)) {
+            emitCliError({ json, outputPath: output, error: `Invalid date: ${at}`, code: 'INVALID_PARAM', exitCode: 1 });
+            return;
+        }
+        const sinceIso = new Date(parsedMs).toISOString();
+        const currentFields = idIndex.has(id) ? (fieldsCache.get(id) || {}) : null;
+        const events = getMutationEvents({ noteId: id });
+        const result = reconstructNoteAtTime(id, sinceIso, currentFields, events);
+
+        if (!result.exists) {
+            emitCliError({
+                json, outputPath: output,
+                error: `Note did not exist at ${sinceIso}: ${id}`,
+                code: 'NOT_FOUND', exitCode: 1,
+                details: { id, reason: result.reason, earliestReconstructableTimestamp: result.earliestReconstructableTimestamp }
+            });
+            return;
+        }
+
+        const outbound = [];
+        for (const [field, value] of Object.entries(result.fields || {})) {
+            if (!field || field === 'id' || field === 'type' || field.startsWith('__')) continue;
+            for (const targetId of extractRelationTargets(value)) outbound.push({ field, to: targetId });
+        }
+
+        const data = {
+            id, at: sinceIso, exists: true,
+            type: result.fields ? (result.fields.type || null) : null,
+            fields: result.fields,
+            outbound,
+            complete: result.complete,
+            earliestReconstructableTimestamp: result.earliestReconstructableTimestamp,
+            ...(result.reason ? { reason: result.reason } : {}),
+            ...(result.deletedAt ? { deletedAt: result.deletedAt } : {})
+        };
+
+        if (json) {
+            emitCliSuccess(data, output);
+            return;
+        }
+
+        emitText(captureOutput(() => {
+            fmt.header(`Note Report: ${id} (as of ${sinceIso})`);
+            if (!data.fields) {
+                console.log(`  Existed then, deleted since${data.deletedAt ? ' at ' + data.deletedAt : ''} — content unrecoverable.`);
+                fmt.blank();
+                return;
+            }
+            if (data.type) fmt.row('Type', data.type);
+            if (!data.complete) console.log('  ' + fmt.warn(`Note: only guaranteed accurate back to ${data.earliestReconstructableTimestamp}`));
+            fmt.row('Outbound links', outbound.length);
+            if (outbound.length) {
+                fmt.blank();
+                fmt.subheader('Outbound');
+                for (const edge of outbound) fmt.row('  ' + edge.field, edge.to);
+            }
+            fmt.blank();
+            console.log('  (Lifecycle/drift/inbound/history are live-vault inferences and are not available for a historical snapshot — use `yamlink report ' + id + '` without --at for those.)');
+            fmt.blank();
+        }), output);
+        return;
+    }
 
     if (!idIndex.has(id)) {
         emitCliError({

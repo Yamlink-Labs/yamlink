@@ -14,6 +14,7 @@ const ERROR_CODES = {
     BAD_REQUEST:        400,
     MISSING_PARAM:      400,
     INVALID_JSON:       400,
+    INVALID_PARAM:      400,
     LIMIT_EXCEEDED:     400,
     NOT_FOUND:          404,
     METHOD_NOT_ALLOWED: 405,

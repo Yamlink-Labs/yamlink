@@ -12,9 +12,12 @@
 // Debounced at 300ms on document change. Zero disk reads — index only.
 
 const vscode = require('vscode');
+const path = require('path');
 const { resolveDateShortcutToken } = require('../core/date');
 const { resolveLinkedTarget } = require('../core/id');
+const { resolveImageEmbed } = require('../core/imageEmbed');
 const { getAliasIndex } = require('../core/indexService');
+const { extractPriority } = require('../core/tasks');
 
 // The [[ and ]] brackets — dimmed, no underline
 const bracketDecoration = vscode.window.createTextEditorDecorationType({
@@ -49,6 +52,34 @@ const tagDecoration = vscode.window.createTextEditorDecorationType({
     color: '#ddd6fe',
     borderRadius: '3px',
     border: '1px solid rgba(139, 92, 246, 0.40)',
+    fontWeight: '500',
+});
+
+// Task-priority tags (#urgent, #medium, #low — see core/tasks.js's
+// PRIORITY_ALIASES for the full recognized vocabulary) get their own color
+// per word instead of the generic lavender tag chip above — the whole point
+// is that #urgent reads as urgent at a glance in the source text itself, not
+// just inside Task Center. Same chip shape (background + border + text
+// color) as the base tag decoration, just recolored per priority.
+const tagUrgentDecoration = vscode.window.createTextEditorDecorationType({
+    backgroundColor: 'rgba(248, 113, 113, 0.18)',
+    color: '#f87171',
+    borderRadius: '3px',
+    border: '1px solid rgba(248, 113, 113, 0.45)',
+    fontWeight: '600',
+});
+const tagMediumDecoration = vscode.window.createTextEditorDecorationType({
+    backgroundColor: 'rgba(245, 158, 11, 0.18)',
+    color: '#f5a524',
+    borderRadius: '3px',
+    border: '1px solid rgba(245, 158, 11, 0.45)',
+    fontWeight: '500',
+});
+const tagLowDecoration = vscode.window.createTextEditorDecorationType({
+    backgroundColor: 'rgba(148, 163, 184, 0.14)',
+    color: '#94a3b8',
+    borderRadius: '3px',
+    border: '1px solid rgba(148, 163, 184, 0.35)',
     fontWeight: '500',
 });
 
@@ -254,6 +285,9 @@ function updateDecorations(editor, getIndex) {
         editor.setDecorations(dateShortcutDecoration, []);
         editor.setDecorations(resolvedDateDecoration, []);
         editor.setDecorations(tagDecoration, []);
+        editor.setDecorations(tagUrgentDecoration, []);
+        editor.setDecorations(tagMediumDecoration, []);
+        editor.setDecorations(tagLowDecoration, []);
         editor.setDecorations(calloutSourceDecoration, []);
         editor.setDecorations(calloutInfoDecoration, []);
         editor.setDecorations(calloutWarningDecoration, []);
@@ -281,6 +315,9 @@ function updateDecorations(editor, getIndex) {
     const dateTokens     = [];
     const resolvedDates  = [];
     const tags           = [];
+    const urgentTags     = [];
+    const mediumTags     = [];
+    const lowTags        = [];
     const calloutSource  = [];
     const calloutInfo    = [];
     const calloutWarning = [];
@@ -291,6 +328,11 @@ function updateDecorations(editor, getIndex) {
         const isEmbed      = match[1] === '!';
         const rawInner     = match[2];
         const resolvedId   = resolveLinkedTarget(rawInner, idIndex, aliasIdx);
+        // ![[photo.png]] embeds resolve against real files, not notes — check
+        // this before treating the link as broken.
+        const resolvedImage = !resolvedId && isEmbed
+            ? resolveImageEmbed(rawInner, path.dirname(editor.document.uri.fsPath))
+            : null;
 
         const fullStart    = match.index;
         const fullEnd      = match.index + match[0].length;
@@ -298,7 +340,7 @@ function updateDecorations(editor, getIndex) {
         const idStart      = bracketStart + 2;            // after [[
         const idEnd        = bracketStart + 2 + rawInner.length; // before ]]
 
-        if (!resolvedId) {
+        if (!resolvedId && !resolvedImage) {
             // Broken link — amber brackets + faded amber inner text.
             brokenBrackets.push({ range: new vscode.Range(editor.document.positionAt(bracketStart),     editor.document.positionAt(bracketStart + 2)) });
             brokenBrackets.push({ range: new vscode.Range(editor.document.positionAt(fullEnd - 2),      editor.document.positionAt(fullEnd)) });
@@ -338,8 +380,11 @@ function updateDecorations(editor, getIndex) {
     for (const dateRange of collectResolvedDateDecorations(editor.document)) {
         resolvedDates.push({ range: dateRange });
     }
-    for (const tagRange of collectTagDecorations(editor.document)) {
-        tags.push({ range: tagRange });
+    for (const { range, priority } of collectTagDecorations(editor.document)) {
+        if (priority === 'urgent') urgentTags.push({ range });
+        else if (priority === 'medium') mediumTags.push({ range });
+        else if (priority === 'low') lowTags.push({ range });
+        else tags.push({ range });
     }
 
     editor.setDecorations(bracketDecoration,       brackets);
@@ -350,6 +395,9 @@ function updateDecorations(editor, getIndex) {
     editor.setDecorations(dateShortcutDecoration, dateTokens);
     editor.setDecorations(resolvedDateDecoration, resolvedDates);
     editor.setDecorations(tagDecoration, tags);
+    editor.setDecorations(tagUrgentDecoration, urgentTags);
+    editor.setDecorations(tagMediumDecoration, mediumTags);
+    editor.setDecorations(tagLowDecoration, lowTags);
 
     // Concealment layer. Bracket ranges excluded from bracketDecoration above when active,
     // so there is no competing dim decoration fighting the opacity-zero concealment.
@@ -407,8 +455,9 @@ function collectResolvedDateDecorations(document) {
     return ranges;
 }
 
-/** @param {import('vscode').TextDocument} document @returns {import('vscode').Range[]} */
+/** @param {import('vscode').TextDocument} document @returns {Array<{range: import('vscode').Range, priority: 'urgent'|'medium'|'low'|null}>} */
 function collectTagDecorations(document) {
+    /** @type {Array<{range: import('vscode').Range, priority: 'urgent'|'medium'|'low'|null}>} */
     const ranges = [];
     const text = document.getText();
     const seen = new Set();
@@ -422,35 +471,79 @@ function collectTagDecorations(document) {
         const key = `${start}:${end}`;
         if (seen.has(key)) continue;
         seen.add(key);
-        ranges.push(new vscode.Range(
-            document.positionAt(start),
-            document.positionAt(end)
-        ));
+        ranges.push({
+            range: new vscode.Range(document.positionAt(start), document.positionAt(end)),
+            priority: extractPriority(`#${match[2]}`)
+        });
+    }
+
+    function addRange(start, end, rawToken) {
+        const key = `${start}:${end}`;
+        if (seen.has(key)) return;
+        seen.add(key);
+        ranges.push({
+            range: new vscode.Range(document.positionAt(start), document.positionAt(end)),
+            priority: extractPriority(`#${String(rawToken || '').replace(/^#+/, '')}`)
+        });
+    }
+
+    // Same-line item extraction (flow `[a, b]` or comma-separated `a, b`).
+    // Leading alternation includes `[` so the first item right after an
+    // opening bracket is matched too — previously only start-of-string or a
+    // preceding comma counted as a valid boundary, so `tags: [a, b, c]`
+    // silently dropped `a` and only decorated `b`/`c`.
+    function addInlineItems(rawValue, baseOffset) {
+        const itemRegex = /(^|,\s*|\[\s*)(#?[A-Za-z][\w-]*)/g;
+        let itemMatch;
+        while ((itemMatch = itemRegex.exec(rawValue)) !== null) {
+            const token = itemMatch[2] || '';
+            const normalized = token.replace(/^#+/, '');
+            if (!normalized) continue;
+            const tokenOffset = itemMatch.index + itemMatch[1].length;
+            const start = baseOffset + tokenOffset;
+            addRange(start, start + token.length, normalized);
+        }
     }
 
     const lines = text.split('\n');
     let offset = 0;
+    // Block-style YAML list state: `tags:`/`labels:` with nothing after the
+    // colon, followed by `  - item` lines — the idiomatic YAML list form,
+    // and what Obsidian-import produces. Previously never handled at all:
+    // the field-line regex required same-line content, so a block list
+    // rendered zero pills.
+    let blockListIndent = null;
     for (const line of lines) {
-        const fieldMatch = line.match(/^\s*(tags?|labels?)\s*:\s*(.+)\s*$/i);
+        if (blockListIndent !== null) {
+            const itemMatch = line.match(/^(\s*)-\s+(.+?)\s*$/);
+            if (itemMatch && itemMatch[1].length > blockListIndent) {
+                const rawValue = itemMatch[2] || '';
+                const valueOffset = line.indexOf(rawValue, itemMatch[1].length);
+                const normalized = rawValue.replace(/^#+/, '');
+                if (normalized && /^[A-Za-z]/.test(normalized)) {
+                    addRange(offset + valueOffset, offset + valueOffset + rawValue.length, normalized);
+                }
+                offset += line.length + 1;
+                continue;
+            }
+            if (line.trim() === '') {
+                // Blank lines are legal inside a YAML block sequence.
+                offset += line.length + 1;
+                continue;
+            }
+            blockListIndent = null;
+        }
+
+        const fieldMatch = line.match(/^(\s*)(tags?|labels?)\s*:\s*(.*)$/i);
         if (fieldMatch) {
-            const rawValue = fieldMatch[2] || '';
-            const valueOffset = line.indexOf(rawValue);
-            const itemRegex = /(^|,\s*)(#?[A-Za-z][\w-]*)/g;
-            let itemMatch;
-            while ((itemMatch = itemRegex.exec(rawValue)) !== null) {
-                const token = itemMatch[2] || '';
-                const normalized = token.replace(/^#+/, '');
-                if (!normalized) continue;
-                const tokenOffset = itemMatch.index + itemMatch[1].length;
-                const start = offset + valueOffset + tokenOffset;
-                const end = start + token.length;
-                const key = `${start}:${end}`;
-                if (seen.has(key)) continue;
-                seen.add(key);
-                ranges.push(new vscode.Range(
-                    document.positionAt(start),
-                    document.positionAt(end)
-                ));
+            const rawValue = (fieldMatch[3] || '').trim();
+            if (rawValue) {
+                const valueOffset = line.indexOf(fieldMatch[3]);
+                addInlineItems(fieldMatch[3], offset + valueOffset);
+            } else {
+                // Nothing after the colon — the list, if any, is on the
+                // following indented `- item` lines.
+                blockListIndent = fieldMatch[1].length;
             }
         }
         offset += line.length + 1;

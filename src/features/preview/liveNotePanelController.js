@@ -1,11 +1,14 @@
 'use strict';
 
+const path = require('path');
 const crypto = require('crypto');
 const vscode = require('vscode');
 const { getPathIndex } = require('../../core/index');
 const { appendMutationEvents } = require('../../runtime/mutationEventLog');
 const { buildLiveNoteModel, buildLiveNoteBodyHtml } = require('./liveNoteModel');
+const { rewriteImageSrcs } = require('./previewRenderer');
 const { LIVE_NOTE_STYLES, LIVE_TOOLBAR_STYLES } = require('./liveNoteStyles');
+const { getPrimaryWorkspaceRoot } = require('../../core/workspace');
 
 const LIVE_NOTE_VIEW_TYPE = 'yamlink.liveNote';
 
@@ -63,16 +66,28 @@ function createLiveNotePanelController() {
         };
     }
 
+    function buildLocalResourceRoots(fsPath) {
+        const roots = [];
+        const vaultRoot = getPrimaryWorkspaceRoot(vscode.workspace.workspaceFolders);
+        if (vaultRoot) roots.push(vscode.Uri.file(vaultRoot));
+        if (fsPath) roots.push(vscode.Uri.file(path.dirname(fsPath)));
+        return roots;
+    }
+
+    function webviewSrc(html) {
+        return rewriteImageSrcs(html, (p) => panel.webview.asWebviewUri(vscode.Uri.file(p)).toString());
+    }
+
     function buildBootHtml(model) {
         const nonce = crypto.randomBytes(16).toString('hex');
-        const bodyHtml = toJsLiteral(model?.html || '<p class="preview-empty">Open a Markdown note to use Live Note mode.</p>');
+        const bodyHtml = toJsLiteral(webviewSrc(model?.html || '<p class="preview-empty">Open a Markdown note to use Live Note mode.</p>'));
         const title = model?.title || 'Live Note';
         return `<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1.0">
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'nonce-${nonce}'; style-src 'unsafe-inline';">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'nonce-${nonce}'; style-src 'unsafe-inline'; img-src ${escapeAttr(panel ? panel.webview.cspSource : '')} https: data:;">
 <title>${escapeAttr(title)}</title>
 <style>${LIVE_TOOLBAR_STYLES}</style>
 </head>
@@ -176,7 +191,7 @@ function createLiveNotePanelController() {
         if (!panel || !model) return;
         lastFilePath = model.filePath || null;
         panel.title = `Live: ${model.title}`;
-        panel.webview.postMessage({ type: 'live:update', html: model.html, title: model.title });
+        panel.webview.postMessage({ type: 'live:update', html: webviewSrc(model.html), title: model.title });
     }
 
     function openLiveNotePanel(context) {
@@ -206,7 +221,11 @@ function createLiveNotePanelController() {
             LIVE_NOTE_VIEW_TYPE,
             model ? `Live: ${model.title}` : 'Live Note',
             vscode.ViewColumn.Beside,
-            { enableScripts: true, retainContextWhenHidden: true }
+            {
+                enableScripts: true,
+                retainContextWhenHidden: true,
+                localResourceRoots: buildLocalResourceRoots(model ? model.filePath : null)
+            }
         );
 
         panel.webview.html = buildBootHtml(model);

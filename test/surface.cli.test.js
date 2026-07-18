@@ -117,14 +117,23 @@ test('CLI briefing --json has expected shape', () => {
     assert.ok(Array.isArray(body.activity));
 });
 
-test('CLI ls prints one note per line sorted by name', () => {
-    const result = cli(['ls', '--sort', 'name'], vaultPath);
+test('CLI ls --quiet prints one note per line, tab-separated, sorted by name', () => {
+    const result = cli(['ls', '--sort', 'name', '--quiet'], vaultPath);
     assert.equal(result.status, 0);
     const lines = result.stdout.trim().split(/\r?\n/);
     assert.equal(lines.length, 3);
     assert.match(lines[0], /^carl-jenkins\tcontact\tCarl Jenkins$/);
     assert.match(lines[1], /^johnny-rico\tcontact\tJohnny Rico$/);
     assert.match(lines[2], /^roughnecks\tunit\tRoughnecks$/);
+});
+
+test('CLI ls default output is a real aligned table, not raw tab-separated lines', () => {
+    const result = cli(['ls', '--sort', 'name'], vaultPath);
+    assert.equal(result.status, 0);
+    assert.match(result.stdout, /id\s+type\s+name/);
+    assert.match(result.stdout, /─+/);
+    assert.match(result.stdout, /carl-jenkins\s+contact\s+Carl Jenkins/);
+    assert.ok(!result.stdout.includes('\t'), 'table output has no raw tab characters');
 });
 
 test('CLI ls --json filters by type and returns array shape', () => {
@@ -156,13 +165,77 @@ test('CLI cat --json returns fields plus body', () => {
     assert.match(body.body, /Submit mission report/);
 });
 
-test('CLI grep prints matching frontmatter values', () => {
-    const result = cli(['grep', 'rough', '--field', 'unit'], vaultPath);
+test('CLI cat --at reconstructs frontmatter as of a past timestamp, omitting body', () => {
+    const vault = createVault({ 'rico.md': '---\nid: johnny-rico\ntype: contact\nstatus: active\n---\nBody text.\n' });
+    try {
+        const since = new Date(Date.now() - 1000).toISOString();
+        const setResult = cli(['set', 'johnny-rico', 'status', 'deployed'], vault.dir);
+        assert.equal(setResult.status, 0);
+
+        const result = cli(['cat', 'johnny-rico', '--at', since], vault.dir);
+        assert.equal(result.status, 0);
+        assert.match(result.stdout, /status: active/);
+        assert.doesNotMatch(result.stdout, /Body text/);
+    } finally {
+        vault.destroy();
+    }
+});
+
+test('CLI cat --at --json returns reconstructed fields with completeness metadata', () => {
+    const vault = createVault({ 'rico.md': '---\nid: johnny-rico\ntype: contact\nstatus: active\n---\n' });
+    try {
+        const since = new Date(Date.now() - 1000).toISOString();
+        cli(['set', 'johnny-rico', 'status', 'deployed'], vault.dir);
+
+        const result = cli(['cat', 'johnny-rico', '--at', since, '--json'], vault.dir);
+        assert.equal(result.status, 0);
+        const body = parseJson(result.stdout);
+        assert.equal(body.id, 'johnny-rico');
+        assert.equal(body.status, 'active');
+        assert.equal(typeof body.complete, 'boolean');
+    } finally {
+        vault.destroy();
+    }
+});
+
+test('CLI cat --at with an invalid date exits 1 with INVALID_PARAM', () => {
+    const vault = createVault({ 'rico.md': '---\nid: johnny-rico\ntype: contact\n---\n' });
+    try {
+        const result = cli(['cat', 'johnny-rico', '--at', 'not-a-date', '--json'], vault.dir);
+        assert.equal(result.status, 1);
+        const body = parseJson(result.stdout);
+        assert.equal(body.code, 'INVALID_PARAM');
+    } finally {
+        vault.destroy();
+    }
+});
+
+test('CLI cat --at for an id that never existed at that time exits 1', () => {
+    const vault = createVault({ 'rico.md': '---\nid: johnny-rico\ntype: contact\n---\n' });
+    try {
+        const result = cli(['cat', 'nonexistent-note', '--at', new Date().toISOString(), '--json'], vault.dir);
+        assert.equal(result.status, 1);
+        const body = parseJson(result.stdout);
+        assert.equal(body.code, 'NOT_FOUND');
+    } finally {
+        vault.destroy();
+    }
+});
+
+test('CLI grep --quiet prints matching frontmatter values, tab-separated', () => {
+    const result = cli(['grep', 'rough', '--field', 'unit', '--quiet'], vaultPath);
     assert.equal(result.status, 0);
     const lines = result.stdout.trim().split(/\r?\n/);
     assert.equal(lines.length, 2);
     assert.ok(lines.includes('johnny-rico\tunit\t[[roughnecks]]'));
     assert.ok(lines.includes('carl-jenkins\tunit\t[[roughnecks]]'));
+});
+
+test('CLI grep default output is a real aligned table', () => {
+    const result = cli(['grep', 'rough', '--field', 'unit'], vaultPath);
+    assert.equal(result.status, 0);
+    assert.match(result.stdout, /id\s+field\s+value/);
+    assert.match(result.stdout, /johnny-rico\s+unit\s+\[\[roughnecks\]\]/);
 });
 
 test('CLI grep --json respects type and field filters', () => {
@@ -175,11 +248,18 @@ test('CLI grep --json respects type and field filters', () => {
     assert.equal(body[0].field, 'name');
 });
 
-test('CLI find prints notes matching has and missing filters', () => {
-    const result = cli(['find', '--type', 'contact', '--has', 'status', '--missing', 'owner'], vaultPath);
+test('CLI find --quiet prints notes matching has and missing filters, tab-separated', () => {
+    const result = cli(['find', '--type', 'contact', '--has', 'status', '--missing', 'owner', '--quiet'], vaultPath);
     assert.equal(result.status, 0);
     const lines = result.stdout.trim().split(/\r?\n/);
     assert.deepEqual(lines, ['johnny-rico\tcontact']);
+});
+
+test('CLI find default output is a real aligned table', () => {
+    const result = cli(['find', '--type', 'contact', '--has', 'status', '--missing', 'owner'], vaultPath);
+    assert.equal(result.status, 0);
+    assert.match(result.stdout, /id\s+type/);
+    assert.match(result.stdout, /johnny-rico\s+contact/);
 });
 
 test('CLI find --json returns structural matches as array', () => {
@@ -288,6 +368,41 @@ test('CLI report --json has expected shape', () => {
     assert.equal(body.type, 'contact');
 });
 
+test('CLI report --at reconstructs a reduced historical report (no lifecycle/drift/inbound)', () => {
+    const vault = createVault({
+        'rico.md': '---\nid: johnny-rico\ntype: contact\nstatus: active\nunit: "[[roughnecks]]"\n---\n',
+        'roughnecks.md': '---\nid: roughnecks\ntype: unit\n---\n'
+    });
+    try {
+        const since = new Date(Date.now() - 1000).toISOString();
+        cli(['set', 'johnny-rico', 'status', 'deployed'], vault.dir);
+
+        const result = cli(['report', 'johnny-rico', '--at', since, '--json'], vault.dir);
+        assert.equal(result.status, 0);
+        const body = parseJson(result.stdout);
+        assert.equal(body.id, 'johnny-rico');
+        assert.equal(body.fields.status, 'active');
+        assert.ok(Array.isArray(body.outbound));
+        assert.ok(body.outbound.some((edge) => edge.to === 'roughnecks'));
+        assert.equal('lifecycle' in body, false);
+        assert.equal('inbound' in body, false);
+    } finally {
+        vault.destroy();
+    }
+});
+
+test('CLI report --at with an invalid date exits 1 with INVALID_PARAM', () => {
+    const vault = createVault({ 'rico.md': '---\nid: johnny-rico\ntype: contact\n---\n' });
+    try {
+        const result = cli(['report', 'johnny-rico', '--at', 'garbage', '--json'], vault.dir);
+        assert.equal(result.status, 1);
+        const body = parseJson(result.stdout);
+        assert.equal(body.code, 'INVALID_PARAM');
+    } finally {
+        vault.destroy();
+    }
+});
+
 test('CLI links <id> exits 0', () => {
     const result = cli(['links', 'johnny-rico'], vaultPath);
     assert.equal(result.status, 0);
@@ -302,6 +417,27 @@ test('CLI links --json has expected shape', () => {
     assert.ok(Array.isArray(body.outbound));
     assert.ok(body.outbound.some((entry) => entry.to === 'roughnecks'));
     assert.ok(Array.isArray(body.inbound));
+});
+
+test('CLI links --at returns outbound-only historical links', () => {
+    const vault = createVault({
+        'rico.md': '---\nid: johnny-rico\ntype: contact\nunit: "[[roughnecks]]"\n---\n',
+        'roughnecks.md': '---\nid: roughnecks\ntype: unit\n---\n'
+    });
+    try {
+        const since = new Date(Date.now() - 1000).toISOString();
+        cli(['set', 'johnny-rico', 'status', 'deployed'], vault.dir);
+
+        const result = cli(['links', 'johnny-rico', '--at', since, '--json'], vault.dir);
+        assert.equal(result.status, 0);
+        const body = parseJson(result.stdout);
+        assert.equal(body.id, 'johnny-rico');
+        assert.ok(Array.isArray(body.outbound));
+        assert.ok(body.outbound.some((edge) => edge.to === 'roughnecks'));
+        assert.equal('inbound' in body, false);
+    } finally {
+        vault.destroy();
+    }
 });
 
 test('CLI create exits 0 and writes file to disk', () => {
@@ -643,6 +779,41 @@ test('CLI graph --only-types filters output to specified types', () => {
     assert.ok(body.nodes.length >= 1);
     assert.ok(body.nodes.every((node) => node.type === 'unit'));
     assert.ok(body.edges.every((edge) => body.nodes.some((node) => node.id === edge.source) && body.nodes.some((node) => node.id === edge.target)));
+});
+
+test('CLI graph --at reconstructs a historical graph', () => {
+    const vault = createVault({
+        'rico.md': '---\nid: johnny-rico\ntype: contact\nunit: "[[roughnecks]]"\n---\n',
+        'roughnecks.md': '---\nid: roughnecks\ntype: unit\n---\n'
+    });
+    try {
+        const since = new Date(Date.now() - 1000).toISOString();
+        const createResult = cli(['create', 'contact', '--field', 'name=New Trooper'], vault.dir);
+        assert.equal(createResult.status, 0);
+
+        const result = cli(['graph', '--at', since], vault.dir);
+        assert.equal(result.status, 0);
+        const body = parseJson(result.stdout);
+        assert.equal(body.at, since);
+        assert.ok(Array.isArray(body.nodes));
+        assert.ok(Array.isArray(body.edges));
+        assert.equal(typeof body.stats.incomplete, 'number');
+        assert.ok(body.edges.some((edge) => edge.from === 'johnny-rico' && edge.to === 'roughnecks'));
+    } finally {
+        vault.destroy();
+    }
+});
+
+test('CLI graph --at with an invalid date exits 1 with INVALID_PARAM', () => {
+    const vault = createVault({ 'rico.md': '---\nid: johnny-rico\ntype: contact\n---\n' });
+    try {
+        const result = cli(['graph', '--at', 'not-a-real-date'], vault.dir);
+        assert.equal(result.status, 1);
+        const body = parseJson(result.stdout);
+        assert.equal(body.code, 'INVALID_PARAM');
+    } finally {
+        vault.destroy();
+    }
 });
 
 test('CLI init scaffolds the correct files', () => {
@@ -997,7 +1168,8 @@ test('CLI --output writes file-backed results for the documented command set', (
         { name: 'graph', args: ['graph'] },
         { name: 'export md', args: ['export', 'johnny-rico', '--format', 'md'] },
         { name: 'schema list', args: ['schema', 'list'] },
-        { name: 'schema check', args: ['schema', 'check', 'unit'] }
+        { name: 'schema check', args: ['schema', 'check', 'unit'] },
+        { name: 'story', args: ['story', '--since', new Date(Date.now() - 1000).toISOString()] }
     ];
 
     for (const scenario of scenarios) {
@@ -1147,6 +1319,45 @@ test('CLI doctor exits 1 and reports issues for an unhealthy vault', () => {
     }
 });
 
+test('CLI doctor reports malformed frontmatter with the real file path, not just a console warning', () => {
+    const vault = createVault({
+        'good.md': '---\nid: good-note\ntype: contact\nname: Good Note\n---\n',
+        // Unterminated quoted scalar — invalid YAML, frontmatter fails to parse.
+        'bad.md': '---\nid: bad-note\ntype: contact\nsummary: "unterminated\n---\nBody.\n'
+    });
+    try {
+        const result = cli(['doctor', '--json'], vault.dir);
+        const body = parseJson(result.stdout);
+        assert.equal(body.healthy, false);
+        assert.equal(body.malformedFiles.length, 1);
+        assert.ok(body.malformedFiles[0].file.endsWith('bad.md'));
+        assert.ok(body.malformedFiles[0].message.length > 0);
+    } finally {
+        vault.destroy();
+    }
+});
+
+test('CLI commands no longer leak raw build-time console.warn/error noise ahead of the actual report', () => {
+    // Real bug: buildIndexQuietly only stubbed console.log, so duplicate-id
+    // and malformed-frontmatter warnings (console.warn) still printed raw,
+    // unstructured lines before every command's actual formatted output —
+    // exactly the noise a user reported seeing ahead of a `yamlink health` run.
+    const vault = createVault({
+        'dup-a.md': '---\nid: dup-id\ntype: contact\nname: A\n---\n',
+        'dup-b.md': '---\nid: dup-id\ntype: contact\nname: B\n---\n',
+        'bad.md': '---\nid: bad-note\ntype: contact\nsummary: "unterminated\n---\n'
+    });
+    try {
+        const result = cli(['health'], vault.dir);
+        assert.ok(!/Yamlink — Duplicate id/.test(result.stdout + result.stderr), 'no raw duplicate-id warning leaks into output');
+        assert.ok(!/Yamlink — Malformed frontmatter/.test(result.stdout + result.stderr), 'no raw malformed-frontmatter warning leaks into output');
+        assert.ok(!/Yamlink — Index built/.test(result.stdout + result.stderr), 'no raw index-build summary leaks into output');
+        assert.match(result.stdout, /Vault Health/);
+    } finally {
+        vault.destroy();
+    }
+});
+
 test('CLI diff shows differences between two notes', () => {
     const result = cli(['diff', 'johnny-rico', 'carl-jenkins'], vaultPath);
     assert.equal(result.status, 0);
@@ -1202,6 +1413,118 @@ test('CLI diff --since --json returns time-diff contract shape', () => {
         assert.equal(typeof body.count, 'number');
         assert.ok(Array.isArray(body.changes));
         assert.ok(body.changes.some((entry) => entry.id === 'mission'));
+    } finally {
+        vault.destroy();
+    }
+});
+
+test('CLI story --since with no date exits 1', () => {
+    const vault = createVault({ 'rico.md': '---\nid: johnny-rico\ntype: character\n---\n' });
+    try {
+        const result = cli(['story'], vault.dir);
+        assert.equal(result.status, 1);
+    } finally {
+        vault.destroy();
+    }
+});
+
+test('CLI story --since with an invalid date exits 1 with INVALID_PARAM', () => {
+    const vault = createVault({ 'rico.md': '---\nid: johnny-rico\ntype: character\n---\n' });
+    try {
+        const result = cli(['story', '--since', 'not-a-date', '--json'], vault.dir);
+        assert.equal(result.status, 1);
+        const body = parseJson(result.stdout);
+        assert.equal(body.ok, false);
+        assert.equal(body.code, 'INVALID_PARAM');
+    } finally {
+        vault.destroy();
+    }
+});
+
+test('CLI story --since reports vault growth and activity since the timestamp', () => {
+    const vault = createVault({ 'rico.md': '---\nid: johnny-rico\ntype: character\n---\n' });
+    try {
+        const since = new Date(Date.now() - 1000).toISOString();
+
+        const createResult = cli(['create', 'contact', '--field', 'name=New Trooper'], vault.dir);
+        assert.equal(createResult.status, 0);
+
+        const result = cli(['story', '--since', since], vault.dir);
+        assert.equal(result.status, 0);
+        assert.match(result.stdout, /Vault Story/);
+        assert.match(result.stdout, /Notes created/);
+    } finally {
+        vault.destroy();
+    }
+});
+
+test('CLI story --since --json returns a story contract shape', () => {
+    const vault = createVault({ 'rico.md': '---\nid: johnny-rico\ntype: character\n---\n' });
+    try {
+        const since = new Date(Date.now() - 1000).toISOString();
+
+        const createResult = cli(['create', 'contact', '--field', 'name=New Trooper'], vault.dir);
+        assert.equal(createResult.status, 0);
+
+        const result = cli(['story', '--since', since, '--json'], vault.dir);
+        assert.equal(result.status, 0);
+        const body = parseJson(result.stdout);
+        assert.equal(body.since, since);
+        assert.equal(typeof body.now, 'string');
+        assert.equal(typeof body.then.notes, 'number');
+        assert.equal(typeof body.current.notes, 'number');
+        assert.ok(body.current.notes >= body.then.notes);
+        assert.ok(Array.isArray(body.typeDeltas));
+        assert.equal(typeof body.activity.notesCreated, 'number');
+        assert.ok(body.activity.notesCreated >= 1);
+        assert.ok(Array.isArray(body.busiestNotes));
+    } finally {
+        vault.destroy();
+    }
+});
+
+test('CLI story --quarterly frames the report as a calendar-quarter review', () => {
+    const vault = createVault({ 'rico.md': '---\nid: johnny-rico\ntype: character\n---\n' });
+    try {
+        const result = cli(['story', '--quarterly'], vault.dir);
+        assert.equal(result.status, 0);
+        assert.match(result.stdout, /Vault Quarterly Review — Q\d 20\d\d/);
+    } finally {
+        vault.destroy();
+    }
+});
+
+test('CLI story --quarterly --json includes a quarter label and a since date at the start of the current quarter', () => {
+    const vault = createVault({ 'rico.md': '---\nid: johnny-rico\ntype: character\n---\n' });
+    try {
+        const { getCurrentQuarterInfo } = require('../src/cli/commands/story');
+        const expected = getCurrentQuarterInfo();
+
+        const result = cli(['story', '--quarterly', '--json'], vault.dir);
+        assert.equal(result.status, 0);
+        const body = parseJson(result.stdout);
+        assert.equal(body.quarter, expected.label);
+        assert.equal(body.since, expected.sinceIso);
+    } finally {
+        vault.destroy();
+    }
+});
+
+test('getCurrentQuarterInfo computes correct calendar-quarter boundaries in UTC', () => {
+    const { getCurrentQuarterInfo } = require('../src/cli/commands/story');
+    assert.deepEqual(getCurrentQuarterInfo(new Date('2026-02-15T12:00:00.000Z')), { sinceIso: '2026-01-01T00:00:00.000Z', label: 'Q1 2026' });
+    assert.deepEqual(getCurrentQuarterInfo(new Date('2026-04-01T00:00:00.000Z')), { sinceIso: '2026-04-01T00:00:00.000Z', label: 'Q2 2026' });
+    assert.deepEqual(getCurrentQuarterInfo(new Date('2026-09-30T23:59:59.000Z')), { sinceIso: '2026-07-01T00:00:00.000Z', label: 'Q3 2026' });
+    assert.deepEqual(getCurrentQuarterInfo(new Date('2026-12-31T23:59:59.000Z')), { sinceIso: '2026-10-01T00:00:00.000Z', label: 'Q4 2026' });
+});
+
+test('CLI story --quarterly together with --since exits 1 as an ambiguous usage error', () => {
+    const vault = createVault({ 'rico.md': '---\nid: johnny-rico\ntype: character\n---\n' });
+    try {
+        const result = cli(['story', '--quarterly', '--since', '2026-01-01', '--json'], vault.dir);
+        assert.equal(result.status, 1);
+        const body = parseJson(result.stdout);
+        assert.equal(body.code, 'USAGE');
     } finally {
         vault.destroy();
     }

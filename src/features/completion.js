@@ -6,7 +6,7 @@
 // Context/relation/adaptive helpers: completionHelpers.js (→ completionContextHelpers, completionRelationHelpers, completionAdaptiveHelpers)
 
 const vscode = require('vscode');
-const { isPositionInFrontmatter, resolveFrontmatterRelationCandidates } = require('./completionHelpers');
+const { isPositionInFrontmatter, resolveFrontmatterRelationCandidates } = require('../intelligence/completionHelpers');
 const { inferTargetTypeFromFieldName } = require('../intelligence/fieldRoles');
 const {
     buildDateShortcutItems,
@@ -36,7 +36,7 @@ const {
     rankScalarValues,
     buildFieldInferenceDetail,
     resolveQueryRelationCandidates
-} = require('./completionHelpers');
+} = require('../intelligence/completionHelpers');
 
 function resolveFrontmatterFollowupState(document, position, getIndex) {
     if (!document || !position || !isPositionInFrontmatter(document, position.line)) return null;

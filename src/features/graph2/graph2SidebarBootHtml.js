@@ -94,6 +94,25 @@ body{
   color:var(--accent2)
 }
 #graph-container{flex:1;min-height:0;position:relative}
+.timelapse-bar{
+  flex-shrink:0;display:none;align-items:center;gap:6px;
+  padding:4px 7px;
+  background:var(--surface);
+  border-bottom:1px solid var(--border);
+  font-size:10px
+}
+.timelapse-bar.show{display:flex}
+.timelapse-range{flex:1;min-width:0;accent-color:var(--accent)}
+.timelapse-label{color:var(--mid);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:120px}
+.help-tip{
+  display:inline-flex;align-items:center;justify-content:center;
+  width:14px;height:14px;border-radius:50%;
+  background:var(--surface);border:1px solid var(--border);
+  color:var(--mid);font-size:9px;font-weight:700;
+  cursor:help;user-select:none;flex-shrink:0;margin-left:4px;
+  transition:color .12s,border-color .12s;
+}
+.help-tip:hover{color:var(--accent);border-color:var(--accent)}
 `;
 
 /**
@@ -125,8 +144,10 @@ function buildGraph2SidebarBootHtml(webview, extensionUri, rendererUri) {
     <button class="icon-btn" id="currentBtn" title="Centre on current note" aria-label="Centre on current note"><svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="10"/><line x1="22" y1="12" x2="18" y2="12"/><line x1="6" y1="12" x2="2" y2="12"/><line x1="12" y1="6" x2="12" y2="2"/><line x1="12" y1="22" x2="12" y2="18"/></svg></button>
     <button class="icon-btn" id="fitBtn"     title="Fit all nodes"          aria-label="Fit all nodes"><svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="15 3 21 3 21 9"/><polyline points="9 21 3 21 3 15"/><line x1="21" y1="3" x2="14" y2="10"/><line x1="3" y1="21" x2="10" y2="14"/></svg></button>
     <span class="t-sep"></span>
-    <button class="layer-btn" id="semanticBtn" title="Toggle semantic edge colouring by relation type">Semantic</button>
-    <button class="layer-btn" id="healthBtn"   title="Toggle lifecycle and drift health rings on nodes">Health</button>
+    <button class="layer-btn" id="semanticBtn" type="button">Semantic <span class="help-tip" title="Colors each connection line by its relation type (unit, homeworld, mention, etc.) instead of one flat color, and draws soft outlines around detected note clusters.">?</span></button>
+    <button class="layer-btn" id="healthBtn"   type="button">Health <span class="help-tip" title="Draws a colored ring around each note: its lifecycle stage (draft / growing / consolidated / hub / stale) normally, or its drift state (minor drift / drifting / outlier) instead if the note has drifted from its type's usual pattern -- drift always wins when both apply.">?</span></button>
+    <button class="layer-btn" id="labelsBtn" type="button" title="Cycle node label visibility: Auto (smart density) -> All (show every visible label) -> Off (hide all labels).">Labels</button>
+    <button class="layer-btn" id="timelapseBtn" type="button" title="Play back how this graph grew over time. Reconstructed from git history when available (includes body-text links); frontmatter relations only otherwise."><svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><circle cx="8" cy="8" r="6.3"/><path d="M8 4.6 V8.2 L10.6 9.8" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
     <span class="count" id="countBadge"></span>
   </div>
   <div class="node-bar" id="nodeBar">
@@ -134,6 +155,12 @@ function buildGraph2SidebarBootHtml(webview, extensionUri, rendererUri) {
     <button class="node-bar-btn primary" id="exploreBtn"   title="Open focused local graph for this note">Explore →</button>
     <button class="node-bar-btn"         id="openNodeBtn"  title="Open this note in the editor">Open</button>
     <button class="node-bar-btn"         id="dismissNodeBtn" title="Dismiss"><svg xmlns="http://www.w3.org/2000/svg" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg></button>
+  </div>
+  <div class="timelapse-bar" id="timelapseBar">
+    <button class="icon-btn" id="timelapseRewindBtn" title="Play backward" aria-label="Play time-lapse backward" style="width:18px;height:18px;font-size:10px"><svg width="12" height="10" viewBox="0 0 12 10" fill="currentColor"><path d="M6 0.4 L0.4 5 L6 9.6 Z"/><path d="M11.6 0.4 L6 5 L11.6 9.6 Z"/></svg></button>
+    <button class="icon-btn" id="timelapsePlayBtn" title="Play" aria-label="Play time-lapse" style="width:18px;height:18px;font-size:10px"><svg width="10" height="10" viewBox="0 0 10 10" fill="currentColor"><path d="M1 0.6 L9 5 L1 9.4 Z"/></svg></button>
+    <input id="timelapseScrub" class="timelapse-range" type="range" min="0" max="0" value="0" step="1" aria-label="Scrub through vault history">
+    <span class="timelapse-label" id="timelapseLabel">—</span>
   </div>
   <div id="graph-container"></div>
 </div>

@@ -27,7 +27,7 @@ async function run({ host = '127.0.0.1', port = 3000 }) {
     const React = require('react');
     const ink = await import('ink');
     const { default: TextInput } = await import('ink-text-input');
-    ink.render(React.createElement(App, {
+    const instance = ink.render(React.createElement(App, {
         ink,
         TextInput,
         host: normalizedHost,
@@ -35,6 +35,13 @@ async function run({ host = '127.0.0.1', port = 3000 }) {
         initialData,
         vaultPath
     }), { alternateScreen: true });
+    // Without this, run() resolves the instant ink.render() returns — before
+    // the user has even seen the screen — which lets launchConduit()'s
+    // `finally { ownedServer.close() }` tear down the API server it just
+    // started while Conduit is still on screen and depending on it (App.js's
+    // own `exit` comes from Ink's useApp(), which unmounts and resolves this
+    // promise — so this correctly waits for a real quit, not a fixed delay).
+    await instance.waitUntilExit();
 }
 
 module.exports = { run };

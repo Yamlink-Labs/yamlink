@@ -8,9 +8,41 @@ const { inferLifecycleState }                           = require('../../intelli
 const { computeNoteDrift }                              = require('../../intelligence/driftDetector');
 const { buildNoteArc }                                  = require('../../intelligence/noteArc');
 const { formatLikelyMissingFields }                     = require('../../intelligence/authoringEngine');
+const { buildHoverBadgeMarkdown }                       = require('../../intelligence/hoverBadge');
 const { respond }                                       = require('../transport');
 const { getDocumentText }                               = require('../documentState');
-const { wikilinkAtPosition }                            = require('../utils');
+const { wikilinkAtPosition, pathToUri }                 = require('../utils');
+
+const INLINE_WIKILINK_RE = /\[\[([^\]]+)\]\]/g;
+
+function escapeMarkdown(value) {
+    return String(value || '')
+        .replace(/\\/g, '\\\\')
+        .replace(/([`*_{}\[\]()#+\-.!|>])/g, '\\$1');
+}
+
+function renderInlineFileLinks(text, idIndex, aliasIndex) {
+    const raw = String(text || '');
+    if (!raw) return '';
+    let result = '';
+    let lastIndex = 0;
+    INLINE_WIKILINK_RE.lastIndex = 0;
+    let match;
+    while ((match = INLINE_WIKILINK_RE.exec(raw)) !== null) {
+        result += escapeMarkdown(raw.slice(lastIndex, match.index));
+        const inner = String(match[1] || '').trim();
+        const parts = parseLinkedTargetParts(inner);
+        const resolvedId = resolveLinkedTarget(inner, idIndex, aliasIndex);
+        const filePath = resolvedId ? idIndex.get(resolvedId) : null;
+        const displayText = parts.label || parts.target || inner;
+        result += filePath
+            ? `[${escapeMarkdown(displayText)}](${pathToUri(filePath)})`
+            : escapeMarkdown(`[[${inner}]]`);
+        lastIndex = match.index + match[0].length;
+    }
+    result += escapeMarkdown(raw.slice(lastIndex));
+    return result;
+}
 
 function handleHover(msg, state) {
     const { textDocument, position } = msg.params || {};
@@ -73,7 +105,7 @@ function handleHover(msg, state) {
         const arc = buildNoteArc(
             noteFields, type, fieldsCache,
             priors.typeFieldBundles, priors.fieldTargetTypes,
-            priors.outcomeCalibration, { limit: 3 }
+            priors.outcomeCalibration, { limit: 3, emergentClusters: priors.emergentClusters }
         );
         for (const f of arc.missingFields || []) {
             if (f.confidenceLabel === 'high' || f.confidenceLabel === 'medium') {
@@ -84,24 +116,24 @@ function handleHover(msg, state) {
     } catch (_) {}
 
     // Build markdown card
-    let md = `**${name}**`;
-    if (type)    md += `  \`${type}\``;
-    if (status)  md += `  ·  ${status}`;
-    if (summary) md += `\n\n${summary}`;
+    let md = `**${escapeMarkdown(name)}**`;
+    const badgeMarkdown = buildHoverBadgeMarkdown({ type, status });
+    if (badgeMarkdown) md += `\n\n${badgeMarkdown}`;
+    if (summary) md += `\n\n${renderInlineFileLinks(summary, idIndex, aliasIndex)}`;
 
     const stats = [`↑ ${inbound} inbound`];
     if (lifecycleLabel) stats.push(lifecycleLabel);
     if (driftLabel)     stats.push(driftLabel);
-    md += '\n\n' + stats.join('  ·  ');
+    md += '\n\n' + stats.map(escapeMarkdown).join('  ·  ');
 
     if (targetParts.anchor) {
-        md += `\n\n- section: ${targetParts.anchor}`;
+        md += `\n\n- section: ${escapeMarkdown(targetParts.anchor)}`;
     } else if (targetParts.blockId) {
-        md += `\n\n- block: ^${targetParts.blockId}`;
+        md += `\n\n- block: ^${escapeMarkdown(targetParts.blockId)}`;
     }
 
     if (arcGaps.length) {
-        md += `\n\n**${formatLikelyMissingFields(arcGaps, { limit: 2 })}**`;
+        md += `\n\n**${escapeMarkdown(formatLikelyMissingFields(arcGaps, { limit: 2 }))}**`;
     }
 
     respond(msg.id, { contents: { kind: 'markdown', value: md } });

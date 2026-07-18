@@ -310,6 +310,7 @@ function App({ ink, TextInput, host, port, initialData, vaultPath }) {
     }));
 
     const [lastSessionTs, setLastSessionTs] = React.useState(null);
+    const [graphVersion, setGraphVersion] = React.useState(0);
 
     React.useEffect(() => {
         if (!vaultPath) return;
@@ -539,8 +540,15 @@ function App({ ink, TextInput, host, port, initialData, vaultPath }) {
             if (input === '8') { navigate('diff', undefined, activePaneIndex); return; }
             if (input === '9') { navigate('radar', undefined, activePaneIndex); return; }
         }
-        // Any unhandled printable char on non-text screens triggers warp navigation
-        if (!textInputScreens.has(currentScreen) && input && input.charCodeAt(0) >= 32) {
+        // Any unhandled printable char on non-text screens triggers warp navigation.
+        // Ink's useInput has no stopPropagation — every mounted screen's own
+        // useInput hook and this global one both fire for the same keypress —
+        // so a screen-owned single-letter shortcut needs an explicit carve-out
+        // here or Warp always wins (this is exactly why `navigator` is a
+        // textInputScreens member: its own 'v'/'o'/'g'/'p' keys are only safe
+        // because the whole catch-all is skipped for that screen).
+        const screenReservedKey = currentScreen === 'graph' && input === 'v';
+        if (!textInputScreens.has(currentScreen) && !screenReservedKey && input && input.charCodeAt(0) >= 32) {
             setWarpQuery(input);
             setShowWarp(true);
             return;
@@ -565,6 +573,9 @@ function App({ ink, TextInput, host, port, initialData, vaultPath }) {
             setData((current) => applyStreamEventData(current, event));
             if (event.type === 'rebuild') {
                 refresh().catch(() => {});
+            }
+            if (event.type === 'relation_added' || event.type === 'relation_changed' || event.type === 'rebuild') {
+                setGraphVersion((v) => v + 1);
             }
         }
     });
@@ -671,6 +682,7 @@ function App({ ink, TextInput, host, port, initialData, vaultPath }) {
                 getTypes,
                 getNodes,
                 initialId: paneRoute.graph?.noteId || '',
+                graphVersion,
                 disabled: paneDisabled
             });
         }

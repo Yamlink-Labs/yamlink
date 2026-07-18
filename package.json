@@ -2,7 +2,7 @@
     "name": "yamlink",
     "displayName": "Yamlink",
     "description": "Markdown note-taking with wikilinks, backlinks, and a knowledge graph for VS Code. Query your notes into editable live tables — edit a cell and it writes back to the file. Graph visualization, calendar, vault intelligence. No database, no sync.",
-    "version": "0.7.3",
+    "version": "0.7.4",
     "publisher": "yamlink",
     "author": {
         "name": "Yamlink Labs",
@@ -95,6 +95,14 @@
             {
                 "command": "yamlink.openHome",
                 "title": "Yamlink: Open Home"
+            },
+            {
+                "command": "yamlink.startGuidedTour",
+                "title": "Yamlink: Start Guided Tour"
+            },
+            {
+                "command": "yamlink.addSampleVault",
+                "title": "Yamlink: Add Sample Vault"
             },
             {
                 "command": "yamlink.naturalQuery",
@@ -216,7 +224,11 @@
             },
             {
                 "command": "yamlink.openLiveNote",
-                "title": "Yamlink: Open Live Note"
+                "title": "Yamlink: Open Live Note",
+                "icon": {
+                    "light": "media/preview-light.svg",
+                    "dark": "media/preview-dark.svg"
+                }
             },
             {
                 "command": "yamlink.copyId",
@@ -281,6 +293,34 @@
             {
                 "command": "yamlink.openDailyNote",
                 "title": "Yamlink: Open Daily Note"
+            },
+            {
+                "command": "yamlink.openTaskLine",
+                "title": "Yamlink: Go to Task"
+            },
+            {
+                "command": "yamlink.taskCenterCycleMode",
+                "title": "Yamlink: Cycle Task Filter",
+                "icon": {
+                    "light": "media/task-filter-light.svg",
+                    "dark": "media/task-filter-dark.svg"
+                }
+            },
+            {
+                "command": "yamlink.taskCenterFocusOverdue",
+                "title": "Yamlink: Focus Overdue Tasks",
+                "icon": {
+                    "light": "media/task-overdue-light.svg",
+                    "dark": "media/task-overdue-dark.svg"
+                }
+            },
+            {
+                "command": "yamlink.taskCenterClearFilters",
+                "title": "Yamlink: Clear Task Filters",
+                "icon": {
+                    "light": "media/task-clear-light.svg",
+                    "dark": "media/task-clear-dark.svg"
+                }
             },
             {
                 "command": "yamlink.revealOutlineLine",
@@ -355,6 +395,12 @@
                 "when": "editorLangId == markdown"
             }
         ],
+        "submenus": [
+            {
+                "id": "yamlink.editorContextMenu",
+                "label": "Yamlink"
+            }
+        ],
         "menus": {
             "commandPalette": [
                 {
@@ -367,6 +413,10 @@
                 },
                 {
                     "command": "yamlink.closeViewPanel",
+                    "when": "false"
+                },
+                {
+                    "command": "yamlink.openTaskLine",
                     "when": "false"
                 },
                 {
@@ -427,6 +477,21 @@
             ],
             "view/title": [
                 {
+                    "command": "yamlink.taskCenterCycleMode",
+                    "when": "view == yamlink.tasks",
+                    "group": "navigation@1"
+                },
+                {
+                    "command": "yamlink.taskCenterFocusOverdue",
+                    "when": "view == yamlink.tasks",
+                    "group": "navigation@2"
+                },
+                {
+                    "command": "yamlink.taskCenterClearFilters",
+                    "when": "view == yamlink.tasks",
+                    "group": "navigation@3"
+                },
+                {
                     "command": "yamlink.noteOutlineSearch",
                     "when": "view == yamlink.noteOutline",
                     "group": "navigation@1"
@@ -439,49 +504,61 @@
             ],
             "editor/context": [
                 {
-                    "command": "yamlink.copyId",
+                    "submenu": "yamlink.editorContextMenu",
                     "when": "editorLangId == markdown",
                     "group": "yamlink@1"
-                },
+                }
+            ],
+            "yamlink.editorContextMenu": [
                 {
-                    "command": "yamlink.copyScopedReference",
+                    "command": "yamlink.copyId",
                     "when": "editorLangId == markdown",
-                    "group": "yamlink@1.25"
-                },
-                {
-                    "command": "yamlink.copyBlockReference",
-                    "when": "editorLangId == markdown",
-                    "group": "yamlink@1.5"
+                    "group": "1_note@1"
                 },
                 {
                     "command": "yamlink.newNoteFromSelection",
                     "when": "editorHasSelection",
-                    "group": "yamlink@2"
-                },
-                {
-                    "command": "yamlink.insertScopedReference",
-                    "when": "editorLangId == markdown",
-                    "group": "yamlink@2.1"
-                },
-                {
-                    "command": "yamlink.insertBlockReference",
-                    "when": "editorLangId == markdown",
-                    "group": "yamlink@2.5"
+                    "group": "1_note@2"
                 },
                 {
                     "command": "yamlink.splitNoteBody",
                     "when": "editorLangId == markdown",
-                    "group": "yamlink@3"
+                    "group": "1_note@3"
+                },
+                {
+                    "command": "yamlink.copyScopedReference",
+                    "when": "editorLangId == markdown",
+                    "group": "2_copy@1"
                 },
                 {
                     "command": "yamlink.copySectionReference",
                     "when": "editorLangId == markdown",
-                    "group": "yamlink@1.75"
+                    "group": "2_copy@2"
+                },
+                {
+                    "command": "yamlink.copyBlockReference",
+                    "when": "editorLangId == markdown",
+                    "group": "2_copy@3"
+                },
+                {
+                    "command": "yamlink.insertScopedReference",
+                    "when": "editorLangId == markdown",
+                    "group": "3_insert@1"
                 },
                 {
                     "command": "yamlink.insertSectionReference",
                     "when": "editorLangId == markdown",
-                    "group": "yamlink@2.25"
+                    "group": "3_insert@2"
+                },
+                {
+                    "command": "yamlink.insertBlockReference",
+                    "when": "editorLangId == markdown",
+                    "group": "3_insert@3"
+                },
+                {
+                    "command": "yamlink.exportActiveNotePdf",
+                    "when": "editorLangId == markdown",
+                    "group": "4_export@1"
                 }
             ],
             "view/item/context": [
@@ -523,14 +600,9 @@
                     "group": "navigation@3"
                 },
                 {
-                    "command": "yamlink.openNotePreview",
-                    "when": "editorLangId == markdown",
-                    "group": "navigation@4"
-                },
-                {
                     "command": "yamlink.openLiveNote",
                     "when": "editorLangId == markdown",
-                    "group": "navigation@4.5"
+                    "group": "navigation@4"
                 },
                 {
                     "command": "yamlink.copyScopedReference",
@@ -564,9 +636,81 @@
                 {
                     "id": "yamlink.noteOutline",
                     "name": "Note Outline"
+                },
+                {
+                    "id": "yamlink.tasks",
+                    "name": "Tasks"
                 }
             ]
         },
+        "walkthroughs": [
+            {
+                "id": "yamlink-tour",
+                "title": "Get Started with Yamlink",
+                "description": "Learn Yamlink's core loop: create a note, link it, query it, and inspect the system it creates.",
+                "steps": [
+                    {
+                        "id": "yamlink-tour-first-note",
+                        "title": "Create your first note",
+                        "description": "Every Yamlink note starts with identity. Create a note with an `id:` and a `type:`.\n[New Note](command:yamlink.newNote)",
+                        "media": {
+                            "markdown": "media/walkthrough/first-note.md"
+                        },
+                        "completionEvents": [
+                            "onCommand:yamlink.newNote"
+                        ]
+                    },
+                    {
+                        "id": "yamlink-tour-link-note",
+                        "title": "Create a second note and link it",
+                        "description": "Make one more note, then add a `[[wikilink]]` between them. This is how Yamlink turns Markdown into relationships.\n[New Note](command:yamlink.newNote)",
+                        "media": {
+                            "markdown": "media/walkthrough/link-note.md"
+                        },
+                        "completionEvents": [
+                            "onContext:yamlink.tourLinkCreated"
+                        ]
+                    },
+                    {
+                        "id": "yamlink-tour-first-view",
+                        "title": "Write your first query",
+                        "description": "Insert a `!view` block and let Yamlink render it as a live table.\n[Insert View Block](command:yamlink.insertViewBlock)",
+                        "media": {
+                            "markdown": "media/walkthrough/first-view.md"
+                        },
+                        "completionEvents": [
+                            "onCommand:yamlink.insertViewBlock"
+                        ]
+                    },
+                    {
+                        "id": "yamlink-tour-note-report",
+                        "title": "Inspect one note deeply",
+                        "description": "Open Note Report to see links, tasks, views, and the note's position in the vault.\n[Open Note Report](command:yamlink.openHub)",
+                        "media": {
+                            "markdown": "media/walkthrough/note-report.md"
+                        },
+                        "completionEvents": [
+                            "onCommand:yamlink.openHub"
+                        ]
+                    },
+                    {
+                        "id": "yamlink-tour-system-surfaces",
+                        "title": "Inspect the wider system",
+                        "description": "Open Home, Calendar, Task Center, Vault Health, and Graph to see your workspace as a living system.\n[Open Home](command:yamlink.openHome)\n[Open Calendar](command:yamlink.openCalendar)\n[Open Task Center](command:yamlink.tasks.focus)\n[Open Vault Health](command:yamlink.openHealthPanel)\n[Open Graph Workspace](command:yamlink.runGraph)",
+                        "media": {
+                            "markdown": "media/walkthrough/system-surfaces.md"
+                        },
+                        "completionEvents": [
+                            "onCommand:yamlink.openHome",
+                            "onCommand:yamlink.openCalendar",
+                            "onCommand:yamlink.tasks.focus",
+                            "onCommand:yamlink.openHealthPanel",
+                            "onCommand:yamlink.runGraph"
+                        ]
+                    }
+                ]
+            }
+        ],
         "configurationDefaults": {
             "[markdown]": {
                 "foam.links.hover.enable": false
@@ -630,7 +774,7 @@
         "lint": "eslint extension.js src test scripts eslint.config.js",
         "coverage": "c8 --reporter=text --reporter=lcov --reporter=json-summary npm test",
         "coverage:check": "c8 --check-coverage --lines 67 --functions 75 --branches 70 --statements 67 npm test",
-        "test": "node --test test/activeViewRuntime.test.js test/bodySignals.test.js test/calendar.test.js test/codeActions.integration.test.js test/completion.test.js test/completionCore.test.js test/completionTracker.test.js test/conduit.test.js test/confidence.test.js test/date.test.js test/decorations.test.js test/definition.test.js test/diagnostics.test.js test/driftDetector.test.js test/entityHubController.test.js test/entityHubRecipes.test.js test/fieldCategory.test.js test/fieldPlanner.test.js test/fieldRoles.test.js test/frontmatter.test.js test/frontmatterIntelligence.test.js test/graph.test.js test/graph2Payload.test.js test/graphPanel.test.js test/historyModel.test.js test/hover.test.js test/id.test.js test/ignore.test.js test/gitHistoryImport.test.js test/implicitWeights.test.js test/importObsidian.test.js test/importVaults.test.js test/nlQuery.test.js test/noteArc.test.js test/outcomeCalibration.test.js test/index.test.js test/intelligenceCache.test.js test/lifecycleState.test.js test/mutationEventLog.test.js test/nodeCreationCommands.test.js test/noteRoles.test.js test/pdfExport.test.js test/performanceTracker.test.js test/previewRenderer.test.js test/query.test.js test/queryParser.test.js test/queryBuilder.test.js test/queryCache.test.js test/queryDiagnostics.test.js test/refreshRouter.test.js test/rename.test.js test/schemaRegistry.test.js test/statusRuntime.test.js test/suggestionNoteIndex.test.js test/suggestionCore.test.js test/surface.api.test.js test/surface.cli.test.js test/surface.lsp.test.js test/surface.service.test.js test/taskNotifications.test.js test/unlinkedRefs.test.js test/suggestions.test.js test/surface.completion.test.js test/surface.graph.test.js test/surface.health.test.js test/surface.ignore.test.js test/surface.intelligence.test.js test/surface.mutation.test.js test/surface.noteReport.test.js test/surface.schema.test.js test/surface.view.matrix.test.js test/staleConnectedNotes.test.js test/tagSignals.test.js test/taskCache.test.js test/tasks.test.js test/templateRegistry.test.js test/typeRegistry.test.js test/vaultPriors.test.js test/viewBuilder.test.js test/viewCodeLens.test.js test/viewLightbulb.test.js test/view-table-logic.test.js test/viewPanel.test.js test/viewPanelController.test.js test/writeField.test.js",
+        "test": "node --test test/activeViewRuntime.test.js test/bodySignals.test.js test/calendar.test.js test/clusterEmergence.test.js test/codeActions.integration.test.js test/completion.test.js test/completionCore.test.js test/completionTracker.test.js test/conduit.test.js test/conduitGraphRender.test.js test/confidence.test.js test/date.test.js test/decorations.test.js test/definition.test.js test/diagnostics.test.js test/driftDetector.test.js test/entityHubController.test.js test/entityHubRecipes.test.js test/fieldCategory.test.js test/fieldPlanner.test.js test/fieldRoles.test.js test/frontmatter.test.js test/frontmatterIntelligence.test.js test/graph.test.js test/graph2Payload.test.js test/graphPanel.test.js test/graphTimelapse.test.js test/graphTimelapseGit.test.js test/historyModel.test.js test/homePanelHtml.test.js test/hover.test.js test/id.test.js test/ignore.test.js test/imageEmbed.test.js test/gitHistoryImport.test.js test/implicitWeights.test.js test/importObsidian.test.js test/importVaults.test.js test/nlQuery.test.js test/noteArc.test.js test/outcomeCalibration.test.js test/index.test.js test/parseFrontmatterWikilinkAmbiguity.test.js test/intelligenceCache.test.js test/lifecycleState.test.js test/liveNoteModel.test.js test/mutationEventLog.test.js test/mutationEventTypes.test.js test/nodeCreationCommands.test.js test/noteRoles.test.js test/pdfExport.test.js test/performanceTracker.test.js test/previewRenderer.test.js test/query.test.js test/queryParser.test.js test/queryBuilder.test.js test/queryCache.test.js test/queryDiagnostics.test.js test/refreshRouter.test.js test/relationshipGravity.test.js test/rename.test.js test/schemaRegistry.test.js test/statusRuntime.test.js test/suggestionNoteIndex.test.js test/suggestionCore.test.js test/surface.api.test.js test/surface.cli.test.js test/surface.lsp.test.js test/surface.service.test.js test/taskNotifications.test.js test/unlinkedRefs.test.js test/suggestions.test.js test/surface.completion.test.js test/surface.graph.test.js test/surface.health.test.js test/surface.ignore.test.js test/surface.intelligence.test.js test/surface.mutation.test.js test/surface.noteReport.test.js test/surface.schema.test.js test/surface.schemaProposal.test.js test/surface.suggestionCascade.test.js test/surface.view.matrix.test.js test/staleConnectedNotes.test.js test/tagSignals.test.js test/taskCache.test.js test/taskCenter.test.js test/tasks.test.js test/templateRegistry.test.js test/timeEngine.test.js test/typeRegistry.test.js test/vaultPriors.test.js test/vaultSnapshots.test.js test/vaultTrends.test.js test/viewBuilder.test.js test/viewCodeLens.test.js test/viewLightbulb.test.js test/view-table-logic.test.js test/viewPanel.test.js test/viewPanelController.test.js test/writeField.test.js",
         "test:index": "node --test test/index.test.js",
         "test:date": "node --test test/date.test.js",
         "test:calendar": "node --test test/calendar.test.js",
@@ -640,7 +784,7 @@
         "test:extension": "node test/runExtensionTests.js",
         "test:smoke": "node test/smoke-carmen.js",
         "test:lsp:scale": "node scripts/lsp-scale-check.js",
-        "test:all": "node --test test/activeViewRuntime.test.js test/bodySignals.test.js test/calendar.test.js test/codeActions.integration.test.js test/completion.test.js test/completionCore.test.js test/completionTracker.test.js test/conduit.test.js test/confidence.test.js test/date.test.js test/decorations.test.js test/definition.test.js test/diagnostics.test.js test/driftDetector.test.js test/entityHubController.test.js test/entityHubRecipes.test.js test/fieldCategory.test.js test/fieldPlanner.test.js test/fieldRoles.test.js test/frontmatter.test.js test/frontmatterIntelligence.test.js test/gitHistoryImport.test.js test/graph.test.js test/graph2Payload.test.js test/graphPanel.test.js test/historyModel.test.js test/hover.test.js test/id.test.js test/ignore.test.js test/importObsidian.test.js test/importVaults.test.js test/index.test.js test/nlQuery.test.js test/noteArc.test.js test/outcomeCalibration.test.js test/intelligenceCache.test.js test/lifecycleState.test.js test/mutationEventLog.test.js test/nodeCreationCommands.test.js test/noteRoles.test.js test/pdfExport.test.js test/performanceTracker.test.js test/previewRenderer.test.js test/query.test.js test/queryParser.test.js test/queryBuilder.test.js test/queryCache.test.js test/queryDiagnostics.test.js test/refreshRouter.test.js test/rename.test.js test/schemaRegistry.test.js test/statusRuntime.test.js test/suggestionNoteIndex.test.js test/suggestionCore.test.js test/surface.api.test.js test/surface.cli.test.js test/surface.lsp.test.js test/surface.service.test.js test/taskNotifications.test.js test/unlinkedRefs.test.js test/suggestions.test.js test/surface.completion.test.js test/surface.graph.test.js test/surface.health.test.js test/surface.ignore.test.js test/surface.intelligence.test.js test/surface.mutation.test.js test/surface.noteReport.test.js test/surface.schema.test.js test/surface.view.matrix.test.js test/staleConnectedNotes.test.js test/tagSignals.test.js test/taskCache.test.js test/tasks.test.js test/templateRegistry.test.js test/typeRegistry.test.js test/vaultPriors.test.js test/viewBuilder.test.js test/viewCodeLens.test.js test/viewLightbulb.test.js test/view-table-logic.test.js test/viewPanel.test.js test/viewPanelController.test.js test/writeField.test.js",
+        "test:all": "node --test test/activeViewRuntime.test.js test/bodySignals.test.js test/calendar.test.js test/clusterEmergence.test.js test/codeActions.integration.test.js test/completion.test.js test/completionCore.test.js test/completionTracker.test.js test/conduit.test.js test/conduitGraphRender.test.js test/confidence.test.js test/date.test.js test/decorations.test.js test/definition.test.js test/diagnostics.test.js test/driftDetector.test.js test/entityHubController.test.js test/entityHubRecipes.test.js test/fieldCategory.test.js test/fieldPlanner.test.js test/fieldRoles.test.js test/frontmatter.test.js test/frontmatterIntelligence.test.js test/gitHistoryImport.test.js test/graph.test.js test/graph2Payload.test.js test/graphPanel.test.js test/graphTimelapse.test.js test/graphTimelapseGit.test.js test/historyModel.test.js test/homePanelHtml.test.js test/hover.test.js test/id.test.js test/ignore.test.js test/imageEmbed.test.js test/importObsidian.test.js test/importVaults.test.js test/index.test.js test/parseFrontmatterWikilinkAmbiguity.test.js test/nlQuery.test.js test/noteArc.test.js test/outcomeCalibration.test.js test/intelligenceCache.test.js test/lifecycleState.test.js test/liveNoteModel.test.js test/mutationEventLog.test.js test/mutationEventTypes.test.js test/nodeCreationCommands.test.js test/noteRoles.test.js test/pdfExport.test.js test/performanceTracker.test.js test/previewRenderer.test.js test/query.test.js test/queryParser.test.js test/queryBuilder.test.js test/queryCache.test.js test/queryDiagnostics.test.js test/refreshRouter.test.js test/relationshipGravity.test.js test/rename.test.js test/schemaRegistry.test.js test/statusRuntime.test.js test/suggestionNoteIndex.test.js test/suggestionCore.test.js test/surface.api.test.js test/surface.cli.test.js test/surface.lsp.test.js test/surface.service.test.js test/taskNotifications.test.js test/unlinkedRefs.test.js test/suggestions.test.js test/surface.completion.test.js test/surface.graph.test.js test/surface.health.test.js test/surface.ignore.test.js test/surface.intelligence.test.js test/surface.mutation.test.js test/surface.noteReport.test.js test/surface.schema.test.js test/surface.schemaProposal.test.js test/surface.suggestionCascade.test.js test/surface.view.matrix.test.js test/staleConnectedNotes.test.js test/tagSignals.test.js test/taskCache.test.js test/taskCenter.test.js test/tasks.test.js test/templateRegistry.test.js test/timeEngine.test.js test/typeRegistry.test.js test/vaultPriors.test.js test/vaultSnapshots.test.js test/vaultTrends.test.js test/viewBuilder.test.js test/viewCodeLens.test.js test/viewLightbulb.test.js test/view-table-logic.test.js test/viewPanel.test.js test/viewPanelController.test.js test/writeField.test.js",
         "test:watch": "node --test --watch test/query.test.js test/date.test.js test/calendar.test.js test/rename.test.js test/completion.test.js test/fieldRoles.test.js test/viewPanel.test.js test/viewCodeLens.test.js test/viewLightbulb.test.js test/pdfExport.test.js test/suggestions.test.js test/refreshRouter.test.js test/queryBuilder.test.js test/entityHubRecipes.test.js test/id.test.js test/graphPanel.test.js test/historyModel.test.js test/hover.test.js test/codeActions.integration.test.js test/performanceTracker.test.js",
         "test:ace": "node test/ace.local.js",
         "test:count": "node scripts/check-test-count.js",

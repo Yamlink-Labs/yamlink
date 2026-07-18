@@ -2,7 +2,8 @@
 
 const { test, before, after } = require('node:test');
 const assert = require('node:assert/strict');
-const { spawnSync } = require('child_process');
+const fs = require('node:fs');
+const { spawn, spawnSync } = require('child_process');
 const path = require('path');
 const { createVault } = require('./lib/vaultSim');
 const { buildTaskBlockId } = require('../src/core/bodyBlocks');
@@ -14,6 +15,16 @@ const BIN = path.resolve('bin/yamlink.js');
 function frame(obj) {
     const json = JSON.stringify(obj);
     return `Content-Length: ${Buffer.byteLength(json, 'utf8')}\r\n\r\n${json}`;
+}
+
+function responseFrame(id, result) {
+    return frame({ jsonrpc: '2.0', id, result });
+}
+
+function errorResponseFrame(id, code, message, data) {
+    const error = { code, message };
+    if (data !== undefined) error.data = data;
+    return frame({ jsonrpc: '2.0', id, error });
 }
 
 function parseFrames(buf) {
@@ -93,15 +104,92 @@ function applyTextEdits(text, edits) {
 }
 
 /** Run the LSP server with a pre-built frame sequence, return { messages, status }. */
-function lsp(vaultDir, frames) {
+function lsp(vaultDir, frames, opts = {}) {
     const input = Buffer.from(frames.join(''), 'utf8');
     const result = spawnSync('node', [BIN, 'serve', '--lsp', '--vault', vaultDir], {
-        input, timeout: 10000
+        input, timeout: opts.timeout || 10000,
+        env: opts.env ? { ...process.env, ...opts.env } : process.env
     });
     return {
         messages: parseFrames(result.stdout || Buffer.alloc(0)),
         status:   result.status
     };
+}
+
+/**
+ * Poll the stdout buffered so far for a response to request `id`, instead of
+ * gambling on a fixed sleep — a real flaky test was traced to exactly this: a
+ * fixed `delayMs` before `mutate()` assumed the server had already answered
+ * the last `beforeFrames` request, which doesn't hold under full-suite CPU
+ * contention (slow child-process spawn / cold buildIndex). Polling a real
+ * readiness signal instead of a wall-clock guess removes the load-sensitivity
+ * while still failing loudly (via the outer `timeout`) if the server never
+ * actually converges.
+ * @param {() => Buffer[]} getChunks
+ * @param {number} id
+ * @param {number} [maxWaitMs]
+ * @returns {Promise<void>}
+ */
+async function waitForResponse(getChunks, id, maxWaitMs = 5000) {
+    const start = Date.now();
+    while (Date.now() - start < maxWaitMs) {
+        const messages = parseFrames(Buffer.concat(getChunks()));
+        if (messages.some((m) => m.id === id && m.method == null)) return;
+        await new Promise((resolveDelay) => setTimeout(resolveDelay, 15));
+    }
+}
+
+async function lspInteractive(vaultDir, { beforeFrames = [], afterFrames = [], mutate, delayMs = 75, waitForResponseId, timeout = 10000 } = {}) {
+    return await new Promise((resolve, reject) => {
+        const child = spawn('node', [BIN, 'serve', '--lsp', '--vault', vaultDir], {
+            stdio: ['pipe', 'pipe', 'pipe']
+        });
+        const stdoutChunks = [];
+        const stderrChunks = [];
+        let settled = false;
+        let timeoutId = null;
+
+        function finish(err, result) {
+            if (settled) return;
+            settled = true;
+            if (timeoutId) clearTimeout(timeoutId);
+            if (err) {
+                try { child.kill(); } catch (_) {}
+                reject(err);
+                return;
+            }
+            resolve(result);
+        }
+
+        child.stdout.on('data', (chunk) => stdoutChunks.push(chunk));
+        child.stderr.on('data', (chunk) => stderrChunks.push(chunk));
+        child.on('error', (error) => finish(error));
+        child.on('exit', (status) => {
+            finish(null, {
+                messages: parseFrames(Buffer.concat(stdoutChunks)),
+                status,
+                stderr: Buffer.concat(stderrChunks).toString('utf8')
+            });
+        });
+
+        timeoutId = setTimeout(() => {
+            finish(new Error(`LSP interactive session timed out after ${timeout}ms`));
+        }, timeout);
+
+        (async () => {
+            child.stdin.write(beforeFrames.join(''));
+            if (mutate) {
+                if (typeof waitForResponseId === 'number') {
+                    await waitForResponse(() => stdoutChunks, waitForResponseId);
+                } else {
+                    await new Promise((resolveDelay) => setTimeout(resolveDelay, delayMs));
+                }
+                await mutate();
+            }
+            child.stdin.write(afterFrames.join(''));
+            child.stdin.end();
+        })().catch((error) => finish(error));
+    });
 }
 
 function rootUri(dir) {
@@ -166,6 +254,8 @@ test('LSP initialize returns capabilities and serverInfo', () => {
     assert.ok(init.result.capabilities.executeCommandProvider, 'executeCommandProvider capability');
     assert.ok(init.result.capabilities.executeCommandProvider.commands.includes('yamlink.noteIntelligence'));
     assert.ok(init.result.capabilities.executeCommandProvider.commands.includes('yamlink.addMissingFields'));
+    assert.ok(init.result.capabilities.executeCommandProvider.commands.includes('yamlink.normalizeFrontmatter'));
+    assert.ok(init.result.capabilities.executeCommandProvider.commands.includes('yamlink.convertRelations'));
     assert.equal(init.result.capabilities.diagnosticProvider.workspaceDiagnostics, true);
     assert.equal(init.result.capabilities.textDocumentSync, 2, 'incremental sync advertised');
     assert.equal(init.result.serverInfo.name, 'yamlink-lsp');
@@ -998,8 +1088,53 @@ test('LSP hover on valid wikilink returns note preview', () => {
     assert.ok(hover.result, 'non-null result');
     assert.equal(hover.result.contents.kind, 'markdown');
     assert.match(hover.result.contents.value, /Juan Rico/);
-    assert.match(hover.result.contents.value, /contact/);
+    assert.match(hover.result.contents.value, /data:image\/svg\+xml;base64,/);
     assert.match(hover.result.contents.value, /inbound/);
+});
+
+test('LSP hover includes badge image markdown and file links in summary text', () => {
+    const hoverVault = createVault({
+        'rico.md': [
+            '---',
+            'id: rico',
+            'type: contact',
+            'name: Juan Rico',
+            'status: active',
+            'summary: Works with [[roughnecks]] daily.',
+            '---'
+        ].join('\n'),
+        'roughnecks.md': [
+            '---',
+            'id: roughnecks',
+            'type: unit',
+            'name: Roughnecks',
+            '---'
+        ].join('\n')
+    });
+    const hoverUri = rootUri(hoverVault.dir);
+    const docUri = hoverUri + '/hover-badges.md';
+    const docText = 'See [[rico]].';
+    try {
+        const { messages } = lsp(hoverVault.dir, [
+            frame({ jsonrpc: '2.0', id: 1, method: 'initialize', params: { rootUri: hoverUri, capabilities: {} } }),
+            frame({ jsonrpc: '2.0', method: 'initialized', params: {} }),
+            frame({ jsonrpc: '2.0', method: 'textDocument/didOpen', params: {
+                textDocument: { uri: docUri, languageId: 'markdown', version: 1, text: docText }
+            }}),
+            frame({ jsonrpc: '2.0', id: 2, method: 'textDocument/hover', params: {
+                textDocument: { uri: docUri },
+                position: { line: 0, character: 7 }
+            }}),
+            frame({ jsonrpc: '2.0', id: 3, method: 'shutdown' }),
+            frame({ jsonrpc: '2.0', method: 'exit' }),
+        ]);
+        const hover = messages.find((m) => m.id === 2);
+        assert.ok(hover?.result, 'hover response present');
+        assert.match(hover.result.contents.value, /data:image\/svg\+xml;base64,/);
+        assert.match(hover.result.contents.value, /\[roughnecks\]\(file:\/\/\/.*roughnecks\.md\)/);
+    } finally {
+        hoverVault.destroy();
+    }
 });
 
 test('LSP hover returns null when cursor not on wikilink', () => {
@@ -1123,7 +1258,7 @@ test('LSP hover preserves scoped context for heading and block wikilinks', () =>
         assert.ok(headingHover, 'heading hover response present');
         assert.ok(blockHover, 'block hover response present');
         assert.match(headingHover.result.contents.value, /section: Deployment/);
-        assert.match(blockHover.result.contents.value, new RegExp(`block: \\^${blockId}`));
+        assert.match(blockHover.result.contents.value, new RegExp(`block: \\^${blockId.replace(/-/g, '\\\\-')}`));
     } finally {
         scopedVault.destroy();
     }
@@ -1186,6 +1321,108 @@ test('LSP definition resolves [[id]] to file URI', () => {
     assert.match(def.result.uri, /file:\/\/\//);
     assert.match(def.result.uri, /roughnecks\.md$/);
     assert.deepEqual(def.result.range.start, { line: 0, character: 0 });
+});
+
+test('LSP definition resolves a ![[photo.png]] embed to the real image file — same gap VS Code definition.js already had fixed', () => {
+    const imgVault = createVault({ 'note.md': 'See ![[photo.png]] here.\n' });
+    try {
+        fs.writeFileSync(path.join(imgVault.dir, 'photo.png'), Buffer.alloc(4));
+        const imgUri = rootUri(imgVault.dir);
+        const docUri = imgUri + '/note.md';
+        const { messages } = lsp(imgVault.dir, [
+            frame({ jsonrpc: '2.0', id: 1, method: 'initialize', params: { rootUri: imgUri, capabilities: {} } }),
+            frame({ jsonrpc: '2.0', method: 'initialized', params: {} }),
+            frame({ jsonrpc: '2.0', method: 'textDocument/didOpen', params: {
+                textDocument: { uri: docUri, languageId: 'markdown', version: 1, text: 'See ![[photo.png]] here.\n' }
+            }}),
+            frame({ jsonrpc: '2.0', id: 2, method: 'textDocument/definition', params: {
+                textDocument: { uri: docUri },
+                position: { line: 0, character: 8 } // inside ![[photo.png]]
+            }}),
+            frame({ jsonrpc: '2.0', id: 3, method: 'shutdown' }),
+            frame({ jsonrpc: '2.0', method: 'exit' }),
+        ]);
+        const def = messages.find(m => m.id === 2);
+        assert.ok(def?.result, 'go-to-definition resolves the image, not null');
+        assert.match(def.result.uri, /photo\.png$/);
+    } finally {
+        imgVault.destroy();
+    }
+});
+
+test('LSP definition returns null for a ![[missing.png]] embed that does not resolve to a real file', () => {
+    const imgVault = createVault({ 'note.md': 'See ![[missing.png]] here.\n' });
+    try {
+        const imgUri = rootUri(imgVault.dir);
+        const docUri = imgUri + '/note.md';
+        const { messages } = lsp(imgVault.dir, [
+            frame({ jsonrpc: '2.0', id: 1, method: 'initialize', params: { rootUri: imgUri, capabilities: {} } }),
+            frame({ jsonrpc: '2.0', method: 'initialized', params: {} }),
+            frame({ jsonrpc: '2.0', method: 'textDocument/didOpen', params: {
+                textDocument: { uri: docUri, languageId: 'markdown', version: 1, text: 'See ![[missing.png]] here.\n' }
+            }}),
+            frame({ jsonrpc: '2.0', id: 2, method: 'textDocument/definition', params: {
+                textDocument: { uri: docUri },
+                position: { line: 0, character: 8 }
+            }}),
+            frame({ jsonrpc: '2.0', id: 3, method: 'shutdown' }),
+            frame({ jsonrpc: '2.0', method: 'exit' }),
+        ]);
+        const def = messages.find(m => m.id === 2);
+        assert.equal(def?.result, null);
+    } finally {
+        imgVault.destroy();
+    }
+});
+
+test('LSP documentLink creates a clickable link for a ![[photo.png]] embed that resolves to a real image file', () => {
+    const imgVault = createVault({ 'note.md': 'See ![[photo.png]] here.\n' });
+    try {
+        fs.writeFileSync(path.join(imgVault.dir, 'photo.png'), Buffer.alloc(4));
+        const imgUri = rootUri(imgVault.dir);
+        const docUri = imgUri + '/note.md';
+        const { messages } = lsp(imgVault.dir, [
+            frame({ jsonrpc: '2.0', id: 1, method: 'initialize', params: { rootUri: imgUri, capabilities: {} } }),
+            frame({ jsonrpc: '2.0', method: 'initialized', params: {} }),
+            frame({ jsonrpc: '2.0', method: 'textDocument/didOpen', params: {
+                textDocument: { uri: docUri, languageId: 'markdown', version: 1, text: 'See ![[photo.png]] here.\n' }
+            }}),
+            frame({ jsonrpc: '2.0', id: 2, method: 'textDocument/documentLink', params: {
+                textDocument: { uri: docUri }
+            }}),
+            frame({ jsonrpc: '2.0', id: 3, method: 'shutdown' }),
+            frame({ jsonrpc: '2.0', method: 'exit' }),
+        ]);
+        const links = messages.find(m => m.id === 2);
+        assert.equal(links.result.length, 1, 'expected a document link so Ctrl+Click actually navigates');
+        assert.match(links.result[0].target, /photo\.png$/);
+    } finally {
+        imgVault.destroy();
+    }
+});
+
+test('LSP documentLink creates no link for a ![[missing.png]] embed that does not resolve to a real file', () => {
+    const imgVault = createVault({ 'note.md': 'See ![[missing.png]] here.\n' });
+    try {
+        const imgUri = rootUri(imgVault.dir);
+        const docUri = imgUri + '/note.md';
+        const { messages } = lsp(imgVault.dir, [
+            frame({ jsonrpc: '2.0', id: 1, method: 'initialize', params: { rootUri: imgUri, capabilities: {} } }),
+            frame({ jsonrpc: '2.0', method: 'initialized', params: {} }),
+            frame({ jsonrpc: '2.0', method: 'textDocument/didOpen', params: {
+                textDocument: { uri: docUri, languageId: 'markdown', version: 1, text: 'See ![[missing.png]] here.\n' }
+            }}),
+            frame({ jsonrpc: '2.0', id: 2, method: 'textDocument/documentLink', params: {
+                textDocument: { uri: docUri }
+            }}),
+            frame({ jsonrpc: '2.0', id: 3, method: 'shutdown' }),
+            frame({ jsonrpc: '2.0', method: 'exit' }),
+        ]);
+        const links = messages.find(m => m.id === 2);
+        assert.deepEqual(links.result, []);
+    } finally {
+        imgVault.destroy();
+    }
 });
 
 test('LSP definition resolves heading anchors to the matching heading line', () => {
@@ -1464,6 +1701,145 @@ test('LSP diagnostics published after initialize contain broken-link warnings', 
     assert.equal(broken.severity, 2, 'severity is Warning (2)');
 });
 
+test('LSP diagnostics clear across files when a newly created note resolves a broken wikilink', async () => {
+    const liveVault = createVault({
+        'alpha.md': [
+            '---',
+            'id: alpha',
+            'type: note',
+            '---',
+            '',
+            'See [[ghost-note]].'
+        ].join('\n')
+    });
+    const liveUri = rootUri(liveVault.dir);
+    const docUri = liveUri + '/alpha.md';
+    const docText = [
+        '---',
+        'id: alpha',
+        'type: note',
+        '---',
+        '',
+        'See [[ghost-note]].'
+    ].join('\n');
+    try {
+        const { messages, status } = await lspInteractive(liveVault.dir, {
+            // Wait for the real signal (the initial diagnostic request, id 2,
+            // has actually been answered) instead of a fixed sleep — this was
+            // the flaky test: a 250ms guess wasn't always enough under
+            // full-suite CPU contention (slow child-process spawn / cold
+            // buildIndex), so the new note could get written before the
+            // server had even processed the initial diagnostic request.
+            waitForResponseId: 2,
+            beforeFrames: [
+                frame({ jsonrpc: '2.0', id: 1, method: 'initialize', params: { rootUri: liveUri, capabilities: {} } }),
+                frame({ jsonrpc: '2.0', method: 'initialized', params: {} }),
+                frame({ jsonrpc: '2.0', method: 'textDocument/didOpen', params: {
+                    textDocument: { uri: docUri, languageId: 'markdown', version: 1, text: docText }
+                }}),
+                frame({ jsonrpc: '2.0', id: 2, method: 'textDocument/diagnostic', params: {
+                    textDocument: { uri: docUri }
+                }})
+            ],
+            mutate: async () => {
+                fs.writeFileSync(path.join(liveVault.dir, 'ghost-note.md'), [
+                    '---',
+                    'id: ghost-note',
+                    'type: note',
+                    '---'
+                ].join('\n'), 'utf8');
+            },
+            afterFrames: [
+                frame({ jsonrpc: '2.0', method: 'workspace/didChangeWatchedFiles', params: {
+                    changes: [{ uri: liveUri + '/ghost-note.md', type: 1 }]
+                }}),
+                frame({ jsonrpc: '2.0', id: 3, method: 'textDocument/diagnostic', params: {
+                    textDocument: { uri: docUri }
+                }}),
+                frame({ jsonrpc: '2.0', id: 4, method: 'shutdown' }),
+                frame({ jsonrpc: '2.0', method: 'exit' }),
+            ]
+        });
+        assert.equal(status, 0);
+        const initialDiagnostic = messages.find((m) => m.id === 2);
+        assert.ok(
+            initialDiagnostic?.result?.items?.some((d) => d.message && d.message.includes('ghost-note')),
+            'initial broken-link diagnostic is present before the new note exists'
+        );
+        const diags = messages.filter((m) => m.method === 'textDocument/publishDiagnostics' && m.params?.uri === docUri);
+        assert.ok(diags.some((m) => Array.isArray(m.params?.diagnostics) && m.params.diagnostics.length === 0));
+        const latest = diags[diags.length - 1];
+        assert.equal(latest.params.diagnostics.length, 0, 'broken-link diagnostics clear after the new note is indexed');
+        const finalDiagnostic = messages.find((m) => m.id === 3);
+        assert.deepEqual(finalDiagnostic?.result, { kind: 'full', items: [] });
+    } finally {
+        liveVault.destroy();
+    }
+});
+
+test('LSP completion includes a note created earlier in the same session after watched-file rebuild', async () => {
+    const liveVault = createVault({
+        'draft.md': [
+            '---',
+            'id: draft',
+            'type: note',
+            '---',
+            '',
+            'Link to [[gh'
+        ].join('\n')
+    });
+    const liveUri = rootUri(liveVault.dir);
+    const docUri = liveUri + '/draft.md';
+    const docText = [
+        '---',
+        'id: draft',
+        'type: note',
+        '---',
+        '',
+        'Link to [[gh'
+    ].join('\n');
+    try {
+        const { messages, status } = await lspInteractive(liveVault.dir, {
+            beforeFrames: [
+                frame({ jsonrpc: '2.0', id: 1, method: 'initialize', params: { rootUri: liveUri, capabilities: {} } }),
+                frame({ jsonrpc: '2.0', method: 'initialized', params: {} }),
+                frame({ jsonrpc: '2.0', method: 'textDocument/didOpen', params: {
+                    textDocument: { uri: docUri, languageId: 'markdown', version: 1, text: docText }
+                }})
+            ],
+            mutate: async () => {
+                fs.writeFileSync(path.join(liveVault.dir, 'ghost-note.md'), [
+                    '---',
+                    'id: ghost-note',
+                    'type: note',
+                    'name: Ghost Note',
+                    '---'
+                ].join('\n'), 'utf8');
+            },
+            afterFrames: [
+                frame({ jsonrpc: '2.0', method: 'workspace/didChangeWatchedFiles', params: {
+                    changes: [{ uri: liveUri + '/ghost-note.md', type: 1 }]
+                }}),
+                frame({ jsonrpc: '2.0', id: 2, method: 'textDocument/completion', params: {
+                    textDocument: { uri: docUri },
+                    position: { line: 5, character: 12 }
+                }}),
+                frame({ jsonrpc: '2.0', id: 3, method: 'shutdown' }),
+                frame({ jsonrpc: '2.0', method: 'exit' }),
+            ]
+        });
+        assert.equal(status, 0);
+        const completion = messages.find((m) => m.id === 2);
+        assert.ok(completion, 'completion response present');
+        assert.ok(
+            completion.result.some((item) => item.label === 'Ghost Note' || item.data?.id === 'ghost-note'),
+            'same-session created note appears in completion results after rebuild'
+        );
+    } finally {
+        liveVault.destroy();
+    }
+});
+
 // ── Capabilities tests ────────────────────────────────────────────────────────
 
 test('LSP initialize capabilities include renameProvider and codeActionProvider', () => {
@@ -1652,6 +2028,40 @@ test('LSP rename returns content-modified for stale document versions', () => {
     const ren = messages.find(m => m.id === 2);
     assert.ok(ren?.error, 'rename stale error present');
     assert.equal(ren.error.code, -32801);
+});
+
+test('LSP rename streams work-done progress notifications', () => {
+    const files = {
+        'rico.md': ['---', 'id: rico', 'type: contact', 'name: Rico', '---'].join('\n')
+    };
+    for (let i = 0; i < 80; i++) {
+        files[`ref-${i}.md`] = ['---', `id: ref-${i}`, 'type: note', '---', `See [[rico]] from note ${i}.`].join('\n');
+    }
+    const renameVault = createVault(files);
+    const renameUri = rootUri(renameVault.dir);
+    try {
+        const { messages, status } = lsp(renameVault.dir, [
+            frame({ jsonrpc: '2.0', id: 1, method: 'initialize', params: { rootUri: renameUri, capabilities: {} } }),
+            frame({ jsonrpc: '2.0', method: 'initialized', params: {} }),
+            frame({ jsonrpc: '2.0', id: 2, method: 'textDocument/rename', params: {
+                textDocument: { uri: renameUri + '/rico.md' },
+                position: { line: 1, character: 4 },
+                newName: 'juan-rico',
+                workDoneToken: 'rename-wd-1'
+            }}),
+            frame({ jsonrpc: '2.0', id: 3, method: 'shutdown' }),
+            frame({ jsonrpc: '2.0', method: 'exit' }),
+        ]);
+        assert.equal(status, 0);
+        const progress = messages.filter((m) => m.method === '$/progress' && m.params?.token === 'rename-wd-1');
+        assert.ok(progress.some((m) => m.params?.value?.kind === 'begin'), 'rename work-done begin sent');
+        assert.ok(
+            !messages.some((m) => m.id === 2 && m.error),
+            'rename request should not surface an LSP error while streaming progress'
+        );
+    } finally {
+        renameVault.destroy();
+    }
 });
 
 // ── Code action tests ─────────────────────────────────────────────────────────
@@ -1997,6 +2407,54 @@ test('LSP references from an alias wikilink include canonical and aliased refere
     }
 });
 
+test('LSP references streams work-done and partial-result progress notifications', () => {
+    const files = {
+        'hub.md': ['---', 'id: hub', 'type: note', 'name: Hub', '---'].join('\n')
+    };
+    for (let i = 0; i < 80; i++) {
+        files[`ref-${i}.md`] = ['---', `id: ref-${i}`, 'type: note', '---', `See [[hub]] and [[hub]] in note ${i}.`].join('\n');
+    }
+    const refsVault = createVault(files);
+    const refsUri = rootUri(refsVault.dir);
+    try {
+        const { messages, status } = lsp(refsVault.dir, [
+            frame({ jsonrpc: '2.0', id: 1, method: 'initialize', params: { rootUri: refsUri, capabilities: {} } }),
+            frame({ jsonrpc: '2.0', method: 'initialized', params: {} }),
+            frame({ jsonrpc: '2.0', method: 'textDocument/didOpen', params: {
+                textDocument: {
+                    uri: refsUri + '/hub.md',
+                    languageId: 'markdown',
+                    version: 1,
+                    text: ['---', 'id: hub', 'type: note', 'name: Hub', '---'].join('\n')
+                }
+            }}),
+            frame({ jsonrpc: '2.0', id: 2, method: 'textDocument/references', params: {
+                textDocument: { uri: refsUri + '/hub.md' },
+                position: { line: 1, character: 4 },
+                context: { includeDeclaration: true },
+                workDoneToken: 'refs-wd-1',
+                partialResultToken: 'refs-part-1'
+            }}),
+            frame({ jsonrpc: '2.0', id: 3, method: 'shutdown' }),
+            frame({ jsonrpc: '2.0', method: 'exit' }),
+        ]);
+        assert.equal(status, 0);
+        const progress = messages.filter((m) => m.method === '$/progress');
+        assert.ok(progress.some((m) => m.params?.token === 'refs-wd-1' && m.params?.value?.kind === 'begin'), 'references work-done begin sent');
+        const partials = progress.filter((m) => m.params?.token === 'refs-part-1');
+        assert.ok(partials.length >= 1, 'reference partial batches streamed');
+        assert.ok(partials.every((m) => Array.isArray(m.params?.value)), 'reference partial batches contain location arrays');
+        const streamedLocations = partials.reduce((count, m) => count + m.params.value.length, 0);
+        assert.ok(streamedLocations > 25, 'reference partial batches carry a meaningful location set');
+        assert.ok(
+            !messages.some((m) => m.id === 2 && m.error),
+            'references request should not surface an LSP error while streaming progress'
+        );
+    } finally {
+        refsVault.destroy();
+    }
+});
+
 // ── Document symbols tests ────────────────────────────────────────────────────
 
 test('LSP documentSymbols returns frontmatter fields and body headings', () => {
@@ -2254,6 +2712,38 @@ test('LSP workspace/symbol returns empty array for non-matching query', () => {
     assert.deepEqual(ws.result, [], 'empty for non-matching query');
 });
 
+test('LSP workspace/symbol streams work-done and partial-result progress notifications', () => {
+    const files = {};
+    for (let i = 0; i < 80; i++) {
+        files[`contact-${i}.md`] = ['---', `id: contact-${i}`, 'type: contact', `name: Contact ${i}`, '---'].join('\n');
+    }
+    const symbolVault = createVault(files);
+    const symbolUri = rootUri(symbolVault.dir);
+    try {
+        const { messages, status } = lsp(symbolVault.dir, [
+            frame({ jsonrpc: '2.0', id: 1, method: 'initialize', params: { rootUri: symbolUri, capabilities: {} } }),
+            frame({ jsonrpc: '2.0', method: 'initialized', params: {} }),
+            frame({ jsonrpc: '2.0', id: 2, method: 'workspace/symbol', params: {
+                query: 'contact',
+                workDoneToken: 'ws-wd-1',
+                partialResultToken: 'ws-part-1'
+            }}),
+            frame({ jsonrpc: '2.0', id: 3, method: 'shutdown' }),
+            frame({ jsonrpc: '2.0', method: 'exit' }),
+        ]);
+        assert.equal(status, 0);
+        const progress = messages.filter((m) => m.method === '$/progress');
+        assert.ok(progress.some((m) => m.params?.token === 'ws-wd-1' && m.params?.value?.kind === 'begin'), 'workspace symbol work-done begin sent');
+        assert.ok(progress.some((m) => m.params?.token === 'ws-wd-1' && m.params?.value?.kind === 'report'), 'workspace symbol work-done report sent');
+        assert.ok(progress.some((m) => m.params?.token === 'ws-wd-1' && m.params?.value?.kind === 'end'), 'workspace symbol work-done end sent');
+        const partials = progress.filter((m) => m.params?.token === 'ws-part-1');
+        assert.ok(partials.length >= 1, 'workspace symbol partial batches streamed');
+        assert.ok(partials.every((m) => Array.isArray(m.params?.value)), 'workspace symbol partial batches contain symbol arrays');
+    } finally {
+        symbolVault.destroy();
+    }
+});
+
 // ── Frontmatter completion tests ──────────────────────────────────────────────
 
 test('LSP completion returns field key suggestions inside frontmatter', () => {
@@ -2282,6 +2772,181 @@ test('LSP completion returns field key suggestions inside frontmatter', () => {
     assert.ok(statusItem, 'status field key suggested');
     assert.equal(statusItem.kind, 10, 'kind = Property (10)');
     assert.ok(statusItem.insertText.includes(':'), 'insertText includes colon separator');
+});
+
+test('LSP completion surfaces emergent-cluster field suggestions for a new/untyped note, not just confirmed type bundles', () => {
+    const files = {};
+    for (let i = 0; i < 6; i++) {
+        files[`acct-${i}.md`] = ['---', `id: acct-${i}`, 'type: account', 'company: "[[acme]]"', 'status: active', '---'].join('\n');
+    }
+    // On-disk content must be valid YAML for the index to actually capture
+    // "status" as a field — a bare "co" line with no colon breaks the parse.
+    // Untyped note, already has status set — matches the emergent cluster's
+    // signature (company + status).
+    files['draft.md'] = '---\nid: draft\nstatus: active\n---\n';
+    // The open buffer simulates the user mid-typing the next field key,
+    // separately from the valid on-disk content used to build the index.
+    const liveBufferText = '---\nid: draft\nstatus: active\nco\n---\n';
+    const clusterVault = createVault(files);
+    const clusterUri = rootUri(clusterVault.dir);
+    const docUri = clusterUri + '/draft.md';
+    try {
+        const { messages } = lsp(clusterVault.dir, [
+            frame({ jsonrpc: '2.0', id: 1, method: 'initialize', params: { rootUri: clusterUri, capabilities: {} } }),
+            frame({ jsonrpc: '2.0', method: 'initialized', params: {} }),
+            frame({ jsonrpc: '2.0', method: 'textDocument/didOpen', params: {
+                textDocument: { uri: docUri, languageId: 'markdown', version: 1, text: liveBufferText }
+            }}),
+            frame({ jsonrpc: '2.0', id: 2, method: 'textDocument/completion', params: {
+                textDocument: { uri: docUri },
+                position: { line: 3, character: 2 },
+                context: { triggerKind: 1 }
+            }}),
+            frame({ jsonrpc: '2.0', id: 3, method: 'shutdown' }),
+            frame({ jsonrpc: '2.0', method: 'exit' }),
+        ]);
+        const comp = messages.find(m => m.id === 2);
+        assert.ok(comp, 'completion response present');
+        const companyItem = comp.result.find(i => i.label === 'company');
+        assert.ok(companyItem, 'company field key suggested from the emergent cluster match');
+        assert.equal(companyItem.detail, 'matches an emerging pattern in this vault');
+    } finally {
+        clusterVault.destroy();
+    }
+});
+
+test('LSP frontmatter completion is schema-aware — a real capability VS Code already had that LSP did not', () => {
+    const files = {
+        'schema-contact.md': '---\nid: schema-contact\ntype: schema\ntarget: contact\nfields:\n  homeworld:\n    type: string\n    required: true\n---\n',
+        'ada.md': '---\nid: ada\ntype: contact\nhomeworld: Luna\n---\n'
+    };
+    const schemaVault = createVault(files);
+    const schemaUri = rootUri(schemaVault.dir);
+    const docUri = schemaUri + '/draft.md';
+    const liveBufferText = '---\nid: draft\ntype: contact\nho\n---\n';
+    try {
+        const { messages } = lsp(schemaVault.dir, [
+            frame({ jsonrpc: '2.0', id: 1, method: 'initialize', params: { rootUri: schemaUri, capabilities: {} } }),
+            frame({ jsonrpc: '2.0', method: 'initialized', params: {} }),
+            frame({ jsonrpc: '2.0', method: 'textDocument/didOpen', params: {
+                textDocument: { uri: docUri, languageId: 'markdown', version: 1, text: liveBufferText }
+            }}),
+            frame({ jsonrpc: '2.0', id: 2, method: 'textDocument/completion', params: {
+                textDocument: { uri: docUri },
+                position: { line: 3, character: 2 },
+                context: { triggerKind: 1 }
+            }}),
+            frame({ jsonrpc: '2.0', id: 3, method: 'shutdown' }),
+            frame({ jsonrpc: '2.0', method: 'exit' }),
+        ]);
+        const comp = messages.find(m => m.id === 2);
+        assert.ok(comp, 'completion response present');
+        const homeworldItem = comp.result.find(i => i.label === 'homeworld');
+        assert.ok(homeworldItem, 'homeworld should be suggested from the schema, not just vault-observed frequency');
+        assert.match(homeworldItem.detail, /schema/i);
+    } finally {
+        schemaVault.destroy();
+    }
+});
+
+test('LSP frontmatter completion surfaces archetype/bundle fields ported from VS Code\'s completion path', () => {
+    const files = {};
+    for (let i = 0; i < 5; i++) {
+        files[`contact-${i}.md`] = ['---', `id: contact-${i}`, 'type: contact', 'homeworld: Luna', 'rank: sergeant', '---'].join('\n');
+    }
+    files['draft.md'] = '---\nid: draft\ntype: contact\nho\n---\n';
+    const bundleVault = createVault(files);
+    const bundleUri = rootUri(bundleVault.dir);
+    const docUri = bundleUri + '/draft.md';
+    try {
+        const { messages } = lsp(bundleVault.dir, [
+            frame({ jsonrpc: '2.0', id: 1, method: 'initialize', params: { rootUri: bundleUri, capabilities: {} } }),
+            frame({ jsonrpc: '2.0', method: 'initialized', params: {} }),
+            frame({ jsonrpc: '2.0', id: 2, method: 'textDocument/completion', params: {
+                textDocument: { uri: docUri },
+                position: { line: 3, character: 2 },
+                context: { triggerKind: 1 }
+            }}),
+            frame({ jsonrpc: '2.0', id: 3, method: 'shutdown' }),
+            frame({ jsonrpc: '2.0', method: 'exit' }),
+        ]);
+        const comp = messages.find(m => m.id === 2);
+        assert.ok(comp, 'completion response present');
+        const homeworldItem = comp.result.find(i => i.label === 'homeworld');
+        assert.ok(homeworldItem, 'homeworld should be suggested — common across peer contact notes');
+    } finally {
+        bundleVault.destroy();
+    }
+});
+
+test('LSP completion offers implicit [[relation]] suggestions for a relation field before any bracket is typed', () => {
+    const files = {
+        'contact-1.md': ['---', 'id: contact-1', 'type: contact', 'name: Ace', 'unit: [[roughnecks]]', '---'].join('\n'),
+        'contact-2.md': ['---', 'id: contact-2', 'type: contact', 'name: Carmen', 'unit: [[roughnecks]]', '---'].join('\n'),
+        'contact-3.md': ['---', 'id: contact-3', 'type: contact', 'name: Dizzy', 'unit: [[roughnecks]]', '---'].join('\n'),
+        'contact-4.md': ['---', 'id: contact-4', 'type: contact', 'name: Flores', 'unit: [[roughnecks]]', '---'].join('\n'),
+        'contact-5.md': ['---', 'id: contact-5', 'type: contact', 'name: Zim', 'unit: [[roughnecks]]', '---'].join('\n'),
+        'roughnecks.md': ['---', 'id: roughnecks', 'type: unit', 'name: Mobile Infantry Roughnecks', '---'].join('\n'),
+        'draft.md': ['---', 'id: draft', 'type: contact', 'unit: ', '---'].join('\n')
+    };
+    const relVault = createVault(files);
+    const relUri = rootUri(relVault.dir);
+    const docUri = relUri + '/draft.md';
+    try {
+        const { messages } = lsp(relVault.dir, [
+            frame({ jsonrpc: '2.0', id: 1, method: 'initialize', params: { rootUri: relUri, capabilities: {} } }),
+            frame({ jsonrpc: '2.0', method: 'initialized', params: {} }),
+            frame({ jsonrpc: '2.0', id: 2, method: 'textDocument/completion', params: {
+                textDocument: { uri: docUri },
+                position: { line: 3, character: 6 }, // after 'unit: '
+                context: { triggerKind: 2, triggerCharacter: ':' }
+            }}),
+            frame({ jsonrpc: '2.0', id: 3, method: 'shutdown' }),
+            frame({ jsonrpc: '2.0', method: 'exit' }),
+        ]);
+        const comp = messages.find(m => m.id === 2);
+        assert.ok(comp, 'completion response present');
+        const roughneckItem = comp.result.find(i => i.insertText === '[[roughnecks]]');
+        assert.ok(roughneckItem, 'roughnecks suggested as a relation target before any bracket was typed');
+        assert.equal(roughneckItem.kind, 17, 'kind = Reference (17)');
+    } finally {
+        relVault.destroy();
+    }
+});
+
+test('LSP completion does not hijack a plain scalar field with relation suggestions', () => {
+    const files = {
+        'contact-1.md': ['---', 'id: contact-1', 'type: contact', 'name: Ace', 'status: active', '---'].join('\n'),
+        'contact-2.md': ['---', 'id: contact-2', 'type: contact', 'name: Carmen', 'status: active', '---'].join('\n'),
+        'contact-3.md': ['---', 'id: contact-3', 'type: contact', 'name: Dizzy', 'status: reserve', '---'].join('\n'),
+        'contact-4.md': ['---', 'id: contact-4', 'type: contact', 'name: Flores', 'status: active', '---'].join('\n'),
+        'contact-5.md': ['---', 'id: contact-5', 'type: contact', 'name: Zim', 'status: reserve', '---'].join('\n'),
+        'contact-6.md': ['---', 'id: contact-6', 'type: contact', 'name: Jenkins', 'status: active', '---'].join('\n'),
+        'draft.md': ['---', 'id: draft', 'type: contact', 'status: ', '---'].join('\n')
+    };
+    const scalarVault = createVault(files);
+    const scalarUri = rootUri(scalarVault.dir);
+    const docUri = scalarUri + '/draft.md';
+    try {
+        const { messages } = lsp(scalarVault.dir, [
+            frame({ jsonrpc: '2.0', id: 1, method: 'initialize', params: { rootUri: scalarUri, capabilities: {} } }),
+            frame({ jsonrpc: '2.0', method: 'initialized', params: {} }),
+            frame({ jsonrpc: '2.0', id: 2, method: 'textDocument/completion', params: {
+                textDocument: { uri: docUri },
+                position: { line: 3, character: 8 }, // after 'status: '
+                context: { triggerKind: 2, triggerCharacter: ':' }
+            }}),
+            frame({ jsonrpc: '2.0', id: 3, method: 'shutdown' }),
+            frame({ jsonrpc: '2.0', method: 'exit' }),
+        ]);
+        const comp = messages.find(m => m.id === 2);
+        assert.ok(comp, 'completion response present');
+        const activeItem = comp.result.find(i => i.label === 'active');
+        assert.ok(activeItem, 'plain scalar value completion still offered, not blocked by relation gating');
+        assert.equal(activeItem.kind, 12, 'kind = Value (12), not Reference');
+    } finally {
+        scalarVault.destroy();
+    }
 });
 
 test('LSP completion returns type value suggestions for type: field in frontmatter', () => {
@@ -2479,22 +3144,55 @@ test('LSP callHierarchy returns incoming and outgoing linked notes', () => {
 });
 
 test('LSP workspace/executeCommand returns note intelligence snapshot', () => {
-    const { messages } = lsp(vaultDir, [
-        frame({ jsonrpc: '2.0', id: 1, method: 'initialize', params: { rootUri: uri, capabilities: {} } }),
-        frame({ jsonrpc: '2.0', method: 'initialized', params: {} }),
-        frame({ jsonrpc: '2.0', id: 2, method: 'workspace/executeCommand', params: {
-            command: 'yamlink.noteIntelligence',
-            arguments: [{ id: 'rico' }]
-        }}),
-        frame({ jsonrpc: '2.0', id: 3, method: 'shutdown' }),
-        frame({ jsonrpc: '2.0', method: 'exit' }),
-    ]);
-    const cmd = messages.find(m => m.id === 2);
-    assert.ok(cmd, 'executeCommand response present');
-    assert.equal(cmd.result.id, 'rico');
-    assert.equal(typeof cmd.result.lifecycle, 'object');
-    assert.equal(typeof cmd.result.drift, 'object');
-    assert.equal(typeof cmd.result.arc, 'object');
+    const snapshotVault = createVault({
+        'rico.md': [
+            '---',
+            'id: rico',
+            'type: contact',
+            'name: Johnny Rico',
+            'status: active',
+            'unit: [[roughnecks]]',
+            'homeworld: Buenos Aires',
+            '---'
+        ].join('\n'),
+        'roughnecks.md': ['---', 'id: roughnecks', 'type: unit', 'name: Roughnecks', '---'].join('\n'),
+        'carmen.md': ['---', 'id: carmen', 'type: contact', 'name: Carmen', 'unit: [[roughnecks]]', 'homeworld: Luna', '---'].join('\n')
+    });
+    const snapshotUri = rootUri(snapshotVault.dir);
+    try {
+        const mutationLogDir = path.join(snapshotVault.dir, '.yamlink');
+        fs.mkdirSync(mutationLogDir, { recursive: true });
+        fs.writeFileSync(path.join(mutationLogDir, 'mutation-log.ndjson'), [
+            JSON.stringify({ timestamp: '2026-07-01T10:00:00.000Z', type: 'note_created', noteId: 'rico', field: null, oldValue: null, newValue: null }),
+            JSON.stringify({ timestamp: '2026-07-02T10:00:00.000Z', type: 'field_added', noteId: 'rico', field: 'status', oldValue: null, newValue: 'active' }),
+            JSON.stringify({ timestamp: '2026-07-03T10:00:00.000Z', type: 'field_changed', noteId: 'rico', field: 'unit', oldValue: '[[alpha]]', newValue: '[[roughnecks]]' })
+        ].join('\n') + '\n', 'utf8');
+
+        const { messages } = lsp(snapshotVault.dir, [
+            frame({ jsonrpc: '2.0', id: 1, method: 'initialize', params: { rootUri: snapshotUri, capabilities: {} } }),
+            frame({ jsonrpc: '2.0', method: 'initialized', params: {} }),
+            frame({ jsonrpc: '2.0', id: 2, method: 'workspace/executeCommand', params: {
+                command: 'yamlink.noteIntelligence',
+                arguments: [{ id: 'rico' }]
+            }}),
+            frame({ jsonrpc: '2.0', id: 3, method: 'shutdown' }),
+            frame({ jsonrpc: '2.0', method: 'exit' }),
+        ]);
+        const cmd = messages.find(m => m.id === 2);
+        assert.ok(cmd, 'executeCommand response present');
+        assert.equal(cmd.result.id, 'rico');
+        assert.equal(typeof cmd.result.lifecycle, 'object');
+        assert.equal(typeof cmd.result.drift, 'object');
+        assert.equal(typeof cmd.result.arc, 'object');
+        assert.equal(typeof cmd.result.timeInState, 'object');
+        assert.equal(typeof cmd.result.mutationVelocity, 'object');
+        assert.equal(typeof cmd.result.crossNotePatterns, 'object');
+        assert.equal(cmd.result.mutationVelocity.totalEvents, 3);
+        assert.ok(Array.isArray(cmd.result.crossNotePatterns.commonFields));
+        assert.ok(cmd.result.crossNotePatterns.commonFields.includes('unit'));
+    } finally {
+        snapshotVault.destroy();
+    }
 });
 
 test('LSP workspace/executeCommand returns note arc snapshot', () => {
@@ -2537,7 +3235,7 @@ test('LSP workspace/executeCommand returns field category snapshot', () => {
     assert.equal(typeof cmd.result.surfaces.completion?.level, 'number');
 });
 
-test('LSP workspace/executeCommand returns an edit plan for missing fields', () => {
+test('LSP workspace/executeCommand applies missing fields through workspace/applyEdit', () => {
     const cmdVault = createVault({
         'contact-1.md': ['---', 'id: contact-1', 'type: contact', 'name: Ace', 'status: active', 'unit: [[squad-alpha]]', '---'].join('\n'),
         'contact-2.md': ['---', 'id: contact-2', 'type: contact', 'name: Carmen', 'status: active', 'homeworld: Luna', 'unit: [[squad-alpha]]', '---'].join('\n'),
@@ -2554,15 +3252,124 @@ test('LSP workspace/executeCommand returns an edit plan for missing fields', () 
                 command: 'yamlink.addMissingFields',
                 arguments: [{ id: 'draft' }]
             }}),
+            responseFrame(-1, { applied: true }),
             frame({ jsonrpc: '2.0', id: 3, method: 'shutdown' }),
             frame({ jsonrpc: '2.0', method: 'exit' }),
         ]);
+        const applyEdit = messages.find((m) => m.id === -1 && m.method === 'workspace/applyEdit');
         const cmd = messages.find((m) => m.id === 2);
+        assert.ok(applyEdit, 'workspace/applyEdit request emitted');
+        assert.ok(applyEdit.params?.edit, 'workspace edit payload present');
         assert.ok(cmd, 'executeCommand response present');
         assert.equal(cmd.result.ok, true);
         assert.ok(Array.isArray(cmd.result.missingFields));
         assert.ok(cmd.result.missingFields.includes('unit') || cmd.result.missingFields.includes('homeworld'));
         assert.ok(cmd.result.edit, 'workspace edit returned');
+        assert.equal(cmd.result.applyEdit.applied, true, 'applyEdit acknowledged by client');
+    } finally {
+        cmdVault.destroy();
+    }
+});
+
+test('LSP workspace/executeCommand surfaces applyEdit rejection details from the client', () => {
+    const cmdVault = createVault({
+        'contact-1.md': ['---', 'id: contact-1', 'type: contact', 'name: Ace', 'status: active', 'unit: [[squad-alpha]]', '---'].join('\n'),
+        'contact-2.md': ['---', 'id: contact-2', 'type: contact', 'name: Carmen', 'status: active', 'homeworld: Luna', 'unit: [[squad-alpha]]', '---'].join('\n'),
+        'contact-3.md': ['---', 'id: contact-3', 'type: contact', 'name: Dizzy', 'status: reserve', 'homeworld: Buenos Aires', 'unit: [[squad-alpha]]', '---'].join('\n'),
+        'draft.md': ['---', 'id: draft', 'type: contact', 'name: Draft Contact', '---'].join('\n'),
+        'squad-alpha.md': ['---', 'id: squad-alpha', 'type: unit', 'name: Alpha Squad', '---'].join('\n')
+    });
+    const cmdUri = rootUri(cmdVault.dir);
+    try {
+        const { messages } = lsp(cmdVault.dir, [
+            frame({ jsonrpc: '2.0', id: 1, method: 'initialize', params: { rootUri: cmdUri, capabilities: {} } }),
+            frame({ jsonrpc: '2.0', method: 'initialized', params: {} }),
+            frame({ jsonrpc: '2.0', id: 2, method: 'workspace/executeCommand', params: {
+                command: 'yamlink.addMissingFields',
+                arguments: [{ id: 'draft' }]
+            }}),
+            responseFrame(-1, { applied: false, failureReason: 'Client rejected edit' }),
+            frame({ jsonrpc: '2.0', id: 3, method: 'shutdown' }),
+            frame({ jsonrpc: '2.0', method: 'exit' }),
+        ]);
+        const applyEdit = messages.find((m) => m.id === -1 && m.method === 'workspace/applyEdit');
+        const cmd = messages.find((m) => m.id === 2);
+        assert.ok(applyEdit, 'workspace/applyEdit request emitted');
+        assert.ok(cmd, 'executeCommand response present');
+        assert.equal(cmd.result.ok, true);
+        assert.equal(cmd.result.applyEdit.applied, false);
+        assert.equal(cmd.result.applyEdit.failureReason, 'Client rejected edit');
+    } finally {
+        cmdVault.destroy();
+    }
+});
+
+test('LSP workspace/executeCommand surfaces applyEdit transport errors from the client', () => {
+    const cmdVault = createVault({
+        'contact-1.md': ['---', 'id: contact-1', 'type: contact', 'name: Ace', 'status: active', 'unit: [[squad-alpha]]', '---'].join('\n'),
+        'contact-2.md': ['---', 'id: contact-2', 'type: contact', 'name: Carmen', 'status: active', 'homeworld: Luna', 'unit: [[squad-alpha]]', '---'].join('\n'),
+        'contact-3.md': ['---', 'id: contact-3', 'type: contact', 'name: Dizzy', 'status: reserve', 'homeworld: Buenos Aires', 'unit: [[squad-alpha]]', '---'].join('\n'),
+        'draft.md': ['---', 'id: draft', 'type: contact', 'name: Draft Contact', '---'].join('\n'),
+        'squad-alpha.md': ['---', 'id: squad-alpha', 'type: unit', 'name: Alpha Squad', '---'].join('\n')
+    });
+    const cmdUri = rootUri(cmdVault.dir);
+    try {
+        const { messages } = lsp(cmdVault.dir, [
+            frame({ jsonrpc: '2.0', id: 1, method: 'initialize', params: { rootUri: cmdUri, capabilities: {} } }),
+            frame({ jsonrpc: '2.0', method: 'initialized', params: {} }),
+            frame({ jsonrpc: '2.0', id: 2, method: 'workspace/executeCommand', params: {
+                command: 'yamlink.addMissingFields',
+                arguments: [{ id: 'draft' }]
+            }}),
+            errorResponseFrame(-1, -32603, 'Client applyEdit bridge failed'),
+            frame({ jsonrpc: '2.0', id: 3, method: 'shutdown' }),
+            frame({ jsonrpc: '2.0', method: 'exit' }),
+        ]);
+        const applyEdit = messages.find((m) => m.id === -1 && m.method === 'workspace/applyEdit');
+        const cmd = messages.find((m) => m.id === 2);
+        assert.ok(applyEdit, 'workspace/applyEdit request emitted');
+        assert.ok(cmd, 'executeCommand response present');
+        assert.equal(cmd.result.ok, true);
+        assert.equal(cmd.result.applyEdit.applied, false);
+        assert.equal(cmd.result.applyEdit.failureReason, 'Client applyEdit bridge failed');
+    } finally {
+        cmdVault.destroy();
+    }
+});
+
+test('LSP workspace/executeCommand does not hang forever when the client never responds to applyEdit', () => {
+    const cmdVault = createVault({
+        'contact-1.md': ['---', 'id: contact-1', 'type: contact', 'name: Ace', 'status: active', 'unit: [[squad-alpha]]', '---'].join('\n'),
+        'contact-2.md': ['---', 'id: contact-2', 'type: contact', 'name: Carmen', 'status: active', 'homeworld: Luna', 'unit: [[squad-alpha]]', '---'].join('\n'),
+        'contact-3.md': ['---', 'id: contact-3', 'type: contact', 'name: Dizzy', 'status: reserve', 'homeworld: Buenos Aires', 'unit: [[squad-alpha]]', '---'].join('\n'),
+        'draft.md': ['---', 'id: draft', 'type: contact', 'name: Draft Contact', '---'].join('\n'),
+        'squad-alpha.md': ['---', 'id: squad-alpha', 'type: unit', 'name: Alpha Squad', '---'].join('\n')
+    });
+    const cmdUri = rootUri(cmdVault.dir);
+    try {
+        // No responseFrame for the -1 applyEdit request — simulates a client that
+        // never answers (unsupported capability, dropped dialog, client bug).
+        // Deliberately no shutdown/exit frames either: route() dispatches
+        // handleExecuteCommand without awaiting it, so shutdown+exit sent in the
+        // same input burst would let the process exit before the request timeout
+        // ever fires. A short env-overridden timeout plus a tight spawn timeout
+        // keeps this bounded instead of waiting out the real 5s production
+        // default or the harness's full 10s outer bound.
+        const { messages } = lsp(cmdVault.dir, [
+            frame({ jsonrpc: '2.0', id: 1, method: 'initialize', params: { rootUri: cmdUri, capabilities: {} } }),
+            frame({ jsonrpc: '2.0', method: 'initialized', params: {} }),
+            frame({ jsonrpc: '2.0', id: 2, method: 'workspace/executeCommand', params: {
+                command: 'yamlink.addMissingFields',
+                arguments: [{ id: 'draft' }]
+            }}),
+        ], { env: { YAMLINK_LSP_REQUEST_TIMEOUT_MS: '200' }, timeout: 2000 });
+        const applyEdit = messages.find((m) => m.id === -1 && m.method === 'workspace/applyEdit');
+        const cmd = messages.find((m) => m.id === 2);
+        assert.ok(applyEdit, 'workspace/applyEdit request was sent');
+        assert.ok(cmd, 'executeCommand still received a response instead of hanging');
+        assert.equal(cmd.result.ok, true);
+        assert.equal(cmd.result.applyEdit.applied, false);
+        assert.match(cmd.result.applyEdit.failureReason, /timed out/i);
     } finally {
         cmdVault.destroy();
     }
@@ -2603,7 +3410,7 @@ test('LSP workspace/executeCommand addMissingFields returns content-modified for
     }
 });
 
-test('LSP workspace/executeCommand scaffolds missing identity for an open document', () => {
+test('LSP workspace/executeCommand scaffolds missing identity via workspace/applyEdit', () => {
     const docUri = uri + '/draft-no-frontmatter.md';
     const docText = 'Body only draft.';
     const { messages } = lsp(vaultDir, [
@@ -2616,14 +3423,174 @@ test('LSP workspace/executeCommand scaffolds missing identity for an open docume
             command: 'yamlink.scaffoldIdentity',
             arguments: [{ uri: docUri }]
         }}),
+        responseFrame(-1, { applied: true }),
         frame({ jsonrpc: '2.0', id: 3, method: 'shutdown' }),
         frame({ jsonrpc: '2.0', method: 'exit' }),
     ]);
+    const applyEdit = messages.find((m) => m.id === -1 && m.method === 'workspace/applyEdit');
     const cmd = messages.find((m) => m.id === 2);
+    assert.ok(applyEdit, 'workspace/applyEdit request emitted');
+    assert.ok(applyEdit.params?.edit, 'workspace edit payload present');
     assert.ok(cmd, 'executeCommand response present');
     assert.equal(cmd.result.ok, true);
     assert.match(cmd.result.id, /draft-no-frontmatter/);
     assert.ok(cmd.result.edit, 'workspace edit returned');
+    assert.equal(cmd.result.applyEdit.applied, true, 'applyEdit acknowledged by client');
+});
+
+test('LSP workspace/executeCommand scaffolds identity for closed documents via workspace/applyEdit', () => {
+    const closedVault = createVault({
+        'draft-closed.md': 'Body only draft.'
+    });
+    const closedUri = rootUri(closedVault.dir);
+    const docUri = closedUri + '/draft-closed.md';
+    try {
+        const { messages } = lsp(closedVault.dir, [
+            frame({ jsonrpc: '2.0', id: 1, method: 'initialize', params: { rootUri: closedUri, capabilities: {} } }),
+            frame({ jsonrpc: '2.0', method: 'initialized', params: {} }),
+            frame({ jsonrpc: '2.0', id: 2, method: 'workspace/executeCommand', params: {
+                command: 'yamlink.scaffoldIdentity',
+                arguments: [{ uri: docUri }]
+            }}),
+            responseFrame(-1, { applied: true }),
+            frame({ jsonrpc: '2.0', id: 3, method: 'shutdown' }),
+            frame({ jsonrpc: '2.0', method: 'exit' }),
+        ]);
+        const applyEdit = messages.find((m) => m.id === -1 && m.method === 'workspace/applyEdit');
+        const cmd = messages.find((m) => m.id === 2);
+        assert.ok(applyEdit, 'workspace/applyEdit request emitted');
+        assert.ok(cmd, 'executeCommand response present');
+        assert.equal(cmd.result.ok, true);
+        assert.equal(cmd.result.id, 'draft-closed');
+        assert.equal(cmd.result.type, 'note');
+        assert.equal(cmd.result.applyEdit.applied, true, 'applyEdit acknowledged by client');
+        assert.match(cmd.result.edit.changes[docUri][0].newText, /^---\nid: draft-closed\ntype: note\n---/);
+    } finally {
+        closedVault.destroy();
+    }
+});
+
+test('LSP workspace/executeCommand normalizes frontmatter via workspace/applyEdit', () => {
+    const docUri = uri + '/normalize-frontmatter.md';
+    const docText = ['---', 'unit: roughnecks', 'type: contact', 'id: dizzy', '---', 'Draft body.'].join('\n');
+    const { messages } = lsp(vaultDir, [
+        frame({ jsonrpc: '2.0', id: 1, method: 'initialize', params: { rootUri: uri, capabilities: {} } }),
+        frame({ jsonrpc: '2.0', method: 'initialized', params: {} }),
+        frame({ jsonrpc: '2.0', method: 'textDocument/didOpen', params: {
+            textDocument: { uri: docUri, languageId: 'markdown', version: 1, text: docText }
+        }}),
+        frame({ jsonrpc: '2.0', id: 2, method: 'workspace/executeCommand', params: {
+            command: 'yamlink.normalizeFrontmatter',
+            arguments: [{ uri: docUri }]
+        }}),
+        responseFrame(-1, { applied: true }),
+        frame({ jsonrpc: '2.0', id: 3, method: 'shutdown' }),
+        frame({ jsonrpc: '2.0', method: 'exit' }),
+    ]);
+    const applyEdit = messages.find((m) => m.id === -1 && m.method === 'workspace/applyEdit');
+    const cmd = messages.find((m) => m.id === 2);
+    assert.ok(applyEdit, 'workspace/applyEdit request emitted');
+    assert.ok(applyEdit.params?.edit, 'workspace edit payload present');
+    assert.ok(cmd, 'executeCommand response present');
+    assert.equal(cmd.result.ok, true);
+    assert.ok(cmd.result.edit, 'workspace edit returned');
+    assert.equal(cmd.result.applyEdit.applied, true, 'applyEdit acknowledged by client');
+    const normalized = cmd.result.edit.changes[docUri][0].newText;
+    assert.match(normalized, /id: dizzy/);
+    assert.match(normalized, /type: contact/);
+    assert.match(normalized, /unit: roughnecks/);
+});
+
+test('LSP workspace/executeCommand converts scalar relations via workspace/applyEdit', () => {
+    const docUri = uri + '/convert-relations.md';
+    const docText = [
+        '---',
+        'id: convert-relations',
+        'type: contact',
+        'unit: roughnecks',
+        '---',
+        'Body.'
+    ].join('\n');
+    const { messages } = lsp(vaultDir, [
+        frame({ jsonrpc: '2.0', id: 1, method: 'initialize', params: { rootUri: uri, capabilities: {} } }),
+        frame({ jsonrpc: '2.0', method: 'initialized', params: {} }),
+        frame({ jsonrpc: '2.0', method: 'textDocument/didOpen', params: {
+            textDocument: { uri: docUri, languageId: 'markdown', version: 1, text: docText }
+        }}),
+        frame({ jsonrpc: '2.0', id: 2, method: 'workspace/executeCommand', params: {
+            command: 'yamlink.convertRelations',
+            arguments: [{ uri: docUri }]
+        }}),
+        responseFrame(-1, { applied: true }),
+        frame({ jsonrpc: '2.0', id: 3, method: 'shutdown' }),
+        frame({ jsonrpc: '2.0', method: 'exit' }),
+    ]);
+    const applyEdit = messages.find((m) => m.id === -1 && m.method === 'workspace/applyEdit');
+    const cmd = messages.find((m) => m.id === 2);
+    assert.ok(applyEdit, 'workspace/applyEdit request emitted');
+    assert.ok(applyEdit.params?.edit, 'workspace edit payload present');
+    assert.ok(cmd, 'executeCommand response present');
+    assert.equal(cmd.result.ok, true);
+    assert.ok(cmd.result.edit, 'workspace edit returned');
+    assert.equal(cmd.result.applyEdit.applied, true, 'applyEdit acknowledged by client');
+    assert.equal(cmd.result.edit.changes[docUri][0].newText, '"[[roughnecks]]"');
+});
+
+test('LSP workspace/executeCommand converts multiple scalar relations in one edit pass', () => {
+    const relationVault = createVault({
+        'rico.md': ['---', 'id: rico', 'type: contact', 'name: Juan Rico', 'unit: [[roughnecks]]', 'wingman: [[carmen]]', '---'].join('\n'),
+        'dizzy.md': ['---', 'id: dizzy', 'type: contact', 'name: Dizzy', 'unit: [[roughnecks]]', 'wingman: [[carmen]]', '---'].join('\n'),
+        'roughnecks.md': ['---', 'id: roughnecks', 'type: unit', 'name: Roughnecks', '---'].join('\n'),
+        'carmen.md': ['---', 'id: carmen', 'type: contact', 'name: Carmen', 'unit: [[roughnecks]]', '---'].join('\n'),
+        'convert-multi.md': [
+            '---',
+            'id: convert-multi',
+            'type: contact',
+            'unit: roughnecks',
+            'wingman: carmen',
+            '---',
+            'Body.'
+        ].join('\n')
+    });
+    const relationUri = rootUri(relationVault.dir);
+    const docUri = relationUri + '/convert-multi.md';
+    const docText = [
+        '---',
+        'id: convert-multi',
+        'type: contact',
+        'unit: roughnecks',
+        'wingman: carmen',
+        '---',
+        'Body.'
+    ].join('\n');
+    try {
+        const { messages } = lsp(relationVault.dir, [
+            frame({ jsonrpc: '2.0', id: 1, method: 'initialize', params: { rootUri: relationUri, capabilities: {} } }),
+            frame({ jsonrpc: '2.0', method: 'initialized', params: {} }),
+            frame({ jsonrpc: '2.0', method: 'textDocument/didOpen', params: {
+                textDocument: { uri: docUri, languageId: 'markdown', version: 1, text: docText }
+            }}),
+            frame({ jsonrpc: '2.0', id: 2, method: 'workspace/executeCommand', params: {
+                command: 'yamlink.convertRelations',
+                arguments: [{ uri: docUri }]
+            }}),
+            responseFrame(-1, { applied: true }),
+            frame({ jsonrpc: '2.0', id: 3, method: 'shutdown' }),
+            frame({ jsonrpc: '2.0', method: 'exit' }),
+        ]);
+        const applyEdit = messages.find((m) => m.id === -1 && m.method === 'workspace/applyEdit');
+        const cmd = messages.find((m) => m.id === 2);
+        assert.ok(applyEdit, 'workspace/applyEdit request emitted');
+        assert.ok(cmd, 'executeCommand response present');
+        assert.equal(cmd.result.ok, true);
+        assert.equal(cmd.result.applyEdit.applied, true, 'applyEdit acknowledged by client');
+        const edits = cmd.result.edit.changes[docUri];
+        assert.equal(edits.length, 2, 'both relation fields are rewritten in a single command pass');
+        const rewrittenValues = edits.map((edit) => edit.newText).sort();
+        assert.deepEqual(rewrittenValues, ['"[[carmen]]"', '"[[roughnecks]]"']);
+    } finally {
+        relationVault.destroy();
+    }
 });
 
 test('LSP workspace/executeCommand scaffoldIdentity returns content-modified for stale document versions', () => {
@@ -3004,6 +3971,70 @@ test('LSP codeAction offers scaffold and missing-field quickfixes for Yamlink di
         assert.ok(actions, 'codeAction response present');
         assert.ok(Array.isArray(actions.result));
         assert.ok(actions.result.some((action) => /Scaffold Yamlink identity/.test(action.title)));
+    } finally {
+        actionsVault.destroy();
+    }
+});
+
+test('LSP codeAction offers a relation quickfix for an empty schema-required field on a typed note', () => {
+    const actionsVault = createVault({
+        'schema-contact.md': '---\nid: schema-contact\ntype: schema\ntarget: contact\nfields:\n  unit:\n    type: relation\n---\n',
+        'contact-1.md': ['---', 'id: contact-1', 'type: contact', 'name: Ace', 'unit: [[roughnecks]]', '---'].join('\n'),
+        'contact-2.md': ['---', 'id: contact-2', 'type: contact', 'name: Carmen', 'unit: [[roughnecks]]', '---'].join('\n'),
+        'roughnecks.md': ['---', 'id: roughnecks', 'type: unit', 'name: Mobile Infantry Roughnecks', '---'].join('\n'),
+        'draft.md': ['---', 'id: draft', 'type: contact', 'unit:', '---'].join('\n')
+    });
+    const actionsUri = rootUri(actionsVault.dir);
+    const draftUri = actionsUri + '/draft.md';
+    try {
+        const { messages } = lsp(actionsVault.dir, [
+            frame({ jsonrpc: '2.0', id: 1, method: 'initialize', params: { rootUri: actionsUri, capabilities: {} } }),
+            frame({ jsonrpc: '2.0', method: 'initialized', params: {} }),
+            frame({ jsonrpc: '2.0', id: 2, method: 'textDocument/codeAction', params: {
+                textDocument: { uri: draftUri },
+                range: { start: { line: 3, character: 0 }, end: { line: 3, character: 0 } },
+                context: { diagnostics: [] }
+            }}),
+            frame({ jsonrpc: '2.0', id: 3, method: 'shutdown' }),
+            frame({ jsonrpc: '2.0', method: 'exit' }),
+        ]);
+        const actions = messages.find((m) => m.id === 2);
+        assert.ok(actions, 'codeAction response present');
+        const roughneckAction = actions.result.find((action) => /Use roughnecks for unit\?/.test(action.title));
+        assert.ok(roughneckAction, 'quickfix suggests roughnecks for the empty unit field');
+        assert.equal(roughneckAction.kind, 'quickfix');
+        assert.ok(roughneckAction.edit, 'action carries a workspace edit');
+    } finally {
+        actionsVault.destroy();
+    }
+});
+
+test('LSP codeAction offers a scalar quickfix for an empty common field on a typed note', () => {
+    const actionsVault = createVault({
+        'contact-1.md': ['---', 'id: contact-1', 'type: contact', 'name: Ace', 'status: active', '---'].join('\n'),
+        'contact-2.md': ['---', 'id: contact-2', 'type: contact', 'name: Carmen', 'status: active', '---'].join('\n'),
+        'contact-3.md': ['---', 'id: contact-3', 'type: contact', 'name: Dizzy', 'status: active', '---'].join('\n'),
+        'draft.md': ['---', 'id: draft', 'type: contact', 'status:', '---'].join('\n')
+    });
+    const actionsUri = rootUri(actionsVault.dir);
+    const draftUri = actionsUri + '/draft.md';
+    try {
+        const { messages } = lsp(actionsVault.dir, [
+            frame({ jsonrpc: '2.0', id: 1, method: 'initialize', params: { rootUri: actionsUri, capabilities: {} } }),
+            frame({ jsonrpc: '2.0', method: 'initialized', params: {} }),
+            frame({ jsonrpc: '2.0', id: 2, method: 'textDocument/codeAction', params: {
+                textDocument: { uri: draftUri },
+                range: { start: { line: 3, character: 0 }, end: { line: 3, character: 0 } },
+                context: { diagnostics: [] }
+            }}),
+            frame({ jsonrpc: '2.0', id: 3, method: 'shutdown' }),
+            frame({ jsonrpc: '2.0', method: 'exit' }),
+        ]);
+        const actions = messages.find((m) => m.id === 2);
+        assert.ok(actions, 'codeAction response present');
+        const activeAction = actions.result.find((action) => /Use active for status\?/.test(action.title));
+        assert.ok(activeAction, 'quickfix suggests the common observed value for the empty status field');
+        assert.equal(activeAction.kind, 'quickfix');
     } finally {
         actionsVault.destroy();
     }

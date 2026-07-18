@@ -4,9 +4,56 @@ const fs = require('fs');
 const path = require('path');
 const { parseAllViewQueries, runQuery, buildQueryString } = require('../engine/query');
 const { parseFrontmatterDocument } = require('../core/frontmatter');
+const { resolveImageEmbed } = require('../core/imageEmbed');
 const { CALLOUT_TYPE_FAMILY } = require('./markdownItCallouts');
 
 const CALLOUT_LINE_RE = /^>\s*\[!([A-Z]+)\](?:\s+(.+))?$/i;
+
+// A line whose entire (trimmed) content is a single image reference — either
+// Yamlink's own ![[embed.png]] syntax or standard ![alt](path). Indentation is
+// tolerated (\s* prefix) since this exporter doesn't have a CommonMark-style
+// "4 spaces = code block" rule to fight, unlike the Live Note/Preview renderer.
+const IMAGE_LINE_RE = /^\s*(?:!\[\[([^\]]+)\]\]|!\[([^\]]*)\]\(([^)]+)\))\s*$/;
+
+// pdfkit's doc.image() only actually embeds JPEG and PNG — GIF/WEBP/BMP/SVG
+// (all valid per IMAGE_EMBED_EXTENSIONS elsewhere in the codebase) either throw
+// or silently fail there. Anything outside this set gets an honest text
+// placeholder instead of a crash or a silently-dropped image.
+const PDF_SUPPORTED_IMAGE_EXTENSIONS = new Set(['.png', '.jpg', '.jpeg']);
+
+/**
+ * Resolves a single line to an embeddable local image, or null if the line
+ * isn't a standalone image reference, or is one that doesn't resolve to a real
+ * local file. Remote (http/https/data) images are deliberately left
+ * unresolved — this is an offline, local export, not a network fetch.
+ * @param {string} line
+ * @param {string|null} noteDir
+ * @returns {{src: string, alt: string}|null}
+ */
+function resolveImageLine(line, noteDir) {
+    const match = String(line || '').match(IMAGE_LINE_RE);
+    if (!match) return null;
+
+    if (match[1]) {
+        // ![[embed.png]]
+        if (!noteDir) return null;
+        const resolved = resolveImageEmbed(match[1], noteDir);
+        if (!resolved) return null;
+        return { src: resolved, alt: String(match[1]).split('|')[0].trim() };
+    }
+
+    // ![alt](path)
+    const rawSrc = String(match[3] || '').trim();
+    if (!rawSrc || /^(https?:|data:)/i.test(rawSrc)) return null;
+    if (!noteDir && !path.isAbsolute(rawSrc)) return null;
+    const candidate = path.isAbsolute(rawSrc) ? rawSrc : path.join(noteDir, rawSrc);
+    try {
+        if (!fs.statSync(candidate).isFile()) return null;
+    } catch {
+        return null;
+    }
+    return { src: candidate, alt: String(match[2] || '').trim() };
+}
 
 const CALLOUT_PDF_STYLES = {
     amber:  { bg: '#fdf6e3', stroke: '#e6a817', badge: '#7a5a10', body: '#3d2d08' },
@@ -42,7 +89,7 @@ function buildViewExportModel(query, contextNodeId) {
     };
 }
 
-function buildNoteExportModel(documentText, contextNodeId) {
+function buildNoteExportModel(documentText, contextNodeId, noteDir) {
     const parsed = parseFrontmatterDocument(documentText);
     const queries = parseAllViewQueries(documentText) || [];
     const views = queries.map(query => buildViewExportModel(query, contextNodeId || null));
@@ -56,22 +103,24 @@ function buildNoteExportModel(documentText, contextNodeId) {
         type: parsed.data?.type || '',
         summaryRows,
         body: String(parsed.body || '').trim(),
+        noteDir: noteDir || null,
         views
     };
 }
 
 function exportViewPdf(filePath, model) {
-    const doc = createDocument(filePath, model.label || 'Yamlink View');
+    const { doc, stream } = createDocument(filePath, model.label || 'Yamlink View');
     writeHeader(doc, model.label || 'Yamlink View', model.queryText || '');
     if (Array.isArray(model.warnings) && model.warnings.length) {
         writeCallout(doc, 'Warnings', model.warnings.join('\n'));
     }
     writeTable(doc, model.columns || [], model.rows || []);
     finishDocument(doc);
+    return stream;
 }
 
 function exportNotePdf(filePath, model) {
-    const doc = createDocument(filePath, model.title || 'Yamlink Note');
+    const { doc, stream } = createDocument(filePath, model.title || 'Yamlink Note');
     writeHeader(doc, model.title || 'Yamlink Note', model.id ? `ID: ${model.id}${model.type ? ` · Type: ${model.type}` : ''}` : '');
 
     if (model.summaryRows && model.summaryRows.length) {
@@ -85,9 +134,11 @@ function exportNotePdf(filePath, model) {
     if (model.body) {
         writeSectionTitle(doc, 'Note');
         const bodyWidth = doc.page.width - doc.page.margins.left - doc.page.margins.right;
-        for (const seg of parseBodySegments(model.body)) {
+        for (const seg of parseBodySegments(model.body, model.noteDir)) {
             if (seg.type === 'callout') {
                 writeCalloutBlock(doc, seg.calloutType, seg.title, seg.content);
+            } else if (seg.type === 'image') {
+                writeImageBlock(doc, seg.src, seg.alt, bodyWidth);
             } else {
                 doc.font('Helvetica').fontSize(11).fillColor('#1b1f24')
                     .text(seg.content, { width: bodyWidth, lineGap: 3 });
@@ -112,6 +163,7 @@ function exportNotePdf(filePath, model) {
     }
 
     finishDocument(doc);
+    return stream;
 }
 
 function createDocument(filePath, title) {
@@ -125,8 +177,9 @@ function createDocument(filePath, title) {
             Author: 'Yamlink'
         }
     });
-    doc.pipe(fs.createWriteStream(filePath));
-    return doc;
+    const stream = fs.createWriteStream(filePath);
+    doc.pipe(stream);
+    return { doc, stream };
 }
 
 function finishDocument(doc) {
@@ -164,13 +217,14 @@ function writeKeyValue(doc, key, value) {
 }
 
 /**
- * Split body text into alternating text / callout segments.
+ * Split body text into alternating text / callout / image segments.
  * @param {string} text
- * @returns {Array<{type:'text',content:string}|{type:'callout',calloutType:string,title:string,content:string}>}
+ * @param {string|null} [noteDir] - resolves embed and relative image references
+ * @returns {Array<{type:'text',content:string}|{type:'callout',calloutType:string,title:string,content:string}|{type:'image',src:string,alt:string}>}
  */
-function parseBodySegments(text) {
+function parseBodySegments(text, noteDir) {
     const lines = text.split('\n');
-    /** @type {Array<{type:'text',content:string}|{type:'callout',calloutType:string,title:string,content:string}>} */
+    /** @type {Array<{type:'text',content:string}|{type:'callout',calloutType:string,title:string,content:string}|{type:'image',src:string,alt:string}>} */
     const segments = [];
     let i = 0;
 
@@ -191,9 +245,19 @@ function parseBodySegments(text) {
                 title,
                 content: bodyLines.join('\n').trim()
             }));
-        } else {
+            continue;
+        }
+
+        const image = resolveImageLine(lines[i], noteDir);
+        if (image) {
+            segments.push(/** @type {{type:'image',src:string,alt:string}} */ ({ type: 'image', src: image.src, alt: image.alt }));
+            i++;
+            continue;
+        }
+
+        {
             const textLines = [];
-            while (i < lines.length && !CALLOUT_LINE_RE.test(lines[i])) {
+            while (i < lines.length && !CALLOUT_LINE_RE.test(lines[i]) && !resolveImageLine(lines[i], noteDir)) {
                 textLines.push(lines[i]);
                 i++;
             }
@@ -208,6 +272,33 @@ function parseBodySegments(text) {
     }
 
     return segments;
+}
+
+// Cap embedded image height so a tall image doesn't dominate several pages —
+// pdfkit's `fit` scales down proportionally to stay within both bounds.
+const PDF_IMAGE_MAX_HEIGHT = 320;
+
+function writeImageBlock(doc, src, alt, maxWidth) {
+    const ext = path.extname(src).toLowerCase();
+    if (!PDF_SUPPORTED_IMAGE_EXTENSIONS.has(ext)) {
+        writeImagePlaceholder(doc, alt || path.basename(src), `unsupported image format for PDF export (${ext || 'unknown'} — only PNG/JPEG embed)`);
+        return;
+    }
+
+    ensureSpace(doc, Math.min(PDF_IMAGE_MAX_HEIGHT, 200) + 16);
+    try {
+        doc.image(src, { fit: [maxWidth, PDF_IMAGE_MAX_HEIGHT], align: 'left' });
+        doc.moveDown(0.8);
+    } catch (err) {
+        writeImagePlaceholder(doc, alt || path.basename(src), `could not embed image: ${err.message}`);
+    }
+}
+
+function writeImagePlaceholder(doc, label, reason) {
+    ensureSpace(doc, 40);
+    doc.font('Helvetica-Oblique').fontSize(9).fillColor('#8a6710')
+        .text(`[Image: ${label} — ${reason}]`);
+    doc.moveDown(0.8);
 }
 
 function writeCalloutBlock(doc, calloutType, title, content) {
@@ -329,5 +420,7 @@ module.exports = {
     buildViewExportModel,
     buildNoteExportModel,
     exportViewPdf,
-    exportNotePdf
+    exportNotePdf,
+    parseBodySegments,
+    resolveImageLine
 };

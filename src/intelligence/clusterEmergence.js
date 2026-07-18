@@ -58,7 +58,6 @@ function clusterConfidence(count) {
  * exceeds the minimum cluster size. Large enough groups suggest a pattern
  * the vault has organically developed that may be worth naming or schematizing.
  *
- * @param {Map<string, string>} idIndex
  * @param {Map<string, Record<string, any>>} fieldsCache
  * @returns {{ clusters: Array<{
  *   fields: string[],
@@ -68,11 +67,10 @@ function clusterConfidence(count) {
  *   confidence: 'low'|'medium'|'high'
  * }> }}
  */
-function detectClusters(idIndex, fieldsCache) {
+function detectClusters(fieldsCache) {
     const sigGroups = new Map();
 
-    for (const [noteId] of idIndex) {
-        const fields = fieldsCache.get(noteId);
+    for (const [noteId, fields] of fieldsCache) {
         if (!fields) continue;
 
         const sig = fieldSignature(fields);

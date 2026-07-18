@@ -33,7 +33,7 @@ function run({ id, json, output }) {
         priors.typeFieldBundles,
         priors.fieldTargetTypes,
         priors.outcomeCalibration,
-        { typeBundleTotals: priors.typeBundleTotals, limit: 8 }
+        { typeBundleTotals: priors.typeBundleTotals, limit: 8, emergentClusters: priors.emergentClusters }
     );
 
     const data = {

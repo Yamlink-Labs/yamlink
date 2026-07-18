@@ -60,6 +60,16 @@ describe('vaultPriors — buildFieldTargetTypes', () => {
         assert.equal(result.get('commander').get('character'), 1);
     });
 
+    it('learns relational target types from canonical id values already normalized out of wikilinks', () => {
+        const cache = new Map([
+            ['note-a', { type: 'mission', commander: 'rico' }],
+            ['rico', { type: 'character' }],
+        ]);
+        const result = buildFieldTargetTypes(cache);
+        assert.ok(result.has('commander'));
+        assert.equal(result.get('commander').get('character'), 1);
+    });
+
     it('skips id and type fields', () => {
         const cache = new Map([
             ['note-a', { id: 'note-a', type: '[[some-type]]' }],
@@ -513,12 +523,16 @@ describe('vaultPriors — buildValuePatterns', () => {
 // ─── buildWorkflowFields ─────────────────────────────────────────────────
 
 describe('vaultPriors — buildWorkflowFields', () => {
-    it('detects a status field with finite scalar values', () => {
+    it('detects a status field with finite, genuinely recurring scalar values', () => {
         const cache = new Map([
             ['n1', { type: 'deal', status: 'active' }],
-            ['n2', { type: 'deal', status: 'closed' }],
-            ['n3', { type: 'deal', status: 'pending' }],
+            ['n2', { type: 'deal', status: 'active' }],
+            ['n3', { type: 'deal', status: 'active' }],
             ['n4', { type: 'deal', status: 'active' }],
+            ['n5', { type: 'deal', status: 'closed' }],
+            ['n6', { type: 'deal', status: 'closed' }],
+            ['n7', { type: 'deal', status: 'pending' }],
+            ['n8', { type: 'deal', status: 'pending' }],
         ]);
         const vp = buildValuePatterns(cache);
         const wf = buildWorkflowFields(vp);
@@ -545,6 +559,34 @@ describe('vaultPriors — buildWorkflowFields', () => {
         const vp = buildValuePatterns(cache);
         const wf = buildWorkflowFields(vp);
         assert.ok(!wf.has('due'));
+    });
+
+    it('excludes a field with too few samples to judge, even if all distinct counts are small', () => {
+        const cache = new Map([
+            ['n1', { rank: 'private' }],
+            ['n2', { rank: 'private' }],
+            ['n3', { rank: 'colonel' }],
+        ]);
+        const vp = buildValuePatterns(cache);
+        const wf = buildWorkflowFields(vp);
+        assert.ok(!wf.has('rank'), 'too few samples (3) to treat this as a genuinely closed vocabulary');
+    });
+
+    it('excludes a field with enough samples but mostly-unique values (weak recurrence signal)', () => {
+        // Mirrors a real false positive found in the sample vault: a small vault made
+        // "rank" look closed (few distinct values) purely because there were few notes,
+        // not because rank is actually a finite enum — most values appear only once.
+        const cache = new Map([
+            ['n1', { rank: 'private' }],
+            ['n2', { rank: 'private' }],
+            ['n3', { rank: 'colonel' }],
+            ['n4', { rank: 'lieutenant' }],
+            ['n5', { rank: 'lieutenant commander' }],
+            ['n6', { rank: 'sergeant' }],
+        ]);
+        const vp = buildValuePatterns(cache);
+        const wf = buildWorkflowFields(vp);
+        assert.ok(!wf.has('rank'), 'weak repeat ratio (avg < 2 occurrences per distinct value) should not qualify');
     });
 });
 

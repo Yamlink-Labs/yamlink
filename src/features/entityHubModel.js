@@ -15,6 +15,7 @@ const {
     buildVaultStatusValues,
     buildVaultSemanticRolePriors
 } = require('../intelligence/vaultPriors');
+const { getEdgeGravity } = require('../intelligence/relationshipGravity');
 const { inferLifecycleState, summarizeLifecycleState } = require('../intelligence/lifecycleState');
 const { filterItemsForSurface, shouldSurface } = require('../intelligence/confidence');
 const {
@@ -42,8 +43,9 @@ const SKIP_FIELDS = new Set(['id', 'created']);
 /** @param {string} nodeId @param {Map<string,string>} idIndex @param {Map<string,Record<string,any>>} fieldsCache @returns {Record<string,any>} */
 function buildEntityHubModel(nodeId, idIndex, fieldsCache) {
     const nodeFields = fieldsCache.get(nodeId) || {};
-    const incomingGroups = buildIncomingGroups(nodeId, idIndex, fieldsCache);
-    const outgoingGroups = buildOutgoingGroups(nodeId, nodeFields, idIndex, fieldsCache);
+    const _arcPriors = getCachedPriors(fieldsCache, getVaultGeneration());
+    const incomingGroups = buildIncomingGroups(nodeId, idIndex, fieldsCache, _arcPriors.relationshipGravity);
+    const outgoingGroups = buildOutgoingGroups(nodeId, nodeFields, idIndex, fieldsCache, _arcPriors.relationshipGravity);
     const summaryRows = buildSummaryRows(nodeFields);
     const taskSections = buildTaskSections(nodeId, idIndex);
     const timelineRows = buildTimelineRows(nodeId, nodeFields, taskSections);
@@ -74,14 +76,14 @@ function buildEntityHubModel(nodeId, idIndex, fieldsCache) {
         getVaultGeneration()
     );
 
-    const _arcPriors = getCachedPriors(fieldsCache, getVaultGeneration());
     const noteArc = buildNoteArc(
         nodeFields,
         String(nodeFields.type || '').trim().toLowerCase(),
         fieldsCache,
         _arcPriors.typeFieldBundles,
         _arcPriors.fieldTargetTypes,
-        _arcPriors.outcomeCalibration
+        _arcPriors.outcomeCalibration,
+        { emergentClusters: _arcPriors.emergentClusters }
     );
     const signals = collectBodySignals(docText || '');
     const bodyMentionCounts = extractBodyMentionedIds(docText || '');
@@ -133,7 +135,22 @@ function buildEntityHubModel(nodeId, idIndex, fieldsCache) {
     };
 }
 
-function buildIncomingGroups(nodeId, idIndex, fieldsCache) {
+/** Sorts rows within a relation group by relationship gravity (descending), most
+ * gravitationally significant connection first — falls back to alphabetical
+ * sourceId when scores tie (e.g. no mutation history, uniform structural weight),
+ * so ordering is always deterministic, never arbitrary insertion order.
+ * @param {Array<{sourceId: string}>} rows
+ * @param {(sourceId: string) => number} scoreFor
+ * @returns {Array<{sourceId: string}>}
+ */
+function _sortRowsByGravity(rows, scoreFor) {
+    return [...rows].sort((a, b) => {
+        const diff = scoreFor(b.sourceId) - scoreFor(a.sourceId);
+        return diff !== 0 ? diff : a.sourceId.localeCompare(b.sourceId);
+    });
+}
+
+function buildIncomingGroups(nodeId, idIndex, fieldsCache, relationshipGravity = null) {
     const groups = new Map();
     for (const { field, sourceId } of getBacklinks(nodeId)) {
         const filePath = idIndex.get(sourceId);
@@ -149,7 +166,11 @@ function buildIncomingGroups(nodeId, idIndex, fieldsCache) {
             if (b[0] === 'body') return -1;
             return a[0].localeCompare(b[0]);
         })
-        .map(([field, rows]) => ({ field, rows, direction: 'incoming' }));
+        .map(([field, rows]) => ({
+            field,
+            rows: _sortRowsByGravity(rows, (sourceId) => getEdgeGravity(sourceId, field, nodeId, relationshipGravity).score),
+            direction: 'incoming'
+        }));
 }
 
 /** @param {any} raw @returns {string[]} */
@@ -159,7 +180,7 @@ function extractRelations(raw) {
         .filter(Boolean);
 }
 
-function buildOutgoingGroups(nodeId, nodeFields, idIndex, fieldsCache) {
+function buildOutgoingGroups(nodeId, nodeFields, idIndex, fieldsCache, relationshipGravity = null) {
     const groups = new Map();
 
     for (const { field, targetId } of getEdges(nodeId)) {
@@ -187,7 +208,11 @@ function buildOutgoingGroups(nodeId, nodeFields, idIndex, fieldsCache) {
     }
 
     return [...groups.entries()]
-        .map(([field, rows]) => ({ field, rows, direction: 'outgoing' }))
+        .map(([field, rows]) => ({
+            field,
+            rows: _sortRowsByGravity(rows, (targetId) => getEdgeGravity(nodeId, field, targetId, relationshipGravity).score),
+            direction: 'outgoing'
+        }))
         .sort((a, b) => {
             if (a.field === 'body') return 1;
             if (b.field === 'body') return -1;

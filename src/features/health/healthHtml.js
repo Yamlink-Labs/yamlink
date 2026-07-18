@@ -3,8 +3,41 @@
 const fs = require('fs');
 const path = require('path');
 const { computeHealthScore } = require('./healthStats');
+const { buildVaultProjectionsCardHtml, VAULT_PROJECTIONS_CSS } = require('./vaultProjectionsCard');
 
 const HEALTH_CSS = fs.readFileSync(path.join(__dirname, 'healthPanel.css'), 'utf8');
+
+// Plain-language definitions for Vault Health terminology — written for
+// someone new to Yamlink, not for someone who already knows the codebase.
+// Deliberately separate from GLOSSARY.md, which is the precise technical
+// reference; this copy trades precision for approachability on purpose.
+const HELP_TEXT = {
+    activityTab: 'What changed in your vault today — notes created, fields added, links formed.',
+    lifecycleTab: 'Groups every note by how far along it is: draft, growing, established, hub, or stale.',
+    consistencyTab: 'Flags notes that look structurally different from others of the same type.',
+    schemaTab: 'Formal field definitions for a note type, and how well your notes match them.',
+    intelligenceTab: 'How much real vault data Yamlink’s suggestion engine has to work with right now, and how confident it is.',
+    projectionsTab: 'Where your vault is likely headed over the next 90 days, based on its own history.',
+    templatesTab: 'Notes created from a template that are missing fields the template defines.',
+    typesTab: 'Every note category in your vault and how many notes use it.',
+    orphansTab: 'Notes with no incoming or outgoing links — nothing connects to them yet.',
+    todaysActivity: 'Every note you’ve touched today, with how many changes each one got.',
+    sessionMemory: 'A plain-language recap of what you did in each recent editing session, grouped automatically by time and topic.',
+    lifecycleStates: 'A rough read on how far along a note is: Draft (barely started), Growing (taking shape), Established (looks complete and typical for its kind), Hub (a lot of other notes link to it), or Stale (hasn’t moved in a while).',
+    typeConsistency: 'Compares each note to others of the same type and flags ones that look structurally unusual — for example, missing fields most similar notes have.',
+    schemaCoverage: 'For each schema you’ve defined, how many matching notes actually have all the fields it expects.',
+    intelligenceHealth: 'A snapshot of how much real vault data Yamlink’s suggestion engine has to work with right now — more notes and accepted suggestions make it sharper over time.',
+    emergingPatterns: 'Groups of notes that happen to share the same fields, even though nobody defined a type for them yet — Yamlink noticed the pattern on its own.',
+    topRelationships: 'The links in your vault with the strongest evidence behind them — either because more than one field points to the same note, or because you’ve set that relationship more than once over time.',
+    templateDrift: 'Notes created from a template that are missing one or more fields the template defines.'
+};
+
+/** @param {string} key @param {function} escapeFn @returns {string} */
+function helpTip(key, escapeFn) {
+    const text = HELP_TEXT[key];
+    if (!text) return '';
+    return `<span class="help-tip" title="${escapeFn(text)}">?</span>`;
+}
 
 /** @param {object} stats @param {function} escapeFn @returns {string} */
 function buildSchemaSectionHtml(stats, escapeFn) {
@@ -16,7 +49,7 @@ function buildSchemaSectionHtml(stats, escapeFn) {
         return `
     <div class="section" id="section-schema">
         <div class="section-header">
-            <span class="section-title">Schema Coverage</span>
+            <span class="section-title-row"><span class="section-title">Schema Coverage</span>${helpTip('schemaCoverage', e)}</span>
             <span class="section-count">0 schemas</span>
         </div>
         <div class="empty-section">
@@ -83,7 +116,7 @@ function buildSchemaSectionHtml(stats, escapeFn) {
     return `
     <div class="section" id="section-schema">
         <div class="section-header">
-            <span class="section-title">Schema Coverage</span>
+            <span class="section-title-row"><span class="section-title">Schema Coverage</span>${helpTip('schemaCoverage', e)}</span>
             <span class="section-count">${coverageCount} schema${coverageCount !== 1 ? 's' : ''} active</span>
         </div>
         ${coverageRows || `<div class="empty-section"><div class="empty-title">Schemas exist but no matching notes found.</div></div>`}
@@ -96,7 +129,7 @@ function buildSchemaSectionHtml(stats, escapeFn) {
 function buildIntelligenceHealthHtml(intel, e) {
     if (!intel) return '';
 
-    const { systemConfidence, vaultMaturityPct, lifecycle, drift, arc, calibration, mutationBehavior, projections } = intel;
+    const { systemConfidence, vaultMaturityPct, lifecycle, drift, arc, calibration, mutationBehavior } = intel;
 
     const confColor = systemConfidence >= 70 ? 'var(--accent)' : systemConfidence >= 40 ? 'var(--accent3)' : 'var(--danger)';
     const confLabel = systemConfidence >= 70 ? 'System has strong vault evidence to work with.'
@@ -148,124 +181,10 @@ function buildIntelligenceHealthHtml(intel, e) {
             </div>
     ` : '';
 
-    const growthTypeHtml = projections?.growth?.topTypes?.length
-        ? `<div style="margin-top:6px;font-size:11px;color:var(--mid)">${projections.growth.topTypes.map((entry) => `<code>${e(entry.type)}</code> +${entry.createdLast30d} / 30d → ~${entry.projected90} (${e(entry.confidence)})`).join(' · ')}</div>`
-        : '';
-    const staleTypeHtml = projections?.stale?.topTypes?.length
-        ? `<div style="margin-top:6px;font-size:11px;color:var(--mid)">Most exposed types: ${projections.stale.topTypes.map((entry) => `<code>${e(entry.type)}</code> ${Math.round(entry.staleRate * 100)}% stale`).join(' · ')}</div>`
-        : '';
-    const structureTypeHtml = projections?.structure?.topTypes?.length
-        ? `<div style="margin-top:6px;font-size:11px;color:var(--mid)">Most fragile types: ${projections.structure.topTypes.map((entry) => `<code>${e(entry.type)}</code> ${Math.round(entry.problematicRate * 100)}% problematic`).join(' · ')}</div>`
-        : '';
-    const scenarios = projections?.scenarios || null;
-    const scenarioCards = scenarios ? `
-        <div style="margin-top:14px">
-            <div style="font-size:10px;color:var(--dim);text-transform:uppercase;letter-spacing:.08em;margin-bottom:8px">Scenario layer (${scenarios.horizonDays} days)</div>
-            <div class="intel-grid">
-                <div class="intel-card">
-                    <div class="intel-card-title">If cleanup pace holds</div>
-                    <div class="intel-card-stats">
-                        <span class="intel-stat"><strong>${e(scenarios.cleanupHold.confidence)}</strong> confidence</span>
-                        <span class="intel-stat"><strong>${Math.round((scenarios.cleanupHold.projectedStaleShare || 0) * 100)}%</strong> projected stale</span>
-                        <span class="intel-stat"><strong>${scenarios.cleanupHold.projectedProblematic}</strong> projected problematic</span>
-                    </div>
-                    <div class="intel-flag intel-flag--dim">${e(scenarios.cleanupHold.summary)}</div>
-                </div>
-                <div class="intel-card">
-                    <div class="intel-card-title">If cleanup improves</div>
-                    <div class="intel-card-stats">
-                        <span class="intel-stat"><strong>${e(scenarios.cleanupLift.confidence)}</strong> confidence</span>
-                        <span class="intel-stat"><strong>${Math.round((scenarios.cleanupLift.projectedStaleShare || 0) * 100)}%</strong> projected stale</span>
-                        <span class="intel-stat"><strong>${scenarios.cleanupLift.projectedProblematic}</strong> projected problematic</span>
-                    </div>
-                    <div class="intel-flag intel-flag--ok">${e(scenarios.cleanupLift.summary)}</div>
-                </div>
-                <div class="intel-card">
-                    <div class="intel-card-title">If growth pace holds</div>
-                    <div class="intel-card-stats">
-                        <span class="intel-stat"><strong>${e(scenarios.growthHold.confidence)}</strong> confidence</span>
-                        <span class="intel-stat"><strong>${(scenarios.growthHold.topTypes || []).length}</strong> active lane${(scenarios.growthHold.topTypes || []).length === 1 ? '' : 's'}</span>
-                    </div>
-                    <div class="intel-flag intel-flag--dim">${e(scenarios.growthHold.summary)}</div>
-                </div>
-            </div>
-        </div>
-    ` : '';
-    const weeklyBuckets = projections?.history?.buckets || [];
-    const bucketMax = weeklyBuckets.reduce((max, bucket) => Math.max(max, bucket.created, bucket.touches, bucket.structure + bucket.completions), 1);
-    const historyStrip = weeklyBuckets.length
-        ? `<div style="margin-top:10px">
-            <div style="font-size:10px;color:var(--dim);text-transform:uppercase;letter-spacing:.08em;margin-bottom:6px">Recent 4-week pattern</div>
-            <div style="display:grid;grid-template-columns:repeat(${weeklyBuckets.length},minmax(0,1fr));gap:8px">
-                ${weeklyBuckets.map((bucket) => {
-                    const createdH = Math.max(6, Math.round((bucket.created / bucketMax) * 28));
-                    const touchH = Math.max(6, Math.round((bucket.touches / bucketMax) * 28));
-                    const structureH = Math.max(6, Math.round(((bucket.structure + bucket.completions) / bucketMax) * 28));
-                    return `<div title="${e(bucket.label)} · ${bucket.created} created · ${bucket.touches} touches · ${bucket.structure + bucket.completions} structural" style="display:flex;flex-direction:column;gap:5px">
-                        <div style="display:flex;align-items:flex-end;gap:3px;height:30px">
-                            <span style="display:block;flex:1;height:${createdH}px;border-radius:999px;background:rgba(94,207,190,.65)"></span>
-                            <span style="display:block;flex:1;height:${touchH}px;border-radius:999px;background:rgba(231,168,90,.55)"></span>
-                            <span style="display:block;flex:1;height:${structureH}px;border-radius:999px;background:rgba(196,155,240,.6)"></span>
-                        </div>
-                        <div style="font-size:10px;color:var(--dim)">${e(bucket.label)}</div>
-                    </div>`;
-                }).join('')}
-            </div>
-        </div>`
-        : '';
-
-    const projectionCards = projections ? `
-        <div class="intel-card" style="grid-column:1 / -1">
-            <div class="intel-card-title">Vault Projections</div>
-            <div class="intel-confidence-sub" style="margin-bottom:10px">Forward-looking structural forecasts based on the last ${projections.windowDays} days of observable vault behavior. These are scenario projections, not certainty claims.</div>
-            <div class="intel-grid">
-                <div class="intel-card">
-                    <div class="intel-card-title">Growth</div>
-                    <div class="intel-card-stats">
-                        <span class="intel-stat"><strong>${e(projections.growth.confidence)}</strong> confidence</span>
-                        <span class="intel-stat"><strong>${Math.round((projections.growth.evidenceScore || 0) * 100)}%</strong> evidence</span>
-                        <span class="intel-stat"><strong>${e(projections.growth.trend || 'steady')}</strong> trend</span>
-                        <span class="intel-stat"><strong>${projections.growth.topTypes.length}</strong> active growth lane${projections.growth.topTypes.length === 1 ? '' : 's'}</span>
-                    </div>
-                    <div class="intel-flag intel-flag--dim">${e(projections.growth.summary)}</div>
-                    ${growthTypeHtml}
-                </div>
-                <div class="intel-card">
-                    <div class="intel-card-title">Stale Pressure</div>
-                    <div class="intel-card-stats">
-                        <span class="intel-stat"><strong>${e(projections.stale.confidence)}</strong> confidence</span>
-                        <span class="intel-stat"><strong>${Math.round((projections.stale.evidenceScore || 0) * 100)}%</strong> evidence</span>
-                        <span class="intel-stat"><strong>${e(projections.stale.trend || 'steady')}</strong> trend</span>
-                        <span class="intel-stat"><strong>${Math.round((projections.stale.staleRate || 0) * 100)}%</strong> stale share</span>
-                        <span class="intel-stat"><strong>${e(projections.stale.pressure)}</strong> pressure</span>
-                    </div>
-                    <div class="intel-flag ${projections.stale.pressure === 'high' ? 'intel-flag--warn' : projections.stale.pressure === 'low' ? 'intel-flag--ok' : 'intel-flag--dim'}">${e(projections.stale.summary)}</div>
-                    <div style="margin-top:6px;font-size:11px;color:var(--mid)">${projections.stale.touchEventsRecent} recent touch event${projections.stale.touchEventsRecent === 1 ? '' : 's'}</div>
-                    ${staleTypeHtml}
-                </div>
-                <div class="intel-card">
-                    <div class="intel-card-title">Structure Direction</div>
-                    <div class="intel-card-stats">
-                        <span class="intel-stat"><strong>${e(projections.structure.confidence)}</strong> confidence</span>
-                        <span class="intel-stat"><strong>${Math.round((projections.structure.evidenceScore || 0) * 100)}%</strong> evidence</span>
-                        <span class="intel-stat"><strong>${e(projections.structure.trend || 'steady')}</strong> trend</span>
-                        <span class="intel-stat"><strong>${e(projections.structure.direction)}</strong> direction</span>
-                        <span class="intel-stat"><strong>${projections.structure.problematic}</strong> problematic notes</span>
-                    </div>
-                    <div class="intel-flag ${projections.structure.direction === 'improving' ? 'intel-flag--ok' : projections.structure.direction === 'fragile' ? 'intel-flag--warn' : 'intel-flag--dim'}">${e(projections.structure.summary)}</div>
-                    <div style="margin-top:6px;font-size:11px;color:var(--mid)">${projections.structure.acceptedCompletionsRecent} accepted completion${projections.structure.acceptedCompletionsRecent === 1 ? '' : 's'} · ${projections.structure.structureEventsRecent} structural events</div>
-                    ${structureTypeHtml}
-                </div>
-            </div>
-            ${historyStrip}
-            ${scenarioCards}
-        </div>
-    ` : '';
-
     return `
     <div class="section" id="section-intelligence">
         <div class="section-header">
-            <span class="section-title">Intelligence Health</span>
+            <span class="section-title-row"><span class="section-title">Intelligence Health</span>${helpTip('intelligenceHealth', e)}</span>
             <span class="section-count" style="color:${confColor}">Confidence ${systemConfidence}%</span>
         </div>
 
@@ -319,7 +238,6 @@ function buildIntelligenceHealthHtml(intel, e) {
             </div>
 
             ${behaviorCard}
-            ${projectionCards}
         </div>
     </div>`;
 }
@@ -333,7 +251,7 @@ function buildEmergingPatternsHtml(stats, escapeFn) {
     return `
     <div class="section" id="section-emerging-patterns">
         <div class="section-header">
-            <span class="section-title">Emerging Patterns</span>
+            <span class="section-title-row"><span class="section-title">Emerging Patterns</span>${helpTip('emergingPatterns', e)}</span>
             <span class="section-count">${clusters.length} cluster${clusters.length === 1 ? '' : 's'}</span>
         </div>
         <div class="intel-grid">
@@ -357,11 +275,44 @@ function buildEmergingPatternsHtml(stats, escapeFn) {
                             data-action="createSchemaFromCluster"
                             data-fields='${e(JSON.stringify(cluster.fields))}'
                             data-type="${e(cluster.dominantType || '')}"
+                            data-note-ids='${e(JSON.stringify(cluster.noteIds))}'
                         >Create schema from cluster →</button>
                     </div>
                 </div>
             `).join('')}
         </div>
+    </div>`;
+}
+
+/** @param {object} stats @param {function} escapeFn @returns {string} */
+function buildTopRelationshipsHtml(stats, escapeFn) {
+    const e = escapeFn;
+    const edges = Array.isArray(stats.topRelationships) ? stats.topRelationships : [];
+    if (!edges.length) return '';
+
+    const rows = edges.map((edge) => {
+        const signals = [];
+        if (edge.structuralWeight > 1) signals.push(`${edge.structuralWeight} shared fields`);
+        if (edge.repetition > 0) signals.push(`reaffirmed ${edge.repetition}×`);
+        return `<div class="session-row" data-id="${e(edge.sourceId)}">
+            <div class="session-main">
+                <div class="session-summary"><code>${e(edge.sourceId)}</code> → <code>${e(edge.targetId)}</code></div>
+                <div class="session-meta">
+                    <span class="session-chip">${e(edge.field)}</span>
+                    ${signals.map((s) => `<span class="session-chip">${e(s)}</span>`).join('')}
+                </div>
+            </div>
+        </div>`;
+    }).join('');
+
+    return `
+    <div class="section" id="section-top-relationships">
+        <div class="section-header">
+            <span class="section-title-row"><span class="section-title">Most-Reinforced Connections</span>${helpTip('topRelationships', e)}</span>
+            <span class="section-count">${edges.length} edge${edges.length === 1 ? '' : 's'}</span>
+        </div>
+        <div class="empty-copy" style="margin-bottom:10px;color:var(--mid);font-size:12px">Connections the vault's own structure and edit history corroborate most — either through multiple fields pointing at the same note, or the same relation being set more than once over time.</div>
+        <div class="session-list">${rows}</div>
     </div>`;
 }
 
@@ -470,6 +421,26 @@ function buildHealthHtml(stats, { scriptUri, nonce, csp } = {}) {
     `).join('');
     const todayActivity = stats.todayActivity || [];
     const todaySessions = stats.todaySessions || [];
+    const todaySummary = stats.todaySummary || null;
+    const todayBursts = stats.todayBursts || [];
+    const summaryChips = todaySummary ? [
+        ['notesCreated', 'note', 'notes'],
+        ['fieldsAdded', 'field added', 'fields added'],
+        ['relationsFormed', 'relation formed', 'relations formed'],
+        ['relationsChanged', 'relation changed', 'relations changed'],
+        ['tasksChanged', 'task changed', 'tasks changed'],
+        ['completionsAccepted', 'completion accepted', 'completions accepted'],
+        ['templateApplied', 'template applied', 'templates applied']
+    ].filter(([key]) => todaySummary[key] > 0)
+        .map(([key, singular, plural]) => `<span class="session-chip">${todaySummary[key]} ${todaySummary[key] === 1 ? singular : plural}</span>`)
+        .join('')
+        : '';
+    const summaryStripHtml = summaryChips
+        ? `<div class="session-meta" style="margin-bottom:12px">${summaryChips}</div>`
+        : '';
+    const burstHtml = todayBursts.length
+        ? `<div class="intel-flag intel-flag--ok" style="margin-bottom:12px">⚡ Workflow burst detected: ${esc(todayBursts[0].type.replace(/_/g, ' '))} touching ${todayBursts[0].noteIds.length} notes within ${Math.round(todayBursts[0].windowMs / 1000)}s.</div>`
+        : '';
     const activityHtml = todayActivity.length > 0
         ? `<div class="activity-list">${todayActivity.map(({ noteId, count }) =>
             `<div class="activity-row" data-id="${esc(noteId)}"><span class="activity-id">${esc(noteId)}</span><span class="activity-count">${count} change${count === 1 ? '' : 's'}</span></div>`
@@ -499,18 +470,27 @@ function buildHealthHtml(stats, { scriptUri, nonce, csp } = {}) {
 
     const hasTemplates = stats.templateDrift && stats.templateDrift.size > 0;
     const hasOrphans   = stats.orphans.length > 0;
+    // Vault Projections is the only tab-content anywhere in Vault Health that
+    // does real trend/forecast reasoning (Time-Engine-backed) — every other
+    // tab is a snapshot-in-time classification. It used to be embedded at the
+    // bottom of the Intelligence tab's card grid, after 4 other cards, which
+    // buried it rather than showcasing it. Promoted to its own top-level tab
+    // 2026-07-13 after direct user feedback that it needed real estate of
+    // its own, not a scroll-past afterthought in someone else's tab.
+    const hasProjections = !!stats.intelligenceHealth?.projections;
 
     const tabNav = [
-        { id: 'activity',      label: 'Activity' },
-        { id: 'lifecycle',     label: 'Lifecycle' },
-        { id: 'consistency',   label: 'Consistency' },
-        { id: 'schema',        label: 'Schema' },
-        { id: 'intelligence',  label: 'Intelligence' },
-        ...(hasTemplates ? [{ id: 'templates', label: 'Templates' }] : []),
-        { id: 'types',         label: 'Types' },
-        ...(hasOrphans   ? [{ id: 'orphans',   label: 'Orphans'   }] : []),
+        { id: 'activity',      label: 'Activity',      help: HELP_TEXT.activityTab },
+        { id: 'lifecycle',     label: 'Lifecycle',     help: HELP_TEXT.lifecycleTab },
+        { id: 'consistency',   label: 'Consistency',   help: HELP_TEXT.consistencyTab },
+        { id: 'schema',        label: 'Schema',        help: HELP_TEXT.schemaTab },
+        { id: 'intelligence',  label: 'Intelligence',  help: HELP_TEXT.intelligenceTab },
+        ...(hasProjections ? [{ id: 'projections', label: 'Projections', help: HELP_TEXT.projectionsTab }] : []),
+        ...(hasTemplates ? [{ id: 'templates', label: 'Templates', help: HELP_TEXT.templatesTab }] : []),
+        { id: 'types',         label: 'Types',         help: HELP_TEXT.typesTab },
+        ...(hasOrphans   ? [{ id: 'orphans',   label: 'Orphans', help: HELP_TEXT.orphansTab }] : []),
     ].map((t, i) =>
-        `<button class="tab-btn${i === 0 ? ' active' : ''}" data-tab="${t.id}">${t.label}</button>`
+        `<button class="tab-btn${i === 0 ? ' active' : ''}" data-tab="${t.id}" title="${esc(t.help)}">${t.label}</button>`
     ).join('');
 
     const templateDriftHtml = hasTemplates ? (() => {
@@ -537,7 +517,7 @@ function buildHealthHtml(stats, { scriptUri, nonce, csp } = {}) {
                 </div>`;
             }).join('');
         return `<div class="section-header">
-                <span class="section-title">Template Drift</span>
+                <span class="section-title-row"><span class="section-title">Template Drift</span>${helpTip('templateDrift', esc)}</span>
                 <span class="section-count" style="color:var(--warn)">${totalDrift} note${totalDrift !== 1 ? 's' : ''} missing template fields</span>
             </div>
             <div class="empty-copy" style="margin-bottom:12px;color:var(--mid);font-size:12px">These notes are missing fields defined in their <code>_templates/</code> definition. Click a note to open it, then use <em>Yamlink: Add missing template fields</em> to fix.</div>
@@ -551,7 +531,7 @@ function buildHealthHtml(stats, { scriptUri, nonce, csp } = {}) {
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Vault Health</title>
 <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'nonce-${nonce}' ${csp};">
-<style>${HEALTH_CSS}</style>
+<style>${HEALTH_CSS}${VAULT_PROJECTIONS_CSS}</style>
 </head>
 <body>
 
@@ -625,12 +605,14 @@ function buildHealthHtml(stats, { scriptUri, nonce, csp } = {}) {
     <div class="tab-panel" data-tab="activity" id="section-activity">
         <div class="section">
             <div class="section-header">
-                <span class="section-title">Today's Activity</span>
+                <span class="section-title-row"><span class="section-title">Today's Activity</span>${helpTip('todaysActivity', esc)}</span>
                 <span class="section-count">${todayActivity.length} note${todayActivity.length !== 1 ? 's' : ''} changed</span>
             </div>
+            ${summaryStripHtml}
+            ${burstHtml}
             ${activityHtml}
             ${sessionHtml ? `<div class="section-header" style="margin-top:16px">
-                <span class="section-title">Session Memory</span>
+                <span class="section-title-row"><span class="section-title">Session Memory</span>${helpTip('sessionMemory', esc)}</span>
                 <span class="section-count">${todaySessions.length} session${todaySessions.length === 1 ? '' : 's'}</span>
             </div>${sessionHtml}` : ''}
         </div>
@@ -639,7 +621,7 @@ function buildHealthHtml(stats, { scriptUri, nonce, csp } = {}) {
     <div class="tab-panel tab-panel--hidden" data-tab="lifecycle" id="section-lifecycle">
         <div class="section">
             <div class="section-header">
-                <span class="section-title">Lifecycle States</span>
+                <span class="section-title-row"><span class="section-title">Lifecycle States</span>${helpTip('lifecycleStates', esc)}</span>
                 <span class="section-count">${Object.values(lifecycleCounts).reduce((sum, value) => sum + Number(value || 0), 0)} tracked</span>
             </div>
             <div class="lifecycle-grid">${lifecycleCards}</div>
@@ -652,7 +634,7 @@ function buildHealthHtml(stats, { scriptUri, nonce, csp } = {}) {
     <div class="tab-panel tab-panel--hidden" data-tab="consistency" id="section-drift">
         <div class="section">
             <div class="section-header">
-                <span class="section-title">Type Consistency</span>
+                <span class="section-title-row"><span class="section-title">Type Consistency</span>${helpTip('typeConsistency', esc)}</span>
                 <span class="section-count">${driftTotal} analyzed</span>
             </div>
             ${driftTotal > 0 ? `
@@ -666,12 +648,19 @@ function buildHealthHtml(stats, { scriptUri, nonce, csp } = {}) {
 
     <div class="tab-panel tab-panel--hidden" data-tab="schema">
         ${buildSchemaSectionHtml(stats, esc)}
+        ${buildEmergingPatternsHtml(stats, esc)}
     </div>
 
     <div class="tab-panel tab-panel--hidden" data-tab="intelligence" id="section-intelligence">
         ${buildIntelligenceHealthHtml(stats.intelligenceHealth, esc)}
         ${buildEmergingPatternsHtml(stats, esc)}
+        ${buildTopRelationshipsHtml(stats, esc)}
     </div>
+
+    ${hasProjections ? `
+    <div class="tab-panel tab-panel--hidden" data-tab="projections" id="section-projections">
+        <div class="section">${buildVaultProjectionsCardHtml(stats.intelligenceHealth.projections, esc)}</div>
+    </div>` : ''}
 
     ${hasTemplates ? `
     <div class="tab-panel tab-panel--hidden" data-tab="templates" id="section-template-drift">
@@ -707,13 +696,16 @@ document.addEventListener('click', function (event) {
     if (!button) return;
     const fields = JSON.parse(button.dataset.fields || '[]');
     const type = button.dataset.type || '';
+    const noteIds = JSON.parse(button.dataset.noteIds || '[]');
     acquireVsCodeApi().postMessage({
         command: 'createSchemaFromCluster',
         fields,
-        type
+        type,
+        noteIds
     });
 });
 </script>
+<div id="heat-tooltip" class="heat-tooltip" role="tooltip" aria-hidden="true"></div>
 <script nonce="${nonce}" src="${scriptUri}"></script>
 
 </body>

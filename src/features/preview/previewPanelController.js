@@ -5,9 +5,10 @@ const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
 const vscode = require('vscode');
-const { renderNotePreview } = require('./previewRenderer');
+const { renderNotePreview, rewriteImageSrcs } = require('./previewRenderer');
 const { TOOLBAR_STYLES, NOTE_STYLES } = require('./previewStyles');
 const { getPathIndex } = require('../../core/index');
+const { getPrimaryWorkspaceRoot } = require('../../core/workspace');
 
 const PREVIEW_VIEW_TYPE = 'yamlink.notePreview';
 
@@ -32,7 +33,7 @@ function createPreviewPanelController() {
         return JSON.stringify(str).replace(/<\//g, '<\\/');
     }
 
-    function buildBootHtml(articleHtml, displayTitle) {
+    function buildBootHtml(articleHtml, displayTitle, cspSource) {
         const nonce = crypto.randomBytes(16).toString('hex');
         const safeHtml = toJsLiteral(articleHtml);
 
@@ -41,7 +42,7 @@ function createPreviewPanelController() {
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1.0">
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'nonce-${nonce}'; style-src 'unsafe-inline';">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'nonce-${nonce}'; style-src 'unsafe-inline'; img-src ${escapeAttr(cspSource || '')} https: data:;">
 <title>${escapeAttr(displayTitle)}</title>
 <style>${TOOLBAR_STYLES}</style>
 </head>
@@ -148,8 +149,12 @@ window.addEventListener('load', function() { setTimeout(function() { window.prin
 
     function openInBrowserForPrint(html, title) {
         try {
+            // The temp file opens in the OS default browser (vscode.env.openExternal),
+            // not a VS Code webview — so images need plain file:// URIs, not
+            // asWebviewUri(). rewriteImageSrcs leaves remote/data URLs untouched.
+            const printHtml = rewriteImageSrcs(html, (p) => vscode.Uri.file(p).toString());
             const tmpPath = path.join(os.tmpdir(), `yamlink-preview-${Date.now()}.html`);
-            fs.writeFileSync(tmpPath, buildPrintHtml(html, title), 'utf8');
+            fs.writeFileSync(tmpPath, buildPrintHtml(printHtml, title), 'utf8');
             vscode.env.openExternal(vscode.Uri.file(tmpPath));
         } catch (err) {
             vscode.window.showErrorMessage(`Yamlink: Could not open print preview — ${err.message}`);
@@ -164,12 +169,28 @@ window.addEventListener('load', function() { setTimeout(function() { window.prin
         const contextNodeId = getPathIndex().get(fsPath) || null;
         let html;
         try {
-            html = renderNotePreview(docText, contextNodeId);
+            html = renderNotePreview(docText, contextNodeId, path.dirname(fsPath));
         } catch (err) {
             console.error('Yamlink — preview render failed:', err);
             html = `<p class="preview-error">Preview failed: ${escapeAttr(err.message)}</p>`;
         }
         return { html, title };
+    }
+
+    // The webview only renders images from directories it's explicitly granted
+    // access to. The vault root covers the common case (images anywhere in the
+    // vault); the note's own directory is included too in case it's opened
+    // outside any workspace folder.
+    function buildLocalResourceRoots(fsPath) {
+        const roots = [];
+        const vaultRoot = getPrimaryWorkspaceRoot(vscode.workspace.workspaceFolders);
+        if (vaultRoot) roots.push(vscode.Uri.file(vaultRoot));
+        if (fsPath) roots.push(vscode.Uri.file(path.dirname(fsPath)));
+        return roots;
+    }
+
+    function webviewSrc(html) {
+        return rewriteImageSrcs(html, (p) => panel.webview.asWebviewUri(vscode.Uri.file(p)).toString());
     }
 
     function openPreviewPanel(context) {
@@ -183,7 +204,7 @@ window.addEventListener('load', function() { setTimeout(function() { window.prin
                     lastHtml = rendered.html;
                     lastTitle = rendered.title;
                     panel.title = `Preview: ${rendered.title}`;
-                    panel.webview.postMessage({ type: 'preview:update', html: rendered.html, title: rendered.title });
+                    panel.webview.postMessage({ type: 'preview:update', html: webviewSrc(rendered.html), title: rendered.title });
                 }
             }
             return;
@@ -204,10 +225,14 @@ window.addEventListener('load', function() { setTimeout(function() { window.prin
             PREVIEW_VIEW_TYPE,
             panelTitle,
             vscode.ViewColumn.Beside,
-            { enableScripts: true, retainContextWhenHidden: true }
+            {
+                enableScripts: true,
+                retainContextWhenHidden: true,
+                localResourceRoots: buildLocalResourceRoots(editor ? editor.document.uri.fsPath : null)
+            }
         );
 
-        panel.webview.html = buildBootHtml(articleHtml, rendered ? rendered.title : 'Note Preview');
+        panel.webview.html = buildBootHtml(webviewSrc(articleHtml), rendered ? rendered.title : 'Note Preview', panel.webview.cspSource);
 
         panel.webview.onDidReceiveMessage((message) => {
             if (message && message.type === 'requestPrint') {
@@ -227,7 +252,7 @@ window.addEventListener('load', function() { setTimeout(function() { window.prin
         lastHtml = rendered.html;
         lastTitle = rendered.title;
         panel.title = `Preview: ${rendered.title}`;
-        panel.webview.postMessage({ type: 'preview:update', html: rendered.html, title: rendered.title });
+        panel.webview.postMessage({ type: 'preview:update', html: webviewSrc(rendered.html), title: rendered.title });
     }
 
     return { openPreviewPanel, refreshPreviewPanel };

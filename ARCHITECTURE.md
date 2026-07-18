@@ -1,6 +1,6 @@
 # Yamlink Architecture
 
-Last updated: 2026-06-26
+Last updated: 2026-07-07
 
 This document is the authoritative engineering reference for the Yamlink codebase. It covers the current stack, layer architecture, webview model, data flow, key design decisions, and the migration directions that are actively in progress.
 
@@ -48,7 +48,7 @@ The external URI model is the correct target for all panels. Migration is on the
 | Layout stability | Pre-warms 80 ticks synchronously before animation starts; `velocityDecay` 0.65 for smooth settling |
 | Layer system | Base / Semantic / Health — additive, independent |
 | Worker | `LayoutWorker` available for docs site; extension uses inline layout |
-| Adapter | `graph/adapter-yamlink/index.js` converts vault model to universal `{nodes,edges}` |
+| Adapter | `src/features/graph2/graph2Payload.js` converts vault model to universal `{nodes,edges}`. `graph/adapter-yamlink/` and `graph/core/` are empty leftover directories — removed 2026-07-07, the logic lives inline in `src/features/graph/` and `graph2/` now, not in those paths. |
 | Performance | Edge batching, frustum culling, label LOD, ~2000–3000 node ceiling |
 | Camera | `resize()` scales camera offset proportionally so sidebar graph never appears blank on first open |
 
@@ -86,7 +86,7 @@ Everything else — `cytoscape`, `reactflow`, `react`, `react-dom`, `elkjs`, `lu
 |---|---|
 | `typescript` | Type checking and future migration |
 | `esbuild` | Graph engine build (`graph/build.mjs`); future webview compilation |
-| `d3-force` | Docs site graph engine (`graph/core/InlineLayout.js`) |
+| `d3-force` | DevDependency only — not used by the extension at runtime (inline `SimpleLayout` replaces it there, per the Graph engine table above); confirm current docs-site usage before citing a specific file path, `graph/core/` no longer exists |
 | `eslint` | Linting |
 | `c8` | Coverage reporting |
 | `vite` / `tailwindcss` / `@vitejs/plugin-react` | Docs site build |
@@ -102,39 +102,60 @@ extension.js                    ← VS Code entry point, wires everything
 │
 ├── src/core/                   ← Data model. Ground truth for all queries and surfaces.
 │   ├── index.js                ← Vault scan, idIndex, pathIndex, fieldsCache
+│   ├── indexService.js         ← Shared index/generation accessors used by headless surfaces
 │   ├── graph.js                ← Directed edge graph (outboundEdges, inboundEdges)
 │   ├── frontmatter.js          ← YAML parse/write utilities
 │   ├── id.js                   ← Canonical ID normalization (kebab-case)
 │   ├── rename.js               ← Vault-wide wikilink rename propagation
 │   ├── writeField.js           ← Surgical frontmatter field updates
 │   ├── noteDiff.js             ← Pure compareNoteFields(id1, id2, fields1, fields2) — shared by CLI diff + API /api/diff
+│   ├── timeEngine.js           ← Time Engine: reconstructNoteAtTime/reconstructVaultAtTime (backward-undo from current state via the mutation log), buildNoteTimeline/buildFieldTimeline (multi-point checkpoints), buildHistoricalGraph (shared by API `?at=` and CLI `--at`)
+│   ├── vaultService.js         ← Shared headless rebuild coordinator (mutate + notifyFileChange), used by API/CLI/LSP
+│   ├── bodyBlocks.js           ← Block identity extraction (headings/tasks/quotes/footnotes) — see Block Identity System below
+│   ├── imageEmbed.js           ← Shared `![[image.png]]` embed resolution — one source of truth for hover, diagnostics, decorations, and Ctrl+Click
+│   ├── templateRegistry.js     ← Smart Template lookup per type
+│   ├── healthSnapshot.js       ← Vault Health data model shared by panel + CLI
 │   └── ...
 │
 ├── src/registries/             ← Type and schema registries (typeRegistry, schemaRegistry)
 │
-├── src/engine/                 ← Pure query engine. No VS Code imports.
-│   └── query.js                ← !view parser and executor (766 lines)
+├── src/engine/                 ← Pure query engine. No VS Code imports. Split from a single 766-line query.js.
+│   ├── query.js                ← Thin entry point (parseAllViewQueries, executeQuery)
+│   ├── queryParser.js          ← !view clause parsing
+│   ├── queryExecutor.js        ← Clause execution against fieldsCache
+│   ├── queryConditions.js      ← where-clause condition evaluators
+│   ├── queryCache.js           ← LRU 300-entry query result cache
+│   └── suggestions.js / suggestionsContext.js / suggestionsExplain.js  ← Query-builder suggestion support
 │
-├── src/intelligence/           ← Pure inference layer. No VS Code imports.
+├── src/intelligence/           ← Pure inference layer. No VS Code imports. ~38 files; representative map below.
 │   ├── fieldCategory.js        ← Multi-signal field classifier
-│   ├── fieldPlanner.js         ← Maps confidence → surface action (SILENCE/HINT/QUICKFIX)
-│   ├── fieldRolesCore.js       ← Date/status/person/container/topic role inference
-│   ├── vaultPriors.js          ← Per-vault statistical maps, generation-keyed cache
-│   ├── suggestionCore.js       ← Vault pattern building, field scoring (1011 lines — split planned)
+│   ├── fieldPlanner.js         ← Maps confidence → surface action (SILENCE/COMPLETION_ONLY/HINT/DOCUMENT/QUICKFIX) per surface ('completion'/'lightbulb'/'decoration')
+│   ├── fieldRolesCore.js / fieldRoles.js  ← Date/status/person/container/topic role inference
+│   ├── authoringEngine.js      ← Shared classify→plan wrapper (`classifyFieldForAuthoring`, `evaluateFieldForSurface`) — the contract point both VS Code and LSP call into
+│   ├── vaultPriors.js          ← Per-vault statistical maps, generation-keyed cache (typeFieldBundles, fieldTargetTypes, workflowFields, emergentClusters, relationshipGravity, behavioralRelationPriors, ...)
+│   ├── suggestionCore.js       ← Thin entry point; split into suggestionScorer.js, suggestionRelations.js, suggestionNoteIndex.js and the frontmatter* family below
+│   ├── frontmatterIntelligence.js, frontmatterFieldFamilies.js, frontmatterRelationLearning.js, frontmatterGapLearning.js, frontmatterAffinitySuggestions.js, frontmatterCompanionSuggestions.js, frontmatterContextSuggestions.js, frontmatterContextBuilders.js, frontmatterNeighborhoodSuggestions.js, frontmatterBodyHints.js  ← the split-out suggestion-building family (was one 1011-line suggestionCore.js)
+│   ├── completionContextHelpers.js, completionRelationHelpers.js, completionAdaptiveHelpers.js  ← Duck-typed completion collectors (need only `document.getText()`/`.lineAt()`/`.uri.fsPath`) — shared verbatim by VS Code's `completionProviders.js` and LSP's `handlers/completion.js`. Relocated here from `src/features/` specifically so both surfaces could share them without VS Code imports.
+│   ├── hoverBadge.js           ← Pure hover badge SVG/markdown builder, shared by VS Code hover and LSP hover
+│   ├── clusterEmergence.js     ← Pre-schema field-signature cluster detection, feeds cold-start arc suggestions
+│   ├── relationshipGravity.js  ← Scores (source, field, target) edges by structural corroboration + decayed mutation history
 │   ├── lifecycleState.js       ← draft/growing/consolidated/hub/stale
 │   ├── driftDetector.js        ← on-track/minor-drift/drifting/outlier vs vault bundles
 │   ├── noteRolesCore.js        ← Person/event/artifact/etc role inference
 │   ├── gitHistoryImport.js     ← Git commit history → mutation event backfill
-│   ├── implicitWeights.js      ← Sticky relation knowledge from mutation log history
+│   ├── implicitWeights.js      ← Sticky relation knowledge from mutation log history + field volatility
 │   ├── outcomeCalibration.js   ← Feedback loop: completion_accepted → per-field confidence boost
-│   ├── noteArc.js              ← Arc prediction: missing fields ranked by vault frequency + calibration
+│   ├── noteArc.js              ← Arc prediction: missing fields ranked by vault frequency + calibration + emergent clusters
+│   ├── intelligenceSnapshots.js ← Planner-gated note intelligence snapshot, consumed by LSP's executeCommand and VS Code
 │   └── nlQuery.js              ← Natural language → !view syntax (16 patterns + vault vocabulary injection)
 │
 ├── src/features/               ← VS Code surface providers and webview panels
-│   ├── completion.js           ← Frontmatter + query completion (849 lines — split planned)
+│   ├── completion.js, completionCore.js, completionItemBuilders.js, completionProviders.js, completionTracker.js  ← Frontmatter + query completion, split from a single 849-line completion.js
 │   ├── hover.js                ← Hover cards for wikilinks and !view blocks
+│   ├── viewLightbulb.js, lightbulbUtils.js  ← Code action / lightbulb providers, including the adaptive-frontmatter suggestion system (largely VS-Code-only — see LSP handlers note below)
+│   ├── suggestionCascade.js    ← Post-completion-acceptance field-cascade nudge
 │   ├── viewPanel.js            ← Live table webview
-│   ├── entityHub.js            ← Note Report sidebar
+│   ├── entityHub.js / entityHubModel.js  ← Note Report sidebar
 │   ├── entity/unlinkedRefs.js  ← Unlinked body-text mention detection
 │   ├── calendarPanel.js        ← Calendar webview
 │   ├── healthPanel.js          ← Vault Health panel
@@ -142,6 +163,7 @@ extension.js                    ← VS Code entry point, wires everything
 │   ├── home/                   ← Home panel HTML, CSS, browser-side JS
 │   ├── liveNote.js             ← Live Note rendered sidecar (synced preview beside the editor)
 │   ├── noteOutline.js          ← Note Outline sidebar (section tree with per-heading metadata)
+│   ├── importExternalVaults.js, importObsidian.js  ← Vault import (Obsidian/Notion/Evernote/Roam), split into src/importers/
 │   ├── graph/                  ← x-graph workspace panel (Canvas2D)
 │   └── graph2/                 ← x-graph sidebar panel (same renderer)
 │
@@ -171,13 +193,16 @@ extension.js                    ← VS Code entry point, wires everything
 │       ├── health.js           ← Vault health overview
 │       ├── validate.js         ← Schema conformance check (exits 1 on failures)
 │       ├── query.js            ← Run a query; accepts bare clauses or full !view syntax; ASCII table or JSON
-│       ├── report.js           ← Note report for a given ID
-│       ├── links.js            ← Inbound / outbound links for a note
+│       ├── cat.js               ← Frontmatter snapshot + body for a note (--at <date> for a reconstructed historical snapshot, frontmatter only)
+│       ├── report.js           ← Note report for a given ID (--at <date> for a historical report: fields + outbound only, no lifecycle/drift/inbound)
+│       ├── links.js            ← Inbound / outbound links for a note (--at <date> for outbound-only historical links)
+│       ├── graph.js            ← Export full vault graph as JSON (--at <date> for a historical graph reconstruction, via timeEngine.js's buildHistoricalGraph)
+│       ├── story.js            ← Vault growth story: reconstructs the vault at --since <date> and reports note-count/type deltas, mutation-log activity, and busiest notes
 │       └── export.js           ← Export vault as JSON or CSV
 │
 ├── src/api/                    ← HTTP contract layer used by `yamlink serve`
-│   ├── router.js               ← Stable route surface; imported by tests
-│   ├── handlers/               ← Endpoint handlers (`nodes`, `search`, `schema`, `diff`, etc.)
+│   ├── router.js               ← Declarative route table (`routeDefs`: `{ method, path, handler }`, `:param` paths compiled to regex, matched by one loop) — replaced a hand-wired if/else chain 2026-07-11, behavior-preserving
+│   ├── handlers/               ← Endpoint handlers (`nodes`, `search`, `schema`, `diff`, `graph-traversal`, `history`, etc.)
 │   ├── eventsBus.js            ← SSE client registry + rebuild / mutation fanout
 │   ├── write.js                ← CLI-safe file write bridge for API mutations
 │   └── http.js                 ← Shared headers, JSON helpers, error contract
@@ -188,27 +213,36 @@ extension.js                    ← VS Code entry point, wires everything
 │   ├── useApi.js               ← HTTP + SSE client helpers
 │   └── screens/                ← 9 screens: Briefing, Query, Navigator, Explorer, Health, Search, Graph, Diff, Radar
 │
-├── src/lsp/                    ← Editor-agnostic LSP server over stdio
+├── src/lsp/                    ← Editor-agnostic LSP server over stdio. Active development track (Zed reopened as a target).
 │   ├── server.js               ← `yamlink serve --lsp` — route() + run(), wiring only
-│   ├── transport.js            ← JSON-RPC framing (Content-Length, stdin/stdout, send/respond/notify)
+│   ├── transport.js            ← JSON-RPC framing (Content-Length, stdin/stdout, send/respond/notify, bounded server-initiated request timeout)
 │   ├── utils.js                ← URI helpers, WIKILINK_RE, wikilinkAtPosition, collectMdFiles, inFrontmatter
-│   ├── vaultService.js         ← rebuildIndex, push + pull diagnostics collectors
-│   └── handlers/               ← One module per LSP method group
+│   ├── documentState.js        ← Open-document text/version tracking, stale-request (`content-modified`) detection
+│   ├── documentHelpers.js      ← Edit builders shared across handlers (scaffold identity, create note, replace/insert fields, convert relation fields, formatted frontmatter)
+│   ├── documentStructure.js    ← Shared frontmatter/heading structure builder (selectionRange/foldingRange/symbols)
+│   ├── vaultService.js         ← rebuildIndex, push + pull diagnostics collectors, `flushPendingRebuild()` for race-free exit/pull-diagnostics
+│   └── handlers/               ← 15 modules, 30+ JSON-RPC methods — one module per method group
 │       ├── lifecycle.js        ← initialize, initialized, cancelRequest
 │       ├── sync.js             ← didOpen, didChange, didClose, didChangeWatchedFiles
-│       ├── completion.js       ← wikilink + frontmatter key/value completion
-│       ├── hover.js            ← hover card
-│       ├── navigation.js       ← definition, references
-│       ├── rename.js           ← prepareRename, rename
+│       ├── completion.js       ← wikilink + frontmatter key/value completion, implicit relation-value completion (planner-gated), all 6 VS-Code-parity key-suggestion signal sources + schema fields
+│       ├── hover.js            ← hover card — shares `hoverBadge.js`'s colored badges with VS Code, plus clickable relation/body file:// links
+│       ├── navigation.js       ← definition, references (including block-reference precision via `findBlockLine()`)
+│       ├── rename.js           ← prepareRename, rename (with $/progress streaming)
 │       ├── symbols.js          ← documentSymbols, workspaceSymbol
-│       ├── codeAction.js       ← broken-link quickfix
-│       ├── diagnostics.js      ← textDocument/diagnostic, workspace/diagnostic
-│       └── executeCommand.js   ← note intelligence, note arc, field-category snapshots
+│       ├── structure.js        ← selectionRange, foldingRange
+│       ├── codeAction.js       ← broken-link/duplicate-id/schema-repair/missing-field quickfixes, refactor.rewrite (normalize frontmatter, convert relation fields), and the planner-gated empty-field "Use X for field?" quickfix (`buildEmptyFieldQuickfixes`)
+│       ├── diagnostics.js      ← textDocument/diagnostic, workspace/diagnostic (pull + push)
+│       ├── inlayHint.js        ← Positioned relation hints, planner-gated via `authoringEngine.js`
+│       ├── semanticTokens.js   ← textDocument/semanticTokens/full
+│       ├── formatting.js       ← Frontmatter normalization edits
+│       ├── callHierarchy.js    ← prepareCallHierarchy, incomingCalls, outgoingCalls
+│       └── executeCommand.js   ← noteIntelligence, noteArc, fieldCategory, addMissingFields, scaffoldIdentity, normalizeFrontmatter, convertRelations — richer payloads via `intelligenceSnapshots.js` (timeInState, mutationVelocity, crossNotePatterns), bidirectional `workspace/applyEdit`
 │
 └── graph/                      ← x-graph engine (Canvas2D, used as webview URI)
-    ├── renderer/               ← Canvas2DRenderer.js (self-contained, no imports)
-    ├── core/                   ← Layout, camera, schema (docs site + extension)
-    └── adapter-yamlink/        ← Converts vault model to universal graph format
+    └── renderer/               ← Canvas2DRenderer.js (self-contained, no imports)
+        (graph/core/ and graph/adapter-yamlink/ were empty leftover directories,
+         removed 2026-07-07 — the layout/adapter logic they once held now lives
+         inline in src/features/graph/ and src/features/graph2/)
 ```
 
 ### Layer rules
@@ -230,9 +264,22 @@ extension.js                    ← VS Code entry point, wires everything
 | Command | Description |
 |---|---|
 | `yamlink build` | Index vault, report broken links and duplicate IDs. Exits 1 on issues — CI-safe. |
+| `yamlink ls` | List notes. `--type`, `--sort`. |
+| `yamlink cat <id>` | Print a single note's resolved content. `--at <date>` reconstructs frontmatter as of that date (no body — the mutation log has no body-text concept). |
+| `yamlink grep <text>` | Full-text search across note bodies. `--type`, `--field`. |
+| `yamlink find` | Find notes by field presence/absence. `--has`, `--missing`, `--type`. |
+| `yamlink suggest <id>` | Field/relation suggestions for a specific note (CLI-side arc/completion parity). |
+| `yamlink drift` | List notes ranked by drift from their type's learned bundle. `--type`, `--limit`. |
+| `yamlink stale` | List notes ranked by staleness (lifecycle). `--type`, `--limit`. |
+| `yamlink orphans` | List notes with no inbound or outbound links. `--type`, `--limit`. |
+| `yamlink pressure` | Vault-wide "knowledge pressure" summary (where the vault most needs attention). |
+| `yamlink lenses` | Saved/derived vault lenses (curated views). |
+| `yamlink session` | Session activity summary from the mutation log. `--id`. |
+| `yamlink env` | Print/generate shell environment integration (`--shell`). |
 | `yamlink briefing` | Morning summary: vault pulse, overdue/today tasks, recent activity, arc predictions, drift flag. |
 | `yamlink create <type>` | Create a note non-interactively. Runs before index bootstrap. |
-| `yamlink diff <id1> <id2>` | Compare two notes' frontmatter field sets. Human diff or JSON contract. |
+| `yamlink diff <id1> <id2>` | Compare two notes' frontmatter field sets. Human diff or JSON contract. `--since <date>` compares field changes across the whole vault instead. |
+| `yamlink story --since <date>` | Vault growth story via the Time Engine: note-count/type deltas, mutation-log activity, and busiest notes between `<date>` and now. |
 | `yamlink doctor` | Deep vault audit: broken links, duplicate IDs, schema violations, stale notes, arc gaps. |
 | `yamlink init [path]` | Initialize a new Yamlink vault (creates `.yamlink/` directory and stub config). |
 | `yamlink rename <old-id> <new-id>` | Rename a note ID and rewrite all `[[wikilinks]]` vault-wide. `--dry-run`, `--rename-file`. |
@@ -245,27 +292,27 @@ extension.js                    ← VS Code entry point, wires everything
 | `yamlink schema list\|check <type>` | Schema introspection — list all schema targets or check conformance for a type. |
 | `yamlink validate` | Schema conformance check. Exits 1 on required-field violations. |
 | `yamlink query "<clause>"` | Run a Yamlink query. Accepts bare clauses (`where type = x`) or full `!view` syntax. ASCII table or JSON. |
-| `yamlink report <id>` | Full note report: type, lifecycle, drift, links. |
-| `yamlink links <id>` | Outbound and inbound links for a note. |
+| `yamlink report <id>` | Full note report: type, lifecycle, drift, links. `--at <date>` reconstructs a historical report (fields + outbound only — lifecycle/drift/inbound are live-vault inferences with no historical concept). |
+| `yamlink links <id>` | Outbound and inbound links for a note. `--at <date>` reconstructs outbound-only historical links (inbound-at-a-point needs whole-vault reconstruction — use `graph --at` for that). |
 | `yamlink set <id> <field> <value>` | Set or remove a frontmatter field. `--clear` removes; `--dry-run` previews. Emits mutation events with `source: 'cli'`. |
 | `yamlink link <id> <field> <target>` | Add a `[[wikilink]]` relation field. Validates target exists in index. `--append` for multi-value fields. |
 | `yamlink mutations` | Show recent mutation events from `.yamlink/mutation-log.ndjson`. `--limit`, `--since`, `--type`. |
-| `yamlink graph` | Export full vault graph as `{ nodes, edges }` JSON. `--only-types` to filter. |
+| `yamlink graph` | Export full vault graph as `{ nodes, edges }` JSON. `--only-types` to filter. `--at <date>` reconstructs the whole vault's nodes and edges as they existed at that moment (via `timeEngine.js`'s `reconstructVaultAtTime`/`buildHistoricalGraph`). |
 | `yamlink serve` | Local HTTP API — see below. |
 | `yamlink conduit` | Launch the Ink-based terminal UI that talks to the local API. |
 | `yamlink export` | Export vault as JSON or CSV. |
 
 ### Local HTTP API (`yamlink serve`)
 
-`yamlink serve` exposes the vault as a local REST API on `127.0.0.1`. Full documentation at [`docs/api/README-API.md`](docs/api/README-API.md).
+`yamlink serve` exposes the vault as a local REST API on `127.0.0.1`. Full endpoint-by-endpoint reference (method, path, params, response shape, error codes) at [`docs/api/CONTRACT.md`](docs/api/CONTRACT.md); prose walkthrough with examples at [`docs/api/README-API.md`](docs/api/README-API.md).
 
-**Read endpoints:** `GET /api/nodes`, `GET /api/nodes/:id`, `GET /api/search`, `GET /api/schema`, `GET /api/diff`, `GET /api/query`, `GET /api/graph`, `GET /api/tasks`, `GET /api/mutations`, `GET /api/types`, `GET /api/health`, `GET /api/intelligence/note`, `GET /api/intelligence/arc`, `GET /api/intelligence/fieldCategory`
+**Read endpoints:** `GET /api/nodes`, `GET /api/nodes/:id` (`?at=` time travel, `?include=` composite reads, `?minGeneration=` read-your-writes), `GET /api/nodes/:id/outbound`, `GET /api/nodes/:id/inbound`, `GET /api/nodes/:id/neighborhood`, `GET /api/nodes/:id/history`, `GET /api/nodes/:id/evolution`, `GET /api/nodes/:id/archaeology`, `GET /api/search`, `GET /api/schema`, `GET /api/diff` (two-note compare or `?since=` vault-wide changes), `GET /api/query`, `GET /api/graph` (`?at=` for a historical reconstruction), `GET /api/tasks`, `GET /api/mutations`, `GET /api/session/summary`, `GET /api/types`, `GET /api/health`, `GET /api/intelligence/note`, `GET /api/intelligence/arc`, `GET /api/intelligence/fieldCategory`, `GET /api/intelligence/clusters`, `GET /api/intelligence/lenses`
 
 **Write endpoints:** `POST /api/nodes`, `POST /api/nodes/bulk`, `PATCH /api/nodes/:id`, `PATCH /api/nodes/bulk`, `DELETE /api/nodes/:id`
 
 **Pagination contract:** `/api/nodes`, `/api/search`, and `/api/schema` return wrapper objects with `meta: { total, page, limit, pages }`. Search is capped at `200`, schema at `100`, node listing at `500`.
 
-**Event stream:** `GET /api/events` — Server-Sent Events. Pushes `connected`, fine-grained mutation events (`note_created`, `note_deleted`, `note_touched`, `type_set`, `field_added`, `field_changed`, `field_removed`, `relation_added`, `relation_changed`, `relation_removed`, `completion_accepted`), and a final `{ type: 'rebuild', generation }` after each rebuild.
+**Event stream:** `GET /api/events` — Server-Sent Events, filterable via `?note=`/`?noteType=`/`?type=`. Pushes `connected`, fine-grained mutation events (`note_created`, `note_deleted`, `note_touched`, `type_set`, `field_added`, `field_changed`, `field_removed`, `relation_added`, `relation_changed`, `relation_removed`, `completion_accepted`), and after each rebuild a `{ type: 'rebuild', generation }` followed by `{ type: 'intelligence_changed', generation, changedId }` — the reactive signal for recomputed derived intelligence (lifecycle/drift/arc/priors), distinct from `rebuild`'s raw-field-invalidation signal.
 
 **Generation header:** Every response includes `X-Yamlink-Generation: <n>` — an integer that increments on every completed rebuild. Clients use this to detect stale cached data.
 
@@ -342,7 +389,7 @@ All panels use `postMessage` / `onDidReceiveMessage`. There is no shared protoco
 
 ## Mutation Event Log
 
-`src/runtime/mutationEventLog.js` — persisted NDJSON append log at `.yamlink/mutation-log.ndjson`.
+`src/runtime/mutationEventLog.js` — persisted NDJSON append log at `.yamlink/mutation-log.ndjson`. Event types are centrally registered in `src/runtime/mutationEventTypes.js`. Full reference, including known scaling limits and the Time Engine's reconstruction algorithm built on top of this log: [docs/architecture/TIME-ENGINE.md](./docs/architecture/TIME-ENGINE.md).
 
 Event types: `note_created`, `note_deleted`, `note_touched`, `type_set`, `field_added`, `field_changed`, `field_removed`, `relation_added`, `relation_changed`, `relation_removed`, `completion_accepted`.
 
@@ -506,6 +553,8 @@ These are the natural next depths for the block ID system:
 
 **No hardcoded semantic empire.** Intelligence semantics come from vault-derived evidence (field/type/bundle recurrence, co-occurrence, priors). Bootstrap heuristics are explicit fallbacks, not defaults.
 
+**Authoring Engine convergence — shared duck-typed collectors, not shared UI.** VS Code and LSP must never re-derive the same inference logic independently — that's how the two surfaces drift (the hover-badge duplication and the LSP frontmatter-completion note-id/type-detection bug, both found and fixed 2026-07-06/07, were exactly this failure mode). The fix is not to make VS Code depend on the LSP protocol, or vice versa — VS Code's native extension API (webviews, tree views, decorations) is strictly richer than LSP, so that direction would be a regression. Instead, every collector/classifier function that both surfaces need lives in `src/intelligence/` and is written duck-typed: it calls only `document.getText()`, `document.lineAt(n)`, and `document.uri.fsPath` — never a real `vscode.TextDocument`. A plain object literal (`{ getText, lineAt, uri }`) stands in for the LSP side. `src/intelligence/authoringEngine.js`'s `classifyFieldForAuthoring`/`evaluateFieldForSurface` is the shared contract point: both VS Code (`'completion'`/`'lightbulb'`/`'decoration'` surfaces) and LSP call the same classify→plan pipeline and get the same confidence gating. What does *not* converge: presentation. VS Code's Note Report, Graph, Health, and Calendar panels are webviews with no LSP equivalent, and that's correct — LSP should only ever gain features that map onto real LSP protocol methods (`textDocument/completion`, `textDocument/codeAction`, etc.), not attempt to replicate VS Code's UI surfaces.
+
 ---
 
 ## Platform Optimization — In Progress
@@ -521,7 +570,10 @@ This tracks the active optimization program started 2026-05-26.
 - [x] **pdfkit lazy-loaded** — no longer parsed at activation; deferred to first PDF export call
 - [x] **Dead devDependencies removed** — `mocha` (never used), `@types/react`, `@types/react-dom`
 - [x] **Hardcoded type completion removed** — `getKnownTypeCandidates()` now returns vault types first; archetypes only fire on zero-history vaults
-- [x] **Test baseline updated** — 1938/1938
+- [x] **Test baseline updated** — see `scripts/test-count-baseline.json` for the current number (grows every session; do not hardcode it here)
+- [x] **P3 monolith splits (original 3) — all done**: `src/engine/query.js` (766 → 24 lines; split into `queryParser.js`/`queryExecutor.js`/`queryConditions.js`/`queryCache.js`/`suggestions*.js`), `src/intelligence/suggestionCore.js` (1011 → 64 lines; split into the `frontmatter*`/`suggestion*` family), `src/features/completion.js` (849 → 201 lines; split into `completionCore.js`/`completionItemBuilders.js`/`completionProviders.js`/`completionTracker.js`)
+- [x] **P3 monolith splits (found during the 0.7.4 pass, not on the original list)** — `src/actions/queryBuilderPanel.js` (1830→298 lines), `src/actions/codeActionsNodeCreationCommands.js` (991→87 lines, handlers split into `nodeCreationHandlers.js`), `src/features/graph/graphClientXGraphScript.js` (996→36 lines, fragments in `xgraphClientBody.js`), `src/features/importExternalVaults.js`/`importObsidian.js` split into `src/importers/{notion,evernote,roam,obsidian,shared}.js`. Structural only — no behavior changes, full suite stayed green throughout each split.
+- [ ] **`src/conduit/screens/Explorer.js`** (1086 lines) — deliberately deferred, not done. Stateful React/Ink component, not a mechanical split; needs custom-hook extraction with real state-ownership decisions and has no test coverage to catch mistakes. Needs its own dedicated pass.
 
 ### Pending — P1: Webview architecture migration
 
@@ -540,18 +592,12 @@ Migration order: table panel first (highest complexity, most payoff) → health 
 
 `typescript` is in devDependencies. Migration path:
 
-1. Add `tsconfig.json` with `checkJs: true` — zero-cost first step, surfaces type errors immediately
-2. Migrate `src/engine/query.js` → `.ts` as pilot
-3. Migrate `src/intelligence/` (implicit module contracts are the highest-risk area)
-4. Migrate `src/core/`, `src/actions/`, `src/diagnostics/`
-5. `src/features/` last (VS Code API types add surface area)
+1. [x] Add `tsconfig.json` with `checkJs: true` — done. JSDoc type annotations now enforced across 15+ files as part of CI (caught 3 real bugs during the 0.6.29f typecheck pass).
+2. Migrate `src/engine/query.js` → `.ts` as pilot — not started
+3. Migrate `src/intelligence/` (implicit module contracts are the highest-risk area) — not started
+4. Migrate `src/core/`, `src/actions/`, `src/diagnostics/` — not started
+5. `src/features/` last (VS Code API types add surface area) — not started
 6. Webview TypeScript enabled automatically once P1 is complete
-
-### Pending — P3: Monolith splits
-
-- `src/intelligence/suggestionCore.js` (1011 lines) — vault pattern building, field scoring, suggestion assembly, observed-field analysis
-- `src/features/completion.js` (849 lines) — already partially split into helpers; finish the decomposition
-- `src/engine/query.js` (766 lines) — parser, executor, clause handlers; natural split boundary at parser/executor
 
 ### Not planned
 

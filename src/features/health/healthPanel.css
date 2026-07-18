@@ -79,7 +79,18 @@
     .section { margin-top: 20px; }
     .section-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px; padding-bottom: 10px; border-bottom: 1px solid var(--border); }
     .section-title { font-size: 11px; text-transform: uppercase; letter-spacing: 0.12em; color: var(--mid); font-weight: 700; }
+    .section-title-row { display: flex; align-items: center; gap: 6px; }
     .section-count { font-size: 11px; color: var(--dim); letter-spacing: 0.05em; }
+    .help-tip {
+        display: inline-flex; align-items: center; justify-content: center;
+        width: 14px; height: 14px; border-radius: 50%;
+        background: var(--surface3); border: 1px solid var(--border2);
+        color: var(--dim); font-size: 9px; font-weight: 700;
+        text-transform: none; letter-spacing: normal;
+        cursor: help; user-select: none; flex-shrink: 0;
+        transition: color 0.12s, border-color 0.12s;
+    }
+    .help-tip:hover { color: var(--accent); border-color: var(--accent); }
 
     .type-block { border: 1px solid var(--border); border-radius: 14px; margin-bottom: 7px; overflow: hidden; transition: border-color 0.12s, transform .12s; background: var(--surface2); box-shadow: 0 6px 18px rgba(0,0,0,.06); }
     .type-block:hover { border-color: var(--border2); transform: translateY(-1px); }
@@ -275,3 +286,19 @@
 .trend-arrow { font-size: 12px; font-weight: 700; margin-left: 4px; vertical-align: middle; }
 .trend-bad  { color: var(--danger, #ff5c5c); }
 .trend-good { color: var(--accent, #5ecfbe); }
+
+/* ── Chart hover tooltip (Vault Projections growth/trend-bar hovers) ──── */
+.heat-tooltip {
+    display: none;
+    position: fixed;
+    z-index: 200;
+    background: var(--surface2, #2d2d30);
+    border: 1px solid var(--border, #454545);
+    border-radius: 5px;
+    padding: 5px 10px;
+    font-size: 11px;
+    color: var(--text, #cccccc);
+    pointer-events: none;
+    white-space: nowrap;
+    box-shadow: 0 2px 8px rgba(0,0,0,0.45);
+}

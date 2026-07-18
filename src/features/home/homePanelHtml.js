@@ -25,6 +25,7 @@ const LUCIDE = {
     calendar:      `<rect x="3" y="4" width="18" height="18" rx="2" ry="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/>`,
     alertTriangle: `<path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/>`,
     barChart:      `<line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/>`,
+    trendingUp:    `<polyline points="22 7 13.5 15.5 8.5 10.5 2 17"/><polyline points="16 7 22 7 22 13"/>`,
 };
 
 const ACTIVITY_ICON = {
@@ -208,7 +209,10 @@ function buildConnectivitySvg(linkDistribution) {
         const count = linkDistribution[b.key] || 0;
         const barW = Math.max(2, Math.round((count / maxVal) * (W - LABEL_W - 32)));
         const y = i * (BAR_H + GAP);
-        return `<text x="${LABEL_W - 5}" y="${y + BAR_H / 2 + 4}" fill="rgba(156,156,156,0.78)" font-size="10" font-family="system-ui,sans-serif" text-anchor="end">${b.label}</text><rect x="${LABEL_W}" y="${y}" width="${barW}" height="${BAR_H}" rx="3" fill="${b.color}"/><text x="${LABEL_W + barW + 5}" y="${y + BAR_H / 2 + 4}" fill="rgba(200,200,200,0.65)" font-size="10" font-family="system-ui,sans-serif">${count}</text>`;
+        const tip = esc(`${b.label}: ${count} note${count !== 1 ? 's' : ''}`);
+        // A full-row invisible hit area gives a real hover target even for a
+        // near-zero-width bar — the visible bar itself is left exactly as before.
+        return `<text x="${LABEL_W - 5}" y="${y + BAR_H / 2 + 4}" fill="rgba(156,156,156,0.78)" font-size="10" font-family="system-ui,sans-serif" text-anchor="end">${b.label}</text><rect x="${LABEL_W}" y="${y}" width="${barW}" height="${BAR_H}" rx="3" fill="${b.color}" style="pointer-events:none"/><rect x="${LABEL_W}" y="${y}" width="${W - LABEL_W}" height="${BAR_H}" fill="transparent" data-tip="${tip}" style="cursor:help"/><text x="${LABEL_W + barW + 5}" y="${y + BAR_H / 2 + 4}" fill="rgba(200,200,200,0.65)" font-size="10" font-family="system-ui,sans-serif" style="pointer-events:none">${count}</text>`;
     }).join('');
 
     return `<svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="${H}" role="img" aria-label="Link density distribution" style="display:block;overflow:visible">${rows}</svg>`;
@@ -272,7 +276,13 @@ function buildGrowthSvg(weeklyGrowth) {
 
     const dots = points
         .filter(p => p.count > 0)
-        .map(p => `<circle cx="${p.x.toFixed(1)}" cy="${p.y.toFixed(1)}" r="2.5" fill="#C49BF0"/>`)
+        .map(p => `<circle cx="${p.x.toFixed(1)}" cy="${p.y.toFixed(1)}" r="2.5" fill="#C49BF0" style="pointer-events:none"/>`)
+        .join('');
+
+    // Invisible, larger hit-area circle per week — including zero-count weeks,
+    // which otherwise have no visible dot at all to hover.
+    const hitAreas = points
+        .map(p => `<circle cx="${p.x.toFixed(1)}" cy="${p.y.toFixed(1)}" r="7" fill="transparent" data-tip="${esc(`${p.label}: ${p.count} note${p.count !== 1 ? 's' : ''} created`)}" style="cursor:help"/>`)
         .join('');
 
     const labelIdx = [0, Math.floor(n / 2), n - 1];
@@ -283,9 +293,9 @@ function buildGrowthSvg(weeklyGrowth) {
 
     return `<svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="${H}" role="img" aria-label="Note growth over last 12 weeks" style="display:block;overflow:visible">
         <defs><linearGradient id="gg" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stop-color="#C49BF0" stop-opacity="0.38"/><stop offset="100%" stop-color="#C49BF0" stop-opacity="0.02"/></linearGradient></defs>
-        <polygon points="${areaPoints}" fill="url(#gg)"/>
-        <polyline points="${linePoints}" fill="none" stroke="#C49BF0" stroke-width="1.5" stroke-linejoin="round"/>
-        ${dots}${xLabels}
+        <polygon points="${areaPoints}" fill="url(#gg)" style="pointer-events:none"/>
+        <polyline points="${linePoints}" fill="none" stroke="#C49BF0" stroke-width="1.5" stroke-linejoin="round" style="pointer-events:none"/>
+        ${dots}${xLabels}${hitAreas}
     </svg>`;
 }
 
@@ -402,10 +412,15 @@ ${showWelcome ? `
 ${overdueAlertHtml}
 
 <nav class="tab-bar" role="tablist">
-    <button class="tab-btn active" data-tab="home" role="tab" aria-selected="true">Home</button>
-    <button class="tab-btn" data-tab="stats" role="tab" aria-selected="false">
-        ${svgIcon(LUCIDE.barChart, 11)} Stats
-    </button>
+    <div class="tab-bar-tabs">
+        <button class="tab-btn active" data-tab="home" role="tab" aria-selected="true">Home</button>
+        <button class="tab-btn" data-tab="stats" role="tab" aria-selected="false">
+            ${svgIcon(LUCIDE.barChart, 11)} Stats
+        </button>
+    </div>
+    <div class="tab-bar-actions">
+        <button class="action-chip" data-command="yamlink.openHealthPanel">Open full Vault Health →</button>
+    </div>
 </nav>
 
 <!-- HOME TAB -->
@@ -477,19 +492,88 @@ function buildOverdueAlertHtml(tasks) {
     </section>`;
 }
 
+function pct(x) {
+    return `${Math.round((x || 0) * 100)}%`;
+}
+
+// Compact per-week mini bar chart (created/touches/structure) from the same
+// history buckets Vault Health's "Recent 4-week pattern" uses — a smaller,
+// glanceable version for the Home tab's tight no-scroll layout. Each column
+// carries its full breakdown in a title attribute rather than inline text,
+// keeping the strip a single row tall.
+function buildProjectionTrendStrip(history) {
+    const buckets = history?.buckets || [];
+    if (!buckets.length) return '';
+    const maxVal = Math.max(1, ...buckets.map(b => Math.max(b.created || 0, b.touches || 0, b.structure || 0)));
+    const cols = buckets.map(b => {
+        const h = (v) => Math.max(2, Math.round((v / maxVal) * 22));
+        const tip = `${b.label}: ${b.created || 0} created, ${b.touches || 0} touches, ${b.structure || 0} structure, ${b.completions || 0} completions`;
+        return `<span class="proj-trend-col" title="${esc(tip)}">
+            <span class="proj-trend-bar proj-trend-bar--created" style="height:${h(b.created)}px"></span>
+            <span class="proj-trend-bar proj-trend-bar--touches" style="height:${h(b.touches)}px"></span>
+            <span class="proj-trend-bar proj-trend-bar--structure" style="height:${h(b.structure)}px"></span>
+        </span>`;
+    }).join('');
+    return `<span class="projection-trend-strip">${cols}</span>`;
+}
+
+// Below this, there isn't enough real signal to say anything honest about a
+// metric — it's left out of the strip entirely (silence) rather than shown
+// with a confident-looking sentence backed by almost no evidence. Same floor
+// vaultProjectionsCard.js uses for the full Projections tab, so the compact
+// strip and the detail view never disagree about what's worth saying.
+const EVIDENCE_FLOOR = 0.15;
+function evidenceOk(score) {
+    return typeof score === 'number' && score >= EVIDENCE_FLOOR;
+}
+
+// Plain, concrete sentences — no jargon ("evidence %", "sampled"), no
+// unbacked trend claims. Each function either names real numbers from this
+// vault, or returns '' so the line is left out rather than shown empty.
+function buildGrowthSentence(growth) {
+    const leader = growth?.topTypes?.[0];
+    if (!growth || !evidenceOk(growth.evidenceScore) || !leader) {
+        return 'Not enough activity yet to tell if this vault is growing quickly or slowly.';
+    }
+    return `<code>${esc(leader.type)}</code> is your fastest-growing type — ${leader.currentTotal} notes now, on track for about ${leader.projected90} in 90 days.`;
+}
+
+function buildStaleSentence(stale) {
+    if (!stale || !evidenceOk(stale.evidenceScore) || !stale.total) return '';
+    const share = pct(stale.staleRate);
+    return `Based on your vault activity, about ${share} of notes (${stale.staleCount} of ${stale.total}) haven't been changed in 90+ days.`;
+}
+
+function buildStructureSentence(structure) {
+    const leader = structure?.topTypes?.[0];
+    if (!structure || !evidenceOk(structure.evidenceScore) || !structure.sampled || !leader) return '';
+    return `${leader.problematic} of your ${leader.sampled} <code>${esc(leader.type)}</code> notes ${leader.problematic === 1 ? "doesn't" : "don't"} match the shape the rest usually have.`;
+}
+
 function buildProjectionStripHtml(projections) {
     if (!projections) return '';
-    const items = [
-        { label: 'Growth',    conf: projections.growth?.confidence    || 'low' },
-        { label: 'Stale',     conf: projections.stale?.confidence     || 'low' },
-        { label: 'Structure', conf: projections.structure?.confidence || 'low' },
-    ];
-    const chips = items.map(({ label, conf }) =>
-        `<span class="proj-item">${esc(label)} <span class="proj-badge proj-badge--${esc(conf)}">${esc(conf.toUpperCase())}</span></span>`
-    ).join('<span class="proj-sep">·</span>');
-    return `<div class="projection-strip" data-action="switchTab" data-tab="stats" role="button" tabindex="0" title="Open Stats tab for details">
-        ${chips}
-        <span class="proj-link">Stats →</span>
+    const { growth, stale, structure, history } = projections;
+
+    const lines = [
+        buildGrowthSentence(growth),
+        buildStaleSentence(stale),
+        buildStructureSentence(structure),
+    ].filter(Boolean).map(line => `<div class="proj-snapshot-line">${line}</div>`).join('');
+
+    if (!lines) return '';
+
+    // Links out to Vault Health's own dedicated Projections tab rather than
+    // a full duplicate tab inside Home — the real chart/stat-card treatment
+    // lives in one place now (see healthHtml.js), this stays a compact
+    // teaser. Moved 2026-07-13 per direct user feedback that the Home-tab
+    // version wasn't good enough to earn a full feature slot there.
+    return `<div class="projection-snapshot" data-command="yamlink.openHealthPanel" role="button" tabindex="0" title="Open Vault Health's Projections tab for full detail">
+        <div class="projection-snapshot-row">
+            <span class="projection-snapshot-title">Projection Snapshot</span>
+            ${buildProjectionTrendStrip(history)}
+            <span class="proj-link">Vault Health →</span>
+        </div>
+        <div class="proj-snapshot-lines">${lines}</div>
     </div>`;
 }
 
@@ -500,6 +584,7 @@ function buildFeedHtml(events, fieldsCache, sessions) {
             const iconHtml = `<span class="feed-icon feed-icon--${esc(session.primaryType || 'field_changed')}">${svgIcon(iconPath)}</span>`;
             const chips = [
                 session.familyLabel      ? `<span class="feed-chip">${esc(session.familyLabel)}</span>`           : '',
+                session.outcomeLabel     ? `<span class="feed-chip feed-chip--outcome">${esc(session.outcomeLabel)}</span>` : '',
                 session.primaryTypeName  ? `<span class="feed-chip">${esc(session.primaryTypeName)}</span>`       : '',
                 session.count > 1        ? `<span class="feed-chip">${session.count} events</span>`               : '',
                 session.focusFields?.length ? `<span class="feed-chip">fields: ${esc(session.focusFields.slice(0, 2).join(', '))}</span>` : '',

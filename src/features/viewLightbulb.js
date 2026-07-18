@@ -34,7 +34,7 @@ const {
     rankScalarValues,
     rankCandidateIds,
     buildRelationCandidateDetail
-} = require('./completionHelpers');
+} = require('../intelligence/completionHelpers');
 
 function focusFirstEmptyFrontmatterField(editor, document) {
     if (!editor || !document) return false;

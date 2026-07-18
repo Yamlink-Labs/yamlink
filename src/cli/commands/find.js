@@ -1,14 +1,15 @@
 'use strict';
 
 const { getIndex, getFieldsCache } = require('../../core/indexService');
-const { emitJson, emitText } = require('../io');
+const fmt = require('../format');
+const { captureOutput, emitJson, emitText } = require('../io');
 
 function hasValue(value) {
     if (Array.isArray(value)) return value.some((entry) => String(entry || '').trim());
     return String(value || '').trim().length > 0;
 }
 
-function run({ hasFields, missingFields, typeFilter, json }) {
+function run({ hasFields, missingFields, typeFilter, json, quiet }) {
     const requiredFields = (Array.isArray(hasFields) ? hasFields : []).map((value) => String(value || '').trim()).filter(Boolean);
     const forbiddenFields = (Array.isArray(missingFields) ? missingFields : []).map((value) => String(value || '').trim()).filter(Boolean);
     const targetType = String(typeFilter || '').trim().toLowerCase();
@@ -32,7 +33,25 @@ function run({ hasFields, missingFields, typeFilter, json }) {
         return;
     }
 
-    emitText(results.map((entry) => `${entry.id}\t${entry.type || '—'}`).join('\n') + (results.length ? '\n' : ''));
+    if (!results.length) {
+        emitText('(no results)\n');
+        return;
+    }
+
+    if (quiet) {
+        emitText(results.map((entry) => `${entry.id}\t${entry.type || '—'}`).join('\n') + '\n');
+        return;
+    }
+
+    emitText(captureOutput(() => {
+        fmt.table(results.map((entry) => ({
+            id: entry.id,
+            type: entry.type || '—'
+        })), [
+            { key: 'id', label: 'id' },
+            { key: 'type', label: 'type' }
+        ]);
+    }));
 }
 
 module.exports = { run };

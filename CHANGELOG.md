@@ -2,6 +2,84 @@
 
 ---
 
+## [0.7.4] — Platform Depth
+
+The Time Engine reaches every surface, Vault Projections rebuilt on real historical reconstruction, Task Center, a guided tour, custom hover cards, Conduit's new live spatial graph view, and an Intelligence Engine depth pass — plus a monolith-decomposition pass across Conduit, actions, and importers.
+
+### Time Engine
+
+- **`?at=<timestamp>` time travel** — `GET /api/nodes/:id` and `GET /api/graph` reconstruct any note, or the whole vault graph, as it looked at a past moment from the mutation log, not a stored snapshot. Responses report `complete: true`/`false` honestly when reconstruction can't be proven back to a note's real birth, and a note that existed at the target time but was later deleted returns `exists: true, fields: null` rather than a guess.
+- **`--at <date>` on `cat`, `report`, `links`, `graph`**, and a new **`story --since <date>`** — the CLI's everyday inspection commands now reach into vault history. `story` reports growth since a date: note counts then vs. now, fastest-growing types, activity in the window, busiest notes by edit count.
+- **x-graph time-lapse** — play back vault growth in both graph surfaces (workspace panel and sidebar). Reconstructs each checkpoint from real git history when the vault is a git repo, including body-text mentions; falls back to the mutation log otherwise, which now also tracks body-text mention changes going forward. Playback holds one fixed, pre-settled layout and only reveals/hides nodes and edges over it, so positions never move during playback.
+- **Vault Projections rebuilt on real historical reconstruction.** Replaces the old rolling 4-week-window linear multiplier with `src/intelligence/vaultTrends.js`: reconstructs the vault at real historical checkpoints and fits a genuine least-squares trend line (reporting R²) across all three lanes — Growth, Stale, Structure. Adds retrospective accuracy scoring (what the model would have projected 90 days ago, compared to what actually happened) and per-note staleness forecasting (which specific notes go stale soonest, ranked by days remaining).
+
+### Conduit
+
+- **Live spatial graph view** — press `v` on the Graph screen for a constellation layout: the focused note centered with branching, numbered lanes to each connection, labeled and colored by note type with a legend, honestly paginated past a connection-count cap. Updates live over SSE as relations change.
+
+### Intelligence
+
+- **Temporal confidence from mutation volatility** — fields revised often carry a small confidence penalty in classification; fields set once and never touched again get a small boost.
+- **Suggestion cascade** — accepting a relation-field completion offers a one-click nudge for the note's next likely-missing field, when the arc model is confident.
+- **Natural-language write actions** — the plain-English query box recognizes write-intent phrasings ("archive all missions with status failed") alongside its existing read-only `!view` generation.
+- **Schema-proposal action closes its own loop** — creating a schema note from a detected cluster now offers to back-fill the new fields onto the cluster's own member notes.
+- **Pre-schema field emergence** — completions on an untyped or pattern-less note favor a real repeated field pattern already present in the vault over the old generic starter list.
+- **Relationship gravity** — Note Report's relation lists rank by corroboration (multiple fields pointing at the same note, reinforced over time) instead of index build order.
+
+### VS Code
+
+- **Custom hover cards** — `type`/`status` render as Apollo-colored pill badges inside VS Code's native hover; relation and body wikilinks are clickable rather than literal bracket text.
+- **`![[image.png]]`-style embeds** resolve consistently across hover, link styling, and Ctrl+Click.
+- **Task Center** — a dedicated sidebar view listing every vault task grouped into Overdue/Today/Upcoming/Undated/Done, with native checkboxes and jump-to-line. Supports `#urgent`/`#medium`/`#low` priority markers, shown as a colored dot, used for in-bucket sort order and escalated notifications.
+- **Guided tour** — a first-run walkthrough covering Home, Calendar, Vault Health, Graph, and Task Center.
+- **Vault Health depth pass** — Emerging Patterns also shown on the Schema tab; a new Most-Reinforced Connections list on the Intelligence tab; the Activity tab opens with a plain-count summary and workflow-burst detection.
+- **Vault Health terminology explainers** — every jargon term and tab now has a "?" with a plain-language definition.
+- **Graph console** — a Labels control (Auto/All/Off), "?" explainers for Signal/Themes/Relations/Semantic/Health, real inline icons in place of emoji transport controls, a longer and more visible time-lapse fade-in, and a true off-black canvas background matching the rest of the product.
+- **Editor topbar and right-click menu reorganized** — Live Note takes the topbar slot the older Preview panel used to occupy; Export to PDF is now also a right-click action; all 9 right-click note/reference actions are grouped under one "Yamlink" submenu.
+
+### API
+
+- **`docs/api/CONTRACT.md`** — a flat method/path/params/response/error-code reference for every endpoint, generated from the real route table. Documents two previously-unwritten capabilities: `intelligence_changed` SSE events and composite reads (`?include=outbound,inbound,intelligence,history`).
+
+### CLI
+
+- **`ls`/`grep`/`find` print a real aligned table by default**, matching the convention already used by `search`/`doctor`/`build`/`schema`/`links`/`mutations`/`briefing`/`validate`. The old plain/tab-separated form is preserved behind `--quiet` for shell pipelines.
+- **`doctor` reports malformed frontmatter** as a structured table (file + YAML error) instead of an unstructured console warning.
+
+### LSP
+
+- **Hover reaches parity with VS Code** — the same colored `type`/`status` badges and clickable relation/body links, via standard markdown syntax so it works the same across editors.
+- **`workspace/applyEdit` support** — `addMissingFields`, `scaffoldIdentity`, and two newly-exposed commands (`normalizeFrontmatter`, `convertRelations`) can now write back through any LSP client.
+- **Richer `noteIntelligence` payloads** — time-in-current-lifecycle-state, mutation velocity, and cross-note pattern matches, matching VS Code's Note Report depth.
+
+### Fixed
+
+- Note Report's Tasks tab empty state described a feature that doesn't exist ("mention this node from another task"); rewritten to describe what the tab actually shows.
+- Conduit's own API server could die within milliseconds of starting fresh — `run()` never awaited Ink's exit promise, so the CLI tore the server down while the UI was still using it. Now awaits `waitUntilExit()`.
+- `yamlink`/`yamlink conduit` could silently attach to the wrong vault's already-running server. `probeServer()` now confirms the target vault via `/api/health`'s `vaultPath` before reusing a server; any mismatch or unidentifiable server gets its own fresh instance on a free port instead.
+- `.yamlinkignore` rules starting with a leading `/` matched nothing, since scanned paths are never given a leading slash. Leading slashes are now stripped the same way `./` already was.
+- CLI commands leaked raw build-time `console.warn`/`console.error` diagnostics ahead of their actual output. `buildIndexQuietly()` now stubs all three console methods during a quiet rebuild.
+- Graph Workspace: disconnected or low-weight components could drift arbitrarily far from the main cluster. Added a hard per-tick position clamp in `SimpleLayout`.
+- Vault Health's "Create schema from cluster" button double-fired a spurious `openView` message alongside the real action.
+- LSP could hang a command forever if the editor never answered an `applyEdit` request. Added a 5s timeout to the transport's request layer.
+- LSP diagnostics could miss a rebuild triggered by an external file change, or answer a pull request with stale pre-rebuild data during the debounce window. Both now wait for any in-flight rebuild.
+- Images in Live Note and Preview didn't render if indented, and `![[embed.png]]` never rendered as an image at all. Fixed dedenting, embed-vs-wikilink detection, and webview image URI handling.
+- A follow-up fix was needed for Windows: the first fix's `file://` URIs contained backslash-mangled paths, and markdown-it's link validator blocks `file:` URIs by default. Both resolved; standard `![alt](relative/path.png)` syntax now also resolves against the note's directory.
+- PDF export had no image support at all since the command was first built. Both `![alt](path)` and `![[embed.png]]` now resolve and embed via pdfkit, falling back to a placeholder line for unsupported formats.
+- Two Stats-tab charts (Link Density, Note Growth) had no hover tooltips, unlike the rest of the tab.
+- Two Home-panel tests were silently failing, undetected because the test file was never wired into `package.json`'s test scripts.
+
+### Changed (structural only — no behavior changes)
+
+- `src/actions/queryBuilderPanel.js` split 1830→298 lines; webview HTML/CSS/JS extracted to `src/actions/queryBuilder/queryBuilderHtml.js`.
+- `src/features/importExternalVaults.js` / `src/features/importObsidian.js` split into `src/importers/{notion,evernote,roam,obsidian,shared}.js` — pure parsing modules, zero VS Code imports.
+- `src/actions/codeActionsNodeCreationCommands.js` split 991→87 lines; all 11 command handlers extracted to `src/actions/nodeCreationHandlers.js`.
+- `src/features/graph/graphClientXGraphScript.js` split 996→36 lines; the x-graph webview client script extracted to `src/features/graph/xgraphClientBody.js` as 6 concern-grouped fragments.
+- `graph/renderer/Canvas2DRenderer.js` evaluated for a split and declined — already well-sectioned, and no bundler exists in this repo to support split-source/single-file-output without contradicting the "no build step" principle.
+- `src/conduit/screens/Explorer.js` split 1086→426 lines. Extracted the keyboard handler (`explorerInput.js`), detail-panel builder (`explorerDetail.js`), formatting helpers (`explorerFormat.js`), and row renderers (`explorerRows.js`) into pure, dependency-injected modules with 14 new behavioral tests covering mode transitions and detail output that had zero prior coverage.
+
+---
+
 ## [0.7.3] — Hotfix
 
 - **Sample-vault race condition** — installing the extension while multiple VS Code project windows were already open could activate it in all of them near-simultaneously; a check-then-set race on a machine-wide first-run flag meant every open project could get the sample vault's Markdown files silently copied in. Replaced with a per-workspace, opt-in prompt ("Add a sample Yamlink vault here to explore its features?") — nothing is written to disk without explicit consent, and the check is now scoped per workspace so it can't race across windows.

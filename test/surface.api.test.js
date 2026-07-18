@@ -350,6 +350,37 @@ test('GET /api/nodes/:id/archaeology?field=unit returns relation timeline', asyn
     await request('PATCH', '/api/nodes/johnny-rico', { field: 'unit', value: '[[roughnecks]]' });
 });
 
+test('GET /api/nodes/:id/evolution — 404 for unknown note', async () => {
+    const response = await get('/api/nodes/nonexistent-note/evolution');
+    assert.equal(response.status, 404);
+});
+
+test('GET /api/nodes/:id/archaeology — 404 for unknown note', async () => {
+    const response = await get('/api/nodes/nonexistent-note/archaeology?field=unit');
+    assert.equal(response.status, 404);
+});
+
+test('GET /api/nodes/:id/archaeology with no field param — 400', async () => {
+    const response = await get('/api/nodes/johnny-rico/archaeology');
+    assert.equal(response.status, 400);
+    assert.equal(response.body.code, 'MISSING_PARAM');
+});
+
+test('POST /api/nodes/:id/evolution — 405 method not allowed', async () => {
+    const response = await request('POST', '/api/nodes/johnny-rico/evolution', {});
+    assert.equal(response.status, 405);
+});
+
+test('POST /api/intelligence/lenses — 405 method not allowed', async () => {
+    const response = await request('POST', '/api/intelligence/lenses', {});
+    assert.equal(response.status, 405);
+});
+
+test('POST /api/session/summary — 405 method not allowed', async () => {
+    const response = await request('POST', '/api/session/summary', {});
+    assert.equal(response.status, 405);
+});
+
 test('GET /api/intelligence/lenses returns vault-level change lenses', async () => {
     const response = await get('/api/intelligence/lenses');
     assert.equal(response.status, 200);
@@ -374,6 +405,67 @@ test('GET /api/graph — shape', async () => {
     assert.equal(typeof response.body.stats, 'object');
     assert.ok(response.body.nodes.length >= 4);
     assert.ok(response.body.edges.some((edge) => edge.from === 'johnny-rico' && edge.to === 'roughnecks'));
+});
+
+test('GET /api/nodes/:id?at= reconstructs a field to its value before a later PATCH', async () => {
+    await request('PATCH', '/api/nodes/johnny-rico', { field: 'status', value: 'timeline-before' });
+    const afterPatch1 = new Date().toISOString();
+    await request('PATCH', '/api/nodes/johnny-rico', { field: 'status', value: 'timeline-after' });
+
+    const historical = await get(`/api/nodes/johnny-rico?at=${encodeURIComponent(afterPatch1)}`);
+    assert.equal(historical.status, 200);
+    assert.equal(historical.body.exists, true);
+    assert.equal(historical.body.fields.status, 'timeline-before');
+    assert.ok(Array.isArray(historical.body._outbound));
+    assert.ok(historical.body._outbound.some((edge) => edge.field === 'unit' && edge.to === 'roughnecks'));
+
+    const current = await get('/api/nodes/johnny-rico');
+    assert.equal(current.body.status, 'timeline-after');
+});
+
+test('GET /api/nodes/:id?at= for a timestamp before the fixture vault existed reverts through the whole recorded chain', async () => {
+    // The fixture notes are static files, never created via the API — there is
+    // no note_created event for johnny-rico anywhere in this test file's log,
+    // so `complete` should honestly report false, and undoing every recorded
+    // field_changed all the way back should still land on the true original
+    // fixture value ("active") regardless of how many other tests in this
+    // file already mutated status before this one runs.
+    const response = await get('/api/nodes/johnny-rico?at=2020-01-01T00:00:00.000Z');
+    assert.equal(response.status, 200);
+    assert.equal(response.body.fields.status, 'active');
+    assert.equal(response.body.complete, false);
+    assert.equal(typeof response.body.earliestReconstructableTimestamp, 'string');
+});
+
+test('GET /api/nodes/:id?at= with an invalid timestamp — 400', async () => {
+    const response = await get('/api/nodes/johnny-rico?at=not-a-real-date');
+    assert.equal(response.status, 400);
+    assert.equal(response.body.code, 'INVALID_PARAM');
+});
+
+test('GET /api/nodes/:id?at= for an id that never existed — 404 with a reason', async () => {
+    const response = await get('/api/nodes/never-existed-id?at=2026-01-01T00:00:00.000Z');
+    assert.equal(response.status, 404);
+    assert.equal(response.body.code, 'NOT_FOUND');
+    assert.equal(response.body.reason, 'no-history');
+});
+
+test('GET /api/graph?at= reconstructs historical node state and re-derives edges from it', async () => {
+    const response = await get('/api/graph?at=2020-01-01T00:00:00.000Z');
+    assert.equal(response.status, 200);
+    assert.equal(response.body.at, '2020-01-01T00:00:00.000Z');
+    const rico = response.body.nodes.find((node) => node.id === 'johnny-rico');
+    assert.ok(rico);
+    assert.equal(rico.complete, false);
+    assert.ok(response.body.edges.some((edge) => edge.from === 'johnny-rico' && edge.to === 'roughnecks' && edge.field === 'unit'));
+    assert.equal(typeof response.body.stats.incomplete, 'number');
+    assert.ok(response.body.stats.incomplete >= 1);
+});
+
+test('GET /api/graph?at= with an invalid timestamp — 400', async () => {
+    const response = await get('/api/graph?at=not-a-real-date');
+    assert.equal(response.status, 400);
+    assert.equal(response.body.code, 'INVALID_PARAM');
 });
 
 test('GET /api/nodes/johnny-rico/outbound — returns outbound traversal shape', async () => {
@@ -414,6 +506,31 @@ test('GET /api/nodes/unknown-id/outbound — 404', async () => {
     const response = await get('/api/nodes/unknown-id/outbound');
     assert.equal(response.status, 404);
     assert.equal(response.body.code, 'NOT_FOUND');
+});
+
+test('GET /api/nodes/unknown-id/inbound — 404', async () => {
+    const response = await get('/api/nodes/unknown-id/inbound');
+    assert.equal(response.status, 404);
+});
+
+test('GET /api/nodes/unknown-id/neighborhood — 404', async () => {
+    const response = await get('/api/nodes/unknown-id/neighborhood');
+    assert.equal(response.status, 404);
+});
+
+test('POST /api/nodes/:id/outbound — 405 method not allowed', async () => {
+    const response = await request('POST', '/api/nodes/johnny-rico/outbound', {});
+    assert.equal(response.status, 405);
+});
+
+test('POST /api/nodes/:id/inbound — 405 method not allowed', async () => {
+    const response = await request('POST', '/api/nodes/roughnecks/inbound', {});
+    assert.equal(response.status, 405);
+});
+
+test('POST /api/nodes/:id/neighborhood — 405 method not allowed', async () => {
+    const response = await request('POST', '/api/nodes/johnny-rico/neighborhood', {});
+    assert.equal(response.status, 405);
 });
 
 test('GET /api/types — shape and sort', async () => {
@@ -502,6 +619,33 @@ test('GET /api/diff missing params returns 400', async () => {
     assert.equal(response.body.code, 'MISSING_PARAM');
 });
 
+test('GET /api/diff?from=<unknown> — 404', async () => {
+    const response = await get('/api/diff?from=nonexistent-note&to=johnny-rico');
+    assert.equal(response.status, 404);
+});
+
+test('GET /api/diff?to=<unknown> — 404', async () => {
+    const response = await get('/api/diff?from=johnny-rico&to=nonexistent-note');
+    assert.equal(response.status, 404);
+});
+
+test('POST /api/diff — 405 method not allowed', async () => {
+    const response = await request('POST', '/api/diff', {});
+    assert.equal(response.status, 405);
+});
+
+test('GET /api/diff?since= repeated edits to the same field collapse into one from→to change', async () => {
+    const since = new Date(Date.now() - 1000).toISOString();
+    await request('PATCH', '/api/nodes/johnny-rico', { field: 'status', value: 'diff-since-first' });
+    await request('PATCH', '/api/nodes/johnny-rico', { field: 'status', value: 'diff-since-second' });
+
+    const response = await get(`/api/diff?since=${encodeURIComponent(since)}`);
+    assert.equal(response.status, 200);
+    const johnny = response.body.changes.find((entry) => entry.id === 'johnny-rico');
+    assert.ok(johnny);
+    assert.equal(johnny.fields.status.to, 'diff-since-second');
+});
+
 test('GET /api/diff?since=<iso-date> returns field changes after the given time', async () => {
     const since = new Date(Date.now() - 1000).toISOString();
     const patched = await request('PATCH', '/api/nodes/johnny-rico', { field: 'status', value: 'diff-since-active' });
@@ -534,6 +678,12 @@ test('GET /api/health — shape', async () => {
     assert.equal(typeof response.body.brokenLinks, 'number');
     assert.ok(response.body.brokenLinks >= 1);
     assert.equal(typeof response.body.schemaIntelligence, 'object');
+});
+
+test('GET /api/health — reports which vault it is serving, so a client can detect a port collision with a different vault', async () => {
+    const response = await get('/api/health');
+    assert.equal(response.status, 200);
+    assert.equal(response.body.vaultPath, vault.dir);
 });
 
 test('GET /api/tasks — all tasks', async () => {
@@ -639,6 +789,23 @@ test('GET /api/query?q=nonexistent+garbage — bad query', async () => {
     const response = await get('/api/query?q=nonexistent+garbage');
     assert.ok(response.status === 400 || response.status === 200);
     assert.equal(typeof response.body, 'object');
+});
+
+test('POST /api/query — 405 method not allowed', async () => {
+    const response = await request('POST', '/api/query', {});
+    assert.equal(response.status, 405);
+});
+
+test('GET /api/query with no q param — 400', async () => {
+    const response = await get('/api/query');
+    assert.equal(response.status, 400);
+    assert.equal(response.body.code, 'MISSING_PARAM');
+});
+
+test('GET /api/query?q= with an unparseable query string — 400', async () => {
+    const response = await get('/api/query?q=' + encodeURIComponent('!view !!!not-a-type'));
+    assert.equal(response.status, 400);
+    assert.equal(typeof response.body.error, 'string');
 });
 
 test('GET /api/events — SSE connect', async () => {
@@ -805,6 +972,20 @@ test('POST /api/nodes/bulk — one conflict, one success', async () => {
     assert.equal(response.status, 207);
     assert.equal(response.body.created.length, 1);
     assert.equal(response.body.errors.length, 1);
+});
+
+test('POST /api/nodes/bulk — entry missing type is reported as a MISSING_PARAM error, valid entries still created', async () => {
+    const response = await request('POST', '/api/nodes/bulk', {
+        notes: [
+            { fields: { name: 'No Type Trooper' } },
+            { type: 'contact', fields: { name: 'Ace Levy' } }
+        ]
+    });
+    assert.equal(response.status, 207);
+    assert.equal(response.body.created.length, 1);
+    assert.equal(response.body.errors.length, 1);
+    assert.equal(response.body.errors[0].index, 0);
+    assert.equal(response.body.errors[0].code, 'MISSING_PARAM');
 });
 
 test('PATCH /api/nodes/carl-jenkins — update field', async () => {
@@ -1031,6 +1212,40 @@ test('PATCH /api/nodes/bulk — updates 2 different notes', async () => {
     assert.equal(response.body.errors.length, 0);
 });
 
+test('PATCH /api/nodes/bulk — entry missing id/fields is reported as an error, valid entries still applied', async () => {
+    const response = await request('PATCH', '/api/nodes/bulk', {
+        updates: [
+            { id: 'johnny-rico', fields: { status: 'bulk-partial-ok' } },
+            { id: '', fields: {} },
+            { fields: { status: 'orphan' } }
+        ]
+    });
+    assert.equal(response.status, 207);
+    assert.equal(response.body.updated.length, 1);
+    assert.equal(response.body.errors.length, 2);
+    assert.ok(response.body.errors.every((e) => e.code === 'MISSING_PARAM'));
+});
+
+test('PATCH /api/nodes/bulk — entry with unknown id is reported as a NOT_FOUND error', async () => {
+    const response = await request('PATCH', '/api/nodes/bulk', {
+        updates: [
+            { id: 'johnny-rico', fields: { status: 'bulk-partial-notfound' } },
+            { id: 'nonexistent-note', fields: { status: 'ghost' } }
+        ]
+    });
+    assert.equal(response.status, 207);
+    assert.equal(response.body.updated.length, 1);
+    assert.equal(response.body.errors.length, 1);
+    assert.equal(response.body.errors[0].code, 'NOT_FOUND');
+});
+
+test('PATCH /api/nodes/bulk over the 50-note limit — 400', async () => {
+    const updates = Array.from({ length: 51 }, () => ({ id: 'johnny-rico', fields: { status: 'x' } }));
+    const response = await request('PATCH', '/api/nodes/bulk', { updates });
+    assert.equal(response.status, 400);
+    assert.equal(response.body.code, 'LIMIT_EXCEEDED');
+});
+
 test('DELETE /api/nodes/delta-team — delete note created in test 18', async () => {
     const response = await request('DELETE', '/api/nodes/delta-team');
     assert.equal(response.status, 200);
@@ -1177,4 +1392,14 @@ test('GET /api/intelligence/fieldCategory — 400 when field param missing', asy
 test('GET /api/intelligence/fieldCategory — 404 for unknown note', async () => {
     const res = await get('/api/intelligence/fieldCategory?id=nobody&field=status');
     assert.equal(res.status, 404);
+});
+
+test('docs/api/CONTRACT.md documents every route in the live route table (drift guard)', () => {
+    const { routeDefs } = require('../src/api/router');
+    const contract = fs.readFileSync(path.join(__dirname, '..', 'docs', 'api', 'CONTRACT.md'), 'utf8');
+    const missing = routeDefs
+        .map((route) => route.path)
+        .filter((routePath) => !contract.includes('`' + routePath + '`') && !contract.includes(routePath + '?'))
+        .filter((routePath, index, arr) => arr.indexOf(routePath) === index);
+    assert.deepEqual(missing, [], 'CONTRACT.md is missing route(s): ' + missing.join(', '));
 });

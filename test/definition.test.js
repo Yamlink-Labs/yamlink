@@ -3,6 +3,9 @@
 const { test, describe } = require('node:test');
 const assert = require('node:assert/strict');
 const Module = require('module');
+const fs = require('fs');
+const path = require('path');
+const os = require('os');
 
 const registrations = [];
 
@@ -52,9 +55,10 @@ const vscodeStub = {
     DocumentLink
 };
 
-function buildDocument(lineText) {
+function buildDocument(lineText, fsPath = 'C:\\vault\\a.md') {
     return {
         lineCount: 1,
+        uri: { fsPath },
         lineAt() {
             return { text: lineText };
         }
@@ -140,6 +144,41 @@ describe('wikilink document links', () => {
 
         assert.equal(links.length, 1);
         assert.equal(links[0].target.fsPath, 'C:\\vault\\johnny-rico.md');
+    });
+
+    test('creates a document link for a ![[photo.png]] embed that resolves to a real image file', () => {
+        const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'yamlink-def-img-'));
+        try {
+            const imagePath = path.join(dir, 'photo.png');
+            fs.writeFileSync(imagePath, Buffer.alloc(4));
+            const notePath = path.join(dir, 'a.md');
+            const provider = registerAndGetProvider(new Map());
+
+            const links = provider.provideDocumentLinks(
+                buildDocument('![[photo.png]]', notePath)
+            );
+
+            assert.equal(links.length, 1, 'expected a document link so Ctrl+Click actually navigates');
+            assert.equal(links[0].target.fsPath, imagePath);
+        } finally {
+            fs.rmSync(dir, { recursive: true, force: true });
+        }
+    });
+
+    test('creates no document link for a ![[missing.png]] embed that does not resolve to a real file', () => {
+        const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'yamlink-def-img-'));
+        try {
+            const notePath = path.join(dir, 'a.md');
+            const provider = registerAndGetProvider(new Map());
+
+            const links = provider.provideDocumentLinks(
+                buildDocument('![[missing.png]]', notePath)
+            );
+
+            assert.deepEqual(links, []);
+        } finally {
+            fs.rmSync(dir, { recursive: true, force: true });
+        }
     });
 
     test('skips links when no target exists', () => {

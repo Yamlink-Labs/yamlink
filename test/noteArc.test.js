@@ -51,6 +51,57 @@ describe('buildNoteArc — no type / cold-start', () => {
     });
 });
 
+describe('buildNoteArc — cold-start with a matching emergent cluster', () => {
+    const emergentClusters = [
+        { fields: ['company', 'status'], noteIds: [], noteCount: 6, dominantType: 'contact', confidence: 'low' }
+    ];
+
+    it('prefers a matching cluster over the hardcoded cold-start list', () => {
+        const fc = makeFieldsCache({});
+        const bundles = buildTypeFieldBundles(fc);
+        const result = buildNoteArc({ status: 'active' }, 'contact', fc, bundles, new Map(), null, { emergentClusters });
+        assert.deepEqual(result.missingFields.map(f => f.field), ['company']);
+        assert.equal(result.missingFields[0].emergentCluster, true);
+        assert.equal(result.missingFields[0].coldStart, true);
+        assert.equal(result.missingFields[0].confidenceLabel, 'low');
+    });
+
+    it('never matches a note with no current fields at all — that would be a guess, not a match', () => {
+        const fc = makeFieldsCache({});
+        const bundles = buildTypeFieldBundles(fc);
+        const result = buildNoteArc({}, 'contact', fc, bundles, new Map(), null, { emergentClusters });
+        assert.ok(result.missingFields.every(f => !f.emergentCluster), 'should fall back to the generic cold-start list');
+    });
+
+    it('does not match a cluster whose fields are not a superset of the note\'s current fields', () => {
+        const fc = makeFieldsCache({});
+        const bundles = buildTypeFieldBundles(fc);
+        const result = buildNoteArc({ homeworld: 'Luna' }, 'contact', fc, bundles, new Map(), null, { emergentClusters });
+        assert.ok(result.missingFields.every(f => !f.emergentCluster), 'homeworld is not part of the cluster signature');
+    });
+
+    it('prefers the higher-confidence cluster when multiple clusters match', () => {
+        const twoClusters = [
+            { fields: ['company', 'status', 'homeworld'], noteIds: [], noteCount: 5, dominantType: null, confidence: 'low' },
+            { fields: ['company', 'status', 'unit'], noteIds: [], noteCount: 20, dominantType: null, confidence: 'high' }
+        ];
+        const fc = makeFieldsCache({});
+        const bundles = buildTypeFieldBundles(fc);
+        const result = buildNoteArc({ status: 'active' }, 'contact', fc, bundles, new Map(), null, { emergentClusters: twoClusters });
+        const fieldNames = result.missingFields.map(f => f.field);
+        assert.ok(fieldNames.includes('unit'), 'should pick the high-confidence cluster');
+        assert.ok(!fieldNames.includes('homeworld'), 'should not blend in the lower-confidence cluster');
+        assert.equal(result.missingFields[0].confidenceLabel, 'high');
+    });
+
+    it('does nothing when emergentClusters is omitted (default behavior unchanged)', () => {
+        const fc = makeFieldsCache({});
+        const bundles = buildTypeFieldBundles(fc);
+        const result = buildNoteArc({ status: 'active' }, 'contact', fc, bundles, new Map(), null);
+        assert.ok(result.missingFields.every(f => !f.emergentCluster));
+    });
+});
+
 describe('buildNoteArc — basic field detection', () => {
     it('returns fields the note is missing relative to its type', () => {
         const fc = makeFieldsCache({

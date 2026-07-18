@@ -1,8 +1,12 @@
 'use strict';
 
+const path = require('path');
+const fs = require('fs');
+const { pathToFileURL, fileURLToPath } = require('url');
 const { parseFrontmatterDocument } = require('../../core/frontmatter');
 const { getFieldsCache } = require('../../core/index');
 const { parseAllViewQueries, runQuery } = require('../../engine/query');
+const { resolveImageEmbed } = require('../../core/imageEmbed');
 
 let _md = null;
 function getMd() {
@@ -11,6 +15,13 @@ function getMd() {
         const { calloutPlugin } = require('../../export/markdownItCallouts');
         _md = new MarkdownIt({ html: true, linkify: false });
         calloutPlugin(_md);
+        // markdown-it's default validateLink blocks file:/javascript:/vbscript: uniformly
+        // as a defense against untrusted-content link injection. file: URIs reaching this
+        // renderer are always our own construction (see preprocessImagesForRender —
+        // pathToFileURL() of a path resolveImageEmbed/fs.statSync already verified is a
+        // real local file), never raw user input, so only the genuinely dangerous schemes
+        // need blocking here.
+        _md.validateLink = (url) => !/^(javascript|vbscript):/i.test(String(url || '').trim().toLowerCase());
     }
     return _md;
 }
@@ -61,7 +72,127 @@ function extractFootnoteDefinitions(text) {
     };
 }
 
-function renderMarkdownWithFootnotes(md, text) {
+// Two independent problems, handled together in one fence/list-aware line scan
+// so they share the same fence/list-context tracking:
+//
+// 1. Yamlink's own ![[embed.png]] syntax isn't real markdown image syntax, so
+//    markdown-it's inline image rule never recognizes it — it falls through as
+//    literal text. Rewriting it to standard ![alt](path) *before* md.render()
+//    means markdown-it turns it into a real <img> tag, and there's no leftover
+//    [[...]] text left for wikilinkToSpan to wrongly grab afterward.
+// 2. CommonMark treats a line indented 4+ spaces (outside an active list's own
+//    content column) as an indented code block, not a paragraph. A line whose
+//    entire content is just an image reference — accidentally over-indented,
+//    with no list marker actually governing that indentation — silently turns
+//    into a literal-text code block instead of an image. Dedenting only that
+//    specific case (whole-line image reference, indentation not owned by an
+//    active list) is a safe, conservative fix: it never touches lines that are
+//    legitimately part of a list item's own content column.
+const EMBED_RE = /!\[\[([^\]]+)\]\]/g;
+const STANDARD_IMAGE_RE = /!\[([^\]]*)\]\(([^)]+)\)/g;
+const IMAGE_ONLY_RE = /^(!\[\[[^\]]+\]\]|!\[[^\]]*\]\([^)]*\))$/;
+const FENCE_LINE_RE = /^\s*(`{3,}|~{3,})/;
+const LIST_MARKER_RE = /^(\s*)([-*+]|\d+[.)])\s+/;
+
+function preprocessImagesForRender(text, noteDir) {
+    const lines = String(text || '').split('\n');
+    const out = [];
+    let inFence = false;
+    let fenceMarker = '';
+    let listMarkerColumn = null;
+    let listContentColumn = null;
+
+    for (const rawLine of lines) {
+        const fenceMatch = rawLine.match(FENCE_LINE_RE);
+        if (fenceMatch) {
+            if (!inFence) { inFence = true; fenceMarker = fenceMatch[1][0]; }
+            else if (rawLine.trim().startsWith(fenceMarker)) inFence = false;
+            out.push(rawLine);
+            continue;
+        }
+        if (inFence) { out.push(rawLine); continue; }
+
+        let line = rawLine;
+        if (noteDir) {
+            line = line.replace(EMBED_RE, (full, rawTarget) => {
+                const resolved = resolveImageEmbed(rawTarget, noteDir);
+                if (!resolved) return full; // leave unresolvable embeds alone — same honest-failure behavior as before
+                const alt = String(rawTarget).split('|')[0].trim().replace(/[[\]()]/g, '');
+                return `![${alt}](${pathToFileURL(resolved).href})`;
+            });
+            // Standard ![alt](relative/path.png) syntax markdown-it already renders
+            // as a real <img> tag natively — but the src stays whatever relative
+            // path was written, which never resolves in a webview or browser.
+            // Resolve it against noteDir the same way, leaving absolute/remote
+            // sources (http(s):, data:, file:, already-rooted paths) untouched.
+            line = line.replace(STANDARD_IMAGE_RE, (full, alt, rawSrc) => {
+                const src = String(rawSrc || '').trim();
+                if (!src || /^(https?:|data:|file:)/i.test(src) || path.isAbsolute(src)) return full;
+                const candidate = path.join(noteDir, src);
+                let isFile = false;
+                try { isFile = fs.statSync(candidate).isFile(); } catch (_) { isFile = false; }
+                if (!isFile) return full; // leave unresolvable references alone — same honest-failure behavior
+                return `![${alt}](${pathToFileURL(candidate).href})`;
+            });
+        }
+
+        if (!line.trim()) { out.push(line); continue; }
+
+        const listMatch = line.match(LIST_MARKER_RE);
+        if (listMatch) {
+            listMarkerColumn = listMatch[1].length;
+            listContentColumn = listMatch[0].length;
+            out.push(line);
+            continue;
+        }
+
+        const indent = line.match(/^\s*/)[0].length;
+        if (listContentColumn !== null && indent < listMarkerColumn) {
+            listContentColumn = null;
+            listMarkerColumn = null;
+        }
+
+        const trimmed = line.trim();
+        if (indent >= 4 && IMAGE_ONLY_RE.test(trimmed)) {
+            const withinList = listContentColumn !== null && indent >= listContentColumn;
+            if (!withinList) {
+                out.push(trimmed); // fully dedent — safe fallback: render as a normal paragraph image
+                continue;
+            }
+        }
+
+        out.push(line);
+    }
+
+    return out.join('\n');
+}
+
+// Rewrites <img src="..."> attributes emitted by md.render() into whatever URI
+// scheme the destination actually needs: a webview needs asWebviewUri(), a
+// browser-print temp file needs a plain file:// URI. Remote/data URLs are left
+// untouched. Local images are embedded as file:// URIs (via pathToFileURL) by
+// preprocessImagesForRender above — not raw filesystem paths — because
+// markdown-it's own link-destination parsing mangles Windows backslashes into
+// %5C when it sees a raw path, silently producing an unloadable src. Converted
+// back to a plain fs path here before handing off to resolveSrc, so each
+// caller's resolver function keeps a simple "always receives a real fs path" contract.
+const IMG_SRC_RE = /(<img\s[^>]*\bsrc=")([^"]+)(")/gi;
+
+function rewriteImageSrcs(html, resolveSrc) {
+    if (typeof resolveSrc !== 'function') return html;
+    return String(html || '').replace(IMG_SRC_RE, (full, pre, src, post) => {
+        if (/^(https?:|data:|vscode-)/i.test(src)) return full;
+        try {
+            const fsPath = src.startsWith('file:') ? fileURLToPath(src) : src;
+            return `${pre}${resolveSrc(fsPath)}${post}`;
+        } catch (_) {
+            return full;
+        }
+    });
+}
+
+function renderMarkdownWithFootnotes(md, text, noteDir) {
+    text = preprocessImagesForRender(text, noteDir);
     const { bodyText, definitions } = extractFootnoteDefinitions(text);
     const orderedIds = [];
 
@@ -208,7 +339,7 @@ function splitSegments(body) {
     return segments;
 }
 
-function renderNotePreview(documentText, contextNodeId) {
+function renderNotePreview(documentText, contextNodeId, noteDir) {
     const { body } = parseFrontmatterDocument(documentText);
     const segments = splitSegments(body);
     const md = getMd();
@@ -216,7 +347,7 @@ function renderNotePreview(documentText, contextNodeId) {
 
     for (const seg of segments) {
         if (seg.type === 'md') {
-            let html = renderMarkdownWithFootnotes(md, seg.text);
+            let html = renderMarkdownWithFootnotes(md, seg.text, noteDir);
             html = wikilinkToSpan(html);
             parts.push(html);
         } else {
@@ -230,4 +361,10 @@ function renderNotePreview(documentText, contextNodeId) {
     return parts.join('\n');
 }
 
-module.exports = { renderNotePreview, extractFootnoteDefinitions, renderMarkdownWithFootnotes };
+module.exports = {
+    renderNotePreview,
+    extractFootnoteDefinitions,
+    renderMarkdownWithFootnotes,
+    preprocessImagesForRender,
+    rewriteImageSrcs
+};

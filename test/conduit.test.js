@@ -26,6 +26,8 @@ const Warp = require('../src/conduit/components/Warp');
 const Radar = require('../src/conduit/screens/Radar');
 const Briefing = require('../src/conduit/screens/Briefing');
 const Navigator = require('../src/conduit/screens/Navigator');
+const { handleExplorerKey } = require('../src/conduit/screens/explorerInput');
+const { buildExplorerDetail } = require('../src/conduit/screens/explorerDetail');
 
 test('SelectionList window centers on cursor when items > maxVisible', () => {
     const items = Array.from({ length: 20 }, (_, index) => index);
@@ -674,4 +676,229 @@ test('Radar.arrangeOuterRing — single node has an angle', () => {
     const ring = Radar.arrangeOuterRing([{ id: 'solo' }]);
     assert.equal(ring.length, 1);
     assert.ok(typeof ring[0].angle === 'number');
+});
+
+// ── Explorer.js monolith-decomposition pass ─────────────────────────────
+// Real, first-of-their-kind behavioral tests for the two pieces of
+// Explorer.js's ~1086-line mode-based state machine that were extracted
+// into pure, dependency-injected functions (explorerInput.js/
+// explorerDetail.js) — previously untestable without an Ink-rendering
+// harness this repo doesn't have. Since neither function needs Ink's
+// reconciler to exercise (handleExplorerKey just calls plain setter
+// functions; buildExplorerDetail returns plain React-element descriptor
+// objects), these run through node:test with zero new dependencies.
+
+function spy() {
+    const calls = [];
+    const fn = (...args) => { calls.push(args); return fn.returnValue; };
+    fn.calls = calls;
+    return fn;
+}
+
+// React.createElement returns a plain {type, props} descriptor — no
+// rendering needed to inspect it, just a recursive walk of .props.children.
+function flattenText(node) {
+    if (node === null || node === undefined || typeof node === 'boolean') return '';
+    if (typeof node === 'string' || typeof node === 'number') return String(node);
+    if (Array.isArray(node)) return node.map(flattenText).join('');
+    if (node && node.props && node.props.children !== undefined) return flattenText(node.props.children);
+    return '';
+}
+
+const INK_STUB = { Box: 'Box', Text: 'Text', useInput() {} };
+
+function baseExplorerActions() {
+    return {
+        onQuit: spy(), setFilterText: spy(), setMode: spy(), setNoteCursor: spy(), onNoteView: spy(),
+        setEditFieldCursor: spy(), setEditField: spy(), setEditValue: spy(),
+        patchNode: spy(), showToast: spy(), forceDetailRefresh: spy(),
+        setBulkActionCursor: spy(), setBulkFieldName: spy(), setBulkValue: spy(),
+        patchNodesBulk: spy(), clearBulkState: spy(), deleteNode: spy(),
+        setCreateForm: spy(), postNode: spy(), setRefreshKey: spy(),
+        setLinkFieldName: spy(), setLinkPickLoading: spy(), setLinkPickFilter: spy(), setLinkPickCursor: spy(),
+        getNodes: spy(), setLinkPickNotes: spy(),
+        setContextCursor: spy(), restoreOperationalContext: spy(),
+        setHistoryEvents: spy(), setHistoryLoading: spy(), setHistoryError: spy(), setHistoryCursor: spy(), getMutations: spy(),
+        onNavigate: spy(), _toggleSelectedNote: spy(), onPeek: spy(), saveOperationalContext: spy(),
+        traverseTo: spy(), setTraverseStack: spy(), setTraverseTarget: spy(),
+        setActivePane: spy(), setTypeCursor: spy(), setPreview: spy(), setNodeDetail: spy(), setBodyLines: spy()
+    };
+}
+
+function baseExplorerState(overrides = {}) {
+    return {
+        mode: 'browse', filterText: '', filteredNotes: [], selectedNote: null,
+        editableFields: [], editFieldCursor: 0, editField: '', editValue: '',
+        bulkActionCursor: 0, bulkFieldName: '', bulkValue: '', selectedIds: [],
+        createForm: { step: 0, id: '', type: '', name: '' }, linkFieldName: '',
+        filteredPickNotes: [], safePickCursor: 0, contexts: [], contextCursor: 0,
+        historyEvents: [], activePane: 'notes', nodeDetail: null, traverseStack: [],
+        notes: [], splitMode: false, types: [], host: '127.0.0.1', port: 3000,
+        ...overrides
+    };
+}
+
+test('handleExplorerKey — j in notes pane clamps setNoteCursor to filteredNotes length', () => {
+    const state = baseExplorerState({ filteredNotes: [{ id: 'a' }, { id: 'b' }, { id: 'c' }] });
+    const actions = baseExplorerActions();
+    handleExplorerKey('j', {}, state, actions);
+    assert.equal(actions.setNoteCursor.calls.length, 1);
+    const updater = actions.setNoteCursor.calls[0][0];
+    assert.equal(updater(1), 2);
+    assert.equal(updater(2), 2, 'clamps at the last index');
+});
+
+test('handleExplorerKey — "/" in notes pane enters filter mode', () => {
+    const state = baseExplorerState();
+    const actions = baseExplorerActions();
+    handleExplorerKey('/', {}, state, actions);
+    assert.deepEqual(actions.setFilterText.calls[0], ['']);
+    assert.deepEqual(actions.setMode.calls[0], ['filter']);
+});
+
+test('handleExplorerKey — Escape in filter mode clears filter and returns to browse', () => {
+    const state = baseExplorerState({ mode: 'filter' });
+    const actions = baseExplorerActions();
+    handleExplorerKey('', { escape: true }, state, actions);
+    assert.deepEqual(actions.setFilterText.calls[0], ['']);
+    assert.deepEqual(actions.setMode.calls[0], ['browse']);
+});
+
+test('handleExplorerKey — edit-pick Enter selects the field under the cursor', () => {
+    const state = baseExplorerState({
+        mode: 'edit-pick',
+        editableFields: [['status', 'active'], ['name', 'Johnny Rico']],
+        editFieldCursor: 1
+    });
+    const actions = baseExplorerActions();
+    handleExplorerKey('', { return: true }, state, actions);
+    assert.deepEqual(actions.setEditField.calls[0], ['name']);
+    assert.deepEqual(actions.setEditValue.calls[0], ['Johnny Rico']);
+    assert.deepEqual(actions.setMode.calls[0], ['edit-type']);
+});
+
+test('handleExplorerKey — edit-type Enter patches the field and refreshes on success', async () => {
+    const state = baseExplorerState({
+        mode: 'edit-type',
+        editField: 'status',
+        editValue: 'active',
+        selectedNote: { id: 'johnny-rico' }
+    });
+    const actions = baseExplorerActions();
+    actions.patchNode = (args) => { actions.patchNode.calls.push([args]); return Promise.resolve(); };
+    actions.patchNode.calls = [];
+    handleExplorerKey('', { return: true }, state, actions);
+    assert.deepEqual(actions.patchNode.calls[0][0], {
+        host: '127.0.0.1', port: 3000, id: 'johnny-rico', fields: { status: 'active' }
+    });
+    await Promise.resolve().then(() => {});
+    assert.equal(actions.showToast.calls.length, 1);
+    assert.match(actions.showToast.calls[0][0], /status: active/);
+    assert.deepEqual(actions.setMode.calls[0], ['browse']);
+    assert.equal(actions.forceDetailRefresh.calls.length, 1);
+});
+
+test('handleExplorerKey — top-level Escape backs out of the notes pane and clears the preview', () => {
+    const state = baseExplorerState({ activePane: 'notes' });
+    const actions = baseExplorerActions();
+    handleExplorerKey('', { escape: true }, state, actions);
+    assert.deepEqual(actions.setActivePane.calls[0], ['types']);
+    assert.deepEqual(actions.setPreview.calls[0], [null]);
+    assert.deepEqual(actions.setNodeDetail.calls[0], [null]);
+    assert.deepEqual(actions.setBodyLines.calls[0], [[]]);
+});
+
+test('handleExplorerKey — "g" navigates to the graph screen centered on the selected note', () => {
+    const state = baseExplorerState({ selectedNote: { id: 'johnny-rico' } });
+    const actions = baseExplorerActions();
+    handleExplorerKey('g', {}, state, actions);
+    assert.deepEqual(actions.onNavigate.calls[0], ['graph', 'johnny-rico']);
+});
+
+test('handleExplorerKey — Space toggles the selected note for bulk actions', () => {
+    const state = baseExplorerState({ selectedNote: { id: 'johnny-rico' } });
+    const actions = baseExplorerActions();
+    handleExplorerKey(' ', {}, state, actions);
+    assert.deepEqual(actions._toggleSelectedNote.calls[0], ['johnny-rico']);
+});
+
+test('handleExplorerKey — bulk-delete-confirm "y" deletes every selected id then refreshes', async () => {
+    const state = baseExplorerState({ mode: 'bulk-delete-confirm', selectedIds: ['a', 'b'] });
+    const actions = baseExplorerActions();
+    const deleted = [];
+    actions.deleteNode = ({ id }) => { deleted.push(id); return Promise.resolve(); };
+    handleExplorerKey('y', {}, state, actions);
+    await Promise.resolve().then(() => Promise.resolve());
+    assert.deepEqual(deleted.sort(), ['a', 'b']);
+    assert.equal(actions.clearBulkState.calls.length, 1);
+    assert.deepEqual(actions.setMode.calls[actions.setMode.calls.length - 1], ['browse']);
+});
+
+function baseDetailState(overrides = {}) {
+    return {
+        mode: 'browse', selectedIds: [], bulkActionCursor: 0, bulkFieldName: '', bulkValue: '',
+        editableFields: [], safeEditFieldCursor: 0, editField: '', editValue: '',
+        createForm: { step: 0, id: '', type: '', name: '' }, selectedNote: null,
+        linkFieldName: '', linkPickFilter: '', linkPickLoading: false, filteredPickNotes: [],
+        safePickCursor: 0, contexts: [], contextCursor: 0, historyLoading: false, historyError: '',
+        historyEvents: [], historyCursor: 0, splitMode: false, nodeDetail: null, preview: null,
+        bodyLines: [], previewLoading: false, selectedType: { type: 'all', count: 0 },
+        ...overrides
+    };
+}
+
+test('buildExplorerDetail — edit-pick shows every editable field with the cursor on the selected one', () => {
+    const state = baseDetailState({
+        mode: 'edit-pick',
+        selectedNote: { id: 'johnny-rico' },
+        editableFields: [['status', 'active'], ['name', 'Johnny Rico']],
+        safeEditFieldCursor: 1
+    });
+    const { title, content } = buildExplorerDetail(INK_STUB, state);
+    assert.equal(title, 'Edit — Pick Field');
+    const text = flattenText(content);
+    assert.match(text, /status/);
+    assert.match(text, /Johnny Rico/);
+});
+
+test('buildExplorerDetail — bulk-menu title includes the selected count', () => {
+    const state = baseDetailState({ mode: 'bulk-menu', selectedIds: ['a', 'b', 'c'], bulkActionCursor: 2 });
+    const { title, content } = buildExplorerDetail(INK_STUB, state);
+    assert.equal(title, 'Bulk Actions — 3 notes');
+    assert.match(flattenText(content), /Delete all/);
+});
+
+test('buildExplorerDetail — history mode renders formatted events via formatHistoryEvent', () => {
+    const state = baseDetailState({
+        mode: 'history',
+        selectedNote: { id: 'johnny-rico' },
+        historyEvents: [
+            { type: 'field_changed', field: 'status', oldValue: 'draft', newValue: 'active', timestamp: '2026-06-11T10:00:00.000Z' }
+        ]
+    });
+    const { title, content } = buildExplorerDetail(INK_STUB, state);
+    assert.equal(title, 'History — johnny-rico');
+    const text = flattenText(content);
+    assert.match(text, /CHANGED/);
+    assert.match(text, /draft/);
+    assert.match(text, /active/);
+});
+
+test('buildExplorerDetail — split mode with no selected note shows the empty-state prompt', () => {
+    const state = baseDetailState({ splitMode: true, selectedNote: null });
+    const { content } = buildExplorerDetail(INK_STUB, state);
+    assert.match(flattenText(content), /Select a note to preview/);
+});
+
+test('buildExplorerDetail — a selected note renders its detail and the full key-hint line', () => {
+    const state = baseDetailState({
+        selectedNote: { id: 'johnny-rico', label: 'Johnny Rico', type: 'character', inbound: 0 },
+        nodeDetail: { id: 'johnny-rico', type: 'character', status: 'active' },
+        preview: null,
+        bodyLines: []
+    });
+    const { content } = buildExplorerDetail(INK_STUB, state);
+    const text = flattenText(content);
+    assert.match(text, /Johnny Rico/);
+    assert.match(text, /follow out/);
 });

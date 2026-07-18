@@ -186,8 +186,80 @@ function getImplicitBoost(fieldName, implicitWeights) {
     return { boost, reason };
 }
 
+// ─── Temporal confidence from mutation volatility ──────────────────────────
+//
+// A field revised often (`field_changed`) relative to how often it's set
+// (`field_added`) is noisier evidence than one that's set once and left
+// alone. This mines the mutation log per field, vault-wide, into a
+// volatilityScore in [0,1] — changed / (added + changed) — and requires a
+// minimum sample before returning anything, so a field with one or two
+// observations never gets a confident-sounding score either way.
+
+const VOLATILITY_MIN_SAMPLES = 3;
+const VOLATILITY_HIGH = 0.6;
+const VOLATILITY_LOW = 0.15;
+
+/**
+ * @typedef {{ added: number, changed: number, total: number, volatilityScore: number }} FieldVolatility
+ */
+
+/**
+ * Per-field, vault-wide volatility from mutation log history.
+ * @param {Array<{ type: string, field: string|null }>} mutationEvents
+ * @returns {Map<string, FieldVolatility>}
+ */
+function buildFieldVolatility(mutationEvents) {
+    const stats = new Map();
+    for (const event of (mutationEvents || [])) {
+        if (!event || !event.field) continue;
+        if (event.type !== 'field_added' && event.type !== 'field_changed') continue;
+        const fn = String(event.field || '').trim().toLowerCase();
+        if (!fn || fn === 'id' || fn === 'type') continue;
+        if (!stats.has(fn)) stats.set(fn, { added: 0, changed: 0 });
+        const s = stats.get(fn);
+        if (event.type === 'field_added') s.added++;
+        else s.changed++;
+    }
+    const volatility = new Map();
+    for (const [field, { added, changed }] of stats) {
+        const total = added + changed;
+        if (total < VOLATILITY_MIN_SAMPLES) continue;
+        volatility.set(field, { added, changed, total, volatilityScore: changed / total });
+    }
+    return volatility;
+}
+
+/**
+ * Bounded confidence multiplier from a field's mutation volatility.
+ * No evidence (field absent, or under the minimum sample) → multiplier 1, no-op.
+ * @param {string} fieldName
+ * @param {Map<string, FieldVolatility>|null|undefined} fieldVolatility
+ * @returns {{ multiplier: number, reason: string|null }}
+ */
+function getTemporalConfidenceAdjustment(fieldName, fieldVolatility) {
+    if (!fieldVolatility || !fieldVolatility.size) return { multiplier: 1, reason: null };
+    const fn = String(fieldName || '').trim().toLowerCase();
+    const v = fieldVolatility.get(fn);
+    if (!v) return { multiplier: 1, reason: null };
+    if (v.volatilityScore >= VOLATILITY_HIGH) {
+        return {
+            multiplier: 0.85,
+            reason: `"${fn}" has been revised often in this vault (${v.changed}/${v.total} changes) — treated as less settled`
+        };
+    }
+    if (v.volatilityScore <= VOLATILITY_LOW) {
+        return {
+            multiplier: 1.08,
+            reason: `"${fn}" has stayed stable once set in this vault (${v.total} observations, ${v.changed} revisions)`
+        };
+    }
+    return { multiplier: 1, reason: null };
+}
+
 module.exports = {
     buildImplicitFieldWeights,
     buildBehavioralRelationPriors,
-    getImplicitBoost
+    getImplicitBoost,
+    buildFieldVolatility,
+    getTemporalConfidenceAdjustment
 };

@@ -441,15 +441,18 @@ function buildNoteArcSection(noteArc) {
     if (!noteArc || !noteArc.missingFields || !noteArc.missingFields.length) return '';
     const { inferredType, missingFields } = noteArc;
     const isColdStart = missingFields.length > 0 && missingFields[0].coldStart === true;
+    const isEmergentCluster = missingFields.length > 0 && missingFields[0].emergentCluster === true;
 
-    const rows = missingFields.map(({ field, ratio, calibrationCount, isRelation, coldStart }) => {
+    const rows = missingFields.map(({ field, ratio, calibrationCount, isRelation, coldStart, emergentCluster }) => {
         const relBadge = isRelation ? ' <span class="arc-missing-rel">relation</span>' : '';
         const calNote = calibrationCount > 0
             ? ` <span class="arc-missing-cal" title="Accepted ${calibrationCount}× as a suggestion">✓${calibrationCount}</span>`
             : '';
-        const pctLabel = coldStart
-            ? '<span class="arc-missing-pct arc-missing-pct--starter">starter</span>'
-            : `<span class="arc-missing-pct">${Math.round(ratio * 100)}% of ${esc(inferredType || '')} notes</span>`;
+        const pctLabel = emergentCluster
+            ? '<span class="arc-missing-pct arc-missing-pct--starter" title="Matches a repeated field pattern elsewhere in your vault">pattern match</span>'
+            : coldStart
+                ? '<span class="arc-missing-pct arc-missing-pct--starter">starter</span>'
+                : `<span class="arc-missing-pct">${Math.round(ratio * 100)}% of ${esc(inferredType || '')} notes</span>`;
         return [
             '<div class="arc-missing-row">',
             `  <span class="arc-missing-field">${esc(field)}</span>`,
@@ -461,11 +464,13 @@ function buildNoteArcSection(noteArc) {
         ].join('');
     }).join('\n');
 
-    const hintText = isColdStart
-        ? (inferredType
-            ? `Your vault has no other <strong>${esc(inferredType)}</strong> notes yet. These are universally useful fields to consider adding.`
-            : 'Useful starter fields for any new note. Add what fits, skip what doesn\'t.')
-        : `Fields common on <strong>${esc(inferredType || '')}</strong> notes in your vault that this note doesn't have yet.`;
+    const hintText = isEmergentCluster
+        ? 'Other notes with the fields you\'ve already set here tend to also have these — a repeated pattern in your vault that hasn\'t been formalized as a schema yet.'
+        : isColdStart
+            ? (inferredType
+                ? `Your vault has no other <strong>${esc(inferredType)}</strong> notes yet. These are universally useful fields to consider adding.`
+                : 'Useful starter fields for any new note. Add what fits, skip what doesn\'t.')
+            : `Fields common on <strong>${esc(inferredType || '')}</strong> notes in your vault that this note doesn't have yet.`;
 
     return [
         '<div class="hub-section open" data-field="note-arc">',

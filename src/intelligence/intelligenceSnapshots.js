@@ -1,16 +1,23 @@
 'use strict';
 
 const { getIndex, getFieldsCache, getVaultGeneration } = require('../core/indexService');
-const { getCachedPriors } = require('./vaultPriors');
+const { getCachedPriors, getCommonFieldsForType } = require('./vaultPriors');
 const { buildNoteArc } = require('./noteArc');
 const { inferLifecycleState } = require('./lifecycleState');
 const { computeNoteDrift } = require('./driftDetector');
+const { buildNoteEvolution } = require('./noteEvolution');
 const {
     classifyFieldForAuthoring,
     evaluateFieldForSurface,
     getExpectedRelationTypes
 } = require('./authoringEngine');
 const { getBacklinks } = require('../core/graph');
+
+let _getMutationEventsFn = null;
+
+function setMutationEventsProvider(fn) {
+    _getMutationEventsFn = typeof fn === 'function' ? fn : null;
+}
 
 function getNoteContext(noteId) {
     const idIndex = getIndex();
@@ -33,7 +40,7 @@ function buildArcSnapshot(noteId) {
         priors.typeFieldBundles,
         priors.fieldTargetTypes,
         priors.outcomeCalibration,
-        { typeBundleTotals: priors.typeBundleTotals }
+        { typeBundleTotals: priors.typeBundleTotals, emergentClusters: priors.emergentClusters }
     );
     return { id: noteId, ...arc };
 }
@@ -124,6 +131,135 @@ function buildFieldCategorySnapshot(noteId, fieldName) {
     };
 }
 
+function getMutationEvents() {
+    if (typeof _getMutationEventsFn !== 'function') return [];
+    try {
+        const events = _getMutationEventsFn();
+        return Array.isArray(events) ? events : [];
+    } catch (_) {
+        return [];
+    }
+}
+
+function buildTimeInState(lifecycle, evolution) {
+    if (!lifecycle || typeof lifecycle !== 'object') return null;
+    const lastTouchedDays = lifecycle.metrics?.lastTouchedDays;
+    const created = evolution?.created || null;
+    const lastActivity = evolution?.lastActivity || null;
+    const approxDays = Number.isFinite(lastTouchedDays)
+        ? lastTouchedDays
+        : null;
+    return {
+        state: lifecycle.state || null,
+        approxDays,
+        basis: approxDays !== null ? 'lastTouchedDays' : 'unknown',
+        created,
+        lastActivity
+    };
+}
+
+function buildMutationVelocity(noteId) {
+    const events = getMutationEvents().filter((event) => event && event.noteId === noteId && event.timestamp);
+    if (!events.length) {
+        return {
+            totalEvents: 0,
+            lastActivity: null,
+            eventsLast7d: 0,
+            eventsLast30d: 0,
+            editsLast7d: 0,
+            editsLast30d: 0,
+            averagePerWeek: 0
+        };
+    }
+
+    const nowMs = Date.now();
+    const sevenDaysAgo = nowMs - (7 * 24 * 60 * 60 * 1000);
+    const thirtyDaysAgo = nowMs - (30 * 24 * 60 * 60 * 1000);
+    let eventsLast7d = 0;
+    let eventsLast30d = 0;
+    let editsLast7d = 0;
+    let editsLast30d = 0;
+    const editTypes = new Set([
+        'field_added',
+        'field_changed',
+        'field_removed',
+        'relation_added',
+        'relation_changed',
+        'relation_removed',
+        'type_set',
+        'note_created'
+    ]);
+
+    for (const event of events) {
+        const timestampMs = Date.parse(event.timestamp);
+        if (Number.isNaN(timestampMs)) continue;
+        if (timestampMs >= thirtyDaysAgo) {
+            eventsLast30d++;
+            if (editTypes.has(event.type)) editsLast30d++;
+        }
+        if (timestampMs >= sevenDaysAgo) {
+            eventsLast7d++;
+            if (editTypes.has(event.type)) editsLast7d++;
+        }
+    }
+
+    const firstMs = Date.parse(events[0].timestamp);
+    const spanDays = Number.isFinite(firstMs)
+        ? Math.max(1, (nowMs - firstMs) / (24 * 60 * 60 * 1000))
+        : 1;
+
+    return {
+        totalEvents: events.length,
+        lastActivity: events[events.length - 1]?.timestamp || null,
+        eventsLast7d,
+        eventsLast30d,
+        editsLast7d,
+        editsLast30d,
+        averagePerWeek: Number((events.length / (spanDays / 7)).toFixed(2))
+    };
+}
+
+function buildCrossNotePatterns(noteFields, noteType, priors, fieldsCache) {
+    if (!noteType) {
+        return {
+            inferredType: null,
+            commonFields: [],
+            matchedCommonFields: [],
+            relationTargets: []
+        };
+    }
+
+    const commonFields = getCommonFieldsForType(
+        noteType,
+        priors.typeFieldBundles,
+        fieldsCache || getFieldsCache(),
+        { limit: 6, minRatio: 0.2 },
+        priors.typeBundleTotals
+    );
+    const commonFieldNames = commonFields.map((entry) => entry.field).filter(Boolean);
+    const matchedCommonFields = commonFieldNames.filter((field) => Object.prototype.hasOwnProperty.call(noteFields, field));
+    const relationTargets = Object.keys(noteFields || {})
+        .filter((field) => priors.fieldTargetTypes?.has(field))
+        .map((field) => {
+            const rankedTargets = [...(priors.fieldTargetTypes.get(field) || new Map()).entries()]
+                .sort((a, b) => b[1] - a[1])
+                .slice(0, 3)
+                .map(([targetType, count]) => ({ targetType, count }));
+            return {
+                field,
+                targets: rankedTargets
+            };
+        })
+        .filter((entry) => entry.targets.length > 0);
+
+    return {
+        inferredType: noteType,
+        commonFields: commonFieldNames,
+        matchedCommonFields,
+        relationTargets
+    };
+}
+
 function buildNoteIntelligenceSnapshot(noteId) {
     const context = getNoteContext(noteId);
     if (!context) return null;
@@ -144,6 +280,7 @@ function buildNoteIntelligenceSnapshot(noteId) {
             label: String(result.label || result.state || ''),
             isStale: Boolean(result.isStale),
             reasons: Array.isArray(result.reasons) ? result.reasons : [],
+            likelyType: result.likelyType || null,
             metrics: result.metrics || {}
         } : null;
     } catch (_) {
@@ -174,13 +311,26 @@ function buildNoteIntelligenceSnapshot(noteId) {
             priors.typeFieldBundles,
             priors.fieldTargetTypes,
             priors.outcomeCalibration,
-            { typeBundleTotals: priors.typeBundleTotals }
+            { typeBundleTotals: priors.typeBundleTotals, emergentClusters: priors.emergentClusters }
         );
     } catch (_) {
         arc = null;
     }
 
-    return { id: noteId, lifecycle, drift, arc };
+    const evolution = buildNoteEvolution(noteId, getMutationEvents().filter((event) => event && event.noteId === noteId));
+    const timeInState = buildTimeInState(lifecycle, evolution);
+    const mutationVelocity = buildMutationVelocity(noteId);
+    const crossNotePatterns = buildCrossNotePatterns(noteFields, noteType || lifecycle?.likelyType || '', priors, fieldsCache);
+
+    return {
+        id: noteId,
+        lifecycle,
+        drift,
+        arc,
+        timeInState,
+        mutationVelocity,
+        crossNotePatterns
+    };
 }
 
 module.exports = {
@@ -188,5 +338,6 @@ module.exports = {
     buildArcSnapshot,
     buildTypeArcSnapshot,
     buildFieldCategorySnapshot,
-    buildNoteIntelligenceSnapshot
+    buildNoteIntelligenceSnapshot,
+    setMutationEventsProvider
 };

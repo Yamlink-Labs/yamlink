@@ -18,25 +18,55 @@
         });
     }
 
-    // ── Heatmap hover tooltip ─────────────────────────────────────────
+    // ── Chart hover tooltip — shared across all Stats-tab charts ───────
+    // Heatmap cells carry their own data-date/data-count (richer per-day
+    // formatting); every other chart element (Link Density bars, Growth
+    // sparkline points) carries a plain data-tip string. Same tooltip div,
+    // same follow-cursor positioning, for consistent hover behavior everywhere.
     var heatTooltip = document.getElementById('heat-tooltip');
+
+    function showChartTooltip(text, e) {
+        heatTooltip.textContent = text;
+        heatTooltip.style.display = 'block';
+        // Clamp inside the viewport — a tooltip near the right/bottom edge
+        // (e.g. the last point of a chart) was getting cut off by the
+        // window boundary instead of flipping to the other side of the cursor.
+        var margin = 8;
+        var width = heatTooltip.offsetWidth;
+        var height = heatTooltip.offsetHeight;
+        var left = e.clientX + 14;
+        if (left + width > window.innerWidth - margin) {
+            left = e.clientX - 14 - width;
+        }
+        left = Math.max(margin, Math.min(left, window.innerWidth - width - margin));
+        var top = e.clientY - 32;
+        if (top < margin) top = e.clientY + 18;
+        top = Math.max(margin, Math.min(top, window.innerHeight - height - margin));
+        heatTooltip.style.left = left + 'px';
+        heatTooltip.style.top = top + 'px';
+    }
 
     document.addEventListener('mousemove', function (e) {
         if (!heatTooltip) return;
+
         var cell = e.target.closest('rect[data-date]');
-        if (!cell) {
-            heatTooltip.style.display = 'none';
+        if (cell) {
+            var date  = cell.dataset.date;
+            var count = parseInt(cell.dataset.count, 10) || 0;
+            var label = count === 0
+                ? date + ' — no activity'
+                : date + ' · ' + count + ' change' + (count !== 1 ? 's' : '');
+            showChartTooltip(label, e);
             return;
         }
-        var date  = cell.dataset.date;
-        var count = parseInt(cell.dataset.count, 10) || 0;
-        var label = count === 0
-            ? date + ' — no activity'
-            : date + ' · ' + count + ' change' + (count !== 1 ? 's' : '');
-        heatTooltip.textContent = label;
-        heatTooltip.style.display = 'block';
-        heatTooltip.style.left = (e.clientX + 14) + 'px';
-        heatTooltip.style.top  = (e.clientY - 32) + 'px';
+
+        var tipEl = e.target.closest('[data-tip]');
+        if (tipEl) {
+            showChartTooltip(tipEl.dataset.tip, e);
+            return;
+        }
+
+        heatTooltip.style.display = 'none';
     });
 
     // ── Click router ─────────────────────────────────────────────────
@@ -52,6 +82,18 @@
         var projStrip = e.target.closest('[data-action="switchTab"]');
         if (projStrip) {
             switchTab(projStrip.dataset.tab || 'stats');
+            return;
+        }
+
+        // Vault Projections metric toggle (Growth / Stale / Structure)
+        var projToggle = e.target.closest('[data-proj-toggle]');
+        if (projToggle) {
+            e.stopPropagation();
+            var projCard = projToggle.closest('.proj-dashboard-card');
+            if (!projCard) return;
+            var key = projToggle.dataset.projToggle;
+            projCard.querySelectorAll('[data-proj-toggle]').forEach(function (b) { b.classList.toggle('active', b === projToggle); });
+            projCard.querySelectorAll('[data-proj-panel]').forEach(function (p) { p.style.display = p.dataset.projPanel === key ? 'flex' : 'none'; });
             return;
         }
 

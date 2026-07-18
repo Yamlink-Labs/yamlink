@@ -17,6 +17,7 @@ const { registerDecorations } = require('./src/features/decorations');
 const { parseFrontmatterDocument } = require('./src/core/frontmatter');
 const { buildNoteExportModel, exportNotePdf } = require('./src/export/pdf');
 const { openHealthPanel, updatePanel } = require('./src/features/healthPanel');
+const { maybeSuggestFieldCascade } = require('./src/features/suggestionCascade');
 const { openHomePanel, refreshHomePanel } = require('./src/features/homePanel');
 const { openViewPanel, refreshViewPanel, closeViewPanel, getOpenViewDocumentPath, setViewPanelStateListener } = require('./src/features/viewPanel');
 const { registerViewCodeLens } = require('./src/features/viewCodeLens');
@@ -25,6 +26,7 @@ const { registerGraphView, refreshGraphSidebarView } = require('./src/features/g
 const { createGraphPanelController } = require('./src/features/graph/graphPanelController');
 const { syncEntityHub, refreshEntityHub, registerEntityHubView, focusEntityHub } = require('./src/features/entityHub');
 const { registerNoteOutlineView } = require('./src/features/noteOutline');
+const { registerTaskCenterView, refreshTaskCenter } = require('./src/features/taskCenter');
 const { importObsidianVault } = require('./src/features/importObsidian');
 const { importExternalVault } = require('./src/features/importExternalVaults');
 const { runGitHistoryImport } = require('./src/intelligence/gitHistoryImport');
@@ -33,9 +35,10 @@ const { createRefreshRouter } = require('./src/runtime/refreshRouter');
 const { createStatusRuntime } = require('./src/runtime/statusRuntime');
 const { createTaskNotificationRuntime } = require('./src/runtime/taskNotifications');
 const { perfTracker } = require('./src/runtime/performanceTracker');
-const { initMutationLog, appendMutationEvents, emitOutcomeEvent, getMutationEvents, setDefaultMutationContextProvider } = require('./src/runtime/mutationEventLog');
+const { initMutationLog, appendMutationEvents, emitOutcomeEvent, getMutationEvents, setDefaultMutationContextProvider, setSnapshotFieldsCacheProvider, onMutationEventsAppended } = require('./src/runtime/mutationEventLog');
 const { createMutationSessionRuntime } = require('./src/runtime/mutationSession');
 const { setMutationEventsProvider } = require('./src/intelligence/vaultPriors');
+const { setMutationEventsProvider: setIntelligenceSnapshotMutationEventsProvider } = require('./src/intelligence/intelligenceSnapshots');
 const { setMutationAppender: setCompletionTrackerAppender, clearPending: clearCompletionPending, onSelectionChanged: onCompletionSelectionChanged } = require('./src/features/completionTracker');
 const { createPreviewPanelController } = require('./src/features/preview/previewPanelController');
 const { createLiveNotePanelController } = require('./src/features/preview/liveNotePanelController');
@@ -63,6 +66,25 @@ async function showWhatsNew(context) {
     await vscode.commands.executeCommand('markdown.showPreview', vscode.Uri.file(notesPath));
 }
 
+const GUIDED_TOUR_ID = 'yamlink.yamlink#yamlink-tour';
+
+async function openGuidedTour(toSide = false) {
+    await vscode.commands.executeCommand('workbench.action.openWalkthrough', GUIDED_TOUR_ID, toSide);
+}
+
+async function openWorkspaceWelcomeDoc(workspaceRoot) {
+    const welcomePath = path.join(workspaceRoot, 'welcome.md');
+    if (!fs.existsSync(welcomePath)) return false;
+    try {
+        const doc = await vscode.workspace.openTextDocument(vscode.Uri.file(welcomePath));
+        await vscode.window.showTextDocument(doc, { viewColumn: vscode.ViewColumn.One, preview: false });
+        return true;
+    } catch (e) {
+        console.error('Yamlink — Could not open welcome.md:', e.message);
+        return false;
+    }
+}
+
 // ─────────────────────────────────────────────────────────────────
 // First-run setup — opt-in, per-workspace, no silent writes.
 //
@@ -83,53 +105,56 @@ async function showWhatsNew(context) {
 // identity — two different workspaces can never race each other's
 // flag the way the old global flag did.
 // ─────────────────────────────────────────────────────────────────
-async function maybeOfferSampleVault(context) {
+async function addSampleVaultToWorkspace(context) {
     // Machine-wide "has this extension ever run before" flag — used only
     // by showWhatsNew to skip the changelog on a true first install.
     if (!context.globalState.get('yamlink.hasActivatedBefore', false)) {
         context.globalState.update('yamlink.hasActivatedBefore', true);
     }
 
-    const alreadyPrompted = context.workspaceState.get('yamlink.sampleVaultPrompted', false);
-    if (alreadyPrompted) return;
-
     if (!vscode.workspace.workspaceFolders) return;
     const workspaceRoot = getPrimaryWorkspaceRoot(vscode.workspace.workspaceFolders);
     if (!workspaceRoot) return;
 
-    // Mark as prompted immediately (not after the answer) so a slow response,
-    // a second window on the same workspace, or a reload can't re-trigger it.
-    context.workspaceState.update('yamlink.sampleVaultPrompted', true);
-
-    const choice = await vscode.window.showInformationMessage(
-        'Add a sample Yamlink vault here to explore its features?',
-        'Add Sample Vault',
-        'No Thanks'
-    );
-    if (choice !== 'Add Sample Vault') return;
-
     const sampleSrcDir = path.join(context.extensionPath, 'sample');
     if (!fs.existsSync(sampleSrcDir)) {
         console.warn('Yamlink — sample/ folder not found in extension. Skipping.');
-        return;
+        return false;
     }
 
     try {
         copySampleFiles(sampleSrcDir, workspaceRoot);
     } catch (e) {
         console.error('Yamlink — Error copying sample files:', e.message);
-        return;
+        return false;
     }
 
-    const welcomePath = path.join(workspaceRoot, 'welcome.md');
-    if (fs.existsSync(welcomePath)) {
-        try {
-            const doc = await vscode.workspace.openTextDocument(vscode.Uri.file(welcomePath));
-            await vscode.window.showTextDocument(doc, { viewColumn: vscode.ViewColumn.One, preview: false });
-        } catch (e) {
-            console.error('Yamlink — Could not open welcome.md:', e.message);
-        }
+    await openWorkspaceWelcomeDoc(workspaceRoot);
+    return true;
+}
+
+async function maybeOfferGuidedTour(context) {
+    if (!context.globalState.get('yamlink.hasActivatedBefore', false)) {
+        context.globalState.update('yamlink.hasActivatedBefore', true);
     }
+
+    const alreadyPrompted = context.workspaceState.get('yamlink.guidedTourPrompted', false);
+    if (alreadyPrompted) return;
+
+    if (!vscode.workspace.workspaceFolders) return;
+    const workspaceRoot = getPrimaryWorkspaceRoot(vscode.workspace.workspaceFolders);
+    if (!workspaceRoot) return;
+
+    context.workspaceState.update('yamlink.guidedTourPrompted', true);
+
+    const choice = await vscode.window.showInformationMessage(
+        'Want a guided Yamlink tour? We will only ask once, and you can always reopen it from the Command Palette.',
+        'Start Guided Tour',
+        'No Thanks'
+    );
+    if (choice !== 'Start Guided Tour') return;
+
+    await openGuidedTour(false);
 }
 
 // Recursively copies src → dest. Never overwrites existing files.
@@ -166,7 +191,26 @@ async function activate(context) {
         initMutationLog(path.join(_yamLinkDir, 'mutation-log.ndjson'));
         initSuppressions(_yamLinkDir);
     }
+    setSnapshotFieldsCacheProvider(() => getFieldsCache());
+
+    // Guided tour, step 2 completion — see the walkthrough's completionEvents
+    // in package.json. Reusing onCommand:yamlink.newNote for both step 1 and
+    // step 2 would mark step 2 done the instant the FIRST note is created
+    // (VS Code tracks "has this event fired," not step order/count), before
+    // the user has actually made a second note or added a [[wikilink]]. This
+    // fires a distinct context key the moment a real relation is created —
+    // any relation, not just ones made mid-tour, which is an intentionally
+    // generous but honest proxy for "you've now linked two notes."
+    context.subscriptions.push({
+        dispose: onMutationEventsAppended((events) => {
+            if (events.some(e => e.type === 'relation_added')) {
+                vscode.commands.executeCommand('setContext', 'yamlink.tourLinkCreated', true);
+            }
+        })
+    });
+
     setMutationEventsProvider(getMutationEvents);
+    setIntelligenceSnapshotMutationEventsProvider(getMutationEvents);
     setCompletionTrackerAppender(appendMutationEvents);
     const mutationSessionRuntime = createMutationSessionRuntime(context);
     setDefaultMutationContextProvider(() => ({
@@ -203,6 +247,7 @@ async function activate(context) {
                     targetId: payload.targetId
                 }
             }]);
+            maybeSuggestFieldCascade(payload.noteId);
         }),
         vscode.commands.registerCommand('yamlink._lightbulbApplied', (payload) => {
             if (!payload || !payload.noteId || !payload.field) return;
@@ -357,6 +402,7 @@ async function activate(context) {
     registerRename(context, getIndex, getPathIndex, buildIndex, validateAll);
     registerEntityHubView(context);
     registerNoteOutlineView(context);
+    registerTaskCenterView(context);
     registerCalendarView(context);
     registerGraphView(context);
     const decorationsProvider = registerDecorations(context, getIndex);
@@ -389,6 +435,7 @@ async function activate(context) {
         refreshCalendar:   refreshCalendarPanel,
         refreshSuggestions:refreshSuggestionBar,
         refreshHome:       refreshHomePanel,
+        refreshTaskCenter,
         refreshTaskNotifications
     });
 
@@ -415,7 +462,7 @@ async function activate(context) {
 
     // ── First-run setup ──────────────────────────────────────────────────────
     // Non-blocking — errors are caught so they never crash activation.
-    maybeOfferSampleVault(context).catch(e => {
+    maybeOfferGuidedTour(context).catch(e => {
         console.error('Yamlink — First-run setup error:', e.message);
     });
 
@@ -773,6 +820,12 @@ async function activate(context) {
                 });
                 return;
             }
+            if (result.kind !== 'read') {
+                vscode.window.showWarningMessage(
+                    `Yamlink: "${result.explanation}" is a write action — natural-language writes aren't wired up here yet.`
+                );
+                return;
+            }
 
             // Show preview and ask to insert
             const picked = await vscode.window.showQuickPick(
@@ -820,6 +873,17 @@ async function activate(context) {
 
         vscode.commands.registerCommand('yamlink.openHome', () => {
             openHomePanel(context);
+        }),
+
+        vscode.commands.registerCommand('yamlink.startGuidedTour', async () => {
+            await openGuidedTour(false);
+        }),
+
+        vscode.commands.registerCommand('yamlink.addSampleVault', async () => {
+            const added = await addSampleVaultToWorkspace(context);
+            if (added) {
+                vscode.window.showInformationMessage('Yamlink: Sample vault added to this workspace.');
+            }
         }),
 
         vscode.commands.registerCommand('yamlink.openHealthPanel', () => {
@@ -951,7 +1015,7 @@ async function activate(context) {
             });
             if (!uri) return;
 
-            const model = buildNoteExportModel(docText, noteId || null);
+            const model = buildNoteExportModel(docText, noteId || null, path.dirname(editor.document.uri.fsPath));
             exportNotePdf(uri.fsPath, model);
             vscode.window.showInformationMessage(`Yamlink: Exported "${baseName}" to PDF`);
         })
@@ -990,7 +1054,7 @@ async function activate(context) {
         vscode.commands.registerCommand('yamlink.proposeSchema', async () => {
             const { detectClusters } = require('./src/intelligence/clusterEmergence');
             const { createSchemaNote } = require('./src/features/healthPanel');
-            const clusters = detectClusters(getIndex(), getFieldsCache()).clusters
+            const clusters = detectClusters(getFieldsCache()).clusters
                 .filter((c) => c.confidence === 'medium' || c.confidence === 'high');
 
             if (clusters.length === 0) {
@@ -1014,7 +1078,8 @@ async function activate(context) {
             if (!pick) return;
             await createSchemaNote({
                 type: pick.cluster ? pick.cluster.dominantType : null,
-                fields: pick.cluster ? pick.cluster.fields : []
+                fields: pick.cluster ? pick.cluster.fields : [],
+                noteIds: pick.cluster ? pick.cluster.noteIds : []
             });
         }),
 

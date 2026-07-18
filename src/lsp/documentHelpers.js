@@ -345,7 +345,7 @@ function collectMissingFieldsForNote(noteId, vaultPath) {
         priors.typeFieldBundles,
         priors.fieldTargetTypes,
         priors.outcomeCalibration,
-        { typeBundleTotals: priors.typeBundleTotals, limit: 6 }
+        { typeBundleTotals: priors.typeBundleTotals, limit: 6, emergentClusters: priors.emergentClusters }
     );
     const suggested = [];
     for (const item of arc.missingFields || []) {

@@ -15,7 +15,7 @@ const {
     getDominantTargetType,
     getCommonFieldsForType
 } = require('./vaultPriors');
-const { getImplicitBoost } = require('./implicitWeights');
+const { getImplicitBoost, getTemporalConfidenceAdjustment } = require('./implicitWeights');
 const { getFieldCalibrationBoost } = require('./outcomeCalibration');
 
 /**
@@ -595,6 +595,7 @@ function _doClassifyField(fieldName, options = {}) {
  *   workflowFields?: Map<string, {values: string[], count: number}>,
  *   valuePatterns?: Map<string, any>,
  *   outcomeCalibration?: import('./outcomeCalibration').OutcomeCalibration,
+ *   fieldVolatility?: Map<string, {added: number, changed: number, total: number, volatilityScore: number}>,
  *   vaultMaturity?: number
  * }} [options]
  * @returns {ClassificationResult}
@@ -602,7 +603,20 @@ function _doClassifyField(fieldName, options = {}) {
 function classifyField(fieldName, options = {}) {
     const vaultMaturity = options.vaultMaturity ?? 1;
     const result = _doClassifyField(fieldName, options);
-    return { ...result, vaultMaturity };
+
+    const { multiplier, reason } = getTemporalConfidenceAdjustment(fieldName, options.fieldVolatility);
+    if (multiplier === 1) return { ...result, vaultMaturity };
+
+    const confidence = Math.min(0.98, Math.max(0, result.confidence * multiplier));
+    const adjusted = {
+        ...result,
+        confidence,
+        reasons: reason ? [...(result.reasons || []), reason] : result.reasons
+    };
+    if (adjusted.category === CATEGORY.RELATION) {
+        adjusted.relationStrength = relationStrengthFor(confidence, adjusted.source);
+    }
+    return { ...adjusted, vaultMaturity };
 }
 
 /**

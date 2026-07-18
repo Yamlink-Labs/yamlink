@@ -20,6 +20,7 @@ body{background:var(--bg);color:var(--text);font:13px/1.5 var(--sans)}
 .app{display:flex;height:100vh;overflow:hidden}
 .canvas-wrap{
   flex:1;position:relative;overflow:hidden;min-width:0;
+  --graph-floating-top:128px;
   background:
     radial-gradient(circle at 16% 16%,color-mix(in srgb,var(--accent2) 10%,transparent),transparent 40%),
     radial-gradient(circle at 84% 80%,color-mix(in srgb,var(--accent) 8%,transparent),transparent 38%),
@@ -31,6 +32,7 @@ body{background:var(--bg);color:var(--text);font:13px/1.5 var(--sans)}
   position:absolute;top:12px;left:12px;z-index:100;
   display:flex;align-items:center;gap:6px;flex-wrap:wrap;
   padding:7px 10px;
+  max-width:calc(100% - 24px);
   background:color-mix(in srgb,var(--surface2) 88%,transparent);
   backdrop-filter:blur(16px);-webkit-backdrop-filter:blur(16px);
   border:1px solid var(--border);border-radius:12px;
@@ -44,8 +46,8 @@ body{background:var(--bg);color:var(--text);font:13px/1.5 var(--sans)}
 }
 .sr-only{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0}
 .mode-help{
-  position:absolute;top:78px;left:12px;z-index:95;
-  max-width:540px;
+  position:absolute;top:var(--graph-floating-top);left:12px;z-index:95;
+  max-width:min(540px, calc(100% - 24px));
   padding:6px 10px;
   border:1px solid var(--border);
   border-radius:10px;
@@ -169,6 +171,17 @@ body{background:var(--bg);color:var(--text);font:13px/1.5 var(--sans)}
 .layer-btn{padding:4px 9px;border-radius:7px;border:1px solid var(--border);background:transparent;color:var(--mid);font:inherit;font-size:11px;cursor:pointer;white-space:nowrap;transition:background .1s,color .1s,border-color .1s}
 .layer-btn:hover{color:var(--text)}
 .layer-btn.on{background:rgba(94,207,190,.14);border-color:rgba(94,207,190,.4);color:var(--accent)}
+.timelapse-bar{
+  position:absolute;top:var(--graph-floating-top);left:12px;z-index:96;
+  display:flex;align-items:center;gap:10px;
+  padding:6px 12px 6px 8px;max-width:min(560px, calc(100% - 24px));
+  background:color-mix(in srgb,var(--surface2) 90%,transparent);
+  backdrop-filter:blur(16px);-webkit-backdrop-filter:blur(16px);
+  border:1px solid var(--border);border-radius:12px;
+  box-shadow:0 4px 20px rgba(0,0,0,.28)
+}
+.timelapse-range{flex:1;min-width:120px;accent-color:var(--accent)}
+.timelapse-label{font-size:11px;color:var(--mid);white-space:nowrap;min-width:150px}
 .btn:focus-visible,.inp:focus-visible,.chip:focus-visible,.nrow:focus-visible,.ctx-item:focus-visible{outline:2px solid var(--accent2);outline-offset:2px}
 .inp{padding:5px 10px;border-radius:7px;outline:none;border:1px solid var(--border);background:var(--surface3);color:var(--text);font:inherit;font-size:12px;transition:border-color .12s}
 .inp:focus{border-color:rgba(196,155,240,.45)}
@@ -193,6 +206,15 @@ body.vscode-light .live-bar{background:color-mix(in srgb,var(--surface) 58%,whit
   .focus-pill{max-width:160px}
   .toolbar{gap:5px;padding:6px 8px}
 }
+.help-tip{
+  display:inline-flex;align-items:center;justify-content:center;
+  width:14px;height:14px;border-radius:50%;
+  background:var(--surface3);border:1px solid var(--border);
+  color:var(--mid);font-size:9px;font-weight:700;
+  cursor:help;user-select:none;flex-shrink:0;margin-left:4px;
+  transition:color .12s,border-color .12s;
+}
+.help-tip:hover{color:var(--accent);border-color:var(--accent)}
 `;
 
 module.exports = {

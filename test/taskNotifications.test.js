@@ -70,4 +70,47 @@ describe('task notifications', () => {
 
         assert.notEqual(buildNotificationFingerprint(summaryA), buildNotificationFingerprint(summaryB));
     });
+
+    test('an urgent-priority overdue task escalates severity to "critical"', () => {
+        const summary = summarizeTaskNotifications([
+            { id: 'a', fileId: 'alpha', line: 1, done: false, date: '2026-06-17', priority: 'medium' },
+            { id: 'b', fileId: 'beta', line: 1, done: false, date: '2026-06-15', priority: 'urgent' }
+        ], '2026-06-18', { maxItemsPerAlert: 3 });
+
+        assert.equal(summary.severity, 'critical');
+        assert.equal(summary.urgentOverdueCount, 1);
+        assert.match(summary.message, /1 urgent/);
+    });
+
+    test('a non-urgent overdue set stays at "warning", not "critical"', () => {
+        const summary = summarizeTaskNotifications([
+            { id: 'a', done: false, date: '2026-06-17', priority: 'medium' },
+            { id: 'b', done: false, date: '2026-06-15', priority: 'low' }
+        ], '2026-06-18');
+
+        assert.equal(summary.severity, 'warning');
+        assert.equal(summary.urgentOverdueCount, 0);
+        assert.doesNotMatch(summary.message, /urgent/);
+    });
+
+    test('urgent overdue tasks sort before non-urgent ones regardless of date', () => {
+        const summary = summarizeTaskNotifications([
+            { id: 'older-low', done: false, date: '2026-06-10', priority: 'low' },
+            { id: 'newer-urgent', done: false, date: '2026-06-16', priority: 'urgent' }
+        ], '2026-06-18', { maxItemsPerAlert: 3 });
+
+        assert.deepEqual(summary.items.map((item) => item.id), ['newer-urgent', 'older-low']);
+    });
+
+    test('fingerprint changes when a task becomes urgent even if counts stay the same', () => {
+        const before = summarizeTaskNotifications([
+            { id: 'a', done: false, date: '2026-06-17', priority: 'medium' }
+        ], '2026-06-18');
+        const after = summarizeTaskNotifications([
+            { id: 'a', done: false, date: '2026-06-17', priority: 'urgent' }
+        ], '2026-06-18');
+
+        assert.equal(before.overdueCount, after.overdueCount);
+        assert.notEqual(buildNotificationFingerprint(before), buildNotificationFingerprint(after));
+    });
 });

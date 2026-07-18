@@ -37,6 +37,7 @@ Yamlink turns Markdown files into a structured graph:
 - **heading anchors** — `[[id#Section]]`: Ctrl+Click navigates to the exact heading line; hovering shows the section content (heading + up to 8 lines). Pipe-aliased anchors (`[[id#Section|Label]]`) work correctly.
 - block refs — `[[id^blockid]]`
 - body/frontmatter link targets are canonicalized before graph indexing, so casing, spacing, aliases, and heading/block suffixes do not silently break graph edges
+- **hover cards** — hovering a `[[wikilink]]` shows the target note's `type` and `status` as colored pill badges inside VS Code's native hover widget, plus relation-field values and body `[[mentions]]` as real clickable links rather than literal bracket text
 
 ### Callouts
 
@@ -182,6 +183,10 @@ Run Yamlink capabilities from a terminal, CI pipeline, or build script — no VS
 yamlink build [--vault <path>]                  # index vault, report broken links / duplicate IDs
 yamlink briefing [--vault <path>] [--json]      # vault pulse, overdue tasks, activity, arc predictions
 yamlink create <type> [--field key=value...]    # create a note non-interactively
+yamlink cat <id> [--at <date>] [--json]         # frontmatter snapshot + body (--at: historical, frontmatter only)
+yamlink ls [--type] [--sort] [--json]           # list notes with unix-style filtering and sorting
+yamlink grep <text> [--type] [--field] [--json] # search frontmatter values for matching text
+yamlink find [--has] [--missing] [--type]       # structural search by present/missing fields
 yamlink set <id> <field> <value> [--clear]      # set or remove a frontmatter field
 yamlink link <id> <field> <target> [--append]   # add a wikilink relation field
 yamlink search <query> [--type] [--json]        # search by id, name, title, or type
@@ -189,14 +194,26 @@ yamlink status [--vault <path>] [--json]        # compact vault snapshot (notes,
 yamlink health [--vault <path>] [--json]        # lifecycle, drift, type distribution
 yamlink validate [--vault <path>] [--json]      # schema conformance (exits 1 if required fields missing)
 yamlink query "<query>" [--json]                # run a query, output ASCII table or JSON
-yamlink report <note-id> [--json]               # note report in terminal
-yamlink links <note-id> [--json]                # inbound + outbound links for a note
+yamlink report <note-id> [--at <date>] [--json] # note report in terminal (--at: historical, no lifecycle/drift/inbound)
+yamlink links <note-id> [--at <date>] [--json]  # inbound + outbound links for a note (--at: outbound-only historical)
+yamlink diff <id1> <id2> | --since <date>       # compare two notes' fields, or vault-wide changes since a date
+yamlink story --since <date> [--json]           # vault growth story: note/type deltas, activity, busiest notes
 yamlink rename <old-id> <new-id> [--dry-run]    # vault-wide ID rename
 yamlink schema list|check <type> [--json]       # schema introspection and conformance
-yamlink graph [--only-types <types>] [--json]   # export vault graph as JSON
+yamlink graph [--only-types <types>] [--at <date>] [--json]  # export vault graph as JSON (--at: historical reconstruction)
+yamlink suggest <id> [--json]                   # fields likely missing from a note
+yamlink drift [--type] [--limit] [--json]       # notes structurally drifting from their type bundle
+yamlink stale [--type] [--limit] [--json]       # notes in a stale lifecycle state
+yamlink orphans [--type] [--limit] [--json]     # notes with no inbound or outbound links
+yamlink pressure [--json]                       # knowledge pressure: load-bearing drafts, stale hubs, orphans
+yamlink lenses [--json]                         # vault change lenses over mutation history
+yamlink session [--id] [--json]                 # summarize recent or explicit mutation sessions
+yamlink mutations [--limit] [--since] [--type]  # recent mutation events from the vault log
+yamlink doctor [--vault <path>] [--json]        # comprehensive integrity pass
 yamlink serve [--port 3000]                     # local HTTP API server
 yamlink serve --lsp --vault <path>              # JSON-RPC 2.0 LSP server over stdio
 yamlink export [--format json|csv]              # dump vault to JSON or CSV
+yamlink env [--shell bash|zsh|fish]             # export shell variables for the current vault
 yamlink watch [--vault <path>]                  # watch vault, rebuild on .md changes
 yamlink on <event> [--type <type>] -- <script>  # run a script on vault mutation events
 yamlink conduit                                 # terminal UI — auto-starts server if not already running
@@ -204,32 +221,39 @@ yamlink init [path]                             # scaffold a new Yamlink vault
 yamlink completions bash|zsh                    # print shell completion script
 ```
 
-All commands accept `--vault <path>` (defaults to current directory). Most accept `--json` for machine-readable output.
+37 commands total. All commands accept `--vault <path>` (defaults to current directory). Most accept `--json` for machine-readable output. `ls`/`grep`/`find` print a real aligned table by default; `--quiet` on those three restores the old plain tab-separated form for shell pipelines.
 
 `yamlink serve --lsp` runs the [LSP server](#lsp-server) — a persistent JSON-RPC 2.0 process for Neovim, Zed, Helix, and Emacs. See the LSP section below.
 
+**Time Engine on the CLI:** `yamlink story --since <date>` narrates vault growth from a past date to now. `--at <date>` reconstructs historical state directly on `cat`, `report`, `links`, and `graph` — each scopes down honestly to what's actually reconstructable (no note body, no live-vault-priors inferences like lifecycle/drift, outbound-only where inbound would need a full-vault reconstruction). Full detail in [`docs/cli/README-CLI.md`](docs/cli/README-CLI.md).
+
 ### serve endpoints
 
-`yamlink serve` starts a local HTTP server (default port 3000) that exposes the live vault index as a REST API:
+`yamlink serve` starts a local HTTP server (default port 3000) that exposes the live vault index as a REST API. Full method/path/params/error-code reference: [`docs/api/CONTRACT.md`](docs/api/CONTRACT.md).
 
 | Endpoint | Description |
 |---|---|
-| `GET /api/nodes` | All notes as JSON; optional `?type=contact` filter |
-| `GET /api/nodes/:id` | Single note with `_inbound`, `_outbound`, `_filePath` |
+| `GET /api/nodes` | All notes as JSON; `?type=` filter, `?page=`/`?limit=` pagination |
+| `GET /api/nodes/:id` | Single note with `_inbound`, `_outbound`, `_filePath`. `?include=outbound,inbound,intelligence,history` for composite reads; `?minGeneration=N` to wait for a generation before answering; `?at=<timestamp>` for a Time Engine historical reconstruction |
+| `GET /api/nodes/:id/outbound` \| `/inbound` \| `/neighborhood` | Graph traversal — resolved outbound/inbound edges, or a multi-hop neighborhood (`?depth=1-3`) |
+| `GET /api/nodes/:id/history` \| `/evolution` \| `/archaeology?field=` | Mutation history, change-pattern summary, and per-field relation timeline for a note |
 | `POST /api/nodes` | Create a new note from `{ type, fields? }` — returns `{ ok, id, filePath }` (201) |
+| `POST /api/nodes/bulk` \| `PATCH /api/nodes/bulk` | Batch create/update up to 50 notes in one call — `207` on partial failure |
 | `PATCH /api/nodes/:id` | Update frontmatter field(s); pass `null`/`""` to delete a field |
 | `DELETE /api/nodes/:id` | Remove the note file from disk and index |
 | `GET /api/query?q=<query>` | Run any Yamlink query, returns rows + columns |
-| `GET /api/graph` | All nodes and edges as `{ nodes, edges }` |
-| `GET /api/types` | Type distribution sorted by count |
+| `GET /api/graph` | All nodes and edges as `{ nodes, edges }`. `?at=<timestamp>` for a historical graph reconstruction |
+| `GET /api/diff` | `?from=`+`?to=` compares two notes' fields; `?since=<timestamp>` reports vault-wide field changes |
+| `GET /api/search` \| `/schema` \| `/types` | Vault search, schema introspection, type distribution |
 | `GET /api/health` | Broken link count + schema conformance |
 | `GET /api/tasks` | All vault tasks; filter by `?done=`, `?today=`, `?overdue=`, `?note=`, `?limit=` |
-| `GET /api/mutations` | Recent mutation events; filter by `?limit=`, `?since=`, `?type=` |
-| `GET /api/events` | Server-Sent Events stream; pushes `rebuild` events after every vault change |
+| `GET /api/mutations` \| `/session/summary` | Recent mutation events (`?limit=`, `?since=`, `?type=`), or a summarized session |
+| `GET /api/events` | Server-Sent Events stream (filterable via `?note=`/`?noteType=`/`?type=`); pushes mutation events, `rebuild` after every vault change, and `intelligence_changed` (reactive push when derived intelligence — lifecycle/drift/arc/priors — is recomputed) |
 | `GET /api/intelligence/arc?id=` | Arc prediction — likely missing fields for a note |
 | `GET /api/intelligence/fieldCategory?id=&field=` | Field classification: category, confidence, source, reasons |
+| `GET /api/intelligence/note?id=` \| `/clusters` \| `/lenses` | Combined note intelligence snapshot; detected pre-schema field clusters; vault-wide change lenses |
 
-All responses include `X-Yamlink-Generation` (vault version integer) and `X-Yamlink-Api-Version: 1` headers. CORS is enabled for all origins (`*`). Full reference at `docs/api/README.md`.
+All responses include `X-Yamlink-Generation` (vault version integer) and `X-Yamlink-Api-Version` headers. CORS is enabled for all origins (`*`). Full reference at [`docs/api/README-API.md`](docs/api/README-API.md) and [`docs/api/CONTRACT.md`](docs/api/CONTRACT.md).
 
 **Publishing use case:** `yamlink serve` → Next.js / Astro site reads vault at build time via API. Notes become pages, frontmatter becomes structured metadata, wikilinks resolve to relative URLs. Vault as CMS, files stay plain Markdown.
 
@@ -828,6 +852,16 @@ Tasks are a real workflow surface in Yamlink.
   - `this weekend`
   - `next weekend`
 
+### Task Center
+
+A dedicated "Tasks" view in the Yamlink sidebar (alongside Graph, Note Report, Calendar, and Note Outline) — a real place to work with every task in the vault, not just a glanceable preview.
+
+- Every task grouped into Overdue / Today / Upcoming / Undated / Done, with no hard cap on how many show per bucket
+- Native checkboxes mark a task done or open directly from the sidebar — the file's `- [ ]`/`- [x]` line updates immediately, no need to open the note
+- Clicking a task jumps to its exact line, not just the note
+- **Priority markers** — write `#urgent`, `#medium`, or `#low` in a task line (`#high` and `#medium-priority` also recognized) and Task Center picks it up automatically: shown as a colored dot on the task, urgent/medium tasks sort to the top of their status bucket, and the tag itself renders in a matching color in the editor (red/amber/gray) instead of the generic tag color. A closed, explicit vocabulary — priority is never inferred from wording, only from a marker you actually typed.
+- Overdue tasks marked `#urgent` escalate to VS Code's error-level notification instead of the usual warning
+
 ---
 
 ## Graph
@@ -968,6 +1002,15 @@ g.destroy();
 
 The sidebar gives ambient structural awareness. The workspace is for deliberate, scoped exploration. Both surfaces use x-graph: Canvas2D + D3-force, semantic and health layers, draggable nodes with live physics.
 
+### Time-lapse
+
+Both graph surfaces have a toolbar toggle that opens a play/pause/scrub bar, playing back how the vault's knowledge graph grew over time:
+
+- **Git-backed reconstruction** — if the vault is a git repository, each checkpoint is reconstructed from real historical file content at the nearest commit, including body-text `[[mentions]]`, not just frontmatter relations.
+- **Mutation-log fallback** — non-git vaults fall back to `.yamlink/mutation-log.ndjson`, which tracks body-text mention changes as well as frontmatter changes.
+- **Stable playback** — one fixed, pre-settled layout is solved once for the vault's current state; historical frames only reveal or hide a subset of that layout via alpha fade, so node positions never shift during playback.
+- The same reconstruction engine backs the `?at=` API parameter and the CLI's `--at`/`story --since` time-travel commands (see the "Time Engine on the CLI" note under [Yamlink CLI](#yamlink-cli)).
+
 ---
 
 ## Vault Health
@@ -1047,24 +1090,17 @@ Vault Health is the operational quality surface for the vault — not just diagn
 
 ### Vault projections
 
-Vault Projections are a first-pass forecasting layer built from the same local signals Yamlink already tracks:
+Vault Projections are built on the Time Engine: `src/intelligence/vaultTrends.js` reconstructs the vault at real historical checkpoints (via `reconstructVaultAtTime()`) and fits an actual least-squares trend line through real per-type note counts, rather than extrapolating from a single rolling mutation-log window.
 
-- mutation-log activity over the last 30 days
-- lifecycle distribution
-- current structural drift pressure
-- accepted completion behavior
+Three lanes, each with a real historical trajectory:
 
-They do **not** pretend to predict the future perfectly. The goal is narrower and more useful:
+- **Growth** — `growth.trend` (rising/steady/falling) with a 4-week line chart and a 90-day projection per leading type
+- **Stale** — `stale.pressure` (low/medium/high), plus a "going stale soonest" list of specific notes ranked by real days-remaining
+- **Structure** — `structure.direction` (improving/steady/fragile), naming the actual missing fields driving drift for that type
 
-- show whether note growth is accelerating in specific types
-- show whether stale pressure is likely building
-- show whether the vault feels structurally healthier or more fragile than its recent baseline
-- show which note families are actually driving those reads
-- scale confidence down when the vault is too sparse to justify loud forecasts
-- show whether those directions are changing week over week rather than only reading one 30-day lump
-- let the user see what likely happens if current cleanup or growth behavior continues
+Every projection reports a genuine fit-quality signal (R²) instead of a hand-tuned confidence score, and never fabricates continuity before the earliest reconstructable event. **Retrospective accuracy scoring** makes the claim falsifiable: it reconstructs the vault as of 90 days ago, runs the same trend-fit on that trailing history, and compares what it would have projected for "today" against what actually happened.
 
-This makes Vault Health directional, not just descriptive.
+Shown in both Vault Health's Projections tab and the Home panel's compact snapshot strip, from one shared rendering (`buildVaultProjectionsCardHtml()`) so both surfaces stay in sync.
 
 ---
 
@@ -1325,7 +1361,7 @@ Space-separated `select` fields are normalized to comma-separated automatically,
 | `4` | Explorer | Two-pane browser (types → notes) with intelligence preview; full write capability |
 | `5` | Health | Schema coverage bars, advisories, dangling relations, vault health score |
 | `6` | Search | Free-text vault search |
-| `7` | Graph | Vault graph navigator |
+| `7` | Graph | Vault graph navigator; `v` toggles a live spatial "constellation" layout |
 | `8` | Diff | Side-by-side note diff |
 | `9` | Radar | Relation radar — connections radiating from the current note |
 
@@ -1373,6 +1409,10 @@ Every Conduit open shows what changed since your last session at the top of Brie
 > *since your last session (14h ago): 3 notes created, 2 missions updated, 1 broken link appeared*
 
 Powered by `GET /api/diff` scoped to the last-session timestamp in `.yamlink/conduit-last-session.json`. First run: no delta. Every subsequent open: the delta since you left.
+
+### Graph — live spatial view
+
+Press `v` on the Graph screen to switch from the list-based traversal view to a spatial "constellation" layout: the focused note centered in a card with branching, numbered lanes to each connection, labeled and colored by note type with a legend, honestly paginated ("+N more connections hidden") rather than overcrowding the terminal. Updates live over SSE as relations change while the view is open — no manual refresh needed.
 
 ### Explorer — bulk operations
 
@@ -1441,6 +1481,10 @@ Yamlink ships with repeatable sample files for demos and manual testing:
 - [tasks-calendar.md](./sample/tasks-calendar.md)
 
 For a more practical walkthrough, including recommended CRM and programmer setups, see [GETTING_STARTED.md](./GETTING_STARTED.md).
+
+### Guided tour
+
+A first-run VS Code walkthrough (Command Palette → "Get Started") covers Home, Calendar, Vault Health, Graph, and Task Center, and walks through creating a first note and linking a second one.
 
 ---
 

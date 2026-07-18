@@ -44,17 +44,17 @@ const {
     isPositionInFrontmatter,
     getDocumentType,
     normalizeFrontmatterKey
-} = require('../src/features/completionContextHelpers');
+} = require('../src/intelligence/completionContextHelpers');
 const {
     collectObservedFrontmatterFields,
     collectArchetypeFieldSuggestions,
     collectNoteRoleFieldSuggestions,
     collectDriftMissingFieldSuggestions
-} = require('../src/features/completionAdaptiveHelpers');
-const { scoreFieldSuggestion } = require('../src/features/completionRelationHelpers');
+} = require('../src/intelligence/completionAdaptiveHelpers');
+const { scoreFieldSuggestion } = require('../src/intelligence/completionRelationHelpers');
 const {
     resolveFrontmatterRelationCandidates
-} = require('../src/features/completionRelationHelpers');
+} = require('../src/intelligence/completionRelationHelpers');
 
 const SAMPLE = path.join(__dirname, '..', 'sample');
 buildIndex([{ uri: { fsPath: SAMPLE } }]);

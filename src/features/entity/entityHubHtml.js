@@ -102,7 +102,7 @@ function buildHubHtml({
     const unlinkedMentionsHtml = buildUnlinkedMentionsSection(unlinkedMentions || []);
     const taskHtml = taskSections.length
         ? taskSections.map(section => buildTaskSection(section.label, section.rows)).join('\n')
-        : buildEmptySection('tasks', 'No task activity tied to this note.', 'Add Markdown tasks in this note or mention this node from another task to track work here.');
+        : buildEmptySection('tasks', 'No task activity tied to this note.', 'Add a Markdown task (`- [ ] ...`) in this note\'s body to track work here.');
     const timelineHtml = buildTimelineSection(timelineRows);
     const historyHtml = buildHistorySection(historyGroups || [], historyCount || 0, historyArc || [], historySessions || [], historyEvolution || null);
     const documentHtml = buildDocumentSection(documentData);

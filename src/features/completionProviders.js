@@ -37,7 +37,7 @@ const {
     rankCandidateIds,
     collectLocalLinkedIds,
     getHumanLabel
-} = require('./completionHelpers');
+} = require('../intelligence/completionHelpers');
 const { getKnownTypeCandidates } = require('./completionCore');
 const { buildNoteArc } = require('../intelligence/noteArc');
 const { summarizeNoteRoleReasons } = require('../intelligence/noteRolesCore');
@@ -362,7 +362,7 @@ function provideFrontmatterFieldCompletions(document, position, getIndex) {
             _arcNoteFields, docType, _arcFieldsCache,
             _arcPriors.typeFieldBundles, _arcPriors.fieldTargetTypes,
             _arcPriors.outcomeCalibration,
-            { typeBundleTotals: _arcPriors.typeBundleTotals }
+            { typeBundleTotals: _arcPriors.typeBundleTotals, emergentClusters: _arcPriors.emergentClusters }
         );
 
         const combined = new Map();
@@ -499,17 +499,21 @@ function provideFrontmatterFieldCompletions(document, position, getIndex) {
             }
         }
 
-        for (const { field, ratio, calibrationCount, isRelation, coldStart } of (_arc.missingFields || [])) {
+        for (const { field, ratio, calibrationCount, isRelation, coldStart, emergentCluster } of (_arc.missingFields || [])) {
             const relNote = isRelation ? ' · relation' : '';
             const calNote = calibrationCount > 0 ? ` · accepted ${calibrationCount}×` : '';
-            const arcDetail = coldStart
-                ? `starter field${relNote}`
-                : `in ${Math.round(ratio * 100)}% of ${_arc.inferredType || ''} notes · likely missing${relNote}${calNote}`;
+            const arcDetail = emergentCluster
+                ? `matches an emerging pattern in this vault${relNote}`
+                : coldStart
+                    ? `starter field${relNote}`
+                    : `in ${Math.round(ratio * 100)}% of ${_arc.inferredType || ''} notes · likely missing${relNote}${calNote}`;
             const existing = combined.get(field);
             if (!existing) {
                 combined.set(field, {
                     key: field,
-                    sortScore: coldStart ? 1200 : 1300 + Math.round(ratio * 80) + calibrationCount * 5,
+                    // Emergent-cluster matches are real vault-taught evidence — rank above the
+                    // hardcoded universal cold-start list, but below confirmed type-bundle arcs.
+                    sortScore: emergentCluster ? 1250 : (coldStart ? 1200 : 1300 + Math.round(ratio * 80) + calibrationCount * 5),
                     detail: arcDetail,
                     source: 'arc'
                 });

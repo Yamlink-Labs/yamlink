@@ -2,6 +2,8 @@
 
 const fs = require('fs');
 const { getIndex, getFieldsCache } = require('../../core/indexService');
+const { reconstructNoteAtTime } = require('../../core/timeEngine');
+const { getMutationEvents } = require('../../runtime/mutationEventLog');
 const { emitCliError, emitJson, emitText } = require('../io');
 
 function orderedFieldEntries(id, fields) {
@@ -33,9 +35,59 @@ function extractBody(content) {
     return String(content || '').slice(match[0].length);
 }
 
-function run({ id, json }) {
+function run({ id, json, at }) {
     const idIndex = getIndex();
     const fieldsCache = getFieldsCache();
+
+    if (at) {
+        const parsedMs = Date.parse(at);
+        if (!Number.isFinite(parsedMs)) {
+            emitCliError({ json, error: `Invalid date: ${at}`, code: 'INVALID_PARAM', exitCode: 1 });
+            return;
+        }
+        const sinceIso = new Date(parsedMs).toISOString();
+        const currentFields = idIndex.has(id) ? (fieldsCache.get(id) || {}) : null;
+        const events = getMutationEvents({ noteId: id });
+        const result = reconstructNoteAtTime(id, sinceIso, currentFields, events);
+
+        if (!result.exists) {
+            emitCliError({
+                json,
+                error: `Note did not exist at ${sinceIso}: ${id}`,
+                code: 'NOT_FOUND',
+                exitCode: 1,
+                details: { id, reason: result.reason, earliestReconstructableTimestamp: result.earliestReconstructableTimestamp }
+            });
+            return;
+        }
+
+        const orderedFields = Object.fromEntries(orderedFieldEntries(id, result.fields || {}));
+        if (json) {
+            emitJson({
+                id, at: sinceIso, exists: true, ...orderedFields,
+                complete: result.complete,
+                earliestReconstructableTimestamp: result.earliestReconstructableTimestamp,
+                ...(result.reason ? { reason: result.reason } : {}),
+                ...(result.deletedAt ? { deletedAt: result.deletedAt } : {})
+            });
+            return;
+        }
+
+        if (!result.fields) {
+            emitText(`# ${id} existed at ${sinceIso} but was deleted${result.deletedAt ? ' at ' + result.deletedAt : ''} — content unrecoverable (deletion captures no field snapshot)\n`);
+            return;
+        }
+
+        const frontmatter = orderedFieldEntries(id, result.fields)
+            .map(([key, value]) => `${key}: ${yamlScalar(value)}`)
+            .join('\n');
+        const notice = result.complete
+            ? ''
+            : `\n# Note: reconstruction only guaranteed accurate back to ${result.earliestReconstructableTimestamp} (mutation log retention limit)\n`;
+        emitText(`---\n${frontmatter}\n---\n${notice}# Body is not reconstructable — the mutation log only tracks frontmatter, showing frontmatter as of ${sinceIso} only.\n`);
+        return;
+    }
+
     if (!idIndex.has(id)) {
         emitCliError({ json, error: 'Note not found: ' + id, code: 'NOT_FOUND', exitCode: 1, details: { id } });
         return;

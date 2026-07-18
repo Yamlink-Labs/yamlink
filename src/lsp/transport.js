@@ -1,6 +1,27 @@
 'use strict';
 
 let responseGuard = null;
+let nextRequestId = -1;
+const pendingRequests = new Map();
+const bufferedResponses = new Map();
+
+function _settlePendingRequest(message) {
+    const entry = pendingRequests.get(message.id);
+    if (!entry) {
+        bufferedResponses.set(message.id, message);
+        return false;
+    }
+    pendingRequests.delete(message.id);
+    if (message && Object.prototype.hasOwnProperty.call(message, 'error')) {
+        const error = new Error(message.error?.message || 'Request failed');
+        /** @type {any} */ (error).code = message.error?.code;
+        /** @type {any} */ (error).data = message.error?.data;
+        entry.reject(error);
+        return true;
+    }
+    entry.resolve(message ? message.result : null);
+    return true;
+}
 
 function startTransport(onMessage) {
     let buffer = Buffer.alloc(0);
@@ -20,6 +41,10 @@ function startTransport(onMessage) {
             buffer = buffer.slice(headerEnd + 4 + len);
             try {
                 const message = JSON.parse(content);
+                if (message && message.method == null && message.id !== undefined && message.id !== null) {
+                    _settlePendingRequest(message);
+                    continue;
+                }
                 if (message && message.method === '$/cancelRequest') {
                     Promise.resolve(onMessage(message)).catch(() => {});
                     continue;
@@ -79,6 +104,40 @@ function notify(method, params) {
     send({ jsonrpc: '2.0', method, params });
 }
 
+// A client that never responds to a server-initiated request (unsupported
+// capability, dropped dialog, client-side bug) must not hang the request
+// forever — the original JSON-RPC request that triggered it would otherwise
+// never get a response either. Bounded, not indefinite.
+const DEFAULT_REQUEST_TIMEOUT_MS = Number(process.env.YAMLINK_LSP_REQUEST_TIMEOUT_MS) || 5000;
+
+function request(method, params, timeoutMs = DEFAULT_REQUEST_TIMEOUT_MS) {
+    return new Promise((resolve, reject) => {
+        const id = nextRequestId--;
+        const timer = setTimeout(() => {
+            if (pendingRequests.delete(id)) {
+                const error = new Error(`Request '${method}' timed out waiting for a client response after ${timeoutMs}ms`);
+                /** @type {any} */ (error).code = -32001;
+                reject(error);
+            }
+        }, timeoutMs);
+        // Deliberately not unref()'d: this timer existing is exactly what
+        // guarantees the original request gets a response even if stdin
+        // closes or the process would otherwise have nothing else keeping
+        // the event loop alive — the one scenario where the timeout matters
+        // most. It's bounded (fires once, self-clears), never indefinite.
+        pendingRequests.set(id, {
+            resolve: (result) => { clearTimeout(timer); resolve(result); },
+            reject: (err) => { clearTimeout(timer); reject(err); }
+        });
+        send({ jsonrpc: '2.0', id, method, params });
+        if (bufferedResponses.has(id)) {
+            const buffered = bufferedResponses.get(id);
+            bufferedResponses.delete(id);
+            _settlePendingRequest(buffered);
+        }
+    });
+}
+
 function log(msg) {
     process.stderr.write('[yamlink-lsp] ' + msg + '\n');
 }
@@ -96,6 +155,7 @@ module.exports = {
     respondError,
     respondErrorImmediate,
     notify,
+    request,
     log,
     logToClient,
     setResponseGuard

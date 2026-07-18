@@ -4,6 +4,7 @@ const React = require('react');
 const SelectionList = require('../components/SelectionList');
 const Panel = require('../components/Panel');
 const { p, SYM, termWidth } = require('../palette');
+const { buildSpatialGraphView } = require('../graphRender');
 
 function truncate(text, width) {
     const value = String(text ?? '');
@@ -17,10 +18,43 @@ function pad(text, width) {
     return value.length >= width ? value : value + ' '.repeat(width - value.length);
 }
 
-function Graph({ ink, host, port, getNode, getTypes, getNodes, initialId, onNavigate, onQuit, disabled, width, splitMode }) {
+// Colors a slice of an already-rendered spatial-graph row by note type, when
+// `labelColors` (from buildSpatialGraphView) has an entry for that row. Every
+// other row (and the untouched parts of a colored row) still goes through
+// the normal p.primary() styling — this only ever recolors the exact name
+// substring the render pipeline reported, never guesses at position.
+function renderSpatialLine(line, rowIndex, labelColors) {
+    const span = (labelColors || []).find((entry) => entry.row === rowIndex);
+    if (!span) return p.primary(line);
+    const before = line.slice(0, span.col);
+    const highlighted = line.slice(span.col, span.col + span.length);
+    const after = line.slice(span.col + span.length);
+    return p.primary(before) + p.hex(span.color, highlighted) + p.primary(after);
+}
+
+function summarizeGraphTypes(outbound, inbound) {
+    const counts = new Map();
+    for (const edge of outbound || []) {
+        const type = String(edge?.toType || '').trim();
+        if (!type) continue;
+        counts.set(type, (counts.get(type) || 0) + 1);
+    }
+    for (const edge of inbound || []) {
+        const type = String(edge?.fromType || '').trim();
+        if (!type) continue;
+        counts.set(type, (counts.get(type) || 0) + 1);
+    }
+    return [...counts.entries()]
+        .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
+        .slice(0, 4)
+        .map(([type, count]) => `${type} ${count}`);
+}
+
+function Graph({ ink, host, port, getNode, getTypes, getNodes, initialId, onNavigate, onQuit, disabled, width, splitMode, graphVersion }) {
     const { Box, Text, useInput } = ink;
 
     const [activePane, setActivePane] = React.useState(initialId ? 'graph' : 'types');
+    const [viewMode, setViewMode] = React.useState('list');
     const [typeCursor, setTypeCursor] = React.useState(0);
     const [noteCursor, setNoteCursor] = React.useState(0);
     const [types, setTypes] = React.useState([]);
@@ -58,12 +92,12 @@ function Graph({ ink, host, port, getNode, getTypes, getNodes, initialId, onNavi
         if (!graphId) return;
         setGraphLoading(true);
         setGraphData(null);
-        getNode({ host, port, id: graphId }).then((n) => {
+        getNode({ host, port, id: graphId, include: 'outbound,inbound' }).then((n) => {
             setGraphData(n);
             setGraphLoading(false);
             setGraphCursor(0);
         }).catch((err) => { setGraphLoading(false); setLoadError(err.message || String(err)); });
-    }, [graphId, host, port]);
+    }, [graphId, host, port, graphVersion]);
 
     const safeNoteCursor = Math.max(0, Math.min(noteCursor, Math.max(0, notes.length - 1)));
     const selectedNote = notes[safeNoteCursor] || null;
@@ -87,6 +121,7 @@ function Graph({ ink, host, port, getNode, getTypes, getNodes, initialId, onNavi
         for (const n of notes) map.set(n.id, n.type);
         return map;
     }, [notes]);
+    const graphTypeSummary = React.useMemo(() => summarizeGraphTypes(outbound, inbound), [outbound, inbound]);
 
     useInput((input, key) => {
         if (key.ctrl && input === 'c') { onQuit(); return; }
@@ -133,6 +168,8 @@ function Graph({ ink, host, port, getNode, getTypes, getNodes, initialId, onNavi
         }
 
         if (activePane === 'graph') {
+            if (input === 'v') { setViewMode((m) => (m === 'list' ? 'spatial' : 'list')); return; }
+            if (viewMode === 'spatial') return;
             if (key.upArrow || input === 'k') { setGraphCursor((c) => Math.max(0, c - 1)); return; }
             if (key.downArrow || input === 'j') { setGraphCursor((c) => Math.min(Math.max(0, allEdges.length - 1), c + 1)); return; }
             if (key.return && allEdges[graphCursor]) {
@@ -173,6 +210,18 @@ function Graph({ ink, host, port, getNode, getTypes, getNodes, initialId, onNavi
         );
     }
 
+    const totalWidth = Math.max(20, Math.min(Number(width) || termWidth(), termWidth()));
+    const spatialCols = Math.max(20, totalWidth - (width ? Math.floor(width * 0.36) : 20) - 6);
+    // Reserve ~8 rows for the panel border, breadcrumb, connection count, and
+    // the hint bar below — the rest goes to the graph itself, so a busy hub
+    // note actually gets room to spread out instead of a fixed, cramped 14.
+    const spatialRows = Math.max(10, (Number(process.stdout.rows) || 30) - 8);
+
+    const spatialView = React.useMemo(() => {
+        if (!graphId || !graphData) return null;
+        return buildSpatialGraphView({ centerNodeId: graphId, outbound, inbound, cols: spatialCols, rows: spatialRows });
+    }, [graphId, graphData, outbound, inbound, spatialCols, spatialRows]);
+
     let graphContent;
     if (!graphId) {
         graphContent = React.createElement(Text, null, p.faint('  Select a note to see its connections'));
@@ -180,6 +229,22 @@ function Graph({ ink, host, port, getNode, getTypes, getNodes, initialId, onNavi
         graphContent = React.createElement(Text, null, p.muted(`  ${SYM.idle}  loading...`));
     } else if (!graphData) {
         graphContent = React.createElement(Text, null, p.err(`  ${SYM.err}  failed to load`));
+    } else if (viewMode === 'spatial' && spatialView) {
+        const rootType = graphData.type ? p.type(` (${graphData.type})`) : '';
+        const summaryLine = graphTypeSummary.length
+            ? p.faint('  ') + graphTypeSummary.map((entry) => p.secondary(entry)).join(p.faint(' · '))
+            : null;
+        graphContent = React.createElement(
+            Box,
+            { flexDirection: 'column' },
+            React.createElement(Text, null, '  ' + p.accent(graphId) + rootType + p.faint(`  — ${allEdges.length} connection${allEdges.length === 1 ? '' : 's'}`)),
+            summaryLine ? React.createElement(Text, null, summaryLine) : null,
+            React.createElement(Text, null, ''),
+            ...spatialView.lines.map((line, i) => React.createElement(Text, { key: `row-${i}` }, '  ' + renderSpatialLine(line, i, spatialView.labelColors))),
+            spatialView.legend && spatialView.legend.length
+                ? React.createElement(Text, null, '  ' + p.faint('key  ') + spatialView.legend.map((entry) => p.hex(entry.color, '● ') + p.secondary(entry.type)).join(p.faint('  ')))
+                : null
+        );
     } else {
         const rootType = graphData.type ? p.type(` (${graphData.type})`) : '';
         const breadcrumb = history.length > 0
@@ -241,7 +306,9 @@ function Graph({ ink, host, port, getNode, getTypes, getNodes, initialId, onNavi
         ? (!splitMode
             ? p.faint('[Tab] switch pane  [↑↓] move  [↵] select  [Esc/q] back')
             : p.faint('[↑↓] move  [↵] select  [Esc/q] back'))
-        : p.faint('[Esc/q] back  [↑↓] move  [↵] jump to node');
+        : (viewMode === 'spatial'
+            ? p.faint('[Esc/q] back  [v] list view')
+            : p.faint('[Esc/q] back  [↑↓] move  [↵] jump to node  [v] map view'));
 
     return React.createElement(
         Box,

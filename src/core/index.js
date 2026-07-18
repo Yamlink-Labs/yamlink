@@ -24,7 +24,18 @@ let duplicateIds   = new Map();
 let fieldsCache    = new Map(); // id → parsed frontmatter fields
 let aliasIndex     = new Map(); // alias → canonical id
 let blockIndex     = new Map(); // id → (blockId → body block metadata)
+// id → comma-joined "[[rawTarget]]" text for every body-text wikilink mention,
+// deliberately kept OUT of fieldsCache — a synthetic frontmatter-shaped field
+// would need auditing/exclusion across every consumer that enumerates a
+// note's fields (drift detection, lifecycle state, query autocomplete,
+// cluster emergence...). This is Time Engine-only data: it exists so
+// buildMutationEvents-style diffing can detect body-link changes on save
+// (the mutation log has otherwise never recorded body text at all), and so
+// historical reconstruction can seed "now"'s body-link value. See
+// core/timeEngine.js's use of getBodyLinksCache().
+let bodyLinksCache = new Map();
 let mtimeCache     = new Map(); // filePath → mtime (ms) — skip unchanged files on incremental update
+let malformedFiles = new Map(); // filePath → yaml error message — files skipped for unparsable frontmatter
 let vaultGeneration = 0;        // incremented on every vault mutation — invalidates activation caches
 
 function isNonEmptyFieldValue(rawValue) {
@@ -39,6 +50,37 @@ function extractRelationTargets(rawValue) {
         const text = String(value || '');
         for (const match of text.matchAll(/\[\[([^\]]+)\]\]/g)) {
             const targetId = canonicalizeLinkedTarget(match[1]);
+            if (targetId) targets.push(targetId);
+        }
+    }
+    return [...new Set(targets)].sort();
+}
+
+/**
+ * Same [[wikilink]] extraction as extractRelationTargets(), but resolves each
+ * match the same way the live graph does — through resolveLinkedTarget()'s
+ * idIndex/aliasIndex lookup, falling back to a bare canonicalize only if that
+ * fails. extractRelationTargets() alone only ever produces a naive
+ * canonicalized guess, which silently misses every link written by display
+ * name/alias ([[Carl Jenkins]]) rather than exact canonical id ([[carl-jenkins]]).
+ * Time Engine historical-graph reconstruction (buildHistoricalGraph()'s
+ * consumers — the ?at= API, CLI, and x-graph time-lapse) needs this version,
+ * since the live graph resolves the same links correctly and a historical
+ * view should never show fewer real connections than the live one for a
+ * reason this basic.
+ *
+ * @param {any} rawValue
+ * @param {Map<string, string>} idIndex
+ * @param {Map<string, string>} [aliasIndex]
+ * @returns {string[]}
+ */
+function extractAndResolveRelationTargets(rawValue, idIndex, aliasIndex) {
+    const values = Array.isArray(rawValue) ? rawValue : [rawValue];
+    const targets = [];
+    for (const value of values) {
+        const text = String(value || '');
+        for (const match of text.matchAll(/\[\[([^\]]+)\]\]/g)) {
+            const targetId = resolveLinkedTarget(match[1], idIndex, aliasIndex) || canonicalizeLinkedTarget(match[1]);
             if (targetId) targets.push(targetId);
         }
     }
@@ -107,6 +149,43 @@ function buildMutationEvents(oldFields, newFields, noteId) {
     return events;
 }
 
+// Synthetic field name used only inside the mutation log / Time Engine
+// reconstruction — never written to fieldsCache, never shown as a real
+// frontmatter field. See bodyLinksCache's own comment for why this is kept
+// completely separate rather than folded into fieldsCache.
+const BODY_LINKS_FIELD = '__body_links__';
+
+/**
+ * Mirrors buildMutationEvents()'s per-field diff logic, but for the one
+ * synthetic "field" that isn't real frontmatter: a note's body-text wikilink
+ * mentions. This is what lets time-lapse's mutation-log fallback path
+ * (graphTimelapse.js, for vaults with no git history) show body-mention
+ * growth going forward — the mutation log itself has never recorded body
+ * text before this.
+ *
+ * @param {string|undefined} oldValue
+ * @param {string|undefined} newValue
+ * @param {string} noteId
+ * @returns {object[]}
+ */
+function buildBodyLinkMutationEvents(oldValue, newValue, noteId) {
+    if (!noteId) return [];
+    const timestamp = new Date().toISOString();
+    const hadValue = String(oldValue || '').trim().length > 0;
+    const hasValue = String(newValue || '').trim().length > 0;
+
+    if (!hadValue && hasValue) {
+        return [{ timestamp, type: 'field_added', noteId, field: BODY_LINKS_FIELD, oldValue: oldValue ?? null, newValue }];
+    }
+    if (hadValue && !hasValue) {
+        return [{ timestamp, type: 'field_removed', noteId, field: BODY_LINKS_FIELD, oldValue, newValue: null }];
+    }
+    if (hadValue && hasValue && String(oldValue).trim() !== String(newValue).trim()) {
+        return [{ timestamp, type: 'field_changed', noteId, field: BODY_LINKS_FIELD, oldValue, newValue }];
+    }
+    return [];
+}
+
 /**
  * @typedef {{ field: string, rawTarget: string }} RawEdge
  */
@@ -139,7 +218,9 @@ function buildIndex(workspaceFolders) {
     fieldsCache.clear();
     aliasIndex.clear();
     blockIndex.clear();
+    bodyLinksCache.clear();
     mtimeCache.clear();  // must clear so updateSingleFile re-reads all files after a full rebuild
+    malformedFiles.clear();
     clearGraph();
     clearRegistry();
     clearSchemaRegistry();
@@ -233,10 +314,11 @@ function indexFile(fullPath, pendingGraphBuild = null) {
         ...extractBodyLinksRaw(content)
     ];
 
-    const fields = parseFrontmatter(content);
+    const fields = parseFrontmatter(content, fullPath);
     if (fields) {
         const enriched = enrichFieldsWithTagSignals(fields, content);
         fieldsCache.set(id, enriched);
+        bodyLinksCache.set(id, extractBodyLinksFieldValue(content));
         for (const alias of extractAliasesFromFields(enriched)) {
             if (!aliasIndex.has(alias)) aliasIndex.set(alias, id);
         }
@@ -369,16 +451,55 @@ function extractBodyLinksRaw(content) {
 }
 
 /**
+ * Renders a note's body-text wikilink mentions as a single comma-joined
+ * "[[target]]" string — the same raw-bracket-text shape a frontmatter
+ * relation field's value would have, so it can be diffed and later resolved
+ * with the exact same extractRelationTargets/extractAndResolveRelationTargets
+ * machinery relation fields already use, no format-specific branching needed.
+ * Deduplicated (case/whitespace-insensitive) and order-stable so repeated
+ * mentions of the same target don't produce a noisy mutation-log diff.
+ *
+ * @param {string} content
+ * @returns {string}
+ */
+function extractBodyLinksFieldValue(content) {
+    const seen = new Set();
+    const out = [];
+    for (const edge of extractBodyLinksRaw(content)) {
+        const key = String(edge.rawTarget || '').trim().toLowerCase();
+        if (!key || seen.has(key)) continue;
+        seen.add(key);
+        out.push(`[[${edge.rawTarget}]]`);
+    }
+    return out.join(', ');
+}
+
+/**
  * @param {string} sourceId
  * @param {RawEdge[]} rawEdges
  * @returns {void}
  */
-function registerResolvedEdges(sourceId, rawEdges) {
+/**
+ * Resolves raw {field, rawTarget} edges to canonical {field, targetId} edges,
+ * via the same idIndex/aliasIndex lookup the live graph always uses
+ * (resolveLinkedTarget, falling back to a bare canonicalize). Pulled out as
+ * a pure function (rather than inlined in registerResolvedEdges) so
+ * historical reconstruction — the x-graph time-lapse git-based path in
+ * particular — can resolve wikilinks the exact same way the live graph does,
+ * using a point-in-time idIndex/aliasIndex instead of the live global ones.
+ *
+ * @param {RawEdge[]} rawEdges
+ * @param {string|null} sourceId
+ * @param {Map<string,string>} idIndexArg
+ * @param {Map<string,string>} [aliasIndexArg]
+ * @returns {Array<{field: string, targetId: string}>}
+ */
+function resolveRawEdges(rawEdges, sourceId, idIndexArg, aliasIndexArg) {
     const seen = new Set();
     const edges = [];
 
     for (const edge of rawEdges || []) {
-        const targetId = resolveLinkedTarget(edge.rawTarget, idIndex, aliasIndex) || canonicalizeLinkedTarget(edge.rawTarget);
+        const targetId = resolveLinkedTarget(edge.rawTarget, idIndexArg, aliasIndexArg) || canonicalizeLinkedTarget(edge.rawTarget);
         if (!targetId || targetId === sourceId) continue;
         const key = `${edge.field}:${targetId}`;
         if (seen.has(key)) continue;
@@ -386,7 +507,11 @@ function registerResolvedEdges(sourceId, rawEdges) {
         edges.push({ field: edge.field, targetId });
     }
 
-    registerEdges(sourceId, edges);
+    return edges;
+}
+
+function registerResolvedEdges(sourceId, rawEdges) {
+    registerEdges(sourceId, resolveRawEdges(rawEdges, sourceId, idIndex, aliasIndex));
 }
 
 
@@ -404,8 +529,8 @@ function registerResolvedEdges(sourceId, rawEdges) {
 //   - null/undefined values become empty string
 //   - numbers and booleans converted to string
 // ─────────────────────────────────────────────────────────────────
-/** @param {string} content @returns {Record<string,any>|null} */
-function parseFrontmatter(content) {
+/** @param {string} content @param {string} [filePath] @returns {Record<string,any>|null} */
+function parseFrontmatter(content, filePath) {
     if (content.charCodeAt(0) === 0xFEFF) content = content.slice(1); // strip BOM
 
     if (!/^\s*---/.test(content)) return null;
@@ -420,7 +545,8 @@ function parseFrontmatter(content) {
     try {
         parsed = yaml.load(fmText);
     } catch (e) {
-        console.warn('Yamlink — Malformed frontmatter (file skipped):', e.message);
+        if (filePath) malformedFiles.set(filePath, e.message);
+        console.warn(`Yamlink — Malformed frontmatter (file skipped)${filePath ? `: ${filePath}` : ''} —`, e.message);
         return null;
     }
 
@@ -433,12 +559,69 @@ function parseFrontmatter(content) {
         } else if (val instanceof Date) {
             result[key] = normaliseDateInput(val.toISOString().slice(0, 10)) || val.toISOString().slice(0, 10);
         } else if (Array.isArray(val)) {
-            result[key] = val.map(v => stringifyFrontmatterValue(v)).join(', ');
+            const wikilinkText = unwrapYamlWikilinkAmbiguity(val);
+            result[key] = wikilinkText !== null
+                ? wikilinkText
+                : val.map(v => stringifyFrontmatterValue(v)).join(', ');
         } else {
             result[key] = stringifyFrontmatterValue(val);
         }
     }
     return result;
+}
+
+/**
+ * A `[[note-id]]` value written directly as a frontmatter scalar is also
+ * valid YAML flow-sequence syntax — `unit: [[federations-fleet]]` parses as
+ * `{ unit: [["federations-fleet"]] }`, a nested array, not a string. Left
+ * alone, the literal `[[...]]` brackets are lost forever by the time the
+ * value reaches fieldsCache (and therefore the mutation log and every Time
+ * Engine historical reconstruction downstream of it) — even though the raw
+ * file text still has them, which is why the live graph's edge builder
+ * (extractEdgesFromFrontmatterRaw, which scans raw file text directly and
+ * never goes through YAML parsing) was never affected by this.
+ *
+ * Reconstructs the original wikilink text for both shapes this ambiguity
+ * produces: a single scalar ("unit: [[x]]" -> [["x"]]) and a YAML block list
+ * of wikilinks ("squad:\n  - [[a]]\n  - [[b]]" -> [[["a"]], [["b"]]]).
+ * Returns null (not a match) for any other array shape — including a real
+ * single-item array like `tags: [a]` (only one level of nesting, not two) —
+ * so normal array handling is completely unaffected.
+ *
+ * @param {any[]} val
+ * @returns {string|null}
+ */
+function unwrapYamlWikilinkAmbiguity(val) {
+    const single = unwrapSingleWikilinkChain(val);
+    if (single !== null) return `[[${single}]]`;
+
+    if (Array.isArray(val) && val.length > 0) {
+        const items = val.map((el) => unwrapSingleWikilinkChain(el));
+        if (items.every((item) => item !== null)) {
+            return items.map((item) => `[[${item}]]`).join(', ');
+        }
+    }
+    return null;
+}
+
+/**
+ * Recursively unwraps a chain of single-element arrays down to the leaf
+ * string, but only if there are at least two levels of nesting — that depth
+ * is what distinguishes "this was `[[x]]`" from a genuine single-item array
+ * like `tags: [a]` (one level only). Returns null for anything else.
+ *
+ * @param {any} val
+ * @returns {string|null}
+ */
+function unwrapSingleWikilinkChain(val) {
+    let cur = val;
+    let depth = 0;
+    while (Array.isArray(cur)) {
+        if (cur.length !== 1) return null;
+        cur = cur[0];
+        depth++;
+    }
+    return (depth >= 2 && typeof cur === 'string') ? cur : null;
 }
 
 function stringifyFrontmatterValue(value) {
@@ -537,6 +720,11 @@ function updateSingleFile(filePath, options = {}) {
     if (oldId !== newId) {
         const newFieldsForEvent = newId ? parseFrontmatterCached(newContent) : null;
         const mutationEvents = newId ? buildMutationEvents(null, newFieldsForEvent, newId) : [];
+        if (newId) {
+            const newBodyLinks = extractBodyLinksFieldValue(newContent);
+            mutationEvents.push(...buildBodyLinkMutationEvents(bodyLinksCache.get(newId), newBodyLinks, newId));
+            bodyLinksCache.set(newId, newBodyLinks);
+        }
         vaultGeneration++;
         return { changed: true, needsFull: true, changedId: newId || null, mutationEvents };
     }
@@ -549,6 +737,9 @@ function updateSingleFile(filePath, options = {}) {
 
     if (oldType === 'schema' || newType === 'schema') {
         const mutationEvents = buildMutationEvents(oldFields, newFields || {}, newId);
+        const newBodyLinks = extractBodyLinksFieldValue(newContent);
+        mutationEvents.push(...buildBodyLinkMutationEvents(bodyLinksCache.get(newId), newBodyLinks, newId));
+        bodyLinksCache.set(newId, newBodyLinks);
         vaultGeneration++;
         return { changed: true, needsFull: true, changedId: newId, mutationEvents };
     }
@@ -588,6 +779,11 @@ function updateSingleFile(filePath, options = {}) {
     }
 
     const mutationEvents = buildMutationEvents(oldFields, newFields ? enrichFieldsWithTagSignals(newFields, newContent) : {}, newId);
+    const oldBodyLinks = bodyLinksCache.get(newId);
+    const newBodyLinks = newFields ? extractBodyLinksFieldValue(newContent) : '';
+    mutationEvents.push(...buildBodyLinkMutationEvents(oldBodyLinks, newBodyLinks, newId));
+    if (newFields) bodyLinksCache.set(newId, newBodyLinks);
+    else bodyLinksCache.delete(newId);
     const effectiveEvents = mutationEvents.length > 0 ? mutationEvents : buildTouchEvent(newId);
     vaultGeneration++;
     return { changed: true, needsFull: false, changedId: newId, mutationEvents: effectiveEvents };
@@ -618,6 +814,7 @@ function removeFileFromIndex(filePath) {
     if (deletedType) unregisterType(deletedType, id);
     fieldsCache.delete(id);
     blockIndex.delete(id);
+    bodyLinksCache.delete(id);
 
     vaultGeneration++;
     return {
@@ -632,12 +829,16 @@ function getIndex()           { return idIndex; }
 function getPathIndex()       { return pathIndex; }
 /** @returns {Map<string,string[]>} */
 function getDuplicateIds()    { return duplicateIds; }
+/** @returns {Map<string,string>} filePath → yaml error message */
+function getMalformedFiles()  { return malformedFiles; }
 /** @returns {Map<string,Record<string,any>>} */
 function getFieldsCache()     { return fieldsCache; }
 /** @returns {Map<string,string>} */
 function getAliasIndex()      { return aliasIndex; }
 /** @returns {Map<string,Map<string,import('./bodyBlocks').BodyBlock>>} */
 function getBodyBlockIndex()  { return blockIndex; }
+/** @returns {Map<string,string>} id → comma-joined "[[rawTarget]]" body-mention text; Time Engine-only, never a real frontmatter field */
+function getBodyLinksCache()  { return bodyLinksCache; }
 /** @returns {number} */
 function getVaultGeneration() { return vaultGeneration; }
 /** @param {string|null} [filePath] @returns {void} */
@@ -654,13 +855,23 @@ module.exports = {
     getIndex,
     getPathIndex,
     getDuplicateIds,
+    getMalformedFiles,
     getFieldsCache,
     getAliasIndex,
     getBodyBlockIndex,
+    getBodyLinksCache,
     getVaultGeneration,
     getGraphStats,
     extractIdFromFrontmatter,
     extractEdgesFromFrontmatter,
+    extractEdgesFromFrontmatterRaw,
     extractBodyLinks,
-    parseFrontmatter
+    extractBodyLinksRaw,
+    extractAliasesFromFields,
+    extractBodyLinksFieldValue,
+    resolveRawEdges,
+    parseFrontmatter,
+    extractRelationTargets,
+    extractAndResolveRelationTargets,
+    BODY_LINKS_FIELD
 };

@@ -105,6 +105,18 @@ class VaultService {
         return this._pendingWatchPromise.promise;
     }
 
+    /**
+     * If a debounced rebuild (from notifyFileChange()) is currently pending,
+     * returns a promise that resolves once it completes. Otherwise resolves
+     * immediately. Used before process shutdown so a rebuild-in-flight (and
+     * whatever it triggers — e.g. republishing diagnostics) isn't silently
+     * abandoned by an exit that races ahead of the debounce timer.
+     * @returns {Promise<{generation: number}|undefined>}
+     */
+    flushPendingRebuild() {
+        return this._pendingWatchPromise ? this._pendingWatchPromise.promise : Promise.resolve(undefined);
+    }
+
     async _requireInitialized() {
         if (!this._initializePromise) {
             throw new Error('VaultService.initialize(vaultPath) must complete before use.');

@@ -147,11 +147,17 @@ function runSearch({ host, port, query, limit = 50 }) {
 }
 
 /**
- * @param {NodeRequestOptions} options
+ * @param {NodeRequestOptions & { include?: string }} options
  * @returns {Promise<any>}
  */
-function getNode({ host, port, id }) {
-    return requestJson({ host, port, path: `/api/nodes/${encodeURIComponent(id)}` });
+function getNode({ host, port, id, include }) {
+    // Without `include`, /api/nodes/:id's `_outbound`/`_inbound` are bare
+    // {field, to}/{field, from} — no `toType`/`toName` at all. Callers that
+    // need real per-edge type/name info (colored graph rendering, type
+    // summaries) must opt in explicitly; other callers get the exact same
+    // response shape as before this parameter existed.
+    const query = include ? `?include=${encodeURIComponent(include)}` : '';
+    return requestJson({ host, port, path: `/api/nodes/${encodeURIComponent(id)}${query}` });
 }
 
 /**

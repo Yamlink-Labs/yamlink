@@ -480,25 +480,39 @@ describe('healthStats — vault projections', () => {
         assert.ok(Array.isArray(projections.structure.topTypes));
         assert.ok(projections.scenarios);
         assert.ok(['low', 'medium', 'high'].includes(projections.scenarios.cleanupHold.confidence));
-        assert.ok(['low', 'medium', 'high'].includes(projections.scenarios.cleanupLift.confidence));
+        // Only one real scenario — a fabricated "modest cleanup" lift used to
+        // sit alongside cleanupHold, computed from the exact same input at a
+        // more optimistic fixed multiplier. Removed: it implied a real lever
+        // to pull without ever being tied to an actual different action.
+        assert.equal(projections.scenarios.cleanupLift, undefined);
         assert.ok(typeof projections.scenarios.cleanupHold.summary === 'string' && projections.scenarios.cleanupHold.summary.length > 0);
-        assert.ok(typeof projections.scenarios.growthHold.summary === 'string' && projections.scenarios.growthHold.summary.length > 0);
+        // Growth's own scenario summary lives on projections.growth.summary now
+        // (real trend-fit + retrospective accuracy) — no separate
+        // scenarios.growthHold; that redundant field was removed with the
+        // Time-Engine-backed rebuild.
+        assert.ok(typeof projections.growth.summary === 'string' && projections.growth.summary.length > 0);
+        assert.ok(typeof projections.growth.r2 === 'number' || projections.growth.r2 === null);
 
         vault.destroy();
         clearMutationEvents();
     });
 
-    test('health html renders projection evidence and type-specific leaders', () => {
+    test('health html renders a metric toggle with a chart per tab, not a badge cluster', () => {
         clearMutationEvents();
-        const now = new Date().toISOString();
+        const now = Date.now();
+        const day = 86400000;
         const vault = createVault({
             ...CRM,
             'old-contact.md': NOTE('old-contact', 'contact', 'name: Old Contact\n')
         });
         appendMutationEvents([
-            { type: 'note_created', noteId: 'rico', timestamp: now },
-            { type: 'note_created', noteId: 'carmen', timestamp: now },
-            { type: 'completion_accepted', noteId: 'rico', field: 'account', newValue: '[[mi]]', timestamp: now }
+            // Spread across weeks (not all "now") so the Time-Engine-backed
+            // trajectory has real historical spread to fit a trend through —
+            // growth evidence is now a real checkpoint count, not a heuristic.
+            { type: 'note_created', noteId: 'rico', timestamp: new Date(now - 25 * day).toISOString() },
+            { type: 'note_created', noteId: 'carmen', timestamp: new Date(now - 15 * day).toISOString() },
+            { type: 'note_created', noteId: 'dizzy', timestamp: new Date(now - 5 * day).toISOString() },
+            { type: 'completion_accepted', noteId: 'rico', field: 'account', newValue: '[[mi]]', timestamp: new Date(now).toISOString() }
         ]);
         const html = buildHealthHtml(vault.healthStats(), {
             scriptUri: 'test.js',
@@ -507,13 +521,102 @@ describe('healthStats — vault projections', () => {
         });
 
         assert.match(html, /Vault Projections/);
-        assert.match(html, /Growth/);
-        assert.match(html, /Stale Pressure/);
-        assert.match(html, /Structure Direction/);
-        assert.match(html, /Recent 4-week pattern/);
-        assert.match(html, /Scenario layer/);
-        assert.match(html, /If cleanup pace holds/);
-        assert.match(html, /evidence/);
+        // Toggle row switches between Growth / Stale / Structure — one chart
+        // visible at a time, not three separate tiles shown all at once.
+        assert.match(html, /data-proj-toggle="growth"/);
+        assert.match(html, /data-proj-toggle="stale"/);
+        assert.match(html, /data-proj-toggle="structure"/);
+        // Growth, Stale, and Structure all now render the same real line
+        // chart (Phase 3, 2026-07-16 — Stale/Structure gained real
+        // per-checkpoint historical trajectories, replacing the old
+        // two-number stat card that existed specifically because they used
+        // to have no real history to chart).
+        const chartCount = (html.match(/proj-line-chart/g) || []).length;
+        assert.ok(chartCount >= 3, `expected a real chart for growth, stale, and structure, got ${chartCount}`);
+        assert.ok(!/evidence/i.test(html), 'no raw "evidence" jargon in the rendered card');
+        assert.ok(!/Scenario Compare/.test(html), 'old three-card scenario grid is gone');
+
+        vault.destroy();
+        clearMutationEvents();
+    });
+
+    test('structure panel names the actual missing fields, not just a vague "shape" claim', () => {
+        clearMutationEvents();
+        const files = {};
+        for (let i = 0; i < 12; i++) {
+            files[`char${i}.md`] = NOTE(`char${i}`, 'character', `name: Char ${i}\nrank: Private\nhomeworld: Buenos Aires\n`);
+        }
+        files['ace.md'] = NOTE('ace', 'character', 'name: Ace Levy\n');
+        const vault = createVault(files);
+
+        const stats = vault.healthStats();
+        const structure = stats.intelligenceHealth.projections.structure;
+        assert.ok(structure.problematic > 0, 'fixture produces at least one drifting note');
+        assert.deepEqual(structure.topTypes[0].topMissingFields.sort(), ['homeworld', 'rank']);
+
+        const html = buildHealthHtml(stats, { scriptUri: 'test.js', nonce: 'nonce', csp: "'unsafe-inline'" });
+        // Real field names named directly in the primary summary sentence —
+        // not a secondary footnote the reader has to find. Direct user
+        // feedback ("WHAT IS THE TYPE") after a round that led with a vague
+        // vault-wide count and buried the actual type/fields underneath.
+        assert.match(html, /all of it in character.*commonly missing rank, homeworld/s);
+
+        vault.destroy();
+        clearMutationEvents();
+    });
+
+    test('staleness and structure panels render real trend summaries', () => {
+        clearMutationEvents();
+        const now = Date.now();
+        const day = 86400000;
+        const files = {};
+        for (let i = 0; i < 12; i++) {
+            files[`char${i}.md`] = NOTE(`char${i}`, 'character', `name: Char ${i}\nrank: Private\nhomeworld: Buenos Aires\n`);
+        }
+        files['ace.md'] = NOTE('ace', 'character', 'name: Ace Levy\n');
+        const vault = createVault(files);
+        appendMutationEvents([
+            { type: 'note_touched', noteId: 'char0', timestamp: new Date(now - 25 * day).toISOString() },
+            { type: 'field_changed', noteId: 'char1', field: 'rank', newValue: 'Corporal', timestamp: new Date(now - 3 * day).toISOString() }
+        ]);
+
+        const html = buildHealthHtml(vault.healthStats(), { scriptUri: 'test.js', nonce: 'nonce', csp: "'unsafe-inline'" });
+        // Plain-language summaries reused verbatim from the data model, with
+        // real counts baked in directly — not a canned 3-bucket template.
+        assert.match(html, /No notes have gone 90\+ days without a change yet/);
+        assert.match(html, /1 of 13 sampled notes don't match their type's usual shape — all of it in character/);
+
+        vault.destroy();
+        clearMutationEvents();
+    });
+
+    test('growth tile draws a real weekly trajectory ending at the current total, with a dashed projected point', () => {
+        clearMutationEvents();
+        const now = Date.now();
+        const day = 86400000;
+        const vault = createVault({
+            'char0.md': NOTE('char0', 'character', 'name: Char 0\n'),
+            'char1.md': NOTE('char1', 'character', 'name: Char 1\n'),
+            'char2.md': NOTE('char2', 'character', 'name: Char 2\n')
+        });
+        appendMutationEvents([
+            { type: 'note_created', noteId: 'char0', timestamp: new Date(now - 25 * day).toISOString() },
+            { type: 'note_created', noteId: 'char1', timestamp: new Date(now - 10 * day).toISOString() },
+            { type: 'note_created', noteId: 'char2', timestamp: new Date(now - 2 * day).toISOString() }
+        ]);
+
+        const stats = vault.healthStats();
+        const growth = stats.intelligenceHealth.projections.growth;
+        const leader = growth.topTypes[0];
+        assert.equal(leader.type, 'character');
+        assert.equal(leader.currentTotal, 3);
+        assert.equal(leader.weeklyTotals[leader.weeklyTotals.length - 1], leader.currentTotal, 'the last weekly point always lands on the current total');
+        assert.equal(leader.weeklyTotals.length, 4);
+
+        const html = buildHealthHtml(stats, { scriptUri: 'test.js', nonce: 'nonce', csp: "'unsafe-inline'" });
+        assert.match(html, /proj-line-chart/);
+        assert.match(html, /proj-line-path--projected/);
+        assert.match(html, /proj-dot--projected/);
 
         vault.destroy();
         clearMutationEvents();
@@ -552,6 +655,38 @@ describe('healthStats — vault projections', () => {
         assert.match(html, /Mutation Behavior/);
         assert.match(html, /coherence/i);
         assert.match(html, /Top streak/i);
+
+        vault.destroy();
+        clearMutationEvents();
+    });
+
+    test('stale panel lists the specific notes going stale soonest, ranked, with real days-remaining', () => {
+        clearMutationEvents();
+        const now = Date.now();
+        const day = 86400000;
+        const files = {};
+        for (let i = 0; i < 6; i++) {
+            files[`char${i}.md`] = NOTE(`char${i}`, 'character', `name: Char ${i}\n`);
+        }
+        const vault = createVault(files);
+        appendMutationEvents([
+            { type: 'note_created', noteId: 'char0', timestamp: new Date(now - 88 * day).toISOString() }, // 2 days from stale
+            { type: 'note_created', noteId: 'char1', timestamp: new Date(now - 60 * day).toISOString() }, // 30 days from stale
+            { type: 'note_created', noteId: 'char2', timestamp: new Date(now - 10 * day).toISOString() },
+            { type: 'note_created', noteId: 'char3', timestamp: new Date(now - 5 * day).toISOString() },
+            { type: 'note_created', noteId: 'char4', timestamp: new Date(now - 2 * day).toISOString() },
+            { type: 'note_created', noteId: 'char5', timestamp: new Date(now - 1 * day).toISOString() }
+        ]);
+
+        const stats = vault.healthStats();
+        const upcoming = stats.intelligenceHealth.projections.stale.upcoming;
+        assert.equal(upcoming[0].noteId, 'char0', 'the note closest to going stale should rank first');
+        assert.equal(upcoming[0].daysUntilStale, 2);
+        assert.equal(upcoming[1].noteId, 'char1');
+
+        const html = buildHealthHtml(stats, { scriptUri: 'test.js', nonce: 'nonce', csp: "'unsafe-inline'" });
+        assert.match(html, /Going stale soonest/);
+        assert.match(html, /char0.*in 2 days/s);
 
         vault.destroy();
         clearMutationEvents();
@@ -612,5 +747,168 @@ describe('healthStats — emerging clusters', () => {
         assert.match(html, /Create schema from cluster/);
 
         vault.destroy();
+    });
+});
+
+// ── Top relationships (relationshipGravity vault-level surfacing) ──────────
+
+describe('healthStats — top relationships', () => {
+    test('omits edges with no corroborating signal — a lone single-field link is not "most-reinforced"', () => {
+        clearMutationEvents();
+        const vault = createVault(CRM);
+        const stats = vault.healthStats();
+        assert.deepEqual(stats.topRelationships, []);
+        vault.destroy();
+    });
+
+    test('surfaces an edge reinforced by multiple fields pointing at the same target, ranked by score', () => {
+        clearMutationEvents();
+        const vault = createVault({
+            'rico.md': NOTE('rico', 'character', 'name: Johnny Rico\ncommander: "[[carmen]]"\nmentor: "[[carmen]]"\n'),
+            'carmen.md': NOTE('carmen', 'character', 'name: Carmen Ibanez\n')
+        });
+
+        const stats = vault.healthStats();
+        assert.ok(stats.topRelationships.length >= 1);
+        const top = stats.topRelationships[0];
+        assert.equal(top.sourceId, 'rico');
+        assert.equal(top.targetId, 'carmen');
+        assert.ok(top.structuralWeight > 1);
+
+        const html = buildHealthHtml(stats, { scriptUri: 'test.js', nonce: 'nonce', csp: "'unsafe-inline'" });
+        assert.match(html, /Most-Reinforced Connections/);
+        assert.match(html, /2 shared fields/);
+
+        vault.destroy();
+    });
+
+    test('surfaces an edge reinforced by repeated mutation-log touches', () => {
+        clearMutationEvents();
+        const now = new Date().toISOString();
+        const vault = createVault({
+            'rico.md': NOTE('rico', 'character', 'name: Johnny Rico\ncommander: "[[carmen]]"\n'),
+            'carmen.md': NOTE('carmen', 'character', 'name: Carmen Ibanez\n')
+        });
+        appendMutationEvents([
+            { type: 'relation_added', noteId: 'rico', field: 'commander', newValue: '[[carmen]]', timestamp: now },
+            { type: 'relation_changed', noteId: 'rico', field: 'commander', newValue: '[[carmen]]', timestamp: now }
+        ]);
+
+        const stats = vault.healthStats();
+        assert.ok(stats.topRelationships.length >= 1);
+        assert.equal(stats.topRelationships[0].repetition, 2);
+
+        const html = buildHealthHtml(stats, { scriptUri: 'test.js', nonce: 'nonce', csp: "'unsafe-inline'" });
+        assert.match(html, /reaffirmed 2×/);
+
+        vault.destroy();
+        clearMutationEvents();
+    });
+});
+
+// ── Today at a glance (sessionSummary.js wired into the Activity tab) ──────
+
+describe('healthStats — today at a glance', () => {
+    test('renders plain-count chips for today\'s mutation types, and omits zero-count categories', () => {
+        clearMutationEvents();
+        const now = new Date().toISOString();
+        const vault = createVault(CRM);
+        appendMutationEvents([
+            { type: 'note_created', noteId: 'rico', timestamp: now },
+            { type: 'field_added', noteId: 'rico', field: 'rank', newValue: 'private', timestamp: now },
+            { type: 'relation_added', noteId: 'rico', field: 'account', newValue: '[[mi]]', timestamp: now }
+        ]);
+
+        const stats = vault.healthStats();
+        assert.equal(stats.todaySummary.notesCreated, 1);
+        assert.equal(stats.todaySummary.fieldsAdded, 1);
+        assert.equal(stats.todaySummary.relationsFormed, 1);
+        assert.equal(stats.todaySummary.tasksChanged, 0);
+
+        const html = buildHealthHtml(stats, { scriptUri: 'test.js', nonce: 'nonce', csp: "'unsafe-inline'" });
+        assert.match(html, /1 note<\/span>/);
+        assert.match(html, /1 field added/);
+        assert.match(html, /1 relation formed/);
+        assert.doesNotMatch(html, /task changed/);
+
+        vault.destroy();
+        clearMutationEvents();
+    });
+
+    test('detects and surfaces a real workflow burst — 3+ notes touched by the same event type within 60s', () => {
+        clearMutationEvents();
+        const base = Date.now();
+        const vault = createVault(CRM);
+        appendMutationEvents([
+            { type: 'note_created', noteId: 'rico', timestamp: new Date(base).toISOString() },
+            { type: 'note_created', noteId: 'carmen', timestamp: new Date(base + 5000).toISOString() },
+            { type: 'note_created', noteId: 'dizzy', timestamp: new Date(base + 10000).toISOString() }
+        ]);
+
+        const stats = vault.healthStats();
+        assert.equal(stats.todayBursts.length, 1);
+        assert.equal(stats.todayBursts[0].type, 'note_created');
+        assert.equal(stats.todayBursts[0].noteIds.length, 3);
+
+        const html = buildHealthHtml(stats, { scriptUri: 'test.js', nonce: 'nonce', csp: "'unsafe-inline'" });
+        assert.match(html, /Workflow burst detected/);
+        assert.match(html, /note created/);
+
+        vault.destroy();
+        clearMutationEvents();
+    });
+
+    test('no burst callout when today\'s activity is normal, unclustered editing', () => {
+        clearMutationEvents();
+        const vault = createVault(CRM);
+        appendMutationEvents([
+            { type: 'field_added', noteId: 'rico', field: 'rank', newValue: 'private', timestamp: new Date().toISOString() }
+        ]);
+
+        const stats = vault.healthStats();
+        assert.equal(stats.todayBursts.length, 0);
+
+        const html = buildHealthHtml(stats, { scriptUri: 'test.js', nonce: 'nonce', csp: "'unsafe-inline'" });
+        assert.doesNotMatch(html, /Workflow burst detected/);
+
+        vault.destroy();
+        clearMutationEvents();
+    });
+});
+
+// ── Terminology help tips (plain-language "?" explainers) ──────────────────
+
+describe('healthHtml — terminology help tips', () => {
+    test('every tab button carries a plain-language title explaining what it shows', () => {
+        clearMutationEvents();
+        const vault = createVault(CRM);
+        const html = buildHealthHtml(vault.healthStats(), { scriptUri: 'test.js', nonce: 'nonce', csp: "'unsafe-inline'" });
+
+        assert.match(html, /data-tab="activity" title="[^"]+"/);
+        assert.match(html, /data-tab="lifecycle" title="[^"]+"/);
+        assert.match(html, /data-tab="consistency" title="[^"]+"/);
+        assert.match(html, /data-tab="schema" title="[^"]+"/);
+        assert.match(html, /data-tab="intelligence" title="[^"]+"/);
+        assert.match(html, /data-tab="types" title="[^"]+"/);
+
+        vault.destroy();
+    });
+
+    test('jargon section titles carry a visible "?" help icon with a friendly definition', () => {
+        clearMutationEvents();
+        const now = new Date().toISOString();
+        const vault = createVault(CRM);
+        appendMutationEvents([
+            { type: 'field_added', noteId: 'rico', field: 'rank', newValue: 'private', timestamp: now, sessionId: 's1' }
+        ]);
+        const html = buildHealthHtml(vault.healthStats(), { scriptUri: 'test.js', nonce: 'nonce', csp: "'unsafe-inline'" });
+
+        assert.match(html, /Lifecycle States<\/span><span class="help-tip" title="[^"]+">\?<\/span>/);
+        assert.match(html, /Type Consistency<\/span><span class="help-tip" title="[^"]+">\?<\/span>/);
+        assert.match(html, /Today's Activity<\/span><span class="help-tip"/);
+        assert.match(html, /Session Memory<\/span><span class="help-tip"/);
+
+        vault.destroy();
+        clearMutationEvents();
     });
 });

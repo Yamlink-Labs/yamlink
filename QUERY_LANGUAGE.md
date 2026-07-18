@@ -273,6 +273,19 @@ via account
 
 ---
 
+## Presentation layouts (table / matrix / bar / scatter)
+
+Any query result can be viewed as a table, a two-axis matrix, a bar chart, or a scatter plot — but **this is a toolbar toggle in the View Panel, not a clause you write in the query text.** The same `!view` block always produces the same result set; the layout choice only changes how that result set is rendered, and is remembered per query tab.
+
+- **Table** — the default. One row per note.
+- **Matrix** — pick any vault type as the matrix columns; rows are the query results, cells show ● for a connected pair.
+- **Bar** — groups rows by a field (via the toolbar's own group-by picker) and renders one bar per group. If the query already uses the `group by` clause above, the bar chart renders immediately using those groups — `group by` is the one query-language clause that feeds this layout directly.
+- **Scatter** — plots rows on an X/Y grid. Yamlink auto-selects the first two numeric or date fields in the result as axes; disabled when the result has none.
+
+Switch layouts from the **Layout** toolbar group in the View Panel, or via `Yamlink: Query Builder`'s layout toggle when building a new query.
+
+---
+
 ## Current Rules
 
 - `id` is always included as the first column

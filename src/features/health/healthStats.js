@@ -19,10 +19,12 @@
  *   types: Array<{type: string, count: number, nodes: string[]}>,
  *   lifecycle: { counts: Record<string,number>, notes: Array<{id:string,state:string,label:string,summary:string}> },
  *   drift: any, todayActivity: Array<{noteId:string,count:number}>, todaySessions?: object[],
+ *   todaySummary?: Record<string, any>, todayBursts?: Array<{type:string,count:number,noteIds:string[],windowMs:number}>,
  *   schemas: any, uniqueTypes: number, density: string,
  *   templateDrift: Map<string,any>, schemaIntelligence: SchemaIntelligence,
  *   intelligenceHealth: Record<string, any>,
  *   emergingClusters?: Array<{ fields: string[], noteIds: string[], noteCount: number, dominantType: string|null, confidence: string }>,
+ *   topRelationships?: Array<{sourceId:string,field:string,targetId:string,score:number,structuralWeight:number,decayedMutationWeight:number,repetition:number}>,
   healthTrend?: { brokenTrend: 'up'|'down'|'same'|null, orphanTrend: 'up'|'down'|'same'|null, brokenDelta: number|null, orphanDelta: number|null, snapshotCount: number }
  * }} HealthStats
  */
@@ -41,11 +43,18 @@ const { inferLifecycleState, summarizeLifecycleState } = require('../../intellig
 const { computeVaultDrift, getDriftSummary } = require('../../intelligence/driftDetector');
 const { detectClusters } = require('../../intelligence/clusterEmergence');
 const { buildNoteArc } = require('../../intelligence/noteArc');
-const { getMutationEvents } = require('../../runtime/mutationEventLog');
+const { getMutationEvents, getVaultSnapshots } = require('../../runtime/mutationEventLog');
 const { buildSessionNarratives, buildFamilyStreaks, buildBehaviorEvolution } = require('../../runtime/mutationNarratives');
+const { buildSessionSummary, detectWorkflowBursts } = require('../../intelligence/sessionSummary');
+const { getTopGravityEdges } = require('../../intelligence/relationshipGravity');
 const { getTemplateDrift, summarizeTemplateDrift } = require('../../core/templateRegistry');
+const { buildLaneTrajectories, buildLaneRetrospectiveAccuracy, buildStalenessForecast } = require('../../intelligence/vaultTrends');
 
 const SYSTEM_TYPES = new Set(['schema', 'dashboard', 'template']);
+// A note is "stale" once this many days pass with no recorded mutation. Named
+// so the threshold can be stated explicitly in projection summaries instead
+// of leaving "stale" as an undefined term the vault owner has to guess at.
+const STALE_DAYS_THRESHOLD = 90;
 
 /**
  * @param {Map<string, string>} idIndex
@@ -172,6 +181,8 @@ function collectHealthStats(options = {}) {
         .slice(0, 12)
         .map(([noteId, count]) => ({ noteId, count }));
     const todaySessions = buildSessionNarratives(todayEvents, fieldsCache, { limit: 8 });
+    const todaySummary = buildSessionSummary(todayEvents);
+    const todayBursts = detectWorkflowBursts(todayEvents);
 
     const orphans = [];
     const lifecycleCounts = {
@@ -238,7 +249,7 @@ function collectHealthStats(options = {}) {
     const drift = getDriftSummary(vaultDrift);
 
     const intelligenceHealth = buildIntelligenceHealth(
-        lifecycleCounts, drift, fieldsCache, priors, allMutationEventsEarly
+        lifecycleCounts, drift, fieldsCache, priors, allMutationEventsEarly, lastMutationByNote
     );
 
     const templateDriftByType = workspaceRoot
@@ -246,9 +257,10 @@ function collectHealthStats(options = {}) {
         : new Map();
 
     const schemaIntelligence = buildSchemaIntelligence(idIndex, fieldsCache, registry);
-    const emergingClusters = detectClusters(idIndex, fieldsCache).clusters
+    const emergingClusters = detectClusters(fieldsCache).clusters
         .filter((cluster) => cluster.confidence === 'medium' || cluster.confidence === 'high')
         .slice(0, 3);
+    const topRelationships = getTopGravityEdges(priors.relationshipGravity, { limit: 8 });
 
     const healthTrend = workspaceRoot
         ? readHealthSnapshotTrend(path.join(workspaceRoot, '.yamlink'))
@@ -267,6 +279,8 @@ function collectHealthStats(options = {}) {
         drift,
         todayActivity,
         todaySessions,
+        todaySummary,
+        todayBursts,
         schemas: schemaStats.schemas,
         uniqueTypes: registryStats.uniqueTypes,
         density,
@@ -274,6 +288,7 @@ function collectHealthStats(options = {}) {
         schemaIntelligence,
         intelligenceHealth,
         emergingClusters,
+        topRelationships,
         healthTrend
     };
 }
@@ -289,7 +304,7 @@ function collectHealthStats(options = {}) {
  * @param {object[]} mutationEvents  full mutation log array
  * @returns {object}
  */
-function buildIntelligenceHealth(lifecycleCounts, driftSummary, fieldsCache, priors, mutationEvents) {
+function buildIntelligenceHealth(lifecycleCounts, driftSummary, fieldsCache, priors, mutationEvents, lastMutationByNoteAll) {
     const { typeFieldBundles, fieldTargetTypes, outcomeCalibration } = priors;
 
     // ── System confidence score ──────────────────────────────────────────
@@ -370,7 +385,9 @@ function buildIntelligenceHealth(lifecycleCounts, driftSummary, fieldsCache, pri
         driftSummary,
         mutationEvents,
         calibrationEvents,
-        mutationBehavior
+        mutationBehavior,
+        priors,
+        lastMutationByNoteAll
     });
 
     return {
@@ -446,12 +463,6 @@ function buildWeeklyBuckets(now, bucketCount, bucketDays) {
     return buckets;
 }
 
-function classifyTrend(delta) {
-    if (delta >= 0.18) return 'rising';
-    if (delta <= -0.18) return 'falling';
-    return 'steady';
-}
-
 function classifyScenarioConfidence(baseEvidenceScore, extraWeight = 0) {
     return projectionConfidence(clamp01(baseEvidenceScore + extraWeight));
 }
@@ -516,38 +527,35 @@ function buildMutationBehavior(mutationEvents, fieldsCache) {
     };
 }
 
-function buildVaultProjections({ fieldsCache, lifecycleCounts, vaultDrift, driftSummary, mutationEvents, calibrationEvents, mutationBehavior }) {
+function buildVaultProjections({ fieldsCache, lifecycleCounts, vaultDrift, driftSummary, mutationEvents, calibrationEvents, mutationBehavior, priors, lastMutationByNoteAll }) {
     const now = Date.now();
+    // Shared 90-day horizon for growth trend-fitting (Time Engine-backed,
+    // see below), the cleanup scenario, and retrospective accuracy scoring
+    // — one constant so all three can never silently drift apart.
+    const trendHorizonDays = 90;
     const windowDays = 30;
     const windowMs = windowDays * 86400000;
     const windowStart = now - windowMs;
     const weeklyBuckets = buildWeeklyBuckets(now, 4, 7);
-    const typedCounts = new Map();
-    const createdRecent = new Map();
     const touchedRecentByType = new Map();
     const lastMutationByNote = new Map();
     let touchEventsRecent = 0;
     let structureEventsRecent = 0;
     let acceptedCompletionsRecent = 0;
-    let recentEventsSample = 0;
     const staleByType = new Map();
     const problematicByType = new Map();
     const fieldsByNoteId = new Map(fieldsCache);
 
-    for (const [, fields] of fieldsCache) {
-        const noteType = String(fields?.type || '').trim().toLowerCase();
-        if (!noteType || SYSTEM_TYPES.has(noteType)) continue;
-        typedCounts.set(noteType, (typedCounts.get(noteType) || 0) + 1);
-    }
-
     for (const event of mutationEvents || []) {
         const ts = Date.parse(event.timestamp);
         if (!Number.isFinite(ts) || ts < windowStart) continue;
-        recentEventsSample += 1;
         const existingLast = lastMutationByNote.get(event.noteId);
         if (!existingLast || ts > existingLast) {
             lastMutationByNote.set(event.noteId, ts);
         }
+        const eventFields = fieldsByNoteId.get(event.noteId) || {};
+        const eventType = String(eventFields?.type || '').trim().toLowerCase() || 'untyped';
+
         const bucket = weeklyBuckets.find((entry) => ts >= entry.start && ts < entry.end);
         if (bucket) {
             if (event.type === 'note_created') bucket.created += 1;
@@ -558,16 +566,7 @@ function buildVaultProjections({ fieldsCache, lifecycleCounts, vaultDrift, drift
             }
         }
 
-        const eventFields = fieldsByNoteId.get(event.noteId) || {};
-        const eventType = String(eventFields?.type || '').trim().toLowerCase() || 'untyped';
-
-        if (event.type === 'note_created') {
-            const noteType = eventType;
-            if (!SYSTEM_TYPES.has(noteType)) {
-                createdRecent.set(noteType, (createdRecent.get(noteType) || 0) + 1);
-            }
-            continue;
-        }
+        if (event.type === 'note_created') continue;
 
         if (event.type === 'note_touched') {
             touchEventsRecent += 1;
@@ -591,7 +590,7 @@ function buildVaultProjections({ fieldsCache, lifecycleCounts, vaultDrift, drift
         if (!noteType || SYSTEM_TYPES.has(noteType)) continue;
         const lastMutation = lastMutationByNote.get(noteId);
         const isStaleByActivity = Number.isFinite(lastMutation)
-            ? (now - lastMutation) > 90 * 86400000
+            ? (now - lastMutation) > STALE_DAYS_THRESHOLD * 86400000
             : false;
         if (!staleByType.has(noteType)) {
             staleByType.set(noteType, { total: 0, stale: 0 });
@@ -601,6 +600,7 @@ function buildVaultProjections({ fieldsCache, lifecycleCounts, vaultDrift, drift
         if (isStaleByActivity) bucket.stale += 1;
     }
 
+    const missingFieldsByType = new Map();
     for (const drift of vaultDrift || []) {
         if (!drift || !drift.noteType) continue;
         if (!problematicByType.has(drift.noteType)) {
@@ -610,41 +610,79 @@ function buildVaultProjections({ fieldsCache, lifecycleCounts, vaultDrift, drift
         bucket.total += 1;
         if (drift.driftLabel === 'drifting' || drift.driftLabel === 'outlier') {
             bucket.problematic += 1;
+            // The actual "shape" a drifting note deviates from — real field
+            // names from driftDetector.js's missingExpected, not a vague count.
+            if (!missingFieldsByType.has(drift.noteType)) {
+                missingFieldsByType.set(drift.noteType, new Map());
+            }
+            const fieldCounts = missingFieldsByType.get(drift.noteType);
+            for (const entry of drift.missingExpected || []) {
+                fieldCounts.set(entry.field, (fieldCounts.get(entry.field) || 0) + 1);
+            }
         }
     }
 
-    const topGrowth = [...createdRecent.entries()]
-        .sort((a, b) => b[1] - a[1])
-        .slice(0, 3)
-        .map(([type, created]) => {
-            const current = typedCounts.get(type) || created;
-            const projected90 = current + Math.round(created * 3);
-            const confidenceScore = clamp01((created / 4) * 0.6 + (Math.min(current, 12) / 12) * 0.4);
-            return {
-                type,
-                createdLast30d: created,
-                currentTotal: current,
-                projected90,
-                confidence: projectionConfidence(confidenceScore)
-            };
-        });
+    // Real trend-fitting via the Time Engine, replacing the old rolling-
+    // 4-week-window-plus-multiplier model entirely (2026-07-13 rebuild,
+    // extended to Stale/Structure 2026-07-16 — Phase 3/4). `buildLaneTrajectories`
+    // reconstructs the vault at real historical checkpoints ONCE per
+    // checkpoint and fits real least-squares lines through Growth, Stale,
+    // and Structure together from that single reconstruction pass — see
+    // src/intelligence/vaultTrends.js for the full rationale (this avoids
+    // tripling the reconstruction cost that three independent trajectory
+    // sweeps would otherwise pay). Persisted Time Engine snapshots (see
+    // docs/architecture/TIME-ENGINE.md §4.1) extend how far back real
+    // checkpoints can reach once the live mutation-log window runs out.
+    const vaultSnapshots = getVaultSnapshots();
+    const laneTrajectories = buildLaneTrajectories(
+        { fieldsCache, mutationEvents, snapshots: vaultSnapshots, priors },
+        { now, horizonDays: trendHorizonDays, staleDays: STALE_DAYS_THRESHOLD }
+    );
+    const laneRetrospective = buildLaneRetrospectiveAccuracy(
+        { fieldsCache, mutationEvents, snapshots: vaultSnapshots, priors },
+        { now, horizonDays: trendHorizonDays, staleDays: STALE_DAYS_THRESHOLD }
+    );
+    const trajectory = laneTrajectories.growth;
+    const retrospective = { available: !!laneRetrospective.growth, overall: laneRetrospective.growth || null };
+    const staleTrendFit = laneTrajectories.stale?.trend || null;
+    const structureTrendFit = laneTrajectories.structure?.trend || null;
+    const staleRetrospective = laneRetrospective.stale || null;
+    const structureRetrospective = laneRetrospective.structure || null;
 
-    const growthSampleScore = topGrowth.length === 0
-        ? 0
-        : clamp01(
-            (Math.min(recentEventsSample, 20) / 20) * 0.25 +
-            (Math.min(topGrowth[0].createdLast30d, 5) / 5) * 0.45 +
-            (Math.min(topGrowth[0].currentTotal || 0, 12) / 12) * 0.30 +
-            ((mutationBehavior?.exploratoryRate || 0) * 0.08)
-        );
-    const growthConfidence = projectionConfidence(growthSampleScore);
-    const growthSummary = topGrowth.length === 0
+    const topGrowth = Object.entries(trajectory.byType || {})
+        .map(([type, fit]) => ({
+            type,
+            currentTotal: fit.current,
+            projected90: fit.projected,
+            slope: fit.slope,
+            r2: fit.r2,
+            weeklyTotals: (trajectory.checkpoints || []).map((c) => c.byType[type] || 0),
+            checkpointDates: (trajectory.checkpoints || []).map((c) => c.timestamp)
+        }))
+        .sort((a, b) => (b.projected90 - b.currentTotal) - (a.projected90 - a.currentTotal))
+        .slice(0, 3);
+
+    // A real trend exists or it doesn't — no partial credit blended in here.
+    // Fit quality (r²) is reported separately on the leader below, rather
+    // than folded into the same gate, so a real-but-noisy growth pattern
+    // isn't hidden just because it doesn't fit a straight line well.
+    const growthSampleScore = trajectory.overall ? 1 : 0;
+    const growthConfidence = projectionConfidence(trajectory.overall ? trajectory.overall.r2 : 0);
+    const leaderGrowth = topGrowth[0] || null;
+    const retrospectiveClause = retrospective.available
+        ? ` ${trendHorizonDays} days ago, this same model projected about ${retrospective.overall.projected} notes for today; the vault actually has ${retrospective.overall.actual} — ${Math.round(retrospective.overall.accuracy * 100)}% accurate.`
+        : '';
+    const growthSummary = !leaderGrowth
         ? 'Too little recent creation history for a growth forecast yet.'
-        : `${topGrowth[0].type} notes are growing fastest; if the last ${windowDays} days hold, that lane reaches about ${topGrowth[0].projected90} notes in 90 days.`;
-    const growthTrendDelta = weeklyBuckets.length >= 2
-        ? clamp01(weeklyBuckets[weeklyBuckets.length - 1].created / 6) - clamp01(weeklyBuckets[0].created / 6)
-        : 0;
-    const growthTrend = classifyTrend(growthTrendDelta);
+        : `${leaderGrowth.type} notes are growing fastest — trending at about ${(leaderGrowth.slope * 7).toFixed(1)} notes/week (r²=${leaderGrowth.r2}), on track for about ${leaderGrowth.projected90} in ${trendHorizonDays} days.${retrospectiveClause}`;
+    const growthTrend = !trajectory.overall
+        ? 'steady'
+        // A slope under ~1 note per 90-day horizon isn't a real trend worth
+        // calling "rising" or "falling" — reads as steady rather than
+        // reacting to noise in a very slow-moving vault.
+        : trajectory.overall.slope * trendHorizonDays > 1 ? 'rising'
+            : trajectory.overall.slope * trendHorizonDays < -1 ? 'falling'
+                : 'steady';
 
     const lifecycleTotal = Object.values(lifecycleCounts || {}).reduce((sum, value) => sum + Number(value || 0), 0);
     const staleCount = lifecycleCounts?.stale || 0;
@@ -666,25 +704,22 @@ function buildVaultProjections({ fieldsCache, lifecycleCounts, vaultDrift, drift
         : staleRate >= 0.2
             ? 'medium'
             : 'low';
-    const staleSummary = stalePressure === 'high'
-        ? 'Stale notes already make up a large share of the vault; without a stronger review rhythm, stale pressure is likely to rise.'
-        : stalePressure === 'medium'
-            ? 'Stale notes are noticeable but still containable; more steady touch activity should keep this from becoming structural drag.'
-            : 'Current stale pressure is low; the vault looks maintainable if the present review pace holds.';
     const staleSampleScore = clamp01(
         (Math.min(lifecycleTotal, 20) / 20) * 0.5 +
         (Math.min(touchEventsRecent, 12) / 12) * 0.3 +
         (staleTypeLeaders.length > 0 ? 0.2 : 0) +
         ((mutationBehavior?.appliedRate || 0) * 0.06)
     );
-    const staleTrendDelta = weeklyBuckets.length >= 2
-        ? clamp01(weeklyBuckets[weeklyBuckets.length - 1].touches / 8) - clamp01(weeklyBuckets[0].touches / 8)
-        : 0;
-    const staleTrend = staleTrendDelta >= 0.18
-        ? 'improving'
-        : staleTrendDelta <= -0.18
-            ? 'worsening'
-            : 'steady';
+    // Real fitted trend (Phase 3, 2026-07-16) through actual reconstructed
+    // checkpoints, replacing the weekly-touch-count heuristic — a rising
+    // stale-count slope over real history is a genuine "worsening" signal,
+    // not a proxy for one.
+    const staleTrend = !staleTrendFit
+        ? 'steady'
+        : staleTrendFit.slope * trendHorizonDays > 1 ? 'worsening'
+            : staleTrendFit.slope * trendHorizonDays < -1 ? 'improving'
+                : 'steady';
+    const staleTrendDelta = staleTrendFit ? Number((staleTrendFit.slope * 7).toFixed(2)) : 0;
 
     const problematic = (driftSummary?.drifting || 0) + (driftSummary?.outliers || 0);
     const sampled = driftSummary?.total || 0;
@@ -694,7 +729,11 @@ function buildVaultProjections({ fieldsCache, lifecycleCounts, vaultDrift, drift
             type,
             problematicRate: bucket.total > 0 ? bucket.problematic / bucket.total : 0,
             problematic: bucket.problematic,
-            sampled: bucket.total
+            sampled: bucket.total,
+            topMissingFields: [...(missingFieldsByType.get(type)?.entries() || [])]
+                .sort((a, b) => b[1] - a[1])
+                .slice(0, 3)
+                .map(([field]) => field)
         }))
         .filter((entry) => entry.problematic > 0)
         .sort((a, b) => b.problematicRate - a.problematicRate || b.problematic - a.problematic)
@@ -704,11 +743,6 @@ function buildVaultProjections({ fieldsCache, lifecycleCounts, vaultDrift, drift
         : problematic > 0
             ? 'fragile'
             : 'steady';
-    const structureSummary = structureDirection === 'improving'
-        ? 'Recent accepted completions and structural edits suggest the vault is trending toward cleaner bundles and fewer missing fields.'
-        : structureDirection === 'fragile'
-            ? 'Type consistency is still vulnerable; unless structural edits outpace drift, the same note families will keep needing cleanup.'
-            : 'Structural signals look steady right now; there is not enough recent drift pressure to suggest deterioration.';
     const structureSampleScore = clamp01(
         (Math.min(sampled, 16) / 16) * 0.45 +
         (Math.min(structureEventsRecent, 10) / 10) * 0.25 +
@@ -716,69 +750,86 @@ function buildVaultProjections({ fieldsCache, lifecycleCounts, vaultDrift, drift
         (structureTypeLeaders.length > 0 ? 0.15 : 0) +
         ((mutationBehavior?.coherenceScore || 0) * 0.12)
     );
-    const structureTrendDelta = weeklyBuckets.length >= 2
-        ? (
-            clamp01((weeklyBuckets[weeklyBuckets.length - 1].structure + weeklyBuckets[weeklyBuckets.length - 1].completions) / 10) -
-            clamp01((weeklyBuckets[0].structure + weeklyBuckets[0].completions) / 10)
-        )
-        : 0;
-    const structureTrend = classifyTrend(structureTrendDelta);
-    const scenarioHorizonDays = 90;
-    const staleRecoveryBase = Math.max(
-        0,
-        Math.round((touchEventsRecent / Math.max(windowDays, 1)) * scenarioHorizonDays * 0.18)
-    );
-    const staleRecoveryLift = Math.max(
-        staleRecoveryBase,
-        Math.round((touchEventsRecent / Math.max(windowDays, 1)) * scenarioHorizonDays * 0.26)
-    );
-    const structureRecoveryBase = Math.max(
-        0,
-        Math.round((((acceptedCompletionsRecent * 1.2) + (structureEventsRecent * 0.55)) / Math.max(windowDays, 1)) * scenarioHorizonDays * 0.18)
-    );
-    const structureRecoveryLift = Math.max(
-        structureRecoveryBase,
-        Math.round((((acceptedCompletionsRecent * 1.35) + (structureEventsRecent * 0.7)) / Math.max(windowDays, 1)) * scenarioHorizonDays * 0.22)
-    );
-    const projectedStaleHold = Math.max(0, staleCount - Math.min(staleCount, staleRecoveryBase));
-    const projectedStaleLift = Math.max(0, staleCount - Math.min(staleCount, staleRecoveryLift));
-    const projectedProblematicHold = Math.max(0, problematic - Math.min(problematic, structureRecoveryBase));
-    const projectedProblematicLift = Math.max(0, problematic - Math.min(problematic, structureRecoveryLift));
+    // Real fitted trend (Phase 3, 2026-07-16) — a rising problematic-note
+    // slope over real history is genuine structural fragility, not a proxy
+    // signal. Value space ('improving'/'fragile'/'steady') deliberately
+    // matches structureDirection's existing vocabulary above.
+    const structureTrend = !structureTrendFit
+        ? 'steady'
+        : structureTrendFit.slope * trendHorizonDays > 1 ? 'fragile'
+            : structureTrendFit.slope * trendHorizonDays < -1 ? 'improving'
+                : 'steady';
+    const structureTrendDelta = structureTrendFit ? Number((structureTrendFit.slope * 7).toFixed(2)) : 0;
+    const scenarioHorizonDays = trendHorizonDays;
+    // Real fitted 90-day projections (Phase 3, 2026-07-16), replacing the
+    // old rate*horizon*0.18 hand-tuned multiplier entirely — same rebuild
+    // Growth itself went through on 2026-07-13. `staleTrendFit`/
+    // `structureTrendFit` come from `buildLaneTrajectories`'s real
+    // least-squares fit through reconstructed historical checkpoints, not a
+    // guess extrapolated from 30 days of recent activity volume.
+    const projectedStaleHold = staleTrendFit ? staleTrendFit.projected : staleCount;
+    const projectedProblematicHold = structureTrendFit ? structureTrendFit.projected : problematic;
     const projectedStaleShareHold = lifecycleTotal > 0 ? projectedStaleHold / lifecycleTotal : 0;
-    const projectedStaleShareLift = lifecycleTotal > 0 ? projectedStaleLift / lifecycleTotal : 0;
     const cleanupScenarioBaseEvidence = clamp01((staleSampleScore * 0.45) + (structureSampleScore * 0.55));
-    const topGrowthType = topGrowth[0] || null;
-    const growthTypeScenarios = topGrowth.slice(0, 2).map((entry) => ({
-        type: entry.type,
-        projected90: entry.projected90,
-        confidence: entry.confidence
-    }));
+
+    // Real numbers baked directly into the sentence — no canned 3-bucket
+    // template. Always names the actual count/percentage and the 90-day
+    // threshold that defines "stale" in the first place, rather than
+    // assuming the reader already knows what "stale" or "structural drag"
+    // concretely mean for their own vault.
+    // Naming the actual offending type directly in the primary sentence,
+    // not just a vault-wide abstract count with the real answer buried in a
+    // secondary footnote — direct user feedback ("WHAT IS THE TYPE") after a
+    // round that left the headline sentence generic and only named the type
+    // in a separate, visually deprioritized paragraph underneath.
+    const staleLeader = staleTypeLeaders[0] || null;
+    const staleLeaderClause = staleLeader
+        ? staleLeader.stale === staleCount
+            ? ` — all of it in ${staleLeader.type} (${staleLeader.stale} of ${staleLeader.total})`
+            : ` — mostly in ${staleLeader.type} (${staleLeader.stale} of ${staleLeader.total})`
+        : '';
+    const staleRetrospectiveClause = staleRetrospective
+        ? ` ${scenarioHorizonDays} days ago, this same model projected about ${staleRetrospective.projected} stale notes for today; the vault actually has ${staleRetrospective.actual} — ${Math.round(staleRetrospective.accuracy * 100)}% accurate.`
+        : '';
+    const staleSummary = staleCount === 0
+        ? `No notes have gone ${STALE_DAYS_THRESHOLD}+ days without a change yet — the vault looks current.`
+        : projectedStaleHold < staleCount
+            ? `${staleCount} of ${lifecycleTotal} notes (${Math.round(staleRate * 100)}%) haven't been changed in ${STALE_DAYS_THRESHOLD}+ days${staleLeaderClause}. Based on the real trend, that could ease to about ${projectedStaleHold} in ${scenarioHorizonDays} days.${staleRetrospectiveClause}`
+            : `${staleCount} of ${lifecycleTotal} notes (${Math.round(staleRate * 100)}%) haven't been changed in ${STALE_DAYS_THRESHOLD}+ days${staleLeaderClause}. Based on the real trend, that number isn't likely to drop much in ${scenarioHorizonDays} days without more review activity than recently.${staleRetrospectiveClause}`;
+
+    const structureLeader = structureTypeLeaders[0] || null;
+    const structureLeaderFields = structureLeader?.topMissingFields?.length
+        ? `, commonly missing ${structureLeader.topMissingFields.join(', ')}`
+        : '';
+    const structureLeaderClause = structureLeader
+        ? structureLeader.problematic === problematic
+            ? ` — all of it in ${structureLeader.type} (${structureLeader.problematic} of ${structureLeader.sampled})${structureLeaderFields}`
+            : ` — mostly in ${structureLeader.type} (${structureLeader.problematic} of ${structureLeader.sampled})${structureLeaderFields}`
+        : '';
+    const structureRetrospectiveClause = structureRetrospective
+        ? ` ${scenarioHorizonDays} days ago, this same model projected about ${structureRetrospective.projected} problematic notes for today; the vault actually has ${structureRetrospective.actual} — ${Math.round(structureRetrospective.accuracy * 100)}% accurate.`
+        : '';
+    const structureSummary = problematic === 0
+        ? `No notes are currently drifting from their type's usual shape.`
+        : projectedProblematicHold < problematic
+            ? `${problematic} of ${sampled} sampled notes don't match their type's usual shape${structureLeaderClause}. Based on the real trend, that could ease to about ${projectedProblematicHold} in ${scenarioHorizonDays} days.${structureRetrospectiveClause}`
+            : `${problematic} of ${sampled} sampled notes don't match their type's usual shape${structureLeaderClause}. Based on the real trend, that number isn't likely to drop much in ${scenarioHorizonDays} days without more structural edits than recently.${structureRetrospectiveClause}`;
+
+    // Growth's own scenario used to live here as a separate `growthHold`
+    // object — now redundant and removed: `growth.summary` already carries
+    // the real trend-fit projection (and, when available, the retrospective
+    // accuracy check), so a second copy of the same conclusion in a
+    // different shape was dead weight nothing in the UI ever read.
     const scenarios = {
         horizonDays: scenarioHorizonDays,
         cleanupHold: {
             confidence: classifyScenarioConfidence(cleanupScenarioBaseEvidence, 0),
             summary: projectedStaleHold < staleCount || projectedProblematicHold < problematic
-                ? `If the current cleanup pace holds for ${scenarioHorizonDays} days, stale share could ease to about ${Math.round(projectedStaleShareHold * 100)}% and problematic notes to about ${projectedProblematicHold}.`
-                : `If the current cleanup pace holds for ${scenarioHorizonDays} days, the vault likely stabilizes rather than clearing much additional stale or fragile structure.`,
+                ? `At the current pace over ${scenarioHorizonDays} days, stale share could ease to about ${Math.round(projectedStaleShareHold * 100)}% and problematic notes to about ${projectedProblematicHold}.`
+                : `At the current pace over ${scenarioHorizonDays} days, the vault likely stabilizes rather than clearing much additional stale or fragile structure.`,
             projectedStaleCount: projectedStaleHold,
             projectedStaleShare: projectedStaleShareHold,
             projectedProblematic: projectedProblematicHold
-        },
-        cleanupLift: {
-            confidence: classifyScenarioConfidence(cleanupScenarioBaseEvidence, 0.08),
-            summary: projectedStaleLift < projectedStaleHold || projectedProblematicLift < projectedProblematicHold
-                ? `If cleanup rhythm improves modestly, stale share could fall toward ${Math.round(projectedStaleShareLift * 100)}% and problematic notes toward ${projectedProblematicLift} over the same horizon.`
-                : `Even with a modest cleanup lift, the current vault may need stronger structural attention before the forecast changes materially.`,
-            projectedStaleCount: projectedStaleLift,
-            projectedStaleShare: projectedStaleShareLift,
-            projectedProblematic: projectedProblematicLift
-        },
-        growthHold: {
-            confidence: classifyScenarioConfidence(growthSampleScore, 0.04),
-            summary: topGrowthType
-                ? `If note creation stays at its current pace, ${topGrowthType.type} remains the strongest growth lane at roughly ${topGrowthType.projected90} notes in ${scenarioHorizonDays} days.`
-                : `There is not enough creation history yet to model a meaningful growth scenario.`,
-            topTypes: growthTypeScenarios
         }
     };
 
@@ -801,7 +852,11 @@ function buildVaultProjections({ fieldsCache, lifecycleCounts, vaultDrift, drift
             evidenceScore: Number(growthSampleScore.toFixed(2)),
             summary: growthSummary,
             trend: growthTrend,
-            trendDelta: Number(growthTrendDelta.toFixed(2)),
+            r2: trajectory.overall ? trajectory.overall.r2 : null,
+            slope: trajectory.overall ? trajectory.overall.slope : null,
+            insufficientHistory: trajectory.insufficientHistory,
+            notesWithoutHistory: trajectory.notesWithoutHistory ?? 0,
+            retrospectiveAccuracy: retrospective.available ? retrospective.overall : null,
             topTypes: topGrowth
         },
         stale: {
@@ -809,10 +864,21 @@ function buildVaultProjections({ fieldsCache, lifecycleCounts, vaultDrift, drift
             evidenceScore: Number(staleSampleScore.toFixed(2)),
             summary: staleSummary,
             staleRate,
+            staleCount,
+            total: lifecycleTotal,
             touchEventsRecent,
             pressure: stalePressure,
             trend: staleTrend,
             trendDelta: Number(staleTrendDelta.toFixed(2)),
+            r2: staleTrendFit ? staleTrendFit.r2 : null,
+            slope: staleTrendFit ? staleTrendFit.slope : null,
+            retrospectiveAccuracy: staleRetrospective,
+            weeklyTotals: (laneTrajectories.stale?.checkpoints || []).map((c) => c.staleCount),
+            checkpointDates: (laneTrajectories.stale?.checkpoints || []).map((c) => c.timestamp),
+            projected90: projectedStaleHold,
+            upcoming: lastMutationByNoteAll
+                ? buildStalenessForecast(fieldsCache, lastMutationByNoteAll, { now, staleDays: STALE_DAYS_THRESHOLD, limit: 8 })
+                : [],
             topTypes: staleTypeLeaders
         },
         structure: {
@@ -822,6 +888,12 @@ function buildVaultProjections({ fieldsCache, lifecycleCounts, vaultDrift, drift
             direction: structureDirection,
             trend: structureTrend,
             trendDelta: Number(structureTrendDelta.toFixed(2)),
+            r2: structureTrendFit ? structureTrendFit.r2 : null,
+            slope: structureTrendFit ? structureTrendFit.slope : null,
+            retrospectiveAccuracy: structureRetrospective,
+            weeklyTotals: (laneTrajectories.structure?.checkpoints || []).map((c) => c.problematic),
+            checkpointDates: (laneTrajectories.structure?.checkpoints || []).map((c) => c.timestamp),
+            projected90: projectedProblematicHold,
             problematic,
             sampled,
             structureEventsRecent,

@@ -7,6 +7,13 @@ const { getFieldsCache, getVaultGeneration } = require('../core/indexService');
 const { collectDocumentTags } = require('../intelligence/tagSignals');
 const { collectBodySignals, buildBodySignalHints } = require('../intelligence/bodySignals');
 
+/**
+ * Duck-typed document contract shared by VS Code and the LSP server — only
+ * needs getText()/.uri.fsPath (lineAt() when line-level context is used), not
+ * the full vscode.TextDocument surface. See CLAUDE.md's completion helpers note.
+ * @typedef {{ getText: () => string, lineAt?: (n: number) => {text: string}, uri?: {fsPath?: string} }} DocumentLike
+ */
+
 const FRONTMATTER_ARCHETYPES = {
     account: ['name', 'status', 'owner', 'contacts', 'website', 'domain', 'industry', 'stage', 'email', 'phone'],
     company: ['name', 'status', 'owner', 'contacts', 'website', 'domain', 'industry', 'stage', 'email', 'phone'],
@@ -62,7 +69,7 @@ function isTypeLikeField(fieldName) {
     return compact === 'type' || compact.endsWith('type') || TYPE_FIELD_ALIASES.has(normalizeFrontmatterKey(fieldName));
 }
 
-/** @param {import('vscode').TextDocument} document @param {number} lineIndex @returns {boolean} */
+/** @param {DocumentLike} document @param {number} lineIndex @returns {boolean} */
 function isPositionInFrontmatter(document, lineIndex) {
     const lines = document.getText().split('\n');
     let openLine = -1;
@@ -77,7 +84,7 @@ function isPositionInFrontmatter(document, lineIndex) {
     return lineIndex > openLine && lineIndex < closeLine;
 }
 
-/** @param {import('vscode').TextDocument} document @returns {Record<string,string>} */
+/** @param {DocumentLike} document @returns {Record<string,string>} */
 function extractFrontmatterFields(document) {
     const text = document.getText();
     const match = text.match(/^---\s*\n([\s\S]*?)\n---/);
@@ -113,7 +120,7 @@ function extractDocumentArchetype(document, docType) {
     return Array.from(candidates);
 }
 
-/** @param {import('vscode').TextDocument} document @returns {string|null} */
+/** @param {DocumentLike} document @returns {string|null} */
 function getDocumentType(document) {
     const fields = extractFrontmatterFields(document);
     if (fields.type) return String(fields.type).trim().toLowerCase();
@@ -146,7 +153,7 @@ function extractNoteRoleHints(document, nodeFields = {}) {
     return hints;
 }
 
-/** @param {import('vscode').TextDocument} document @param {string|null} docType @param {Map<string,string>} idIndex @returns {{ nodeFields: Record<string,string>, currentFields: Set<string>, currentTags: Set<string>, bodySignals: any, fieldRoleResults: any[], noteRole: any }} */
+/** @param {DocumentLike} document @param {string|null} docType @param {Map<string,string>} idIndex @returns {{ nodeFields: Record<string,string>, currentFields: Set<string>, currentTags: Set<string>, bodySignals: any, fieldRoleResults: any[], noteRole: any }} */
 function buildDocumentIntelligence(document, docType, idIndex) {
     const nodeFields = extractFrontmatterFields(document);
     const currentTags = collectDocumentTags(document, nodeFields);
@@ -172,7 +179,7 @@ function buildDocumentIntelligence(document, docType, idIndex) {
     };
 }
 
-/** @param {string} fieldName @param {import('vscode').TextDocument} document @param {Map<string,string>} idIndex @returns {{ relational: boolean, targetType: string|null, semanticRole: string|null, reasons: string[] }} */
+/** @param {string} fieldName @param {DocumentLike} document @param {Map<string,string>} idIndex @returns {{ relational: boolean, targetType: string|null, semanticRole: string|null, reasons: string[] }} */
 function fieldLooksRelational(fieldName, document, idIndex) {
     const docType = getDocumentType(document);
     const role = inferFieldRole(fieldName, { documentType: docType, idIndex });

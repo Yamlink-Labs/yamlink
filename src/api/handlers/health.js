@@ -5,7 +5,7 @@ const { getEdges } = require('../../core/graph');
 const { getRegistry } = require('../../registries/typeRegistry');
 const { json, methodNotAllowed } = require('../http');
 
-async function handleHealth(req, res) {
+async function handleHealth(req, res, context) {
     if (req.method !== 'GET') { methodNotAllowed(res); return; }
     const idIndex = getIndex();
     const fieldsCache = getFieldsCache();
@@ -18,7 +18,7 @@ async function handleHealth(req, res) {
             if (!idIndex.has(edge.targetId)) brokenLinks++;
         }
     }
-    json(res, { notes: idIndex.size, brokenLinks, schemaIntelligence: intelligence });
+    json(res, { notes: idIndex.size, brokenLinks, schemaIntelligence: intelligence, vaultPath: context?.vaultPath || null });
 }
 
 module.exports = { handleHealth };

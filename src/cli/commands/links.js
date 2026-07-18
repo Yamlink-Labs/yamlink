@@ -1,13 +1,73 @@
 'use strict';
 
-const { getIndex, getFieldsCache } = require('../../core/indexService');
+const { getIndex, getFieldsCache, extractRelationTargets } = require('../../core/indexService');
 const { getEdges, getBacklinks } = require('../../core/graph');
+const { reconstructNoteAtTime } = require('../../core/timeEngine');
+const { getMutationEvents } = require('../../runtime/mutationEventLog');
 const fmt = require('../format');
 const { captureOutput, emitCliError, emitCliSuccess, emitText } = require('../io');
 
-function run({ id, json, output }) {
+function run({ id, json, output, at }) {
     const idIndex     = getIndex();
     const fieldsCache = getFieldsCache();
+
+    if (at) {
+        const parsedMs = Date.parse(at);
+        if (!Number.isFinite(parsedMs)) {
+            emitCliError({ json, outputPath: output, error: `Invalid date: ${at}`, code: 'INVALID_PARAM', exitCode: 1 });
+            return;
+        }
+        const sinceIso = new Date(parsedMs).toISOString();
+        const currentFields = idIndex.has(id) ? (fieldsCache.get(id) || {}) : null;
+        const events = getMutationEvents({ noteId: id });
+        const result = reconstructNoteAtTime(id, sinceIso, currentFields, events);
+
+        if (!result.exists) {
+            emitCliError({
+                json, outputPath: output,
+                error: `Note did not exist at ${sinceIso}: ${id}`,
+                code: 'NOT_FOUND', exitCode: 1,
+                details: { id, reason: result.reason, earliestReconstructableTimestamp: result.earliestReconstructableTimestamp }
+            });
+            return;
+        }
+
+        const outbound = [];
+        for (const [field, value] of Object.entries(result.fields || {})) {
+            if (!field || field === 'id' || field === 'type' || field.startsWith('__')) continue;
+            for (const targetId of extractRelationTargets(value)) outbound.push({ field, to: targetId });
+        }
+
+        const data = {
+            id, at: sinceIso, exists: true,
+            outbound,
+            complete: result.complete,
+            earliestReconstructableTimestamp: result.earliestReconstructableTimestamp
+        };
+
+        if (json) {
+            emitCliSuccess(data, output);
+            return;
+        }
+
+        emitText(captureOutput(() => {
+            fmt.header(`Links: ${id} (as of ${sinceIso})`);
+            if (!data.complete) console.log('  ' + fmt.warn(`Note: only guaranteed accurate back to ${data.earliestReconstructableTimestamp}`));
+            fmt.row('Outbound', outbound.length);
+            if (outbound.length) {
+                fmt.blank();
+                fmt.subheader('Outbound');
+                fmt.table(outbound.map((e) => ({ field: e.field, to: e.to })), [
+                    { key: 'field', label: 'field' },
+                    { key: 'to', label: 'to' }
+                ]);
+            }
+            fmt.blank();
+            console.log('  (Inbound links at a point in time require reconstructing the whole vault — use `yamlink graph --at ' + sinceIso + '` for that.)');
+            fmt.blank();
+        }), output);
+        return;
+    }
 
     if (!idIndex.has(id)) {
         emitCliError({

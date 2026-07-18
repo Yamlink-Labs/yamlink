@@ -15,7 +15,7 @@ const { getCachedPriors } = require('../intelligence/vaultPriors');
 const {
     isPositionInFrontmatter,
     extractDocumentArchetype
-} = require('./completionHelpers');
+} = require('../intelligence/completionHelpers');
 const { getKnownTypeCandidates } = require('./completionCore');
 
 // ---------------------------------------------------------------------------

@@ -34,6 +34,26 @@ describe('.yamlinkignore rules', () => {
         assert.equal(normalizeRule(''), null);
     });
 
+    // Real bug found live: a leading `/` is common .gitignore muscle memory
+    // ("anchor to root"). Every Yamlink ignore rule is already relative to
+    // the workspace root, so a preserved leading slash never matches the
+    // computed relative path (which never has one) — the rule silently
+    // ignored nothing.
+    test('strips a leading slash (gitignore-style root anchor) so the rule still matches', () => {
+        const rules = parseIgnoreFile('/docs/\n/notes/legacy.md\n/scratch-note.md');
+
+        assert.deepEqual(rules, [
+            { type: 'dir', value: 'docs' },
+            { type: 'path', value: 'notes/legacy.md' },
+            { type: 'name', value: 'scratch-note.md' }
+        ]);
+
+        const root = path.join('C:', 'vault');
+        assert.equal(isIgnoredPath(path.join(root, 'docs', 'guide.md'), root, rules), true);
+        assert.equal(isIgnoredPath(path.join(root, 'notes', 'legacy.md'), root, rules), true);
+        assert.equal(isIgnoredPath(path.join(root, 'misc', 'scratch-note.md'), root, rules), true);
+    });
+
     test('matches relative file paths, folders, and plain filenames', () => {
         const root = path.join('C:', 'vault');
         const rules = parseIgnoreFile('docs/\nnotes/legacy.md\nscratch-note.md');
@@ -70,6 +90,21 @@ describe('.yamlinkignore indexing', () => {
         assert.equal(getIndex().has('ignored'), false);
         assert.equal(getIndex().has('buried'), false);
         assert.equal(getIndex().has('kept'), true);
+    });
+
+    test('buildIndex honors a leading-slash directory rule (real bug: silently matched nothing)', () => {
+        fs.writeFileSync(path.join(tempRoot, '.yamlinkignore'), '/archive/\n');
+        fs.mkdirSync(path.join(tempRoot, 'archive'), { recursive: true });
+        // Same id in both an ignored and a real note — before the fix this
+        // produced a false "duplicate id" warning because the ignored copy
+        // was still scanned and registered first.
+        fs.writeFileSync(path.join(tempRoot, 'archive', 'old.md'), '---\nid: shared-id\n---\n');
+        fs.writeFileSync(path.join(tempRoot, 'real.md'), '---\nid: shared-id\n---\n');
+
+        buildIndex(workspaceFolders);
+
+        assert.equal(getIndex().size, 1);
+        assert.ok(getIndex().get('shared-id').endsWith('real.md'));
     });
 
     test('updateSingleFile stays quiet for ignored notes', () => {

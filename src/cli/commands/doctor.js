@@ -1,6 +1,6 @@
 'use strict';
 
-const { getIndex, getFieldsCache, getDuplicateIds, getVaultGeneration } = require('../../core/indexService');
+const { getIndex, getFieldsCache, getDuplicateIds, getMalformedFiles, getVaultGeneration } = require('../../core/indexService');
 const { getEdges, getBacklinks } = require('../../core/graph');
 const { getRegistry } = require('../../registries/typeRegistry');
 const { getCachedPriors } = require('../../intelligence/vaultPriors');
@@ -30,6 +30,11 @@ function collectDoctorData() {
     const duplicateIds = [];
     for (const [id, files] of getDuplicateIds()) {
         duplicateIds.push({ id, files: [...files] });
+    }
+
+    const malformedFiles = [];
+    for (const [file, message] of getMalformedFiles()) {
+        malformedFiles.push({ file, message });
     }
 
     const orphans = [];
@@ -72,7 +77,8 @@ function collectDoctorData() {
             fieldsCache,
             priors.typeFieldBundles,
             priors.fieldTargetTypes,
-            priors.outcomeCalibration
+            priors.outcomeCalibration,
+            { emergentClusters: priors.emergentClusters }
         );
         if (arc.missingFields.length > 0) bundle.withGap += 1;
         arcGapByType.set(noteType, bundle);
@@ -103,6 +109,7 @@ function collectDoctorData() {
     return {
         brokenLinks,
         duplicateIds,
+        malformedFiles,
         orphans,
         schemaViolations,
         staleNotes,
@@ -119,6 +126,7 @@ function run({ json, output }) {
             refs: data.brokenLinks
         },
         duplicateIds: data.duplicateIds,
+        malformedFiles: data.malformedFiles,
         orphans: data.orphans,
         schemaViolations: data.schemaViolations,
         staleNotes: {
@@ -128,6 +136,7 @@ function run({ json, output }) {
         arcGaps: data.arcGaps,
         healthy: data.brokenLinks.length === 0
             && data.duplicateIds.length === 0
+            && data.malformedFiles.length === 0
             && data.orphans.length === 0
             && data.schemaViolations.length === 0
             && data.staleNotes.length === 0
@@ -144,6 +153,7 @@ function run({ json, output }) {
         fmt.header('Doctor');
         fmt.row('Broken links', data.brokenLinks.length === 0 ? fmt.ok('0') : fmt.err(String(data.brokenLinks.length)));
         fmt.row('Duplicate IDs', data.duplicateIds.length === 0 ? fmt.ok('0') : fmt.err(String(data.duplicateIds.length)));
+        fmt.row('Malformed frontmatter', data.malformedFiles.length === 0 ? fmt.ok('0') : fmt.err(String(data.malformedFiles.length)));
         fmt.row('Orphans', data.orphans.length === 0 ? fmt.ok('0') : fmt.warn(String(data.orphans.length)));
         fmt.row('Schema violations', data.schemaViolations.length === 0 ? fmt.ok('0') : fmt.err(String(data.schemaViolations.length)));
         fmt.row('Stale notes', data.staleNotes.length === 0 ? fmt.ok('0') : fmt.warn(String(data.staleNotes.length)));
@@ -172,6 +182,18 @@ function run({ json, output }) {
             })), [
                 { key: 'id', label: 'id' },
                 { key: 'files', label: 'files' }
+            ]);
+            fmt.blank();
+        }
+
+        console.log(data.malformedFiles.length === 0 ? `${fmt.ok('✓')} Malformed frontmatter` : `${fmt.err('✗')} Malformed frontmatter`);
+        if (data.malformedFiles.length) {
+            fmt.table(data.malformedFiles.map((entry) => ({
+                file: entry.file,
+                error: entry.message
+            })), [
+                { key: 'file', label: 'file' },
+                { key: 'error', label: 'yaml error' }
             ]);
             fmt.blank();
         }

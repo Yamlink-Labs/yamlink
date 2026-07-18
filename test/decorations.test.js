@@ -90,7 +90,7 @@ describe('date shortcut decorations', () => {
         ].join('\n');
         const ranges = collectTagDecorations(makeDocument(text));
         const values = ranges
-            .map((range) => text.slice(range.start.offset, range.end.offset))
+            .map(({ range }) => text.slice(range.start.offset, range.end.offset))
             .sort();
         assert.deepEqual(values, ['#priority-high', '#q2-review', '#wayne-inc', 'crm', 'enterprise']);
     });
@@ -104,7 +104,7 @@ describe('date shortcut decorations', () => {
         ].join('\n');
         const ranges = collectTagDecorations(makeDocument(text));
         const values = ranges
-            .map((range) => text.slice(range.start.offset, range.end.offset))
+            .map(({ range }) => text.slice(range.start.offset, range.end.offset))
             .sort();
         assert.deepEqual(values, ['#client', '#client-note', '#important']);
     });
@@ -112,7 +112,7 @@ describe('date shortcut decorations', () => {
     test('does not decorate pure-numeric hashtags', () => {
         const text = 'Issue #123 and #456 are not tags, but #real-tag is';
         const ranges = collectTagDecorations(makeDocument(text));
-        const values = ranges.map((range) => text.slice(range.start.offset, range.end.offset));
+        const values = ranges.map(({ range }) => text.slice(range.start.offset, range.end.offset));
         assert.deepEqual(values, ['#real-tag']);
     });
 
@@ -120,7 +120,7 @@ describe('date shortcut decorations', () => {
         const text = 'This note is about #architecture and #design';
         const ranges = collectTagDecorations(makeDocument(text));
         const values = ranges
-            .map((range) => text.slice(range.start.offset, range.end.offset))
+            .map(({ range }) => text.slice(range.start.offset, range.end.offset))
             .sort();
         assert.deepEqual(values, ['#architecture', '#design']);
     });
@@ -134,8 +134,121 @@ describe('date shortcut decorations', () => {
         ].join('\n');
         const ranges = collectTagDecorations(makeDocument(text));
         // 'focus' from frontmatter and '#focus' from body are different positions — both included
-        const values = ranges.map((range) => text.slice(range.start.offset, range.end.offset)).sort();
+        const values = ranges.map(({ range }) => text.slice(range.start.offset, range.end.offset)).sort();
         assert.deepEqual(values, ['#focus', 'focus']);
+    });
+
+    // Real bug found live: block-style YAML lists (the idiomatic form, and
+    // what Obsidian import produces) rendered zero pills — the field-line
+    // regex required same-line content after the colon.
+    test('collects tags from a block-style YAML list under tags:', () => {
+        const text = [
+            '---',
+            'tags:',
+            '  - project',
+            '  - urgent',
+            '---',
+            'Body text'
+        ].join('\n');
+        const ranges = collectTagDecorations(makeDocument(text));
+        const values = ranges.map(({ range }) => text.slice(range.start.offset, range.end.offset)).sort();
+        assert.deepEqual(values, ['project', 'urgent']);
+    });
+
+    test('collects tags from a block-style YAML list under labels: (plural)', () => {
+        const text = [
+            '---',
+            'labels:',
+            '  - client',
+            '  - important',
+            '---'
+        ].join('\n');
+        const ranges = collectTagDecorations(makeDocument(text));
+        const values = ranges.map(({ range }) => text.slice(range.start.offset, range.end.offset)).sort();
+        assert.deepEqual(values, ['client', 'important']);
+    });
+
+    test('block-style tag list stops at the next unindented key, not bleeding into it', () => {
+        const text = [
+            '---',
+            'tags:',
+            '  - project',
+            'status: active',
+            '---'
+        ].join('\n');
+        const ranges = collectTagDecorations(makeDocument(text));
+        const values = ranges.map(({ range }) => text.slice(range.start.offset, range.end.offset));
+        assert.deepEqual(values, ['project']);
+    });
+
+    test('a blank line inside a block-style tag list does not end the list early', () => {
+        const text = [
+            '---',
+            'tags:',
+            '  - project',
+            '',
+            '  - urgent',
+            '---'
+        ].join('\n');
+        const ranges = collectTagDecorations(makeDocument(text));
+        const values = ranges.map(({ range }) => text.slice(range.start.offset, range.end.offset)).sort();
+        assert.deepEqual(values, ['project', 'urgent']);
+    });
+
+    // Real bug found live: flow-style `tags: [a, b, c]` silently dropped the
+    // first item — the item regex only accepted start-of-string or a
+    // preceding comma as a valid boundary, never `[`.
+    test('collects all items from a flow-style tags: [a, b, c] list, including the first', () => {
+        const text = [
+            '---',
+            'tags: [alpha, beta, gamma]',
+            '---'
+        ].join('\n');
+        const ranges = collectTagDecorations(makeDocument(text));
+        const values = ranges.map(({ range }) => text.slice(range.start.offset, range.end.offset)).sort();
+        assert.deepEqual(values, ['alpha', 'beta', 'gamma']);
+    });
+
+    test('classifies #urgent and #high as urgent priority', () => {
+        const text = 'Fix the bug #urgent and ship it #high';
+        const ranges = collectTagDecorations(makeDocument(text));
+        const byText = Object.fromEntries(ranges.map(({ range, priority }) => [text.slice(range.start.offset, range.end.offset), priority]));
+        assert.equal(byText['#urgent'], 'urgent');
+        assert.equal(byText['#high'], 'urgent');
+    });
+
+    test('classifies #medium and #medium-priority as medium priority', () => {
+        const text = 'Review this #medium and that #medium-priority';
+        const ranges = collectTagDecorations(makeDocument(text));
+        const byText = Object.fromEntries(ranges.map(({ range, priority }) => [text.slice(range.start.offset, range.end.offset), priority]));
+        assert.equal(byText['#medium'], 'medium');
+        assert.equal(byText['#medium-priority'], 'medium');
+    });
+
+    test('classifies #low as low priority', () => {
+        const text = 'Read this later #low';
+        const ranges = collectTagDecorations(makeDocument(text));
+        const byText = Object.fromEntries(ranges.map(({ range, priority }) => [text.slice(range.start.offset, range.end.offset), priority]));
+        assert.equal(byText['#low'], 'low');
+    });
+
+    test('an ordinary, non-priority tag has a null priority — stays the generic tag color', () => {
+        const text = 'Working on #architecture';
+        const ranges = collectTagDecorations(makeDocument(text));
+        const byText = Object.fromEntries(ranges.map(({ range, priority }) => [text.slice(range.start.offset, range.end.offset), priority]));
+        assert.equal(byText['#architecture'], null);
+    });
+
+    test('priority classification also applies to frontmatter tags: list items', () => {
+        const text = [
+            '---',
+            'tags: urgent, architecture',
+            '---'
+        ].join('\n');
+        const ranges = collectTagDecorations(makeDocument(text));
+        const byText = Object.fromEntries(ranges.map(({ range, priority }) => [text.slice(range.start.offset, range.end.offset), priority]));
+        assert.equal(byText.urgent, 'urgent');
+        assert.equal(byText.architecture, null);
     });
 });
 

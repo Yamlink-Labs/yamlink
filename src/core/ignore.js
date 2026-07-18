@@ -12,7 +12,13 @@ function normalizeRule(rawRule) {
     const trimmed = String(rawRule || '').trim();
     if (!trimmed || trimmed.startsWith('#')) return null;
 
-    const normalized = trimmed.replace(/\\/g, '/').replace(/^\.\//, '');
+    // Every rule is already relative to the workspace root — there's no
+    // "unanchored" pattern to distinguish, unlike .gitignore. A leading `/`
+    // (common muscle memory from .gitignore's root-anchor syntax) must be
+    // stripped here, not preserved: rel paths from toRelativeWorkspacePath()
+    // never have a leading slash, so a preserved one would never match and
+    // the rule would silently ignore nothing.
+    const normalized = trimmed.replace(/\\/g, '/').replace(/^\.\//, '').replace(/^\/+/, '');
     if (!normalized) return null;
 
     if (normalized.endsWith('/')) {

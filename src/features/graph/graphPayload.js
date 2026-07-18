@@ -183,5 +183,6 @@ function getActiveMarkdownNodeId() {
 module.exports = {
     buildPanelPayload,
     buildXGraphData,
-    getActiveMarkdownNodeId
+    getActiveMarkdownNodeId,
+    xgKind: _xgKind
 };

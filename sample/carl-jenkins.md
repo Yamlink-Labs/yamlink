@@ -25,5 +25,5 @@ By the end of the war he outranked everyone he started with. Provided remote psy
 
 The Federation never publicly acknowledged Carl's role in the intelligence break at Planet P. SICON preferred the narrative that it was conventional field reconnaissance.
 
-- [ ] Cross-reference psychic telepath program records
-- [ ] Verify deployment dates against mission logs
+- [ ] Cross-reference psychic telepath program records #urgent
+- [ ] Verify deployment dates against mission logs #medium

@@ -23,6 +23,13 @@ const {
 } = require('./completionContextHelpers');
 const { inferFieldRole } = require('../intelligence/fieldRoles');
 
+/**
+ * Duck-typed document contract shared by VS Code and the LSP server — only
+ * needs getText()/.uri.fsPath (lineAt() when line-level context is used), not
+ * the full vscode.TextDocument surface. See CLAUDE.md's completion helpers note.
+ * @typedef {{ getText: () => string, lineAt?: (n: number) => {text: string}, uri?: {fsPath?: string} }} DocumentLike
+ */
+
 function buildBundleFieldSuggestions(noteType, fieldsCache, opts = {}) {
     if (!noteType) return [];
     const priors = getCachedPriors(fieldsCache, getVaultGeneration());
@@ -47,7 +54,7 @@ function buildStarterActionLabel(action) {
     return 'add next step';
 }
 
-/** @param {import('vscode').TextDocument} document @param {string|null} docType @param {Map<string,string>} idIndex @param {((type: string) => any)|null} [getSchema] @returns {Record<string,any>} */
+/** @param {DocumentLike} document @param {string|null} docType @param {Map<string,string>} idIndex @param {((type: string) => any)|null} [getSchema] @returns {Record<string,any>} */
 function buildAdaptiveFrontmatterContext(document, docType, idIndex, getSchema) {
     const fieldsCache = getFieldsCache();
     const priors = getCachedPriors(fieldsCache, getVaultGeneration());
@@ -95,7 +102,7 @@ function filterAdaptiveHints(items = [], options = {}) {
         .slice(0, options.limit || 4);
 }
 
-/** @param {import('vscode').TextDocument} document @param {string|null} docType @param {Map<string,string>} idIndex @param {(type: string) => any} getSchema @param {Record<string,any>} adaptiveContext @returns {Array<Record<string,any>>} */
+/** @param {DocumentLike} document @param {string|null} docType @param {Map<string,string>} idIndex @param {(type: string) => any} getSchema @param {Record<string,any>} adaptiveContext @returns {Array<Record<string,any>>} */
 function collectAdaptiveFrontmatterStarterSuggestions(document, docType, idIndex, getSchema, adaptiveContext) {
     const context = adaptiveContext || buildAdaptiveFrontmatterContext(document, docType, idIndex, getSchema);
     const { guidance, opportunities } = context;
@@ -147,7 +154,7 @@ function collectObservedFrontmatterFields(docType) {
         .map(([key, count]) => ({ key, count }));
 }
 
-/** @param {import('vscode').TextDocument} document @param {string|null} docType @param {Map<string,string>} idIndex @returns {Array<Record<string,any>>} */
+/** @param {DocumentLike} document @param {string|null} docType @param {Map<string,string>} idIndex @returns {Array<Record<string,any>>} */
 function collectRoleAlignedObservedFrontmatterFields(document, docType, idIndex) {
     const fieldsCache = getFieldsCache();
     const intelligence = buildDocumentIntelligence(document, docType, idIndex);
@@ -167,7 +174,7 @@ function collectRoleAlignedObservedFrontmatterFields(document, docType, idIndex)
     }));
 }
 
-/** @param {import('vscode').TextDocument} document @param {string|null} docType @param {Map<string,string>} idIndex @returns {Array<Record<string,any>>} */
+/** @param {DocumentLike} document @param {string|null} docType @param {Map<string,string>} idIndex @returns {Array<Record<string,any>>} */
 function collectContextualObservedFrontmatterFields(document, docType, idIndex) {
     const fieldsCache = getFieldsCache();
     const intelligence = buildDocumentIntelligence(document, docType, idIndex);
@@ -224,7 +231,7 @@ function collectContextualObservedFrontmatterFields(document, docType, idIndex) 
         }));
 }
 
-/** @param {import('vscode').TextDocument} document @param {string|null} docType @param {Map<string,string>} idIndex @param {Record<string,any>} adaptiveContext @returns {Array<Record<string,any>>} */
+/** @param {DocumentLike} document @param {string|null} docType @param {Map<string,string>} idIndex @param {Record<string,any>} adaptiveContext @returns {Array<Record<string,any>>} */
 function collectAdaptiveFrontmatterFieldSuggestions(document, docType, idIndex, adaptiveContext) {
     const context = adaptiveContext || buildAdaptiveFrontmatterContext(document, docType, idIndex);
     const { opportunities, guidance } = context;
@@ -240,7 +247,7 @@ function collectAdaptiveFrontmatterFieldSuggestions(document, docType, idIndex, 
     }));
 }
 
-/** @param {import('vscode').TextDocument} document @param {string|null} docType @param {Map<string,string>} idIndex @param {Record<string,any>} adaptiveContext @returns {Array<Record<string,any>>} */
+/** @param {DocumentLike} document @param {string|null} docType @param {Map<string,string>} idIndex @param {Record<string,any>} adaptiveContext @returns {Array<Record<string,any>>} */
 function collectSchemaAdaptiveGapSuggestions(document, docType, idIndex, adaptiveContext) {
     const context = adaptiveContext || buildAdaptiveFrontmatterContext(document, docType, idIndex);
     const { opportunities, guidance } = context;
@@ -259,7 +266,7 @@ function collectSchemaAdaptiveGapSuggestions(document, docType, idIndex, adaptiv
     }));
 }
 
-/** @param {import('vscode').TextDocument} document @param {string|null} docType @returns {Array<Record<string,any>>} */
+/** @param {DocumentLike} document @param {string|null} docType @returns {Array<Record<string,any>>} */
 function collectArchetypeFieldSuggestions(document, docType) {
     const fieldsCache = getFieldsCache();
     const bundleSuggestions = buildBundleFieldSuggestions(docType, fieldsCache, { limit: 8, minRatio: 0.30 });
@@ -269,7 +276,7 @@ function collectArchetypeFieldSuggestions(document, docType) {
     return bundleSuggestions;
 }
 
-/** @param {import('vscode').TextDocument} document @param {string|null} docType @param {Map<string,string>} idIndex @returns {Array<Record<string,any>>} */
+/** @param {DocumentLike} document @param {string|null} docType @param {Map<string,string>} idIndex @returns {Array<Record<string,any>>} */
 function collectDriftMissingFieldSuggestions(document, docType, idIndex) {
     const fieldsCache = getFieldsCache();
     const intelligence = buildDocumentIntelligence(document, docType, idIndex);
@@ -289,7 +296,7 @@ function collectDriftMissingFieldSuggestions(document, docType, idIndex) {
     }));
 }
 
-/** @param {import('vscode').TextDocument} document @param {string|null} docType @param {Map<string,string>} idIndex @returns {Array<Record<string,any>>} */
+/** @param {DocumentLike} document @param {string|null} docType @param {Map<string,string>} idIndex @returns {Array<Record<string,any>>} */
 function collectNoteRoleFieldSuggestions(document, docType, idIndex) {
     const fieldsCache = getFieldsCache();
     const intelligence = buildDocumentIntelligence(document, docType, idIndex);

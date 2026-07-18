@@ -6,6 +6,7 @@ const { perfTracker } = require('../../runtime/performanceTracker');
 const { normalizeGraph2State, GRAPH2_SCOPES } = require('./graph2State');
 const { buildGraph2Payload } = require('./graph2Payload');
 const { buildGraph2SidebarBootHtml } = require('./graph2SidebarBootHtml');
+const { buildTimelapseSequence } = require('../graph/graphTimelapse');
 
 /** @returns {Record<string,any>} */
 function createGraph2SidebarController() {
@@ -117,6 +118,14 @@ function createGraph2SidebarController() {
             pushUpdate();
             break;
         }
+        case 'requestTimelapse':
+            if (sidebarView) {
+                perfTracker.measureSync('graph2.sidebar.buildTimelapseSequence', null, () => {
+                    const payload = buildTimelapseSequence();
+                    sidebarView.webview.postMessage({ type: 'graph2:timelapseData', payload });
+                });
+            }
+            break;
         case 'exploreNode': {
             if (message.id) {
                 panelState = normalizeGraph2State({
@@ -156,9 +165,13 @@ function createGraph2SidebarController() {
                     }, activeId, null);
                 }
 
+                // Cache-bust — see the matching comment in
+                // graphPanelController.js: a static asWebviewUri() URL can
+                // get served stale from Chromium's resource cache across
+                // sessions even after a full window reload.
                 const rendererUri = webviewView.webview.asWebviewUri(
                     vscode.Uri.joinPath(context.extensionUri, 'graph', 'renderer', 'Canvas2DRenderer.js')
-                ).toString();
+                ).toString() + '?v=' + Date.now();
 
                 webviewView.webview.onDidReceiveMessage(
                     (msg) => handleMessage(msg),

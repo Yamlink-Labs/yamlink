@@ -50,9 +50,9 @@ Open `roughnecks.md` and find the phrase "note-report" if it appears there in pl
 
 ---
 
-- [ ] Review the Note Report layout on 2026-06-03
-- [ ] Link this dossier in another note to test incoming relations
-- [ ] Test the History arc after making a field change
+- [ ] Review the Note Report layout on 2026-06-03 #medium
+- [ ] Link this dossier in another note to test incoming relations #low
+- [ ] Test the History arc after making a field change #urgent
 
 ---
 

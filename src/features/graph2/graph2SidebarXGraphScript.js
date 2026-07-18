@@ -23,7 +23,10 @@ let selectedId = null;
 let lastHash     = '';
 let lastNodeHash = '';
 let lastScope    = '';
+let lastPayload  = null;
+let hasRenderedGraph = false;
 const layers = { semantic: false, health: false };
+let labelMode = 'auto'; // 'auto' | 'all' | 'none' — see Canvas2DRenderer.setLabelMode
 
 // ── SimpleLayout (vanilla JS, no d3-force) ────────────────────────────────────
 class SimpleLayout {
@@ -321,6 +324,26 @@ class SimpleLayout {
     this._lastPositions = new Map(Object.entries(pos));
   }
 
+  // Synchronously fast-forwards to a settled layout and returns the final
+  // positions, without scheduling any requestAnimationFrame ticks — used by
+  // the time-lapse feature to solve each historical frame's target positions
+  // up front, then tween the *rendered* positions between them.
+  settleSync(nodeData, edgeData) {
+    if (this._raf) { cancelAnimationFrame(this._raf); this._raf = null; }
+    this.init(nodeData, edgeData);
+    let iter = 0;
+    while (this._alpha > this._quality.minAlpha && iter < this._quality.maxTicks) {
+      this._alpha *= this._quality.alphaDecay;
+      this._step(this._alpha);
+      iter++;
+      if (iter > 30 && (this._maxDeltaSq || 0) < 0.04) break;
+    }
+    const pos = {};
+    for (const n of this._nodes) pos[n.id] = { x: n.x, y: n.y };
+    this._rememberPositions(pos);
+    return pos;
+  }
+
   dragStart(id) { this._pinned.add(id); }
   drag(id,x,y) { const i=this._idx.get(id); if(i!==undefined){const n=this._nodes[i];n.x=x;n.y=y;n.vx=0;n.vy=0;} }
   dragEnd(id)   { this._pinned.delete(id); }
@@ -377,6 +400,7 @@ function ensureRenderer() {
   // Re-apply current layer state to new renderer instance
   renderer.setLayer('semantic', layers.semantic);
   renderer.setLayer('health',   layers.health);
+  renderer.setLabelMode(labelMode);
 
   return renderer;
 }
@@ -473,6 +497,18 @@ function toggleLayer(name) {
   if (btn) btn.classList.toggle('on', layers[name]);
 }
 
+const LABEL_MODE_ORDER = ['auto', 'all', 'none'];
+function cycleLabelMode() {
+  const idx = LABEL_MODE_ORDER.indexOf(labelMode);
+  labelMode = LABEL_MODE_ORDER[(idx + 1) % LABEL_MODE_ORDER.length];
+  if (renderer) renderer.setLabelMode(labelMode);
+  const btn = document.getElementById('labelsBtn');
+  if (btn) {
+    btn.classList.toggle('on', labelMode !== 'auto');
+    btn.title = 'Node labels: ' + labelMode + '. Click to cycle Auto -> All -> Off.';
+  }
+}
+
 // ── Main render ───────────────────────────────────────────────────────────────
 function render(payload) {
   // Scope buttons
@@ -507,13 +543,20 @@ function render(payload) {
   if (changed) {
     const r = ensureRenderer();
     if (!r) return;
-    if (nodeHash !== lastNodeHash) {
-      layout.init(payload.graphData.nodes, payload.graphData.edges);
-    }
+    const pos = layout.settleSync(payload.graphData.nodes, payload.graphData.edges);
     r.load(payload.graphData);
-    if (nodeHash !== lastNodeHash) {
-      layout.run();
+    r.updatePositions(pos);
+    const duration = hasRenderedGraph ? 180 : 0;
+    if (selectedId) {
+      renderer.focusNode(selectedId, {
+        zoom: 1.08,
+        preserveHigherZoom: true,
+        duration,
+      });
+    } else {
+      renderer.fitView({ duration, padding: 56, maxZoom: 1.85 });
     }
+    hasRenderedGraph = true;
     lastNodeHash = nodeHash;
   } else if (scopeChanged && renderer) {
     // Scope switched but data unchanged — re-center the view so the button feels responsive
@@ -539,6 +582,14 @@ if (semanticBtn) semanticBtn.addEventListener('click', () => toggleLayer('semant
 
 const healthBtn = document.getElementById('healthBtn');
 if (healthBtn) healthBtn.addEventListener('click', () => toggleLayer('health'));
+
+const labelsBtn = document.getElementById('labelsBtn');
+if (labelsBtn) labelsBtn.addEventListener('click', cycleLabelMode);
+
+// help-tip badges live inside Semantic/Health's own <button> (layout
+// simplicity) — without this, clicking the "?" to read its tooltip would
+// also toggle the parent button's layer as an unwanted side effect.
+document.querySelectorAll('.help-tip').forEach(el => el.addEventListener('click', ev => ev.stopPropagation()));
 
 const exploreBtn = document.getElementById('exploreBtn');
 if (exploreBtn) exploreBtn.addEventListener('click', () => {
@@ -592,9 +643,361 @@ document.addEventListener('keydown', ev => {
   }
 });
 
+// ── Time-lapse ────────────────────────────────────────────────────────────────
+// Frames arrive precomputed from the extension host. Playback keeps one fixed
+// final-stage graph loaded and reveals historical nodes/edges with alpha masks.
+const TL_TWEEN_MS = 1800;
+const TL_STEP_MS = 2100;
+// Real inline SVGs for play/pause/rewind, matching the boot HTML's initial
+// button markup (graph2SidebarBootHtml.js) — swapped in via innerHTML since
+// these buttons toggle state at runtime.
+const ICON_PLAY = '<svg width="10" height="10" viewBox="0 0 10 10" fill="currentColor"><path d="M1 0.6 L9 5 L1 9.4 Z"/></svg>';
+const ICON_PAUSE = '<svg width="10" height="10" viewBox="0 0 10 10" fill="currentColor"><rect x="1" y="0.6" width="2.8" height="8.8"/><rect x="6.2" y="0.6" width="2.8" height="8.8"/></svg>';
+const ICON_REWIND = '<svg width="12" height="10" viewBox="0 0 12 10" fill="currentColor"><path d="M6 0.4 L0.4 5 L6 9.6 Z"/><path d="M11.6 0.4 L6 5 L11.6 9.6 Z"/></svg>';
+const tl = {
+  active: false, loading: false, playing: false, direction: 1,
+  frames: [], index: 0, currentFrame: null,
+  tween: null, tweenRaf: null, playTimer: null,
+  stagePositions: null, stageNodeIds: null, stageEdgeKeys: null, stageFrame: null,
+  cinematicPos: null, restoreLayoutPositions: null
+};
+
+function tlFormatDate(iso) {
+  try { return new Date(iso).toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' }); }
+  catch (_) { return iso; }
+}
+
+function tlUpdateUI() {
+  const bar = document.getElementById('timelapseBar');
+  const label = document.getElementById('timelapseLabel');
+  const scrub = document.getElementById('timelapseScrub');
+  const playBtn = document.getElementById('timelapsePlayBtn');
+  const rewindBtn = document.getElementById('timelapseRewindBtn');
+  if (!bar) return;
+  if (tl.loading) { if (label) label.textContent = 'Reconstructing…'; return; }
+  if (!tl.frames.length) { if (label) label.textContent = 'Not enough history yet.'; return; }
+  const frame = tl.frames[tl.index];
+  if (label) {
+    label.textContent = tlFormatDate(frame.timestamp) + (tl.index === tl.frames.length - 1 ? ' (now)' : '') + ' · ' + frame.nodes.length;
+  }
+  if (scrub) scrub.value = String(tl.index);
+  const playingForward = tl.playing && tl.direction !== -1;
+  const playingBackward = tl.playing && tl.direction === -1;
+  if (playBtn) { playBtn.innerHTML = playingForward ? ICON_PAUSE : ICON_PLAY; playBtn.setAttribute('aria-label', playingForward ? 'Pause' : 'Play'); }
+  if (rewindBtn) { rewindBtn.innerHTML = playingBackward ? ICON_PAUSE : ICON_REWIND; rewindBtn.setAttribute('aria-label', playingBackward ? 'Pause' : 'Play backward'); }
+  const badge = document.getElementById('countBadge');
+  if (badge) badge.textContent = frame.nodes.length + ' notes · ' + frame.edges.length + ' links (time-lapse)';
+  bar.title = tl.source === 'git'
+    ? 'Reconstructed from real git history — includes both frontmatter relations and body-text links.'
+    : 'This vault has no git history to reconstruct from, so only frontmatter-declared relations are shown.';
+}
+
+function tlEaseInOutCubic(t) {
+  return t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2;
+}
+
+function tlRevealAlpha(t, order, total) {
+  const spread = total > 1 ? Math.min(0.42, total * 0.018) : 0;
+  const delay = total > 1 ? (order / Math.max(1, total - 1)) * spread : 0.08;
+  const local = Math.max(0, Math.min(1, (t - delay) / Math.max(0.001, 1 - delay)));
+  return tlEaseInOutCubic(local);
+}
+
+function tlVisibilityMasks(stageNodeIds, stageEdgeKeys, currentNodeIds, currentEdgeKeys) {
+  const nodeMask = new Map();
+  for (const id of stageNodeIds || []) {
+    if (!currentNodeIds.has(id)) nodeMask.set(id, 0);
+  }
+  const edgeMask = new Map();
+  for (const key of stageEdgeKeys || []) {
+    if (!currentEdgeKeys.has(key)) edgeMask.set(key, 0);
+  }
+  return { nodeMask, edgeMask };
+}
+
+function tlPrepareStage() {
+  const r = ensureRenderer();
+  if (!r || !layout || !tl.frames.length) return;
+  const finalFrame = tl.frames[tl.frames.length - 1];
+  tl.restoreLayoutPositions = layout && layout._lastPositions ? new Map(layout._lastPositions) : null;
+  const finalPos = layout.settleSync(finalFrame.nodes, finalFrame.edges);
+  r.load(finalFrame);
+  r.updatePositions(finalPos);
+  r.setNodeAlphaOverrides(new Map(finalFrame.nodes.map((n) => [n.id, 0])));
+  r.setEdgeAlphaOverrides(new Map(finalFrame.edges.map((e) => [tlEdgeKey(e), 0])));
+  r.fitView({ duration: 0, padding: 64, maxZoom: 1.65 });
+  tl.stagePositions = Object.assign({}, finalPos);
+  tl.stageFrame = finalFrame;
+  tl.stageNodeIds = finalFrame.nodes.map((n) => n.id);
+  tl.stageEdgeKeys = finalFrame.edges.map(tlEdgeKey);
+}
+
+function tlSpawnPositions(frame, targetPos, previousPos) {
+  const spawned = {};
+  const vals = Object.values(previousPos || {});
+  const center = vals.length
+    ? { x: vals.reduce((sum, p) => sum + p.x, 0) / vals.length, y: vals.reduce((sum, p) => sum + p.y, 0) / vals.length }
+    : { x: 0, y: 0 };
+  for (const node of frame.nodes || []) {
+    if (previousPos[node.id]) continue;
+    const neighborPositions = [];
+    for (const edge of frame.edges || []) {
+      const neighborId = edge.source === node.id ? edge.target : (edge.target === node.id ? edge.source : null);
+      if (!neighborId) continue;
+      const neighbor = previousPos[neighborId] || targetPos[neighborId];
+      if (neighbor) neighborPositions.push(neighbor);
+    }
+    if (neighborPositions.length) {
+      const anchor = neighborPositions.reduce((acc, p) => ({ x: acc.x + p.x, y: acc.y + p.y }), { x: 0, y: 0 });
+      spawned[node.id] = { x: anchor.x / neighborPositions.length, y: anchor.y / neighborPositions.length };
+      continue;
+    }
+    const target = targetPos[node.id] || center;
+    const angle = node.id.split('').reduce((sum, ch) => sum + ch.charCodeAt(0), 0) * 0.017;
+    spawned[node.id] = { x: target.x + Math.cos(angle) * 18, y: target.y + Math.sin(angle) * 18 };
+  }
+  return spawned;
+}
+
+function tlStepTween(now) {
+  const tw = tl.tween;
+  if (!tw || !renderer) return;
+  const t = Math.min(1, (now - tw.start) / tw.duration);
+  const eased = tlEaseInOutCubic(t);
+  const pos = Object.assign({}, tw.stagePositions);
+  const alphaOverrides = new Map();
+  for (const id of tw.stageNodeIds) {
+    if (!tw.currentNodeIds.has(id)) {
+      alphaOverrides.set(id, 0);
+      continue;
+    }
+    const to = tw.toPos[id];
+    const from = tw.fromPos[id] || tw.spawnPos[id];
+    if (from) {
+      pos[id] = { x: from.x + (to.x - from.x) * eased, y: from.y + (to.y - from.y) * eased };
+    }
+    const newOrder = tw.newNodeOrder.get(id);
+    if (newOrder !== undefined) alphaOverrides.set(id, tlRevealAlpha(t, newOrder, tw.newNodeIds.length));
+  }
+  const edgeAlphaOverrides = new Map();
+  for (const key of tw.stageEdgeKeys) {
+    if (!tw.currentEdgeKeys.has(key)) {
+      edgeAlphaOverrides.set(key, 0);
+      continue;
+    }
+    const newOrder = tw.newEdgeOrder.get(key);
+    if (newOrder !== undefined) edgeAlphaOverrides.set(key, tlRevealAlpha(t, newOrder, tw.newEdgeKeys.length));
+  }
+  renderer.updatePositions(pos);
+  renderer.setNodeAlphaOverrides(alphaOverrides);
+  renderer.setEdgeAlphaOverrides(edgeAlphaOverrides);
+  if (t < 1) {
+    tl.tweenRaf = requestAnimationFrame(tlStepTween);
+  } else {
+    tl.tween = null; tl.tweenRaf = null;
+    const masks = tlVisibilityMasks(tw.stageNodeIds, tw.stageEdgeKeys, tw.currentNodeIds, tw.currentEdgeKeys);
+    renderer.setNodeAlphaOverrides(masks.nodeMask);
+    renderer.setEdgeAlphaOverrides(masks.edgeMask);
+    tl.cinematicPos = Object.assign({}, tw.toPos);
+  }
+}
+
+function tlEdgeKey(e) {
+  return e.source + '|' + e.target + '|' + (e.field || '');
+}
+
+function tlGoToFrame(index, opts) {
+  opts = opts || {};
+  if (!tl.frames.length) return;
+  const r = ensureRenderer();
+  if (!r || !layout) return;
+  const clamped = Math.max(0, Math.min(tl.frames.length - 1, index));
+  const frame = tl.frames[clamped];
+  const hadPrevious = !!tl.currentFrame;
+  // First frame ever shown: nothing to tween from — every node/edge fades in
+  // from nothing instead of the whole reconstructed graph popping in at once.
+  const prevPositions = hadPrevious ? Object.assign({}, tl.cinematicPos || Object.fromEntries(layout._lastPositions)) : {};
+  const prevEdgeKeys = hadPrevious ? new Set(tl.currentFrame.edges.map(tlEdgeKey)) : new Set();
+
+  if (tl.tweenRaf) { cancelAnimationFrame(tl.tweenRaf); tl.tweenRaf = null; }
+  tl.tween = null;
+
+  const toPos = tl.stagePositions
+    ? Object.fromEntries(frame.nodes.map((n) => [n.id, tl.stagePositions[n.id]]).filter((entry) => !!entry[1]))
+    : layout.settleSync(frame.nodes, frame.edges);
+  if (!tl.stageFrame) r.load(frame);
+  r.updatePositions(tl.stagePositions || toPos);
+  tl.index = clamped;
+  tl.currentFrame = frame;
+  const currentNodeIds = new Set(frame.nodes.map((n) => n.id));
+  const currentEdgeKeys = new Set(frame.edges.map(tlEdgeKey));
+
+  if (opts.animate === false) {
+    const masks = tlVisibilityMasks(
+      tl.stageNodeIds || frame.nodes.map((n) => n.id),
+      tl.stageEdgeKeys || frame.edges.map(tlEdgeKey),
+      currentNodeIds,
+      currentEdgeKeys
+    );
+    r.setNodeAlphaOverrides(masks.nodeMask);
+    r.setEdgeAlphaOverrides(masks.edgeMask);
+    tl.cinematicPos = Object.assign({}, toPos);
+  } else {
+    const spawnPos = tlSpawnPositions(frame, toPos, prevPositions);
+    const initialPos = {};
+    for (const n of frame.nodes) initialPos[n.id] = prevPositions[n.id] || spawnPos[n.id] || toPos[n.id];
+    const initialNodeAlpha = new Map();
+    const newNodeIds = [];
+    for (const id of (tl.stageNodeIds || frame.nodes.map((n) => n.id))) {
+      if (!currentNodeIds.has(id)) initialNodeAlpha.set(id, 0);
+      else if (!prevPositions[id]) { initialNodeAlpha.set(id, 0); newNodeIds.push(id); }
+    }
+    const initialEdgeAlpha = new Map();
+    const newEdgeKeys = [];
+    for (const key of (tl.stageEdgeKeys || frame.edges.map(tlEdgeKey))) {
+      if (!currentEdgeKeys.has(key)) initialEdgeAlpha.set(key, 0);
+      else if (!prevEdgeKeys.has(key)) { initialEdgeAlpha.set(key, 0); newEdgeKeys.push(key); }
+    }
+    r.setNodeAlphaOverrides(initialNodeAlpha);
+    r.setEdgeAlphaOverrides(initialEdgeAlpha);
+
+    tl.tween = {
+      fromPos: prevPositions, spawnPos, toPos, frameNodes: frame.nodes, frameEdges: frame.edges, prevEdgeKeys,
+      stagePositions: tl.stagePositions || toPos,
+      stageNodeIds: tl.stageNodeIds || frame.nodes.map((n) => n.id),
+      stageEdgeKeys: tl.stageEdgeKeys || frame.edges.map(tlEdgeKey),
+      currentNodeIds,
+      currentEdgeKeys,
+      newNodeIds,
+      newEdgeKeys,
+      newNodeOrder: new Map(newNodeIds.map((id, i) => [id, i])),
+      newEdgeOrder: new Map(newEdgeKeys.map((key, i) => [key, i])),
+      start: performance.now(), duration: opts.duration || TL_TWEEN_MS
+    };
+    r.updatePositions(Object.assign({}, tl.stagePositions || toPos, initialPos));
+    tl.tweenRaf = requestAnimationFrame(tlStepTween);
+  }
+  tlUpdateUI();
+}
+
+function tlPause() {
+  tl.playing = false;
+  if (tl.playTimer) { clearTimeout(tl.playTimer); tl.playTimer = null; }
+  tlUpdateUI();
+}
+
+function tlScheduleNext() {
+  if (!tl.playing) return;
+  tl.playTimer = setTimeout(() => {
+    if (!tl.playing) return;
+    const nextIndex = tl.index + (tl.direction || 1);
+    if (nextIndex < 0 || nextIndex > tl.frames.length - 1) { tlPause(); return; }
+    tlGoToFrame(nextIndex);
+    tlScheduleNext();
+  }, TL_STEP_MS);
+}
+
+function tlPlay(direction) {
+  if (!tl.frames.length) return;
+  tl.direction = direction === -1 ? -1 : 1;
+  let wrapped = false;
+  if (tl.direction > 0 && tl.index >= tl.frames.length - 1) { tl.index = 0; wrapped = true; }
+  if (tl.direction < 0 && tl.index <= 0) { tl.index = tl.frames.length - 1; wrapped = true; }
+  tl.playing = true;
+  tlUpdateUI();
+  if (wrapped) tlGoToFrame(tl.index, { animate: false });
+  tlScheduleNext();
+}
+
+function tlTogglePlay() { if (tl.playing && tl.direction !== -1) tlPause(); else tlPlay(1); }
+function tlToggleRewind() { if (tl.playing && tl.direction === -1) tlPause(); else tlPlay(-1); }
+
+function tlOnData(payload) {
+  tl.loading = false;
+  tl.source = (payload && payload.source) || 'mutation-log';
+  tl.frames = (payload && payload.frames) || [];
+  tl.index = 0;
+  tl.direction = 1;
+  tl.currentFrame = null;
+  tl.stagePositions = null;
+  tl.stageNodeIds = null;
+  tl.stageEdgeKeys = null;
+  tl.stageFrame = null;
+  tl.cinematicPos = null;
+  if (!tl.frames.length) { tlUpdateUI(); return; }
+  // Land on the earliest checkpoint, faded in from nothing — Play/scrub grow
+  // it forward from there, matching the "watch it grow" story.
+  const lastIndex = tl.frames.length - 1;
+  const scrub = document.getElementById('timelapseScrub');
+  if (scrub) { scrub.max = String(Math.max(0, lastIndex)); scrub.value = '0'; }
+  tlPrepareStage();
+  tlGoToFrame(0, { animate: true });
+}
+
+function tlEnter() {
+  tl.active = true;
+  tl.loading = true;
+  const btn = document.getElementById('timelapseBtn');
+  if (btn) btn.classList.add('on');
+  const bar = document.getElementById('timelapseBar');
+  if (bar) bar.classList.add('show');
+  if (renderer) { renderer.setFilter(null); }
+  // A selected node left over from the live view keeps _isDimmed()'s
+  // focus-dimming active (everything not connected to it drops to ~12%
+  // opacity) — the real reason time-lapse could look permanently faded
+  // regardless of the fade-in tween. Time-lapse has no focused node; clear it.
+  selectedId = null;
+  if (renderer) renderer.setSelected(null);
+  tlUpdateUI();
+  vsc.postMessage({ type: 'requestTimelapse' });
+}
+
+function tlExit() {
+  tlPause();
+  if (tl.tweenRaf) { cancelAnimationFrame(tl.tweenRaf); tl.tweenRaf = null; }
+  tl.tween = null;
+  tl.active = false;
+  tl.stagePositions = null;
+  tl.stageNodeIds = null;
+  tl.stageEdgeKeys = null;
+  tl.stageFrame = null;
+  if (layout && tl.restoreLayoutPositions) layout._lastPositions = new Map(tl.restoreLayoutPositions);
+  tl.restoreLayoutPositions = null;
+  const btn = document.getElementById('timelapseBtn');
+  if (btn) btn.classList.remove('on');
+  const bar = document.getElementById('timelapseBar');
+  if (bar) bar.classList.remove('show');
+  if (renderer) { renderer.setNodeAlphaOverrides(new Map()); renderer.setEdgeAlphaOverrides(new Map()); }
+  lastHash = ''; lastNodeHash = ''; lastScope = '';
+  if (lastPayload) render(lastPayload);
+}
+
+function tlToggle() { if (tl.active) tlExit(); else tlEnter(); }
+
+const timelapseBtn = document.getElementById('timelapseBtn');
+if (timelapseBtn) timelapseBtn.addEventListener('click', tlToggle);
+const timelapsePlayBtn = document.getElementById('timelapsePlayBtn');
+if (timelapsePlayBtn) timelapsePlayBtn.addEventListener('click', tlTogglePlay);
+const timelapseRewindBtn = document.getElementById('timelapseRewindBtn');
+if (timelapseRewindBtn) timelapseRewindBtn.addEventListener('click', tlToggleRewind);
+const timelapseScrubEl = document.getElementById('timelapseScrub');
+if (timelapseScrubEl) {
+  timelapseScrubEl.addEventListener('input', () => {
+    tlPause();
+    tlGoToFrame(+timelapseScrubEl.value, { animate: true, duration: 220 });
+  });
+}
+
 window.addEventListener('message', ev => {
   const m = ev.data;
-  if (m && m.type === 'graph2:update') render(m.payload);
+  if (m && m.type === 'graph2:update') {
+    // Same reasoning as the main graph panel: don't let a live rebuild
+    // silently overwrite the canvas while a historical time-lapse frame is
+    // showing. Keep it for when the user exits time-lapse.
+    lastPayload = m.payload;
+    if (!tl.active) render(m.payload);
+  }
+  if (m && m.type === 'graph2:timelapseData') tlOnData(m.payload);
 });
 window.addEventListener('error', ev => {
   const msg = (ev && ev.message) || '';

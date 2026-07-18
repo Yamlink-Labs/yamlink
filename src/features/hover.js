@@ -1,7 +1,9 @@
 const vscode = require('vscode');
 const fs = require('fs');
+const path = require('path');
 const { parseFrontmatter, getPathIndex, getFieldsCache, getAliasIndex, getVaultGeneration } = require('../core/indexService');
 const { canonicalizeLinkedTarget, resolveLinkedTarget, parseLinkedTargetParts } = require('../core/id');
+const { resolveImageEmbed } = require('../core/imageEmbed');
 const { normaliseDateInput } = require('../core/date');
 const { extractMeaningfulBodyBlocks, normalizeAnchorText } = require('../core/bodyBlocks');
 const { getSchema, getSchemaTargets } = require('../registries/schemaRegistry');
@@ -27,6 +29,11 @@ const {
     buildFrontmatterOpportunityModel,
     buildBodyMentionHints
 } = require('../intelligence/frontmatterIntelligence');
+const {
+    buildHoverBadgeSvg,
+    buildHoverBadgeDataUri,
+    buildHoverBadgeMarkdown
+} = require('../intelligence/hoverBadge');
 const { parseViewQuery, parseAllViewQueries, runQuery } = require('../engine/query');
 const {
     computeSuggestionsForNode,
@@ -41,7 +48,6 @@ const PREVIEW_LINES = 1;
 const PREVIEW_MAX_CHARS = 220;
 const FRONTMATTER_SKIP_FIELDS = new Set(['id']);
 const HOVER_DETAIL_SKIP_FIELDS = new Set(['id', 'title', 'name', 'summary', 'type', 'status']);
-const HOVER_CHIP_FIELDS = ['type', 'status'];
 const HOVER_MAX_DETAILS = 3;
 const FRONTMATTER_PRIORITY_FIELDS = [
     'type',
@@ -87,6 +93,16 @@ function registerHover(context, getIndex) {
                     );
 
                     if (!filePath) {
+                        // ![[photo.png]] isn't a note — idIndex only resolves notes,
+                        // so this previously always fell through to the broken-link
+                        // message even for a perfectly valid image embed. Try
+                        // resolving it as an image file relative to this note first.
+                        if (isEmbed) {
+                            const imagePath = resolveImageEmbed(rawLinkText, path.dirname(document.uri.fsPath));
+                            if (imagePath) {
+                                return new vscode.Hover(_buildImagePreviewHover(imagePath), hoverRange);
+                            }
+                        }
                         const md = new vscode.MarkdownString(
                             `$(warning) Yamlink could not find \`${displayId}\`.\n\nUse Quick Fix (\`Ctrl+.\`) to create it.`
                         );
@@ -116,6 +132,30 @@ function registerHover(context, getIndex) {
     );
 }
 
+
+/** @param {string} imagePath @returns {import('vscode').MarkdownString} */
+function _buildImagePreviewHover(imagePath) {
+    const md = new vscode.MarkdownString();
+    md.isTrusted = false;
+    md.supportHtml = false;
+    const uri = vscode.Uri.file(imagePath).toString();
+    const name = path.basename(imagePath);
+    let sizeLabel = '';
+    try {
+        sizeLabel = _formatFileSize(fs.statSync(imagePath).size);
+    } catch { /* size is decorative — skip silently if unavailable */ }
+    md.appendMarkdown(`![${escapeMarkdown(name)}](${uri})`);
+    md.appendMarkdown(`\n\n_${escapeMarkdown(name)}${sizeLabel ? ` · ${sizeLabel}` : ''}_`);
+    return md;
+}
+
+/** @param {number} bytes @returns {string} */
+function _formatFileSize(bytes) {
+    if (bytes < 1024) return `${bytes} B`;
+    if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+    return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
+}
+
 /** @param {string} lineText @param {number} character @returns {boolean} */
 function isPositionInsideWikilink(lineText, character) {
     const regex = /\[\[([^\]]+)\]\]/g;
@@ -136,28 +176,35 @@ function buildHoverContent(id, content, filePath = '', idIndex = null, anchorRaw
     if (blockPreview) return blockPreview;
 
     const md = new vscode.MarkdownString();
-    md.isTrusted = false;
+    // Trusted so relation-field and body-preview wikilinks can render as real
+    // command:vscode.open links. Safe: escapeMarkdown() escapes `[`, `]`, `(`,
+    // `)` in every plain-text segment (title, summary, detail values), so a
+    // note's own authored content can never forge a working command link —
+    // only renderInlineWikilinks()'s own constructed link syntax is trusted.
+    md.isTrusted = true;
     md.supportHtml = false;
     md.supportThemeIcons = true;
 
     const frontmatter = parseFrontmatter(content) || {};
     const title = String(frontmatter.title || frontmatter.name || id).trim();
-    const chips = buildHoverChips(frontmatter);
+    const badgeMarkdown = buildHoverBadgeMarkdown(frontmatter);
     const summary = buildHoverSummary(content, frontmatter);
     const details = buildHoverDetails(frontmatter, idIndex);
     const contextLine = buildHoverIntelligenceSummary(id, content, frontmatter);
 
     md.appendMarkdown(`### ${escapeMarkdown(title)}\n\n`);
-    if (chips) {
-        md.appendMarkdown(`${chips}\n\n`);
+    if (badgeMarkdown) {
+        md.appendMarkdown(`${badgeMarkdown}\n\n`);
     }
     if (summary) {
-        md.appendMarkdown(`${escapeMarkdown(summary)}\n\n`);
+        md.appendMarkdown(`${renderInlineWikilinks(summary, idIndex)}\n\n`);
     }
     if (details.length) {
         const detailLines = details.map(({ label, value, linkedPath }) => {
             const labelMd = escapeMarkdown(label);
-            const valueMd = escapeMarkdown(value);
+            const valueMd = linkedPath
+                ? `[${escapeMarkdown(value)}](${buildOpenNoteCommandUri(linkedPath)})`
+                : escapeMarkdown(value);
             return `- **${labelMd}:** ${valueMd}`;
         });
         md.appendMarkdown(detailLines.join('\n'));
@@ -241,16 +288,20 @@ function clipBlockPreviewText(value) {
     return text.length > 300 ? `${text.slice(0, 299).trimEnd()}…` : text;
 }
 
-function buildHoverChips(frontmatter) {
-    const chips = [];
-    for (const key of HOVER_CHIP_FIELDS) {
-        const value = cleanValue(frontmatter[key]);
-        if (!value) continue;
-        chips.push(`\`${escapeMarkdown(normalizeDisplayValue(value))}\``);
-        if (chips.length >= 2) break;
-    }
-    return chips.join(' ');
-}
+// ─── Custom badge rendering ─────────────────────────────────────────────────
+//
+// VS Code's native hover widget is the only real hover surface — every
+// registered hover provider's content merges into that one widget, and there
+// is no public API to swap its chrome for custom HTML/CSS (MarkdownString's
+// HTML support is sanitized: no `style` attributes, no `<style>` blocks).
+// A past attempt at a custom-styled card apparently used a separate Webview
+// overlay instead, which can't replace the native hover — only sit alongside
+// an already-active one, which is why it looked like two cards stacked.
+//
+// This renders real Apollo-palette-colored pills as an SVG data URI, embedded
+// via plain markdown image syntax (`![](data:...)`). Images bypass the HTML
+// sanitizer entirely since they're not HTML — this is the one channel that
+// gets genuinely custom typography/color inside the one legitimate hover.
 
 function buildHoverSummary(content, frontmatter) {
     const bodyPreview = extractBodyPreview(content);
@@ -268,14 +319,60 @@ function buildHoverDetails(frontmatter, idIndex) {
         .slice(0, HOVER_MAX_DETAILS)
         .map(([key, rawValue]) => {
             const raw = String(rawValue || '').trim();
-            const display = normalizeDisplayValue(raw);
-            const match = raw.match(/^\[\[([^\]|#^]+)(?:[#^][^\]|]+)?(?:\|([^\]]+))?\]\]$/);
+            const isWikilink = /^\[\[.+\]\]$/.test(raw);
             let linkedPath = null;
-            if (match && idIndex) {
-                linkedPath = idIndex.get(match[1].trim()) || null;
+            let display = normalizeDisplayValue(raw);
+            if (isWikilink) {
+                const inner = raw.slice(2, -2);
+                const parts = parseLinkedTargetParts(inner);
+                display = normalizeDisplayValue(parts.label || parts.target || raw);
+                if (idIndex) {
+                    const resolvedId = resolveLinkedTarget(inner, idIndex, getAliasIndex());
+                    linkedPath = resolvedId ? idIndex.get(resolvedId) || null : null;
+                }
             }
             return { label: key, value: display, linkedPath };
         });
+}
+
+/** @param {string} filePath @returns {string} a command:vscode.open URI that opens the file when clicked in a trusted hover */
+function buildOpenNoteCommandUri(filePath) {
+    const args = encodeURIComponent(JSON.stringify([vscode.Uri.file(filePath).toString()]));
+    return `command:vscode.open?${args}`;
+}
+
+const INLINE_WIKILINK_RE = /\[\[([^\]]+)\]\]/g;
+
+/**
+ * Renders `[[id]]` / `[[id|Alias]]` occurrences in freeform text as clickable
+ * `command:vscode.open` links, escaping everything else. Unresolved links
+ * fall back to plain escaped bracket text rather than a broken link.
+ * @param {string} text
+ * @param {Map<string,string>|null} idIndex
+ * @returns {string}
+ */
+function renderInlineWikilinks(text, idIndex) {
+    const raw = String(text || '');
+    if (!idIndex) return escapeMarkdown(raw);
+    const aliasIdx = getAliasIndex();
+    let result = '';
+    let lastIndex = 0;
+    INLINE_WIKILINK_RE.lastIndex = 0;
+    let match;
+    while ((match = INLINE_WIKILINK_RE.exec(raw)) !== null) {
+        result += escapeMarkdown(raw.slice(lastIndex, match.index));
+        const inner = match[1];
+        const parts = parseLinkedTargetParts(inner);
+        const resolvedId = resolveLinkedTarget(inner, idIndex, aliasIdx);
+        const filePath = resolvedId ? idIndex.get(resolvedId) : null;
+        const displayText = parts.label || parts.target || inner;
+        result += filePath
+            ? `[${escapeMarkdown(displayText)}](${buildOpenNoteCommandUri(filePath)})`
+            : escapeMarkdown(`[[${inner}]]`);
+        lastIndex = match.index + match[0].length;
+    }
+    result += escapeMarkdown(raw.slice(lastIndex));
+    return result;
 }
 
 function prioritizedFrontmatterEntries(frontmatter) {
@@ -628,7 +725,13 @@ module.exports = {
     buildHoverContent,
     buildAnchorHoverContent,
     buildHoverIntelligenceSummary,
-    buildQueryPreview
+    buildQueryPreview,
+    buildHoverBadgeSvg,
+    buildHoverBadgeDataUri,
+    buildHoverBadgeMarkdown,
+    renderInlineWikilinks,
+    buildOpenNoteCommandUri,
+    _buildImagePreviewHover
 };
 
 function getUsefulHoverRoleLabel(noteContext, nodeType) {

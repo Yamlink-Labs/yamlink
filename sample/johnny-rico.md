@@ -20,8 +20,8 @@ By the end of the Bug War he was commanding the Roughnecks — the same unit he'
 
 First rule of Mobile Infantry: everyone fights, nobody quits.
 
-- [ ] Let's see how this looks in the report
-- [ ] Test
+- [ ] Let's see how this looks in the report #low
+- [ ] Test #urgent
 
 
 ## Missions

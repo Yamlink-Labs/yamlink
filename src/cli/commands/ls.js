@@ -1,7 +1,8 @@
 'use strict';
 
 const { getIndex, getFieldsCache } = require('../../core/indexService');
-const { emitCliError, emitJson, emitText } = require('../io');
+const fmt = require('../format');
+const { captureOutput, emitCliError, emitJson, emitText } = require('../io');
 
 function compareText(a, b) {
     return String(a || '').localeCompare(String(b || ''), undefined, { sensitivity: 'base' });
@@ -29,7 +30,7 @@ function sortRows(rows, sortBy) {
     rows.sort((a, b) => compareText(a.name, b.name) || compareText(a.id, b.id));
 }
 
-function run({ typeFilter, sortBy, json }) {
+function run({ typeFilter, sortBy, json, quiet }) {
     const normalizedSort = String(sortBy || 'name').trim().toLowerCase();
     if (!['name', 'date', 'type', ''].includes(normalizedSort)) {
         emitCliError({ json, error: `Unsupported sort: ${sortBy}`, code: 'USAGE', exitCode: 1 });
@@ -61,7 +62,27 @@ function run({ typeFilter, sortBy, json }) {
         return;
     }
 
-    emitText(payload.map((row) => `${row.id}\t${row.type || '—'}\t${row.name}`).join('\n') + (payload.length ? '\n' : ''));
+    if (!payload.length) {
+        emitText('(no results)\n');
+        return;
+    }
+
+    if (quiet) {
+        emitText(payload.map((row) => `${row.id}\t${row.type || '—'}\t${row.name}`).join('\n') + '\n');
+        return;
+    }
+
+    emitText(captureOutput(() => {
+        fmt.table(payload.map((row) => ({
+            id: row.id,
+            type: row.type || '—',
+            name: row.name
+        })), [
+            { key: 'id', label: 'id' },
+            { key: 'type', label: 'type' },
+            { key: 'name', label: 'name' }
+        ]);
+    }));
 }
 
 module.exports = { run };

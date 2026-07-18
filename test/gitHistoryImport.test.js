@@ -313,3 +313,44 @@ describe('runGitHistoryImport — git integration', () => {
         assert.ok(revChanges.length <= 1); // at most 1 change between the 2 oldest commits
     });
 });
+
+describe('getFileAtCommit — subdirectory vault root', () => {
+    // Real, previously-undiscovered bug: `git show <hash>:<path>` always
+    // resolves <path> relative to the REPO ROOT, never to -C's cwd — so a
+    // vault whose root is a subdirectory of a larger git repo (very common;
+    // e.g. notes kept in a subfolder of a monorepo) silently got null for
+    // every single file, meaning runGitHistoryImport (and later, the x-graph
+    // time-lapse git-based reconstruction) never actually worked for that
+    // arrangement despite reporting success.
+    let repoRoot;
+
+    beforeEach(() => {
+        if (!gitAvailable) return;
+        repoRoot = makeTempDir();
+        gitInit(repoRoot);
+    });
+
+    afterEach(() => {
+        if (!repoRoot) return;
+        fs.rmSync(repoRoot, { recursive: true, force: true });
+    });
+
+    test('resolves file content when the vault root is a subdirectory of the git repo', () => {
+        if (!gitAvailable) return;
+        const { getGitLog, getFileAtCommit } = require('../src/intelligence/gitHistoryImport');
+
+        gitCommit(repoRoot, 'vault/rico.md', '---\nid: rico\ntype: character\n---\n', 'add rico');
+        // A same-named file elsewhere in the repo, to prove the fix isn't
+        // accidentally matching the wrong file at the repo-root-relative path.
+        gitCommit(repoRoot, 'rico.md', 'not the vault note', 'decoy at repo root');
+
+        const vaultRoot = path.join(repoRoot, 'vault');
+        const commits = getGitLog(vaultRoot, 'rico.md', 10);
+        assert.ok(commits.length >= 1, 'expected at least one commit for vault/rico.md');
+
+        const content = getFileAtCommit(vaultRoot, commits[0].hash, 'rico.md');
+        assert.ok(content, 'expected real file content, not null');
+        assert.match(content, /id: rico/);
+        assert.doesNotMatch(content, /not the vault note/);
+    });
+});

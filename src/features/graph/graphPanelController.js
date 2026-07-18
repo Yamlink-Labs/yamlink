@@ -5,6 +5,7 @@ const { getIndex, getPathIndex } = require('../../core/indexService');
 const { normaliseState, getPanelTitle, clampDepth } = require('./graphState');
 const { buildBootHtml } = require('./graphBootHtml');
 const { buildPanelPayload } = require('./graphPayload');
+const { buildTimelapseSequence } = require('./graphTimelapse');
 const { perfTracker } = require('../../runtime/performanceTracker');
 
 const PANEL_VIEW_TYPE = 'yamlink.graphPanel.v2';
@@ -203,6 +204,14 @@ function createGraphPanelController() {
             if (panel) panel.title = getPanelTitle(panelState);
             pushGraphUpdate();
             break;
+        case 'requestTimelapse':
+            if (panel) {
+                perfTracker.measureSync('graph.buildTimelapseSequence', null, () => {
+                    const payload = buildTimelapseSequence();
+                    panel.webview.postMessage({ type: 'timelapseData', payload });
+                });
+            }
+            break;
         case 'revealActive': {
             const activeId = getPreferredActiveNodeId();
             const changed = panelState.mode !== 'local' || (activeId && panelState.centerNodeId !== activeId);
@@ -246,9 +255,15 @@ function createGraphPanelController() {
             }
         );
 
+        // Cache-bust: without a varying query param, Chromium's webview
+        // resource cache can serve a stale copy of this externally-loaded
+        // module across sessions even after a full window reload, since the
+        // URI itself never changes. The inline boot script is regenerated
+        // fresh every activation and isn't affected, but this file is loaded
+        // via a static asWebviewUri() URL, so it needs its own busting.
         const rendererUri = panel.webview.asWebviewUri(
             vscode.Uri.joinPath(context.extensionUri, 'graph', 'renderer', 'Canvas2DRenderer.js')
-        ).toString();
+        ).toString() + '?v=' + Date.now();
 
         panel.webview.onDidReceiveMessage((message) => {
             handleWebviewMessage(message);

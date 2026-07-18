@@ -11,9 +11,12 @@ const {
     appendMutationEvents,
     emitOutcomeEvent,
     getMutationEvents,
+    getVaultSnapshots,
     clearMutationEvents,
     withMutationContext,
-    setDefaultMutationContextProvider
+    setDefaultMutationContextProvider,
+    setSnapshotFieldsCacheProvider,
+    onMutationEventsAppended
 } = require('../src/runtime/mutationEventLog');
 
 describe('mutation event log', () => {
@@ -45,6 +48,51 @@ describe('mutation event log', () => {
         initMutationLog(null);
         appendMutationEvents([{ type: 'note_created', noteId: 'rico' }]);
         assert.equal(getMutationEvents().length, 1);
+    });
+
+    describe('onMutationEventsAppended', () => {
+        test('fires with the newly appended events after a real append', () => {
+            const seen = [];
+            const unsubscribe = onMutationEventsAppended((events) => seen.push(...events));
+            appendMutationEvents([{ type: 'note_created', noteId: 'rico' }]);
+            unsubscribe();
+            assert.equal(seen.length, 1);
+            assert.equal(seen[0].noteId, 'rico');
+        });
+
+        test('does not fire when every event is filtered out (missing type/noteId)', () => {
+            let callCount = 0;
+            const unsubscribe = onMutationEventsAppended(() => { callCount += 1; });
+            appendMutationEvents([{ type: 'note_created' }, { noteId: 'rico' }]);
+            unsubscribe();
+            assert.equal(callCount, 0);
+        });
+
+        test('unsubscribe stops further notifications', () => {
+            let callCount = 0;
+            const unsubscribe = onMutationEventsAppended(() => { callCount += 1; });
+            appendMutationEvents([{ type: 'note_created', noteId: 'a' }]);
+            unsubscribe();
+            appendMutationEvents([{ type: 'note_created', noteId: 'b' }]);
+            assert.equal(callCount, 1);
+        });
+
+        test('a throwing listener does not break logging or other listeners', () => {
+            const seen = [];
+            const unsubBad = onMutationEventsAppended(() => { throw new Error('boom'); });
+            const unsubGood = onMutationEventsAppended((events) => seen.push(...events));
+            appendMutationEvents([{ type: 'note_created', noteId: 'rico' }]);
+            unsubBad();
+            unsubGood();
+            assert.equal(seen.length, 1);
+            assert.equal(getMutationEvents().length, 1);
+        });
+
+        test('ignores a non-function argument rather than throwing', () => {
+            const unsubscribe = onMutationEventsAppended('not a function');
+            assert.doesNotThrow(() => appendMutationEvents([{ type: 'note_created', noteId: 'rico' }]));
+            unsubscribe();
+        });
     });
 
     // ── Query API ────────────────────────────────────────────────────────────
@@ -349,6 +397,102 @@ describe('mutation event log', () => {
         } finally {
             initMutationLog(null);
             try { fs.unlinkSync(tmpPath); } catch (_) {}
+        }
+    });
+});
+
+describe('vault snapshotting — see docs/architecture/TIME-ENGINE.md', () => {
+    test('appending past MAX_EVENTS with a registered fieldsCache provider takes a snapshot at the truncation boundary', () => {
+        const tmpDir = path.join(os.tmpdir(), `yamlink-snap-e2e-${Date.now()}`);
+        const tmpPath = path.join(tmpDir, 'mutation-log.ndjson');
+        try {
+            initMutationLog(tmpPath);
+            // A single note whose 'status' field changes on every event, so the
+            // reconstructed snapshot state is trivially checkable.
+            const fieldsCache = new Map([['rico', { id: 'rico', type: 'character', status: 'active' }]]);
+            setSnapshotFieldsCacheProvider(() => fieldsCache);
+
+            const base = Date.parse('2026-01-01T00:00:00.000Z');
+            const batch = [];
+            for (let i = 0; i < 10001; i++) {
+                batch.push({
+                    timestamp: new Date(base + i * 1000).toISOString(),
+                    type: 'field_changed',
+                    noteId: 'rico',
+                    field: 'status',
+                    oldValue: i === 0 ? null : `status-${i - 1}`,
+                    newValue: `status-${i}`
+                });
+            }
+            appendMutationEvents(batch);
+
+            // Trimmed to MAX_EVENTS - SNAPSHOT_INTERVAL (10000 - 2000 = 8000), not MAX_EVENTS.
+            assert.equal(getMutationEvents().length, 8000);
+
+            const snapshots = getVaultSnapshots();
+            assert.equal(snapshots.length, 1);
+            // Boundary = the timestamp of the (dropCount-1)th dropped event.
+            // dropCount = 10001 - 8000 = 2001, so the boundary event is index 2000
+            // (0-indexed) of the batch, whose newValue is 'status-2000'.
+            assert.equal(snapshots[0].notes.rico.status, 'status-2000');
+
+            // The persisted log file must match the truncated in-memory array —
+            // this was a real pre-existing gap (file only ever grew via append,
+            // never rewritten on truncation until the next process restart).
+            const fileLines = fs.readFileSync(tmpPath, 'utf8').split('\n').filter(Boolean);
+            assert.equal(fileLines.length, 8000);
+        } finally {
+            initMutationLog(null);
+            setSnapshotFieldsCacheProvider(null);
+            try { fs.unlinkSync(tmpPath); } catch (_) {}
+            try { fs.unlinkSync(path.join(tmpDir, 'vault-snapshots.ndjson')); } catch (_) {}
+            try { fs.rmdirSync(tmpDir); } catch (_) {}
+        }
+    });
+
+    test('no snapshot is taken when no fieldsCache provider is registered — truncation still happens safely', () => {
+        const tmpDir = path.join(os.tmpdir(), `yamlink-snap-e2e-noprov-${Date.now()}`);
+        const tmpPath = path.join(tmpDir, 'mutation-log.ndjson');
+        try {
+            initMutationLog(tmpPath);
+            setSnapshotFieldsCacheProvider(null);
+
+            const base = Date.parse('2026-01-01T00:00:00.000Z');
+            const batch = [];
+            for (let i = 0; i < 10001; i++) {
+                batch.push({
+                    timestamp: new Date(base + i * 1000).toISOString(),
+                    type: 'note_created',
+                    noteId: `note-${i}`
+                });
+            }
+            appendMutationEvents(batch);
+
+            assert.equal(getMutationEvents().length, 8000);
+            assert.deepEqual(getVaultSnapshots(), []);
+        } finally {
+            initMutationLog(null);
+            try { fs.unlinkSync(tmpPath); } catch (_) {}
+            try { fs.rmdirSync(tmpDir); } catch (_) {}
+        }
+    });
+
+    test('clearMutationEvents also clears persisted snapshots', () => {
+        const tmpDir = path.join(os.tmpdir(), `yamlink-snap-clear-${Date.now()}`);
+        const tmpPath = path.join(tmpDir, 'mutation-log.ndjson');
+        try {
+            initMutationLog(tmpPath);
+            const { appendVaultSnapshot } = require('../src/core/vaultSnapshots');
+            appendVaultSnapshot(path.join(tmpDir, 'vault-snapshots.ndjson'), '2026-01-01T00:00:00.000Z', { a: {} });
+            assert.equal(getVaultSnapshots().length, 1);
+
+            clearMutationEvents();
+            assert.deepEqual(getVaultSnapshots(), []);
+        } finally {
+            initMutationLog(null);
+            try { fs.unlinkSync(tmpPath); } catch (_) {}
+            try { fs.unlinkSync(path.join(tmpDir, 'vault-snapshots.ndjson')); } catch (_) {}
+            try { fs.rmdirSync(tmpDir); } catch (_) {}
         }
     });
 });

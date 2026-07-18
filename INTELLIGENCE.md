@@ -206,6 +206,45 @@ The Vault Health panel surfaces intelligence at the vault level rather than the 
 
 ---
 
+## Additional intelligence signals
+
+These layer on top of everything above — they don't change how completion or lightbulbs are triggered, they change how confident and specific the system is once triggered.
+
+### Pre-schema field emergence
+
+A brand-new note (untyped, or a type your vault hasn't established a pattern for yet) used to fall back to a hardcoded universal field list regardless of what your vault has actually taught the system. Now: if the fields you've already set match a repeated pattern elsewhere in your vault — even one that's never been formalized as a schema — completions and the Note Report's "Likely missing" list suggest that pattern's fields instead, clearly labeled as a vault pattern match ("matches an emerging pattern in this vault") rather than a generic starter suggestion. This is the "Adaptive" row in the field-name-suggestions table above, made real: the system finds the best emergent cluster whose field signature is a superset of the note's current fields, preferring higher-confidence and larger clusters.
+
+### Suggestion cascade
+
+Accepting a relation-field completion (pressing Enter/Tab on a `[[` candidate) now checks whether the note's arc has an obvious next field to fill, and offers a one-click, non-modal nudge to add it — but only when the system is genuinely confident (the same bar the arc model already uses internally), and never twice for the same note in one session. This turns a single accepted suggestion into a short guided chain when the vault's evidence is strong enough to justify it.
+
+### Temporal confidence from mutation volatility
+
+Fields that get revised often (`.yamlink/mutation-log.ndjson` shows frequent `field_changed` events relative to `field_added`) carry a small confidence *penalty* in field classification — a field you keep changing your mind about is weaker evidence than one you set once and left alone, which gets a small confidence *boost*. This is mined directly from mutation history and feeds every existing consumer of field classification (hover, completion, lightbulb) automatically, with no per-surface changes needed.
+
+### Relationship gravity
+
+Note Report's connection lists (Links tab) rank your most-reinforced relationships first, not in arbitrary insertion order. A connection scores higher when more fields on the source note corroborate the same target (structural corroboration), and when the mutation log shows that connection being repeated or reinforced recently (decayed recency — same half-life convention as implicit field weights). This means the relation lists in Note Report read like "what actually matters most to this note," not just "everything, alphabetically."
+
+### Natural-language write actions
+
+The "Query in Plain English" command (`yamlink.naturalQuery`) recognizes a first set of write-intent phrasings — "archive all missions with status failed," "mark all tasks as done" — alongside its existing read-only `!view` generation. This is an early, narrow slice of a broader direction (a deterministic, no-AI command surface for the vault), not a general-purpose natural-language editor: it currently understands two sentence templates, and the generated action is still shown for confirmation before it runs.
+
+### Schema-proposal closes its own loop
+
+`yamlink.proposeSchema` and the Vault Health cluster button already created a schema note from a detected field-signature cluster, but never wrote the new fields back onto the notes that inspired it. `noteIds` now flows from cluster detection through both entry points into `createSchemaNote`, which offers an explicit opt-in prompt to back-fill the missing fields onto the cluster's member notes — the vault can now propose its own schema *and* apply it, instead of leaving the apply step manual.
+
+### Vault Projections: real historical trend-fitting
+
+Vault Projections (Vault Health and Home panel) are built on the Time Engine rather than a single rolling mutation-log window. `src/intelligence/vaultTrends.js` reconstructs the vault at real historical checkpoints via `reconstructVaultAtTime()` and fits an actual least-squares trend line through real per-type note counts, reporting a genuine fit-quality signal (R²) instead of a hand-tuned heuristic. A single combined checkpoint sweep (`buildLaneTrajectories()`) reconstructs the vault once per checkpoint and derives all three lanes — Growth, Stale, Structure — from that one reconstruction, rather than paying a 3x reconstruction cost. Two things this makes possible that weren't before:
+
+- **Retrospective accuracy scoring** — reconstructs the vault as of 90 days ago, runs the same trend-fit on its own trailing history, and compares what that model would have projected for "today" against what actually happened. A falsifiable claim, only possible because the reconstruction is real, not a proxy.
+- **Per-note staleness forecasting** — not just an aggregate stale rate, but which specific notes will cross into stale soonest, ranked by real days-remaining.
+
+Honest about its own limits the same way the rest of the Time Engine is: never fabricates continuity before the earliest real event, and flags when a note has zero recorded mutation history rather than letting it silently distort an early checkpoint.
+
+---
+
 ## Schema: amplifies, never gates
 
 Every Yamlink feature works on a vault with zero schema notes. Schema notes make the intelligence more precise — they do not unlock features that otherwise don't work.
