@@ -1394,9 +1394,9 @@ test('GET /api/intelligence/fieldCategory — 404 for unknown note', async () =>
     assert.equal(res.status, 404);
 });
 
-test('docs/api/CONTRACT.md documents every route in the live route table (drift guard)', () => {
+test('CONTRACT.md documents every route in the live route table (drift guard)', () => {
     const { routeDefs } = require('../src/api/router');
-    const contract = fs.readFileSync(path.join(__dirname, '..', 'docs', 'api', 'CONTRACT.md'), 'utf8');
+    const contract = fs.readFileSync(path.join(__dirname, '..', 'CONTRACT.md'), 'utf8');
     const missing = routeDefs
         .map((route) => route.path)
         .filter((routePath) => !contract.includes('`' + routePath + '`') && !contract.includes(routePath + '?'))

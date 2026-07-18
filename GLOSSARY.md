@@ -285,7 +285,7 @@ Definitions for every term used across Yamlink's surfaces, commands, and documen
 | `yamlink watch` | Persistent watcher — rebuilds on `.md` saves, prints timestamped one-liners |
 | `yamlink on <event> -- <script>` | Automation hooks: execute a script on matching mutation events. `--type` to filter |
 | `yamlink completions bash\|zsh` | Print shell completion script for tab-completion |
-| `yamlink serve` | Local HTTP API server (default port 3000). Full reference: `docs/api/README-API.md`, `docs/api/CONTRACT.md` |
+| `yamlink serve` | Local HTTP API server (default port 3000). Full reference: `docs/api/README-API.md`, `CONTRACT.md` |
 | `yamlink conduit` | Open the Conduit terminal UI. Requires `yamlink serve` running on the same port |
 
 ---

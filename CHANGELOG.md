@@ -39,7 +39,7 @@ The Time Engine reaches every surface, Vault Projections rebuilt on real histori
 
 ### API
 
-- **`docs/api/CONTRACT.md`** — a flat method/path/params/response/error-code reference for every endpoint, generated from the real route table. Documents two previously-unwritten capabilities: `intelligence_changed` SSE events and composite reads (`?include=outbound,inbound,intelligence,history`).
+- **`CONTRACT.md`** — a flat method/path/params/response/error-code reference for every endpoint, generated from the real route table. Documents two previously-unwritten capabilities: `intelligence_changed` SSE events and composite reads (`?include=outbound,inbound,intelligence,history`).
 
 ### CLI
 

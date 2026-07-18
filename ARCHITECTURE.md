@@ -304,7 +304,7 @@ extension.js                    ← VS Code entry point, wires everything
 
 ### Local HTTP API (`yamlink serve`)
 
-`yamlink serve` exposes the vault as a local REST API on `127.0.0.1`. Full endpoint-by-endpoint reference (method, path, params, response shape, error codes) at [`docs/api/CONTRACT.md`](docs/api/CONTRACT.md); prose walkthrough with examples at [`docs/api/README-API.md`](docs/api/README-API.md).
+`yamlink serve` exposes the vault as a local REST API on `127.0.0.1`. Full endpoint-by-endpoint reference (method, path, params, response shape, error codes) at [`CONTRACT.md`](CONTRACT.md); prose walkthrough with examples at [`docs/api/README-API.md`](docs/api/README-API.md).
 
 **Read endpoints:** `GET /api/nodes`, `GET /api/nodes/:id` (`?at=` time travel, `?include=` composite reads, `?minGeneration=` read-your-writes), `GET /api/nodes/:id/outbound`, `GET /api/nodes/:id/inbound`, `GET /api/nodes/:id/neighborhood`, `GET /api/nodes/:id/history`, `GET /api/nodes/:id/evolution`, `GET /api/nodes/:id/archaeology`, `GET /api/search`, `GET /api/schema`, `GET /api/diff` (two-note compare or `?since=` vault-wide changes), `GET /api/query`, `GET /api/graph` (`?at=` for a historical reconstruction), `GET /api/tasks`, `GET /api/mutations`, `GET /api/session/summary`, `GET /api/types`, `GET /api/health`, `GET /api/intelligence/note`, `GET /api/intelligence/arc`, `GET /api/intelligence/fieldCategory`, `GET /api/intelligence/clusters`, `GET /api/intelligence/lenses`
 

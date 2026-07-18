@@ -78,7 +78,7 @@ A new Labels control (cycling Auto → All → Off, in both graph surfaces — C
 
 ### API maturity pass
 
-A declarative route table replaced a 39-entry hand-wired if/else chain. A new [`docs/api/CONTRACT.md`](./docs/api/CONTRACT.md) documents every endpoint's method, path, params, response shape, and error codes in one place — and in writing it, surfaced three capabilities that were already fully built and tested but never documented anywhere (`intelligence_changed` reactive SSE push, composite reads via `?include=`, read-your-writes via `?minGeneration=`).
+A declarative route table replaced a 39-entry hand-wired if/else chain. A new [`CONTRACT.md`](./CONTRACT.md) documents every endpoint's method, path, params, response shape, and error codes in one place — and in writing it, surfaced three capabilities that were already fully built and tested but never documented anywhere (`intelligence_changed` reactive SSE push, composite reads via `?include=`, read-your-writes via `?minGeneration=`).
 
 ### Smaller fixes worth knowing about
 

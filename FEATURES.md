@@ -229,7 +229,7 @@ yamlink completions bash|zsh                    # print shell completion script
 
 ### serve endpoints
 
-`yamlink serve` starts a local HTTP server (default port 3000) that exposes the live vault index as a REST API. Full method/path/params/error-code reference: [`docs/api/CONTRACT.md`](docs/api/CONTRACT.md).
+`yamlink serve` starts a local HTTP server (default port 3000) that exposes the live vault index as a REST API. Full method/path/params/error-code reference: [`CONTRACT.md`](CONTRACT.md).
 
 | Endpoint | Description |
 |---|---|
@@ -253,7 +253,7 @@ yamlink completions bash|zsh                    # print shell completion script
 | `GET /api/intelligence/fieldCategory?id=&field=` | Field classification: category, confidence, source, reasons |
 | `GET /api/intelligence/note?id=` \| `/clusters` \| `/lenses` | Combined note intelligence snapshot; detected pre-schema field clusters; vault-wide change lenses |
 
-All responses include `X-Yamlink-Generation` (vault version integer) and `X-Yamlink-Api-Version` headers. CORS is enabled for all origins (`*`). Full reference at [`docs/api/README-API.md`](docs/api/README-API.md) and [`docs/api/CONTRACT.md`](docs/api/CONTRACT.md).
+All responses include `X-Yamlink-Generation` (vault version integer) and `X-Yamlink-Api-Version` headers. CORS is enabled for all origins (`*`). Full reference at [`docs/api/README-API.md`](docs/api/README-API.md) and [`CONTRACT.md`](CONTRACT.md).
 
 **Publishing use case:** `yamlink serve` → Next.js / Astro site reads vault at build time via API. Notes become pages, frontmatter becomes structured metadata, wikilinks resolve to relative URLs. Vault as CMS, files stay plain Markdown.
 
