@@ -8,6 +8,7 @@ homeworld: Shorebreak
 species: human
 status: active
 created: 2297-01-15
+gender:
 ---
 
 Federal Intelligence officer and telepath. Was in the same graduating class as [[johnny-rico]] and [[carmen-ibanez]] before the Bug War. While Rico went to Mobile Infantry and Carmen to Fleet, Carl joined Federal Intelligence.
@@ -27,3 +28,7 @@ The Federation never publicly acknowledged Carl's role in the intelligence break
 
 - [ ] Cross-reference psychic telepath program records #urgent
 - [ ] Verify deployment dates against mission logs #medium
+
+## Characters
+
+!view character

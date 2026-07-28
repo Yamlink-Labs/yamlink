@@ -161,4 +161,28 @@ function buildTaskRows(index, vaultGeneration) {
   return rows;
 }
 
-module.exports = { parseTasksFromContent, buildTaskRows, extractPriority };
+/**
+ * Pure line-toggle logic shared by every write path (VS Code's
+ * `viewPanel.js`'s `toggleTaskCheckbox` and the headless API's task-toggle
+ * endpoint) — flips a single task line's checkbox state in already-read file
+ * content, without touching the filesystem or any editor. Callers own
+ * reading/writing the file and appending mutation events.
+ * @param {string} content @param {number|string} lineNumber 1-indexed @param {boolean} newDone
+ * @returns {{ changed: boolean, content: string }}
+ */
+function toggleTaskLine(content, lineNumber, newDone) {
+    const lines = String(content || '').replace(/\r\n/g, '\n').replace(/\r/g, '\n').split('\n');
+    const lineIdx = Number(lineNumber) - 1;
+    if (lineIdx < 0 || lineIdx >= lines.length) return { changed: false, content };
+
+    const original = lines[lineIdx];
+    const updated = newDone
+        ? original.replace(/^(\s*[-*]\s+)\[ \]/, '$1[x]')
+        : original.replace(/^(\s*[-*]\s+)\[x\]/i, '$1[ ]');
+    if (updated === original) return { changed: false, content };
+
+    lines[lineIdx] = updated;
+    return { changed: true, content: lines.join('\n') };
+}
+
+module.exports = { parseTasksFromContent, buildTaskRows, extractPriority, toggleTaskLine };

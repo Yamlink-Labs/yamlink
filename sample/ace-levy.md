@@ -4,6 +4,8 @@ type: character
 name: Ace Levy
 unit: [[roughnecks]]
 rank: private
-homeworld: "<santiago"
+homeworld: Santiago
+species: human
+status: active
 gender:
 ---

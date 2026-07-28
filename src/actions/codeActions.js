@@ -11,6 +11,7 @@ const { getExpectedRelationTypes } = require('../intelligence/authoringEngine');
 const { canonicalizeId, extractCanonicalIdFromFrontmatter } = require('../core/id');
 const { getPrimaryWorkspaceRoot } = require('../core/workspace');
 const { getTemplateForType, extractTemplateFields, TEMPLATES_DIR } = require('../core/templateRegistry');
+const { resolveYamlFieldNameForLine } = require('../core/frontmatter');
 const { emitOutcomeEvent } = require('../runtime/mutationEventLog');
 const { buildStarterViewQuery, registerViewCommands } = require('./codeActionsViewCommands');
 const { registerNodeCommands } = require('./codeActionsNodeCommands');
@@ -162,7 +163,12 @@ function registerCodeActions(context, getIndex) {
 
                         const code = /** @type {any} */ (diagnostic.code)?.value ?? diagnostic.code;
 
-                        if (isFrontmatterDiagnostic(document, diagnostic)) {
+                        // Broken-link diagnostics fire on body text just as often as
+                        // frontmatter (a doc explaining `[[wikilink]]` syntax in prose,
+                        // for instance) — this used to only offer "Ignore" when the
+                        // diagnostic fell inside frontmatter, so a body-text false
+                        // positive had no way to dismiss it and un-mute the decoration.
+                        if (isFrontmatterDiagnostic(document, diagnostic) || code === 'yamlink.brokenLink') {
                             const ignoreAction = new vscode.CodeAction(
                                 'Yamlink: Ignore this suggestion here',
                                 vscode.CodeActionKind.QuickFix
@@ -267,9 +273,21 @@ function registerCodeActions(context, getIndex) {
                             if (seenIds.has(id)) continue;
                             seenIds.add(id);
 
-                            const lineText = document.lineAt(diagnostic.range.start.line).text;
-                            const fieldMatch = lineText.match(/^\s*([\w-]+)\s*:/);
-                            const fieldName = fieldMatch ? fieldMatch[1].toLowerCase() : null;
+                            // Only walk upward for a parent field name inside frontmatter
+                            // (yamlink.brokenRelation) — a body broken-link
+                            // (yamlink.brokenLink) has no YAML list-continuation
+                            // concept, and scanning upward through arbitrary prose
+                            // could misattribute to an unrelated "Label:"-shaped line.
+                            const fieldName = code === 'yamlink.brokenRelation'
+                                ? resolveYamlFieldNameForLine(
+                                    document.getText().split('\n'),
+                                    diagnostic.range.start.line
+                                )
+                                : (() => {
+                                    const lineText = document.lineAt(diagnostic.range.start.line).text;
+                                    const fieldMatch = lineText.match(/^\s*([\w-]+)\s*:/);
+                                    return fieldMatch ? fieldMatch[1].toLowerCase() : null;
+                                })();
 
                             let resolvedType = null;
                             if (fieldName) {

@@ -5,6 +5,7 @@ name: Carmen Ibanez
 rank: Lieutenant Commander
 unit: [[federations-fleet]]
 species: human
+status: active
 created: 2297-01-15
 homeworld:
 gender:

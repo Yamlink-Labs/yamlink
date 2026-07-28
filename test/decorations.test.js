@@ -13,7 +13,16 @@ require.cache.__decorations_vscode__ = {
     exports: {
         window: {
             createTextEditorDecorationType() {
-                return {};
+                // Each call must return a distinct object identity — updateDecorations
+                // tests below distinguish "which decoration type got this range" by
+                // object reference, the same way real vscode decoration types are
+                // distinct singleton handles.
+                return { __decorationType: true };
+            }
+        },
+        workspace: {
+            getConfiguration() {
+                return { get: () => false };
             }
         },
         ThemeColor: class ThemeColor {
@@ -50,7 +59,8 @@ Module._resolveFilename = function (request, parent, ...rest) {
     return originalResolve(request, parent, ...rest);
 };
 
-const { collectDateShortcutDecorations, collectResolvedDateDecorations, collectTagDecorations } = require('../src/features/decorations');
+const { collectDateShortcutDecorations, collectResolvedDateDecorations, collectTagDecorations, updateDecorations } = require('../src/features/decorations');
+const { initializeIgnoredDiagnostics, ignoreDiagnostic, describeBrokenLink } = require('../src/diagnostics/ignoredDiagnostics');
 
 function makeDocument(text) {
     return {
@@ -289,6 +299,85 @@ describe('canonicalizeLinkedTarget', () => {
 
     test('empty string returns empty string', () => {
         assert.equal(canonicalizeLinkedTarget(''), '');
+    });
+});
+
+// ─────────────────────────────────────────────────────────────────
+// updateDecorations — broken-link muting must respect "Ignore this
+// suggestion here". Real bug: the muted/faded decoration was computed by
+// a completely separate pass from the diagnostics array, with zero
+// awareness of ignored-diagnostic state, so dismissing the diagnostic via
+// the lightbulb never actually un-muted the text.
+// ─────────────────────────────────────────────────────────────────
+
+describe('updateDecorations — broken link ignore state', () => {
+    // positionAt must return a real {line, character} shape (single-line
+    // text here, so character === offset) — buildIgnoredDiagnosticKey reads
+    // .line/.character, not .offset, and the key computed from decorations.js's
+    // internally-built range must match the key computed from the diagnostic
+    // actually passed to ignoreDiagnostic(), or the ignore check silently
+    // never matches anything.
+    function makeFakeEditor(text) {
+        const calls = [];
+        return {
+            document: {
+                languageId: 'markdown',
+                uri: { fsPath: 'C:\\vault\\note.md' },
+                getText: () => text,
+                positionAt: (offset) => ({ line: 0, character: offset })
+            },
+            selection: { active: { offset: 0 } },
+            setDecorations(type, ranges) {
+                calls.push({ type, ranges });
+            },
+            __calls: calls
+        };
+    }
+
+    function rangesContainingText(editor, text, needle) {
+        return editor.__calls.filter(({ ranges }) =>
+            ranges.some((r) => text.slice(r.range.start.character, r.range.end.character) === needle)
+        );
+    }
+
+    test('an ignored broken-link diagnostic stops being muted and renders as a normal link instead', () => {
+        const fakeWorkspaceState = (() => {
+            let store = [];
+            return {
+                get: (_key, def) => (store.length ? store : def),
+                update: (_key, value) => { store = value; }
+            };
+        })();
+        initializeIgnoredDiagnostics({ workspaceState: fakeWorkspaceState });
+
+        const text = '[[missing-note]] is not a real note yet.';
+        const editor = makeFakeEditor(text);
+
+        // Before ignoring: the broken-link decoration pass must be the one
+        // that claims the "missing-note" range — not the normal link pass.
+        updateDecorations(editor, () => new Map());
+        const beforeMatches = rangesContainingText(editor, text, 'missing-note');
+        assert.ok(beforeMatches.length > 0, 'expected some decoration call to cover the broken id before ignoring');
+        const mutedType = beforeMatches[0].type;
+
+        // Ignore it — the exact same command the "Ignore this suggestion
+        // here" quick fix invokes, using the exact same code/message the
+        // real diagnostic uses (describeBrokenLink), proving the key
+        // actually lines up between diagnostics.js and decorations.js.
+        const { code, message } = describeBrokenLink('missing-note', false);
+        const fakeDocument = { uri: { fsPath: 'C:\\vault\\note.md' } };
+        const fullRange = { start: { line: 0, character: 0 }, end: { line: 0, character: '[[missing-note]]'.length } };
+        return ignoreDiagnostic(fakeDocument, { range: fullRange, code, message }).then(() => {
+            editor.__calls.length = 0;
+            updateDecorations(editor, () => new Map());
+
+            const afterMatches = rangesContainingText(editor, text, 'missing-note');
+            assert.ok(afterMatches.length > 0, 'the id text should still render as *something* after being ignored');
+            assert.ok(
+                afterMatches.every(({ type }) => type !== mutedType),
+                'the muted/broken decoration type must no longer receive this range once the diagnostic is ignored'
+            );
+        });
     });
 });
 

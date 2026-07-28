@@ -91,6 +91,31 @@ describe('vaultPriors — buildFieldTargetTypes', () => {
         assert.equal(result.get('tags').get('character'), 3);
     });
 
+    it('counts every wikilink in a comma-joined string value, not just the first — the real fieldsCache shape for a YAML list field', () => {
+        // A YAML block-list relation field (`contacts:\n  - [[a]]\n  - [[b]]`)
+        // is never actually stored as a real JS array in fieldsCache — the
+        // frontmatter parser flattens it into one joined string for display,
+        // e.g. "[[theo-theodorou]], [[cesar-gutierrez]], ...". Before this
+        // fix, only the first wikilink in a joined string was ever counted
+        // (the old regex was anchored to the start of the string), so a real
+        // 6-contact account note only ever contributed 1 toward
+        // fieldTargetTypes no matter how many contacts it actually listed —
+        // permanently starving getExpectedRelationTypes()'s evidence
+        // threshold for any field shaped like this.
+        const cache = new Map([
+            ['enotria', { type: 'account', contacts: '[[theo]], [[cesar]], [[edith]], [[carlos]], [[christina]], [[paul]]' }],
+            ['theo', { type: 'contact' }],
+            ['cesar', { type: 'contact' }],
+            ['edith', { type: 'contact' }],
+            ['carlos', { type: 'contact' }],
+            ['christina', { type: 'contact' }],
+            ['paul', { type: 'contact' }],
+        ]);
+        const result = buildFieldTargetTypes(cache);
+        assert.ok(result.has('contacts'));
+        assert.equal(result.get('contacts').get('contact'), 6);
+    });
+
     it('omits links where target has no type', () => {
         const cache = new Map([
             ['note-a', { contact: '[[unknown-person]]' }],
@@ -257,6 +282,46 @@ describe('vaultPriors — getCommonFieldsForType', () => {
             withScan.map(f => ({ field: f.field, ratio: f.ratio, adjustedRatio: f.adjustedRatio })),
             withTotals.map(f => ({ field: f.field, ratio: f.ratio, adjustedRatio: f.adjustedRatio }))
         );
+    });
+
+    it('keeps every field tied with the boundary field\'s ratio, instead of arbitrarily alphabetizing away real ties past the limit', () => {
+        // Real bug, found from a live user report: a small, tightly-structured
+        // vault (e.g. 3 notes of a type) can easily have MORE than `limit`
+        // fields all at ratio 1.0 (every note has every field) — the old code
+        // sorted ties alphabetically then hard-sliced to `limit`, silently
+        // dropping fields that were exactly as common as the ones that made
+        // the cut, purely because of spelling. Reproduces the exact shape:
+        // 11 fields all present on all 3 notes of a type, limit: 8 — every
+        // one of the 11 must survive, not just the alphabetically-first 8.
+        const fieldNames = ['zulu', 'yankee', 'xray', 'whiskey', 'victor', 'uniform', 'tango', 'sierra', 'romeo', 'quebec', 'papa'];
+        const cache = new Map();
+        for (let i = 0; i < 3; i++) {
+            const fields = { type: 'mission' };
+            for (const f of fieldNames) fields[f] = `value-${i}`;
+            cache.set(`note-${i}`, fields);
+        }
+        const bundles = buildTypeFieldBundles(cache);
+        const fields = getCommonFieldsForType('mission', bundles, cache, { limit: 8, minRatio: 0.25 });
+        assert.equal(fields.length, fieldNames.length, 'every tied field must survive, not just the first 8 alphabetically');
+        for (const name of fieldNames) {
+            assert.ok(fields.some(f => f.field === name), `${name} should not have been dropped`);
+        }
+    });
+
+    it('still truncates normally when fields are NOT tied at the boundary', () => {
+        // A real, non-tied spread of ratios should still respect `limit` —
+        // the fix only preserves ties at the exact boundary ratio, it doesn't
+        // disable the limit altogether.
+        const cache = new Map([
+            ['a', { type: 'dossier', f1: 'x', f2: 'x', f3: 'x' }],
+            ['b', { type: 'dossier', f1: 'x', f2: 'x' }],
+            ['c', { type: 'dossier', f1: 'x' }],
+            ['d', { type: 'dossier', f1: 'x' }],
+        ]);
+        const bundles = buildTypeFieldBundles(cache);
+        const fields = getCommonFieldsForType('dossier', bundles, cache, { limit: 2, minRatio: 0.1 });
+        assert.equal(fields.length, 2, 'no ties at the boundary — the limit should still apply normally');
+        assert.equal(fields[0].field, 'f1');
     });
 });
 

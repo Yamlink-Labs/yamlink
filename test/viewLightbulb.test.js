@@ -138,11 +138,20 @@ require.cache.__viewlight_index_stub__ = {
                 ['lt-rasczak', { type: 'character', name: 'Lieutenant Rasczak', unit: '[[roughnecks]]', rank: 'lieutenant' }],
                 ['roughnecks', { type: 'unit', name: 'Roughnecks' }],
                 ['acme', { type: 'account', name: 'Acme' }],
-                ['globex', { type: 'account', name: 'Globex' }]
+                ['globex', { type: 'account', name: 'Globex' }],
+                ['mission-klendathu', { type: 'mission', name: 'Klendathu', unit: '[[roughnecks]]' }]
             ]);
         },
         getPathIndex() {
             return new Map();
+        },
+        getIndex() {
+            const ids = [
+                'fix-graph-selection', 'review-hover-card', 'yamlink', 'alice-smith',
+                'contact-andreas', 'contact-brenda', 'johnny-rico', 'carmen-ibanez',
+                'lt-rasczak', 'roughnecks', 'acme', 'globex', 'mission-klendathu'
+            ];
+            return new Map(ids.map((id) => [id, `/vault/${id}.md`]));
         },
         getVaultGeneration() {
             return 0;
@@ -567,6 +576,50 @@ describe('view lightbulb', () => {
         assert.match(unitAction.title, /roughnecks/i);
         assert.equal(unitAction.edit.operations[0].kind, 'replace');
         assert.equal(unitAction.edit.operations[0].text, ' [[roughnecks]]');
+    });
+
+    test('infers a relation fallback from real vault usage even when no schema declares the field (zero-schema vault)', () => {
+        const context = { subscriptions: [] };
+        registerViewLightbulb(context);
+
+        const document = {
+            languageId: 'markdown',
+            uri: { fsPath: '/vault/mission-planet-p.md' },
+            getText() {
+                return [
+                    '---',
+                    'id: mission-planet-p',
+                    'type: mission',
+                    'name: Operation Planet P',
+                    'unit:',
+                    '---',
+                    '',
+                    'Bug hunt.'
+                ].join('\n');
+            },
+            lineAt(line) {
+                const lines = this.getText().split('\n');
+                return { text: lines[line] };
+            }
+        };
+
+        const actions = registeredProvider.provideCodeActions(document, { start: { line: 4 } });
+        assert.ok(actions);
+        assert.ok(actions.length > 0);
+        // getSchema() returns null for the 'mission' type — there is no
+        // schema note declaring `unit` as a relation. Without falling back
+        // to real usage-based relation inference in buildTypedEmptyFieldFallbackActions,
+        // this used to fall through to plain scalar-value ranking, which
+        // happily accepts any string (including bogus non-id values) as a
+        // "common value". Depending on classification confidence this can
+        // surface either through that fallback ("Use roughnecks for unit?")
+        // or through the adaptive field-hint path ("Should unit link to
+        // roughnecks?") — both are legitimate, evidence-backed outcomes, so
+        // this only pins the one thing that matters: it must be the vault's
+        // real, most-referenced unit, never a bogus non-existent id.
+        assert.match(actions[0].title, /roughnecks/i);
+        const editText = actions[0].edit.operations.map((op) => op.text).join('');
+        assert.match(editText, /\[\[roughnecks\]\]/);
     });
 
     test('keeps typed empty descriptive fields alive with ranked value suggestions', () => {

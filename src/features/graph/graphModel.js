@@ -1,7 +1,15 @@
 'use strict';
 
 const { getIndex, getFieldsCache } = require('../../core/indexService');
-const { getEdges, getBacklinks } = require('../../core/graph');
+const {
+    getEdges,
+    getBacklinks,
+    computeGraphEdgeWeight,
+    classifyGraphEdgeStrength,
+    computeHubScore,
+    computeNodeWeightedDegree,
+    computeNodeExplorerScore
+} = require('../../core/graph');
 
 /**
  * @param {string[]} nodeIds
@@ -45,7 +53,7 @@ function buildGraphModel(nodeIds, centerNodeId = null) {
             }
             const reciprocalKey = `${pair.tgt}\x00${pair.src}`;
             const reciprocal = pairMap.get(reciprocalKey);
-            const weight = computeEdgeWeight(label, {
+            const weight = computeGraphEdgeWeight(label, {
                 reciprocal: !!reciprocal,
                 targetType: getNodeType(pair.tgt, fieldsCache),
                 sourceType: getNodeType(pair.src, fieldsCache)
@@ -57,7 +65,7 @@ function buildGraphModel(nodeIds, centerNodeId = null) {
                 label,
                 color: relationColors.get(label),
                 weight,
-                strength: classifyEdgeStrength(label, weight)
+                strength: classifyGraphEdgeStrength(label, weight)
             });
         }
     }
@@ -328,68 +336,6 @@ function getNodeTags(fields = {}) {
     const raw = String(fields.__yamlink_tags || '').trim();
     if (!raw) return [];
     return [...new Set(raw.split(',').map((tag) => String(tag || '').trim()).filter(Boolean))];
-}
-
-function classifyEdgeStrength(label, weight) {
-    if (label === 'mention') return 'weak';
-    if (weight >= 3.2) return 'strong';
-    return 'medium';
-}
-
-function computeEdgeWeight(label, options = {}) {
-    const isMention = label === 'mention';
-    const reciprocalBonus = options.reciprocal ? 0.65 : 0;
-    const semanticBonus = options.sourceType && options.targetType && options.sourceType !== options.targetType ? 0.2 : 0;
-    const base = isMention ? 0.85 : 2.55;
-    return round2(base + reciprocalBonus + semanticBonus);
-}
-
-function computeHubScore({ weightedDegree, relationKinds, connectedTypes, strongEdges, tagCount }) {
-    return round2(
-        (weightedDegree * 2.2) +
-        (relationKinds * 1.4) +
-        (connectedTypes * 1.1) +
-        (strongEdges * 0.75) +
-        (Math.min(tagCount, 4) * 0.25)
-    );
-}
-
-function computeNodeWeightedDegree(id) {
-    const outgoing = (getEdges(id) || []).map((edge) => computeEdgeWeight(edge.field === 'body' ? 'mention' : edge.field, {
-        reciprocal: (getEdges(edge.targetId) || []).some((candidate) => candidate && candidate.targetId === id)
-    }));
-    const incoming = (getBacklinks(id) || []).map((edge) => computeEdgeWeight(edge.field === 'body' ? 'mention' : edge.field, {
-        reciprocal: (getEdges(edge.sourceId) || []).some((candidate) => candidate && candidate.targetId === id)
-    }));
-    return round2([...outgoing, ...incoming].reduce((sum, weight) => sum + weight, 0));
-}
-
-function computeNodeExplorerScore(id, fieldsCache) {
-    const relatedTypes = new Set();
-    const relationFields = new Set();
-    const tags = getNodeTags(fieldsCache.get(id) || {});
-    let strongEdges = 0;
-
-    for (const edge of getEdges(id) || []) {
-        const label = edge.field === 'body' ? 'mention' : edge.field;
-        relationFields.add(label);
-        relatedTypes.add(getNodeType(edge.targetId, fieldsCache));
-        if (classifyEdgeStrength(label, computeEdgeWeight(label)) !== 'weak') strongEdges += 1;
-    }
-    for (const edge of getBacklinks(id) || []) {
-        const label = edge.field === 'body' ? 'mention' : edge.field;
-        relationFields.add(label);
-        relatedTypes.add(getNodeType(edge.sourceId, fieldsCache));
-        if (classifyEdgeStrength(label, computeEdgeWeight(label)) !== 'weak') strongEdges += 1;
-    }
-
-    return computeHubScore({
-        weightedDegree: computeNodeWeightedDegree(id),
-        relationKinds: relationFields.size,
-        connectedTypes: [...relatedTypes].filter(Boolean).length,
-        strongEdges,
-        tagCount: tags.length
-    });
 }
 
 function round2(value) {

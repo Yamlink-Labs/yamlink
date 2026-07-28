@@ -17,6 +17,7 @@ const {
 } = require('./vaultPriors');
 const { getImplicitBoost, getTemporalConfidenceAdjustment } = require('./implicitWeights');
 const { getFieldCalibrationBoost } = require('./outcomeCalibration');
+const { collectPluginEvidence } = require('./pluginRegistry');
 
 /**
  * @typedef {{
@@ -605,17 +606,41 @@ function classifyField(fieldName, options = {}) {
     const result = _doClassifyField(fieldName, options);
 
     const { multiplier, reason } = getTemporalConfidenceAdjustment(fieldName, options.fieldVolatility);
-    if (multiplier === 1) return { ...result, vaultMaturity };
-
-    const confidence = Math.min(0.98, Math.max(0, result.confidence * multiplier));
-    const adjusted = {
-        ...result,
-        confidence,
-        reasons: reason ? [...(result.reasons || []), reason] : result.reasons
-    };
-    if (adjusted.category === CATEGORY.RELATION) {
-        adjusted.relationStrength = relationStrengthFor(confidence, adjusted.source);
+    let adjusted = result;
+    if (multiplier !== 1) {
+        const confidence = Math.min(0.98, Math.max(0, result.confidence * multiplier));
+        adjusted = {
+            ...result,
+            confidence,
+            reasons: reason ? [...(result.reasons || []), reason] : result.reasons
+        };
+        if (adjusted.category === CATEGORY.RELATION) {
+            adjusted.relationStrength = relationStrengthFor(confidence, adjusted.source);
+        }
     }
+
+    // Third-party plugin evidence — a deliberately small, capped nudge, never
+    // the deciding signal. Every registered source's score is explainable
+    // (its own `reason` string) and bounded so no combination of plugins can
+    // push classification further than a modest amount beyond what the
+    // vault's own real evidence already established.
+    const pluginEvidence = collectPluginEvidence(fieldName, {
+        noteType: options.noteType || null,
+        noteFields: Object.freeze({ ...(options.noteFields || {}) }),
+        fieldsCache: options.fieldsCache || new Map()
+    });
+    if (pluginEvidence.length) {
+        const PLUGIN_NUDGE_CAP = 0.10;
+        const nudge = Math.max(-PLUGIN_NUDGE_CAP, Math.min(PLUGIN_NUDGE_CAP,
+            pluginEvidence.reduce((sum, e) => sum + (e.score - 0.5) * 0.2, 0)
+        ));
+        adjusted = {
+            ...adjusted,
+            confidence: Math.min(0.98, Math.max(0, adjusted.confidence + nudge)),
+            reasons: [...(adjusted.reasons || []), ...pluginEvidence.map((e) => `plugin: ${e.reason}`)]
+        };
+    }
+
     return { ...adjusted, vaultMaturity };
 }
 

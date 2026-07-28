@@ -10,6 +10,7 @@ const {
     handleSplitNoteBody,
     handleNewNoteFromSchema,
     handleAddMissingTemplateFields,
+    handleSaveAsTemplate,
     handleAddFrontmatter,
     handleBackfillCreatedDates,
     handleOpenDailyNote
@@ -59,6 +60,9 @@ function registerNodeCreationCommands(context, getIndex, getTypes) {
     );
     context.subscriptions.push(
         vscode.commands.registerCommand('yamlink.addMissingTemplateFields', handleAddMissingTemplateFields)
+    );
+    context.subscriptions.push(
+        vscode.commands.registerCommand('yamlink.saveAsTemplate', handleSaveAsTemplate)
     );
     context.subscriptions.push(
         vscode.commands.registerCommand('yamlink.addFrontmatter', handleAddFrontmatter.bind(null, deps))

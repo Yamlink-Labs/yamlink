@@ -63,6 +63,81 @@ describe('.yamlinkignore rules', () => {
         assert.equal(isIgnoredPath(path.join(root, 'misc', 'scratch-note.md'), root, rules), true);
         assert.equal(isIgnoredPath(path.join(root, 'notes', 'active.md'), root, rules), false);
     });
+
+    // Real gap found from a GitHub Discussions report about multi-root
+    // workspaces: .yamlinkignore had zero wildcard support at all, so a
+    // second folder in the workspace couldn't be excluded wholesale without
+    // listing every path exactly.
+    describe('glob rules', () => {
+        test('parses a bare `*` as an anchored glob rule', () => {
+            const rules = parseIgnoreFile('*');
+            assert.equal(rules.length, 1);
+            assert.equal(rules[0].type, 'glob');
+            assert.equal(rules[0].anchored, false);
+            assert.equal(rules[0].dirLike, false);
+        });
+
+        test('a bare `*` (unanchored) ignores everything at any depth', () => {
+            const root = path.join('C:', 'vault');
+            const rules = parseIgnoreFile('*');
+
+            assert.equal(isIgnoredPath(path.join(root, 'top.md'), root, rules), true);
+            assert.equal(isIgnoredPath(path.join(root, 'sub', 'nested.md'), root, rules), true);
+        });
+
+        test('`**/` ignores the whole tree from any anchor point', () => {
+            const root = path.join('C:', 'vault');
+            const rules = parseIgnoreFile('**/');
+
+            assert.equal(isIgnoredPath(path.join(root, 'top.md'), root, rules), true);
+            assert.equal(isIgnoredPath(path.join(root, 'sub', 'deep', 'nested.md'), root, rules), true);
+        });
+
+        test('an unanchored directory glob (`logs*/`, no slash) excludes matching dirs at any depth', () => {
+            const root = path.join('C:', 'vault');
+            const rules = parseIgnoreFile('logs*/');
+
+            assert.equal(isIgnoredPath(path.join(root, 'logs-2026', 'jan.md'), root, rules), true);
+            assert.equal(isIgnoredPath(path.join(root, 'other', 'logs-2026', 'jan.md'), root, rules), true);
+            assert.equal(isIgnoredPath(path.join(root, 'notes.md'), root, rules), false);
+        });
+
+        test('an anchored directory glob (`archive/old*/`, has a slash) only matches at that exact root path', () => {
+            const root = path.join('C:', 'vault');
+            const rules = parseIgnoreFile('archive/old*/');
+
+            assert.equal(isIgnoredPath(path.join(root, 'archive', 'old-2024', 'jan.md'), root, rules), true);
+            assert.equal(isIgnoredPath(path.join(root, 'archive', 'old-2024'), root, rules), true);
+            assert.equal(isIgnoredPath(path.join(root, 'other', 'archive', 'old-2024', 'jan.md'), root, rules), false);
+            assert.equal(isIgnoredPath(path.join(root, 'archive', 'notes.md'), root, rules), false);
+        });
+
+        test('an anchored file glob (`drafts/*.md`) only matches directly inside that folder', () => {
+            const root = path.join('C:', 'vault');
+            const rules = parseIgnoreFile('drafts/*.md');
+
+            assert.equal(isIgnoredPath(path.join(root, 'drafts', 'idea.md'), root, rules), true);
+            assert.equal(isIgnoredPath(path.join(root, 'drafts', 'sub', 'idea.md'), root, rules), false);
+        });
+
+        test('an unanchored filename glob (`*.tmp.md`) matches at any depth by basename', () => {
+            const root = path.join('C:', 'vault');
+            const rules = parseIgnoreFile('*.tmp.md');
+
+            assert.equal(isIgnoredPath(path.join(root, 'scratch.tmp.md'), root, rules), true);
+            assert.equal(isIgnoredPath(path.join(root, 'nested', 'scratch.tmp.md'), root, rules), true);
+            assert.equal(isIgnoredPath(path.join(root, 'keep.md'), root, rules), false);
+        });
+
+        test('an unanchored directory-name glob (`node_modules*/`) excludes matching folders at any depth', () => {
+            const root = path.join('C:', 'vault');
+            const rules = parseIgnoreFile('node_modules*/');
+
+            assert.equal(isIgnoredPath(path.join(root, 'node_modules', 'pkg.md'), root, rules), true);
+            assert.equal(isIgnoredPath(path.join(root, 'sub', 'node_modules-backup', 'pkg.md'), root, rules), true);
+            assert.equal(isIgnoredPath(path.join(root, 'sub', 'not-modules', 'pkg.md'), root, rules), false);
+        });
+    });
 });
 
 describe('.yamlinkignore indexing', () => {

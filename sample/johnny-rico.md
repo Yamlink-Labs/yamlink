@@ -6,6 +6,7 @@ rank: private
 unit: [[roughnecks]]
 homeworld: Buenos Aires
 species: human
+status: active
 created: 2297-01-15
 gender:
 ---

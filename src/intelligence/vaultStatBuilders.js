@@ -2,10 +2,32 @@
 
 const { inferNoteRole } = require('./noteRolesCore');
 
-const WIKILINK_RE = /^\[\[([^\]|#]+)/;
+const WIKILINK_GLOBAL_RE = /\[\[([^\]|#]+)/g;
 const DATE_VALUE_RE = /^\d{4}-\d{2}-\d{2}$/;
 
 function _norm(s) { return String(s || '').trim().toLowerCase(); }
+
+/**
+ * A YAML block-list relation field (e.g. `contacts:\n  - [[a]]\n  - [[b]]`)
+ * is never actually stored in fieldsCache as a real JS array — the frontmatter
+ * parser flattens it into one comma-joined string ("[[a]], [[b]]") for display
+ * purposes. That means the old single-anchor WIKILINK_RE (`^\[\[...`) only
+ * ever matched the *first* wikilink in a joined string, so any note using a
+ * list-shaped relation field always contributed exactly 1 count toward
+ * `fieldTargetTypes`, no matter how many real links the list actually had —
+ * a genuine 6-contact account note counted as evidence of 1, permanently
+ * starving `getExpectedRelationTypes()`'s minCount threshold of real evidence
+ * for this whole class of field. Extract every `[[id]]` occurrence in the
+ * value instead of only the first, falling back to treating the whole raw
+ * value as a single plain (non-relation) target id when it contains no
+ * wikilinks at all, same as before.
+ * @param {string} raw @returns {string[]}
+ */
+function extractAllWikilinkTargets(raw) {
+    const matches = [...raw.matchAll(WIKILINK_GLOBAL_RE)];
+    if (matches.length) return matches.map((m) => _norm(m[1]));
+    return [_norm(raw)];
+}
 
 function buildFieldTargetTypes(fieldsCache) {
     const result = new Map();
@@ -17,14 +39,14 @@ function buildFieldTargetTypes(fieldsCache) {
             for (const v of values) {
                 const raw = String(v || '').trim();
                 if (!raw) continue;
-                const m = WIKILINK_RE.exec(raw);
-                const targetId = m ? _norm(m[1]) : _norm(raw);
-                if (!targetId || !fieldsCache.has(targetId)) continue;
-                const targetType = _norm(fieldsCache.get(targetId)?.type);
-                if (!targetType) continue;
-                if (!result.has(fn)) result.set(fn, new Map());
-                const tm = result.get(fn);
-                tm.set(targetType, (tm.get(targetType) || 0) + 1);
+                for (const targetId of extractAllWikilinkTargets(raw)) {
+                    if (!targetId || !fieldsCache.has(targetId)) continue;
+                    const targetType = _norm(fieldsCache.get(targetId)?.type);
+                    if (!targetType) continue;
+                    if (!result.has(fn)) result.set(fn, new Map());
+                    const tm = result.get(fn);
+                    tm.set(targetType, (tm.get(targetType) || 0) + 1);
+                }
             }
         }
     }
@@ -110,15 +132,27 @@ function getCommonFieldsForType(noteType, typeFieldBundles, fieldsCache, opts = 
     // ranking without gating suggestions (the filter still uses raw ratio).
     const sampleWeight = Math.min(1.0, total / MIN_RELIABLE_SAMPLE);
 
-    return Array.from(bundle.entries())
+    const ranked = Array.from(bundle.entries())
         .map(([field, count]) => {
             const ratio = count / total;
             const adjustedRatio = ratio * sampleWeight;
             return { field, count, ratio, adjustedRatio };
         })
         .filter(e => e.ratio >= minRatio)
-        .sort((a, b) => b.adjustedRatio - a.adjustedRatio || b.ratio - a.ratio || a.field.localeCompare(b.field))
-        .slice(0, limit);
+        .sort((a, b) => b.adjustedRatio - a.adjustedRatio || b.ratio - a.ratio || a.field.localeCompare(b.field));
+
+    if (ranked.length <= limit) return ranked;
+
+    // A hard slice(0, limit) here would arbitrarily drop fields that are
+    // exactly as common as the last one kept, purely because they sort
+    // later alphabetically — a real bug on small, tightly-structured vaults
+    // (a handful of notes of a type where nearly every field appears on
+    // every note): several fields legitimately tie at ratio 1.0, and which
+    // ones survived the cut depended only on spelling, not actual frequency.
+    // Keep every field tied with the boundary field's ratio, not just the
+    // first `limit` after the tie-break sort.
+    const boundaryRatio = ranked[limit - 1].ratio;
+    return ranked.filter((e) => e.ratio >= boundaryRatio);
 }
 
 function buildFieldAmbiguity(fieldsCache) {

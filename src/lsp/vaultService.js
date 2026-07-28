@@ -4,6 +4,7 @@ const path = require('path');
 
 const { getIndex }    = require('../core/indexService');
 const { getDuplicateIds, getFieldsCache, getAliasIndex, getVaultGeneration } = require('../core/indexService');
+const { findNearDuplicateScalarValue } = require('../intelligence/valueNormalization');
 const { getSchema, getDuplicateSchemas, hasSchema } = require('../registries/schemaRegistry');
 const { computeNoteDrift } = require('../intelligence/driftDetector');
 const { getCachedPriors } = require('../intelligence/vaultPriors');
@@ -55,6 +56,45 @@ function collectDiagnosticsFromContent(content, idIndex, filePath, state) {
                 code: 'yamlink.duplicateId',
                 message: `Yamlink: id "${thisId}" is declared in multiple files.`,
                 data: { id: thisId }
+            });
+        }
+    }
+
+    // Near-duplicate scalar frontmatter value — mirrors the same diagnostic
+    // in src/diagnostics/diagnostics.js (VS Code side). The two are kept as
+    // separate implementations (different diagnostic object shapes: raw LSP
+    // JSON-RPC objects here vs. vscode.Diagnostic there), same as every other
+    // diagnostic in this file, but must stay in sync so non-VS-Code editors
+    // get the same intelligence.
+    if (frontmatter) {
+        const docType = String(getFieldsCache().get(thisId || '')?.type || '').trim().toLowerCase() || null;
+        const fmLines = frontmatter.frontmatterText.split('\n');
+        const scalarFieldPattern = /^([a-zA-Z0-9_-]+):\s*(.+)$/;
+        for (let i = 0; i < fmLines.length; i++) {
+            const lineMatch = scalarFieldPattern.exec(fmLines[i]);
+            if (!lineMatch) continue;
+            const fieldName = lineMatch[1].trim().toLowerCase();
+            const rawValue = lineMatch[2].trim().replace(/^["']|["']$/g, '');
+            if (fieldName === 'id' || fieldName === 'type' || !rawValue) continue;
+            if (/^\[\[[^\]]+\]\]$/.test(rawValue)) continue;
+            if (i + 1 < fmLines.length && /^[ \t]/.test(fmLines[i + 1])) continue;
+
+            const nearDuplicate = findNearDuplicateScalarValue(fieldName, rawValue, docType);
+            if (!nearDuplicate || nearDuplicate.value === rawValue) continue;
+
+            const confidenceNote = nearDuplicate.matchType === 'normalized'
+                ? 'differs only in case/spacing'
+                : 'is a close match';
+            diagnostics.push({
+                range: {
+                    start: { line: i, character: 0 },
+                    end: { line: i, character: fmLines[i].length }
+                },
+                severity: 3,
+                source: 'yamlink',
+                code: 'yamlink.nearDuplicateValue',
+                message: `Yamlink: "${rawValue}" ${confidenceNote} to the existing value "${nearDuplicate.value}" already used on ${fieldName} elsewhere in this vault (${nearDuplicate.count} note${nearDuplicate.count === 1 ? '' : 's'}). Consider reusing the existing value for consistency.`,
+                data: { field: fieldName, existingValue: nearDuplicate.value }
             });
         }
     }

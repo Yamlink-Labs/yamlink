@@ -121,6 +121,45 @@ What you get from it:
   - bare relation fields such as `unit:` can reopen ranked relation candidates even before `[[` is typed
   - bare scalar fields such as `rank:` can reopen learned value vocabularies from similar notes
   - this turns Smart Templates into a staged authoring flow instead of a one-shot scaffold drop
+- **Save as Template** — turn any real, already-filled-in note into a new `_templates/<type>.md` file in one step: `yamlink template save <id>` from the CLI, or "Yamlink: Save Note as Template" from the Command Palette or the editor's right-click menu on any Markdown note.
+  - every frontmatter key is preserved, every value is blanked except `type:` (templates are keyed by it)
+  - a YAML block-list relation field (e.g. `contacts:` with several `[[...]]` entries) collapses to one blank placeholder item instead of repeating every real link
+  - the body keeps only its heading structure — real prose is dropped, since it's note-specific
+  - the result is a normal template file: it immediately works with drift detection, "New Note from Template", and everything else above — no separate format
+  - refuses to overwrite an existing template for that type unless you pass `--force` (CLI) or confirm an overwrite prompt (VS Code)
+
+### Vault Glossary
+
+An alphabetized, live glossary of a vault's own concept/term notes — useful for a worldbuilding, research, or technical vault with real definitional notes; not much use on a pure CRM/entity vault. **Nothing is ever written to disk** — both the CLI command and the VS Code panel compute the view fresh from the current vault every time they're opened, the same way Vault Health does.
+
+- **Access:** `yamlink glossary --type <a,b>` (CLI) or Command Palette → "Yamlink: Open Vault Glossary" (VS Code).
+- **The one required setting** — which note type(s) count as glossary terms (`yamlink.glossaryTypes` in VS Code Settings, `--type` per-run on the CLI). Yamlink can't guess which of your types are conceptual versus entity records, so with nothing configured it asks rather than guesses — an empty-state screen with a direct link to the setting, not a blank or wrong glossary.
+- **Each entry shows:**
+  - a **definition** — an explicit `definition:`/`summary:` field if present, else the note's own first body paragraph, verbatim (never invented text); any `[[wikilink]]` inside that text renders as a real clickable link (or, if the target doesn't resolve, as plain text in a distinct error color — never a dead-looking link)
+  - **Referenced in** — every note that links to it, the same backlink data Note Report's Links tab already reads one note at a time, gathered across every term at once
+- **Four settings, all defaulted so none are required, and all also changeable from the VS Code panel's own toolbar (not just Settings):**
+  - `yamlink.glossaryGroupByType` (default on) — a section per note type instead of one mixed A–Z list
+  - `yamlink.glossaryShowZeroBacklinkTerms` (default on) — show a term nothing links to yet, marked *(not yet referenced)*, instead of silently hiding it
+  - `yamlink.glossarySortBy` (default `alphabetical`) — or `mostReferenced` to rank terms by inbound link count instead of alphabetizing (a ranked list has no letter sections, since order itself is the signal)
+  - `yamlink.glossaryExtraFields` — extra frontmatter field names shown under each entry, if present on that note
+  - CLI equivalents: `--no-group-by-type`, `--hide-unreferenced`, `--sort-by-references`, `--extra-field <name>` (repeatable)
+- **VS Code panel specifics:**
+  - a toolbar with live checkboxes/dropdown for group-by-type, hide-unreferenced, and sort order — toggling any of them updates the underlying setting directly, no Settings trip needed
+  - clicking a term or a backlink jumps straight to that note
+  - collapsible type sections — click a type heading to fold/unfold it
+  - a live search box filters the list client-side as you type, with ↑/↓ keyboard navigation between visible results and Enter to open the focused one
+  - a **Copy as Markdown** button copies whatever's currently visible (respecting an active search filter) as plain Markdown text
+  - a persistent **Settings** button in the header is always one click away, whether the panel is showing the empty state or real data
+  - the panel re-renders automatically both when the vault changes and when any glossary setting changes (including toolbar toggles)
+
+### Smart Paste
+
+When you paste clearly structured clipboard content into a Markdown note, Yamlink can offer a safer structured conversion instead of dumping raw markup.
+
+- **Tables** — tab-separated spreadsheet content or a plain Markdown table can become a `!view` scaffold using the detected column names, or N new Markdown notes where each row becomes frontmatter. Yamlink previews the inferred note IDs before creating files and refuses to overwrite existing notes.
+- **JSON** — a top-level JSON object can become YAML frontmatter directly.
+- **Lists** — a bulleted or numbered list can become Yamlink-compatible Markdown tasks (`- [ ] ...`), preserving markers such as `#urgent`, `#medium`, and `#low`.
+- **Conservative by design** — if the pasted content is ambiguous plain text, Yamlink stays out of the way and normal paste continues.
 
 ### Intelligence direction
 
@@ -161,17 +200,22 @@ That memory now feeds live relation completion and sparse-field recovery, so ran
 
 ### `.yamlinkignore`
 
-Place a `.yamlinkignore` file at the workspace root to exclude Markdown files from Yamlink without removing them from disk.
+Place a `.yamlinkignore` file at a workspace root to exclude Markdown files from Yamlink without removing them from disk.
 
 Supported patterns:
 
 - folders with a trailing slash: `scratch/`
 - exact relative file paths: `notes/legacy.md`
 - plain filenames: `legacy-note.md`
+- wildcards (`*`, `**`, `?`): `*.tmp.md` (any file ending in `.tmp.md`, at any depth), `drafts/*.md` (only files directly inside `drafts/`), `logs*/` (any folder starting with `logs`, at any depth), `**/` (everything under this root)
+
+A pattern with a `/` in it is anchored to this root (matches only that exact path, same as a plain folder or file-path rule); a pattern with no `/` is checked at every depth, same as a plain filename rule.
 
 Ignored files are excluded from indexing, graph edges, diagnostics, Note Report, Vault Health, Calendar analysis, inference, and rename propagation.
 
 This is the right escape hatch for archives, generated content, or mixed-use repos where not every Markdown file belongs in the Yamlink system. Changes to `.yamlinkignore` take effect immediately — no restart required.
+
+**Multi-root workspaces:** `.yamlinkignore` is read separately for each folder in the workspace, and only governs the folder it's placed in — a `.yamlinkignore` in one folder has no effect on another. To exclude an entire second folder (for example, a sample vault or reference repo added alongside your real notes), place a `.yamlinkignore` containing a single `*` line at that folder's own root.
 
 ---
 
@@ -198,6 +242,8 @@ yamlink report <note-id> [--at <date>] [--json] # note report in terminal (--at:
 yamlink links <note-id> [--at <date>] [--json]  # inbound + outbound links for a note (--at: outbound-only historical)
 yamlink diff <id1> <id2> | --since <date>       # compare two notes' fields, or vault-wide changes since a date
 yamlink story --since <date> [--json]           # vault growth story: note/type deltas, activity, busiest notes
+yamlink snapshot [--reason <text>] [--json]     # capture a real, on-demand vault checkpoint right now
+yamlink restore <date> [--output <path>]        # preview (default) or export a reconstructed vault as .md files
 yamlink rename <old-id> <new-id> [--dry-run]    # vault-wide ID rename
 yamlink schema list|check <type> [--json]       # schema introspection and conformance
 yamlink graph [--only-types <types>] [--at <date>] [--json]  # export vault graph as JSON (--at: historical reconstruction)
@@ -221,11 +267,11 @@ yamlink init [path]                             # scaffold a new Yamlink vault
 yamlink completions bash|zsh                    # print shell completion script
 ```
 
-37 commands total. All commands accept `--vault <path>` (defaults to current directory). Most accept `--json` for machine-readable output. `ls`/`grep`/`find` print a real aligned table by default; `--quiet` on those three restores the old plain tab-separated form for shell pipelines.
+41 commands total. All commands accept `--vault <path>` (defaults to current directory). Most accept `--json` for machine-readable output. `ls`/`grep`/`find` print a real aligned table by default; `--quiet` on those three restores the old plain tab-separated form for shell pipelines.
 
 `yamlink serve --lsp` runs the [LSP server](#lsp-server) — a persistent JSON-RPC 2.0 process for Neovim, Zed, Helix, and Emacs. See the LSP section below.
 
-**Time Engine on the CLI:** `yamlink story --since <date>` narrates vault growth from a past date to now. `--at <date>` reconstructs historical state directly on `cat`, `report`, `links`, and `graph` — each scopes down honestly to what's actually reconstructable (no note body, no live-vault-priors inferences like lifecycle/drift, outbound-only where inbound would need a full-vault reconstruction). Full detail in [`docs/cli/README-CLI.md`](docs/cli/README-CLI.md).
+**Time Engine on the CLI:** `yamlink story --since <date>` narrates vault growth from a past date to now. `--at <date>` reconstructs historical state directly on `cat`, `report`, `links`, and `graph` — each scopes down honestly to what's actually reconstructable (no note body, no live-vault-priors inferences like lifecycle/drift, outbound-only where inbound would need a full-vault reconstruction). Run any command with `--help` for its full flag list.
 
 ### serve endpoints
 
@@ -234,7 +280,7 @@ yamlink completions bash|zsh                    # print shell completion script
 | Endpoint | Description |
 |---|---|
 | `GET /api/nodes` | All notes as JSON; `?type=` filter, `?page=`/`?limit=` pagination |
-| `GET /api/nodes/:id` | Single note with `_inbound`, `_outbound`, `_filePath`. `?include=outbound,inbound,intelligence,history` for composite reads; `?minGeneration=N` to wait for a generation before answering; `?at=<timestamp>` for a Time Engine historical reconstruction |
+| `GET /api/nodes/:id` | Single note with `_inbound`, `_outbound`, `_filePath`. `?include=outbound,inbound,intelligence,history,body,timestamps` for composite reads (`body` — 0.7.5, unreleased — adds the raw body text; `timestamps` — 0.7.5, unreleased — adds real filesystem created/modified dates); `?minGeneration=N` to wait for a generation before answering; `?at=<timestamp>` for a Time Engine historical reconstruction |
 | `GET /api/nodes/:id/outbound` \| `/inbound` \| `/neighborhood` | Graph traversal — resolved outbound/inbound edges, or a multi-hop neighborhood (`?depth=1-3`) |
 | `GET /api/nodes/:id/history` \| `/evolution` \| `/archaeology?field=` | Mutation history, change-pattern summary, and per-field relation timeline for a note |
 | `POST /api/nodes` | Create a new note from `{ type, fields? }` — returns `{ ok, id, filePath }` (201) |
@@ -247,13 +293,19 @@ yamlink completions bash|zsh                    # print shell completion script
 | `GET /api/search` \| `/schema` \| `/types` | Vault search, schema introspection, type distribution |
 | `GET /api/health` | Broken link count + schema conformance |
 | `GET /api/tasks` | All vault tasks; filter by `?done=`, `?today=`, `?overdue=`, `?note=`, `?limit=` |
+| `PATCH /api/tasks` (0.7.5, unreleased) | Toggle one task's checkbox — `{ noteId, line, done }`, same write path VS Code's live tables use |
+| `GET /api/glossary?types=` (0.7.5, unreleased) | Term definitions + full backlink lists — same data the CLI/VS Code Vault Glossary compute; `?groupByType=`, `?sortBy=`, `?hideUnreferenced=`, `?extraFields=` |
 | `GET /api/mutations` \| `/session/summary` | Recent mutation events (`?limit=`, `?since=`, `?type=`), or a summarized session |
 | `GET /api/events` | Server-Sent Events stream (filterable via `?note=`/`?noteType=`/`?type=`); pushes mutation events, `rebuild` after every vault change, and `intelligence_changed` (reactive push when derived intelligence — lifecycle/drift/arc/priors — is recomputed) |
 | `GET /api/intelligence/arc?id=` | Arc prediction — likely missing fields for a note |
 | `GET /api/intelligence/fieldCategory?id=&field=` | Field classification: category, confidence, source, reasons |
 | `GET /api/intelligence/note?id=` \| `/clusters` \| `/lenses` | Combined note intelligence snapshot; detected pre-schema field clusters; vault-wide change lenses |
 
-All responses include `X-Yamlink-Generation` (vault version integer) and `X-Yamlink-Api-Version` headers. CORS is enabled for all origins (`*`). Full reference at [`docs/api/README-API.md`](docs/api/README-API.md) and [`CONTRACT.md`](CONTRACT.md).
+All responses include `X-Yamlink-Generation` (vault version integer) and `X-Yamlink-Api-Version` headers. CORS is enabled for all origins (`*`) — no authentication by default, since anything reachable at `127.0.0.1` is otherwise trusted; set `YAMLINK_API_TOKEN` (0.7.5, unreleased) before starting `yamlink serve` to require a matching `X-Yamlink-Token` header on every request. Full method/path/params/error-code reference: [`CONTRACT.md`](CONTRACT.md).
+
+### Plugin API for third-party field evidence (0.7.5, unreleased)
+
+A VS Code extension can register a read-only evidence source that contributes one extra, small, explainable signal to Yamlink's own field classification — `registerFieldEvidenceSource(fn)`, reached via `vscode.extensions.getExtension('<publisher>.yamlink').exports`. Deliberately narrow: no vault writes, no visibility into other registered plugins, every signal must carry a stated reason or it's discarded, and the effect on any single field's confidence is capped small so no plugin can dominate a classification Yamlink's own evidence already made. VS-Code-only — the LSP server has no third-party extension-loading mechanism to expose this through.
 
 **Publishing use case:** `yamlink serve` → Next.js / Astro site reads vault at build time via API. Notes become pages, frontmatter becomes structured metadata, wikilinks resolve to relative URLs. Vault as CMS, files stay plain Markdown.
 
@@ -275,7 +327,7 @@ All responses include `X-Yamlink-Generation` (vault version integer) and `X-Yaml
 
 `yamlink serve --lsp --vault <path>` starts a persistent JSON-RPC 2.0 Language Server Protocol server over stdio, enabling any LSP-capable editor — Neovim, Zed, Helix, Emacs — to use Yamlink intelligence without VS Code.
 
-The server is the headless Yamlink engine with a stdio shell around it. No build step. No third-party dependencies beyond the engine itself. Full reference: `docs/lsp/README-LSP.md`.
+The server is the headless Yamlink engine with a stdio shell around it. No build step. No third-party dependencies beyond the engine itself.
 
 ### Capabilities
 
@@ -567,6 +619,9 @@ It's editor-native: you stay in VS Code, work in plain text, and the builder hel
 - one-step smart repairs for simple fixable problems
 - falls back to direct editing when that's the fastest fix
 - runs the updated view automatically after inserting or refining
+- **plain-language query explanation** — the preview panel states the result in a real sentence built from the actual query and result, not a static description: "This will show 9 character notes, sorted by hub score (highest first), with name/status/unit columns."
+- **Fast starts** — one-click preset buttons in the Shape step that set a real where/sort combination for the current type: **Most connected** (sort by hub score), **No incoming links** (find notes nothing else links to), **Recently modified**, **Recently created**. Each just fills in the same filter/sort fields you could set by hand — no separate code path, no new query syntax.
+- **computed fields in the field picker** — `_inbound_count`, `_outbound_count`, and `_hub_score` (see "Computed fields" below) appear alongside real frontmatter fields in every field dropdown and the custom column list, each with an inline description so it's clear they're vault-computed rather than something you wrote (e.g. "_hub_score — how connected this note is; higher means more central to the vault").
 
 ---
 
@@ -856,7 +911,7 @@ Tasks are a real workflow surface in Yamlink.
 
 A dedicated "Tasks" view in the Yamlink sidebar (alongside Graph, Note Report, Calendar, and Note Outline) — a real place to work with every task in the vault, not just a glanceable preview.
 
-- Every task grouped into Overdue / Today / Upcoming / Undated / Done, with no hard cap on how many show per bucket
+- Every task grouped into Overdue / Today / Upcoming / Undated / Done, with no hard cap per bucket — except Undated, which shows the first 5 by default and collapses the rest behind a "Show N more" row so a large untriaged backlog doesn't dominate the view
 - Native checkboxes mark a task done or open directly from the sidebar — the file's `- [ ]`/`- [x]` line updates immediately, no need to open the note
 - Clicking a task jumps to its exact line, not just the note
 - **Priority markers** — write `#urgent`, `#medium`, or `#low` in a task line (`#high` and `#medium-priority` also recognized) and Task Center picks it up automatically: shown as a colored dot on the task, urgent/medium tasks sort to the top of their status bucket, and the tag itself renders in a matching color in the editor (red/amber/gray) instead of the generic tag color. A closed, explicit vocabulary — priority is never inferred from wording, only from a marker you actually typed.
@@ -1117,8 +1172,13 @@ Yamlink currently surfaces diagnostics for:
 - duplicate schemas
 - malformed schema nodes
 - query suggestions
+- near-duplicate scalar frontmatter values (0.7.5, unreleased — see note below, this one's still an experiment)
 
 Diagnostics appear as hints, warnings, or advisory information depending on severity.
+
+**Near-duplicate scalar value hint — experimenting with, not a committed feature yet (0.7.5, unreleased)** — while editing a plain frontmatter value (not a wikilink relation), Yamlink checks whether it's a near-duplicate of a value already used on the same field by another note of the same type — same casing/spacing difference (`Buenos Aires` vs `buenos aires`) or a close typo (`activ` vs `active`). Fires as a Hint, same severity tier as the missing-`id:` hint — never an automatic rewrite, just a nudge toward vault-wide consistency. Available identically on VS Code and the LSP server.
+
+This is deliberately a small first slice, not the end state: it only compares values already sitting in your vault, one field at a time, with no cross-note "canonical value" concept and no way yet to tell Yamlink two values should always be treated as the same. What it's aimed at, concretely — a CRM vault where `Acme Inc.` and `Acme, Inc` silently split one account's activity across two spellings and no report ever catches it; a worldbuilding vault where a location name drifts across a hundred notes, three slightly different ways, without anyone noticing; a research vault where an author's name formatting varies note to note, quietly breaking "show me everything by this person." If this proves genuinely useful in real vaults, the natural next steps are a one-click "use the existing value instead" quickfix and, further out, a real canonicalization/alias layer for scalar values (something like `aliases:` already does for note identity, but for plain field values) — neither exists yet.
 
 **Tag pill decorations** — `#hashtag` tokens in the note body and values in `tags:` / `labels:` frontmatter fields are highlighted with a purple pill (background fill + rounded border). Works across all Markdown language mode variants (`markdown`, `markdown-extended`, etc.).
 
@@ -1310,8 +1370,10 @@ npm link
 | `yamlink export` | Dump vault to JSON or CSV; `--format json\|csv` |
 | `yamlink watch` | Watch vault for `.md` changes, rebuild on every save |
 | `yamlink on <event> -- <script>` | Run a shell script when matching mutation events fire |
-| `yamlink conduit` | Terminal UI — 9 screens; auto-starts the API server if not already running |
+| `yamlink conduit` | Terminal UI — 10 screens; auto-starts the API server if not already running |
 | `yamlink init [path]` | Scaffold a new vault with `.yamlink/`, `_templates/`, and `welcome.md` |
+| `yamlink template save <id>` | Save an existing note as a blank-skeleton `_templates/<type>.md` template; `--force` to overwrite an existing one |
+| `yamlink glossary --type <a,b>` | Live alphabetized glossary of every note of the given type(s), with definitions and backlinks; nothing written to disk |
 | `yamlink completions bash\|zsh` | Print shell completion script; pipe into `.bashrc` / `.zshrc` |
 
 ### Examples
@@ -1364,12 +1426,13 @@ Space-separated `select` fields are normalized to comma-separated automatically,
 | `7` | Graph | Vault graph navigator; `v` toggles a live spatial "constellation" layout |
 | `8` | Diff | Side-by-side note diff |
 | `9` | Radar | Relation radar — connections radiating from the current note |
+| `0` | Trends | Vault projections — growth, stale, structure, and staleness forecast |
 
 ### Global key bindings
 
 | Key | Action |
 |---|---|
-| `1`–`9` | Switch to screen by number (applies to focused pane in split mode) |
+| `1`–`9`, `0` | Switch to screen by number (applies to focused pane in split mode) |
 | `\|` | Toggle split view — two independent screens side by side |
 | `Tab` | Cycle panes in split mode (lit border = active) |
 | `?` | Open help overlay |

@@ -7,7 +7,7 @@ const API_VERSION = '1';
 const CORS_HEADERS = {
     'Access-Control-Allow-Origin':  '*',
     'Access-Control-Allow-Methods': 'GET, POST, PATCH, DELETE, OPTIONS',
-    'Access-Control-Allow-Headers': 'Content-Type, X-Yamlink-Source, X-Yamlink-Session-Id',
+    'Access-Control-Allow-Headers': 'Content-Type, X-Yamlink-Source, X-Yamlink-Session-Id, X-Yamlink-Token',
 };
 
 const ERROR_CODES = {
@@ -16,6 +16,7 @@ const ERROR_CODES = {
     INVALID_JSON:       400,
     INVALID_PARAM:      400,
     LIMIT_EXCEEDED:     400,
+    UNAUTHORIZED:       401,
     NOT_FOUND:          404,
     METHOD_NOT_ALLOWED: 405,
     CONFLICT:           409,
@@ -72,6 +73,39 @@ function readBody(req) {
     });
 }
 
+async function parseJsonBody(req, res) {
+    try {
+        return await readBody(req);
+    } catch (_) {
+        badRequest(res, 'Invalid JSON body', 'INVALID_JSON');
+        return null;
+    }
+}
+
+function hasRequiredValue(body, fieldName) {
+    if (!body || typeof body !== 'object' || !Object.prototype.hasOwnProperty.call(body, fieldName)) return false;
+    const value = body[fieldName];
+    // Matches the falsy-check the pre-refactor call sites used (e.g.
+    // `String(body.type || '').trim()`), not just a null/undefined check —
+    // `false`, `0`, and `NaN` must count as missing the same way an absent
+    // field does, or a caller sending `{"type": false}` slips past this
+    // check and reaches a write path (writeNoteFile) that has no validation
+    // of its own, silently creating a note with an empty `type:`.
+    if (!value) return false;
+    if (typeof value === 'string' && value.trim() === '') return false;
+    return true;
+}
+
+function requireFields(body, res, fieldNames) {
+    for (const fieldName of fieldNames || []) {
+        if (!hasRequiredValue(body, fieldName)) {
+            badRequest(res, 'Missing param: ' + fieldName, 'MISSING_PARAM');
+            return false;
+        }
+    }
+    return true;
+}
+
 function coercePositiveInt(value, fallback, minimum = 0) {
     const parsed = Number.parseInt(String(value || ''), 10);
     if (!Number.isFinite(parsed)) return fallback;
@@ -95,6 +129,8 @@ module.exports = {
     badRequest,
     methodNotAllowed,
     readBody,
+    parseJsonBody,
+    requireFields,
     coercePositiveInt,
     normaliseSearchValue
 };

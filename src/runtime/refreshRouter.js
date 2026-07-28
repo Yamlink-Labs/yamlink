@@ -28,6 +28,7 @@ function createRefreshRouter(services) {
         if (full || dirty.has('decorations')) services.refreshDecorations();
         if (full || dirty.has('status')) services.refreshStatusBar();
         if (full || dirty.has('health')) services.refreshHealthPanel();
+        if (full || dirty.has('health')) { if (services.refreshGlossaryPanel) services.refreshGlossaryPanel(); }
         if (full || dirty.has('home')) {
             if (services.refreshHome) services.refreshHome();
             if (services.refreshTaskCenter) services.refreshTaskCenter();

@@ -113,7 +113,7 @@ function getWebviewHtml(webview) {
       height: 10px;
       border-radius: 999px;
       background: linear-gradient(180deg, var(--yl-pink), color-mix(in srgb, var(--yl-pink) 72%, white 28%));
-      box-shadow: 0 0 0 4px color-mix(in srgb, var(--yl-pink) 12%, transparent);
+      box-shadow: 0 0 0 3px color-mix(in srgb, var(--yl-pink) 10%, transparent);
       flex-shrink: 0;
     }
     .brand-title {
@@ -138,9 +138,8 @@ function getWebviewHtml(webview) {
     .section,
     .preview-card {
       border: 1px solid var(--border);
-      border-radius: 16px;
-      background:
-        linear-gradient(180deg, color-mix(in srgb, var(--yl-bg-elevated) 90%, var(--yl-link) 10%), color-mix(in srgb, var(--yl-bg-elevated) 98%, transparent));
+      border-radius: 14px;
+      background: color-mix(in srgb, var(--yl-bg-elevated) 96%, var(--yl-link) 4%);
       box-shadow: var(--shadow-inset);
     }
     .rail-card {
@@ -256,19 +255,28 @@ function getWebviewHtml(webview) {
       line-height: 1.35;
     }
     .builder-header {
-      padding: 6px 10px;
+      position: relative;
+      overflow: hidden;
+      padding: 8px 11px;
       border: 1px solid var(--border);
       border-radius: 14px;
       background:
-        radial-gradient(circle at top right, color-mix(in srgb, var(--yl-link) 10%, transparent), transparent 36%),
-        radial-gradient(circle at top left, color-mix(in srgb, var(--yl-mint) 8%, transparent), transparent 34%),
-        linear-gradient(180deg, color-mix(in srgb, var(--yl-bg-elevated) 92%, var(--yl-link) 8%), color-mix(in srgb, var(--yl-bg-elevated) 98%, transparent));
+        linear-gradient(90deg, color-mix(in srgb, var(--yl-mint) 7%, transparent), transparent 46%),
+        color-mix(in srgb, var(--yl-bg-elevated) 96%, var(--yl-link) 4%);
       box-shadow: var(--shadow-inset);
       margin-bottom: 8px;
       display: flex;
       align-items: center;
       justify-content: space-between;
       gap: 10px;
+    }
+    .builder-header::before {
+      content: '';
+      position: absolute;
+      inset: 0 auto 0 0;
+      width: 3px;
+      background: linear-gradient(180deg, var(--yl-pink), var(--yl-mint));
+      opacity: .82;
     }
     .eyebrow {
       font-size: 10px;
@@ -310,12 +318,12 @@ function getWebviewHtml(webview) {
       gap: 7px;
     }
     .chip {
-      padding: 5px 10px;
+      padding: 4px 8px;
       border-radius: 999px;
       background: color-mix(in srgb, var(--surface-card) 84%, var(--yl-mint) 16%);
       border: 1px solid color-mix(in srgb, var(--border) 74%, var(--yl-mint) 26%);
       color: var(--accent);
-      font-size: 11px;
+      font-size: 10.5px;
       font-weight: 600;
     }
     .section-badge {
@@ -445,19 +453,20 @@ function getWebviewHtml(webview) {
     }
     .mode-row {
       display: flex;
-      gap: 8px;
+      gap: 6px;
       flex-wrap: wrap;
-      margin-bottom: 10px;
+      margin-bottom: 9px;
     }
     .mode-btn {
       appearance: none;
       border: 1px solid var(--border);
       background: color-mix(in srgb, var(--surface-alt) 72%, transparent);
       color: var(--muted);
-      border-radius: 999px;
-      padding: 8px 12px;
+      border-radius: 14px;
+      padding: 6px 10px;
       cursor: pointer;
       font: inherit;
+      font-size: 12px;
       transition: background-color .14s ease, border-color .14s ease, color .14s ease, transform .14s ease;
     }
     .mode-btn:hover {
@@ -467,10 +476,10 @@ function getWebviewHtml(webview) {
       transform: translateY(-1px);
     }
     .mode-btn.active {
-      background: color-mix(in srgb, var(--yl-bg-active) 72%, var(--yl-mint) 28%);
-      border-color: color-mix(in srgb, var(--yl-mint) 56%, var(--border));
-      color: var(--accent);
-      box-shadow: inset 0 -1px 0 color-mix(in srgb, var(--yl-mint) 56%, transparent);
+      background: color-mix(in srgb, var(--surface-alt) 74%, var(--yl-link) 9%);
+      border-color: color-mix(in srgb, var(--yl-link) 48%, var(--border));
+      color: color-mix(in srgb, var(--fg) 88%, var(--yl-link) 12%);
+      box-shadow: inset 0 -2px 0 color-mix(in srgb, var(--yl-mint) 70%, transparent);
     }
     .grid {
       display: grid;
@@ -528,7 +537,7 @@ function getWebviewHtml(webview) {
     }
     .checkbox-chip {
       display: flex;
-      align-items: center;
+      align-items: flex-start;
       gap: 6px;
       padding: 7px 9px;
       border-radius: 10px;
@@ -537,9 +546,27 @@ function getWebviewHtml(webview) {
       font-size: 12px;
       color: var(--fg);
     }
+    .checkbox-chip.computed-field {
+      border-color: color-mix(in srgb, var(--yl-link) 34%, var(--border));
+      background:
+        radial-gradient(circle at top right, color-mix(in srgb, var(--yl-link) 12%, transparent), transparent 42%),
+        color-mix(in srgb, var(--surface-alt) 72%, transparent);
+    }
     .checkbox-chip input {
       width: auto;
       margin: 0;
+      transform: translateY(2px);
+    }
+    .field-chip-copy {
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+      min-width: 0;
+    }
+    .field-chip-help {
+      color: var(--muted);
+      font-size: 10px;
+      line-height: 1.3;
     }
     .preview-shell {
       display: flex;
@@ -552,9 +579,18 @@ function getWebviewHtml(webview) {
       padding: 9px 9px 10px;
     }
     .preview-card-primary {
-      background:
-        radial-gradient(circle at top right, color-mix(in srgb, var(--yl-link) 10%, transparent), transparent 36%),
-        linear-gradient(180deg, color-mix(in srgb, var(--yl-bg-elevated) 92%, var(--yl-link) 8%), color-mix(in srgb, var(--yl-bg-elevated) 98%, transparent));
+      position: relative;
+      overflow: hidden;
+      border-color: color-mix(in srgb, var(--border) 82%, var(--yl-mint) 18%);
+      background: color-mix(in srgb, var(--yl-bg-elevated) 95%, var(--yl-link) 5%);
+    }
+    .preview-card-primary::before {
+      content: '';
+      position: absolute;
+      inset: 0 0 auto;
+      height: 3px;
+      background: linear-gradient(90deg, var(--yl-mint), color-mix(in srgb, var(--yl-link) 82%, var(--yl-mint) 18%));
+      opacity: .75;
     }
     .preview-head {
       display: flex;
@@ -586,7 +622,11 @@ function getWebviewHtml(webview) {
       display: inline-flex;
       align-items: center;
       gap: 6px;
+      padding: 7px 8px;
       margin-bottom: 9px;
+      border: 1px solid color-mix(in srgb, var(--border) 82%, var(--yl-mint) 18%);
+      border-radius: 10px;
+      background: color-mix(in srgb, var(--surface-alt) 70%, var(--yl-mint) 5%);
       color: var(--muted);
       font-size: 11px;
       line-height: 1.35;
@@ -595,14 +635,94 @@ function getWebviewHtml(webview) {
       color: var(--accent);
       font-weight: 600;
     }
+    .preview-explanation {
+      margin: 0 0 10px;
+      padding: 8px 10px 8px 11px;
+      border-left: 2px solid color-mix(in srgb, var(--yl-mint) 82%, var(--yl-link) 18%);
+      border-radius: 10px;
+      background: color-mix(in srgb, var(--surface-alt) 68%, transparent);
+      color: color-mix(in srgb, var(--fg) 88%, var(--muted) 12%);
+      font-size: 12px;
+      line-height: 1.45;
+    }
+    .preset-panel {
+      position: relative;
+      overflow: hidden;
+      padding: 10px;
+      border: 1px solid color-mix(in srgb, var(--border) 82%, var(--yl-link) 18%);
+      border-radius: 14px;
+      background: color-mix(in srgb, var(--yl-bg-elevated) 95%, var(--yl-link) 5%);
+      margin-bottom: 12px;
+    }
+    .preset-panel::before {
+      content: '';
+      position: absolute;
+      inset: 0 auto 0 0;
+      width: 3px;
+      background: var(--yl-link);
+      opacity: .62;
+    }
+    .preset-panel-head {
+      display: flex;
+      align-items: baseline;
+      justify-content: space-between;
+      gap: 12px;
+      margin-bottom: 8px;
+    }
+    .preset-title {
+      color: var(--fg);
+      font-size: 12px;
+      font-weight: 700;
+    }
+    .preset-copy {
+      color: var(--muted);
+      font-size: 10px;
+      letter-spacing: .06em;
+      text-transform: uppercase;
+    }
+    .preset-list {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(155px, 1fr));
+      gap: 8px;
+    }
+    .preset-btn {
+      appearance: none;
+      text-align: left;
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      background: color-mix(in srgb, var(--surface-alt) 76%, transparent);
+      color: var(--fg);
+      padding: 8px 9px;
+      cursor: pointer;
+      min-height: 66px;
+    }
+    .preset-btn:hover {
+      border-color: color-mix(in srgb, var(--accent) 50%, var(--border));
+      background: color-mix(in srgb, var(--surface-alt) 82%, var(--yl-mint) 6%);
+    }
+    .preset-btn strong {
+      display: block;
+      font-size: 12px;
+      margin-bottom: 3px;
+    }
+    .preset-btn span {
+      display: block;
+      color: var(--muted);
+      font-size: 10px;
+      line-height: 1.35;
+    }
     .stat-line {
       display: flex;
       gap: 8px;
       align-items: baseline;
-      margin-bottom: 9px;
+      margin-bottom: 10px;
+      padding: 9px 10px;
+      border: 1px solid color-mix(in srgb, var(--border) 86%, transparent);
+      border-radius: 12px;
+      background: color-mix(in srgb, var(--surface-alt) 76%, transparent);
     }
     .stat-big {
-      font-size: 22px;
+      font-size: 24px;
       color: var(--accent);
       font-weight: 600;
       letter-spacing: -.03em;
@@ -616,8 +736,8 @@ function getWebviewHtml(webview) {
       border-radius: 12px;
       overflow: auto;
       background: color-mix(in srgb, var(--surface-alt) 76%, transparent);
-      border: 1px solid color-mix(in srgb, var(--border) 80%, var(--yl-link) 20%);
-      color: color-mix(in srgb, var(--fg) 92%, var(--yl-link) 8%);
+      border: 1px solid color-mix(in srgb, var(--border) 90%, transparent);
+      color: color-mix(in srgb, var(--fg) 96%, var(--yl-mint) 4%);
       line-height: 1.5;
       font-size: 12px;
     }
@@ -864,25 +984,26 @@ function getWebviewHtml(webview) {
     }
     .actions {
       display: flex;
-      gap: 8px;
-      margin-top: 10px;
+      gap: 6px;
+      margin-top: 9px;
       flex-wrap: wrap;
     }
     .btn {
       appearance: none;
-      border-radius: 999px;
-      padding: 8px 12px;
+      border-radius: 14px;
+      padding: 6px 10px;
       border: 1px solid color-mix(in srgb, var(--border) 74%, var(--yl-mint) 26%);
-      background: color-mix(in srgb, var(--yl-bg-active) 72%, var(--yl-mint) 28%);
+      background: color-mix(in srgb, var(--yl-bg-active) 78%, var(--yl-mint) 22%);
       color: var(--accent);
       cursor: pointer;
       font: inherit;
+      font-size: 12px;
       font-weight: 600;
       transition: transform .14s ease, border-color .14s ease, background-color .14s ease, color .14s ease;
     }
     .btn.primary {
-      padding-inline: 18px;
-      min-width: 132px;
+      padding-inline: 14px;
+      min-width: 112px;
       justify-content: center;
       display: inline-flex;
       align-items: center;
@@ -895,6 +1016,7 @@ function getWebviewHtml(webview) {
       background: color-mix(in srgb, var(--surface-alt) 72%, transparent);
       border-color: var(--border);
       color: var(--fg);
+      font-weight: 600;
     }
     .hidden { display: none !important; }
     @media (max-width: 1200px) {
@@ -1092,6 +1214,14 @@ function getWebviewHtml(webview) {
             </div>
           </details>
 
+          <div class="preset-panel" id="preset-panel">
+            <div class="preset-panel-head">
+              <div class="preset-title">Fast starts</div>
+              <div class="preset-copy">Common graph questions</div>
+            </div>
+            <div class="preset-list" id="preset-list"></div>
+          </div>
+
           <details class="subsection" id="filter-section">
             <summary>
               <span class="subsection-head"><span class="subsection-title"><span>Filters</span><span class="subsection-state" id="filter-state">No filters</span></span><span class="subsection-copy">Optional scope narrowing</span></span>
@@ -1198,6 +1328,7 @@ function getWebviewHtml(webview) {
             <div class="stat-copy" id="preview-detail"></div>
           </div>
           <div class="preview-status" id="preview-status"></div>
+          <div class="preview-explanation" id="preview-explanation"></div>
           <pre id="query-preview"></pre>
           <div class="actions">
             <button class="btn primary" id="apply-btn">Insert block</button>
@@ -1264,6 +1395,7 @@ function getWebviewHtml(webview) {
       previewTitle: document.getElementById('preview-title'),
       previewDetail: document.getElementById('preview-detail'),
       previewStatus: document.getElementById('preview-status'),
+      previewExplanation: document.getElementById('preview-explanation'),
       queryPreview: document.getElementById('query-preview'),
       warningList: document.getElementById('warning-list'),
       sampleList: document.getElementById('sample-list'),
@@ -1279,7 +1411,8 @@ function getWebviewHtml(webview) {
       layoutScatterXWrap: document.getElementById('layout-scatter-x-wrap'),
       layoutScatterX: document.getElementById('layout-scatter-x'),
       layoutScatterYWrap: document.getElementById('layout-scatter-y-wrap'),
-      layoutScatterY: document.getElementById('layout-scatter-y')
+      layoutScatterY: document.getElementById('layout-scatter-y'),
+      presetList: document.getElementById('preset-list')
     };
     let model = null;
     let suppress = false;
@@ -1299,6 +1432,19 @@ function getWebviewHtml(webview) {
       for (const value of values) {
         const selected = String(value) === String(current) ? ' selected' : '';
         parts.push('<option value="' + escapeHtml(value) + '"' + selected + '>' + escapeHtml(value) + '</option>');
+      }
+      return parts.join('');
+    }
+
+    function fieldOptionsHtml(values, current, allowBlankLabel = null, descriptions = {}) {
+      const parts = [];
+      if (allowBlankLabel !== null) parts.push('<option value="">' + escapeHtml(allowBlankLabel) + '</option>');
+      for (const value of values) {
+        const description = descriptions[value] || '';
+        const selected = String(value) === String(current) ? ' selected' : '';
+        const title = description ? ' title="' + escapeHtml(description) + '"' : '';
+        const label = description ? value + ' — ' + description : value;
+        parts.push('<option value="' + escapeHtml(value) + '"' + selected + title + '>' + escapeHtml(label) + '</option>');
       }
       return parts.join('');
     }
@@ -1385,12 +1531,13 @@ function getWebviewHtml(webview) {
       els.taskPreset.innerHTML = optionsHtml(['tasks','open-tasks','done-tasks','overdue','undated-tasks','calendar','today','upcoming'], state.taskPreset);
       els.label.value = state.label || '';
       els.selectModeButtons.forEach((btn) => btn.classList.toggle('active', btn.dataset.selectMode === (state.selectMode || 'smart')));
-      els.groupBy.innerHTML = optionsHtml(options.groupableFields || [], state.groupBy, 'No grouping');
+      const fieldDescriptions = options.fieldDescriptions || {};
+      els.groupBy.innerHTML = fieldOptionsHtml(options.groupableFields || [], state.groupBy, 'No grouping', fieldDescriptions);
       els.via.innerHTML = optionsHtml(options.relationFieldCandidates || [], state.viaField || '*', 'Any relation field');
-      els.whereField.innerHTML = optionsHtml(options.fieldCandidates || [], state.whereField, 'No filter');
+      els.whereField.innerHTML = fieldOptionsHtml(options.fieldCandidates || [], state.whereField, 'No filter', fieldDescriptions);
       els.whereOperator.value = state.whereOperator || '=';
       els.whereValue.value = state.whereValue || '';
-      els.sortField.innerHTML = optionsHtml(options.fieldCandidates || [], state.sortField, 'No sort');
+      els.sortField.innerHTML = fieldOptionsHtml(options.fieldCandidates || [], state.sortField, 'No sort', fieldDescriptions);
       els.sortDirection.value = state.sortDirection || 'asc';
       els.limit.value = String(state.limit || 0);
 
@@ -1430,11 +1577,19 @@ function getWebviewHtml(webview) {
 
       els.customFieldList.innerHTML = (options.fieldCandidates || []).map((field) => {
         const checked = (state.selectFields || []).includes(field) ? ' checked' : '';
-        return '<label class="checkbox-chip"><input type="checkbox" value="' + escapeHtml(field) + '"' + checked + ' /> <span>' + escapeHtml(field) + '</span></label>';
+        const description = fieldDescriptions[field] || '';
+        const className = description ? 'checkbox-chip computed-field' : 'checkbox-chip';
+        const title = description ? ' title="' + escapeHtml(description) + '"' : '';
+        const help = description ? '<span class="field-chip-help">' + escapeHtml(description) + '</span>' : '';
+        return '<label class="' + className + '"' + title + '><input type="checkbox" value="' + escapeHtml(field) + '"' + checked + ' /> <span class="field-chip-copy"><span>' + escapeHtml(field) + '</span>' + help + '</span></label>';
+      }).join('');
+      els.presetList.innerHTML = (options.presets || []).map((preset) => {
+        return '<button class="preset-btn" type="button" data-preset="' + escapeHtml(preset.key) + '" title="' + escapeHtml(preset.description || '') + '"><strong>' + escapeHtml(preset.label) + '</strong><span>' + escapeHtml(preset.description || '') + '</span></button>';
       }).join('');
 
       els.previewTitle.textContent = preview.summary?.title || 'Preview';
       els.previewDetail.textContent = preview.summary?.detail || '';
+      els.previewExplanation.textContent = preview.summary?.explanation || '';
       els.queryPreview.textContent = preview.queryText || '';
       const layoutSummary = preview.summary?.layouts || { available: [] };
       els.layoutToggle.innerHTML = (layoutSummary.available || []).map((layout) => {
@@ -1513,6 +1668,21 @@ function getWebviewHtml(webview) {
       el.addEventListener('input', postState);
     });
     els.customFieldList.addEventListener('change', postState);
+    els.presetList.addEventListener('click', (event) => {
+      const btn = event.target.closest('[data-preset]');
+      if (!btn || !model?.options?.presets) return;
+      const preset = model.options.presets.find((entry) => entry.key === btn.dataset.preset);
+      if (!preset?.patch) return;
+      const patch = preset.patch;
+      if ('whereField' in patch) els.whereField.value = patch.whereField || '';
+      if ('whereOperator' in patch) els.whereOperator.value = patch.whereOperator || '=';
+      if ('whereValue' in patch) els.whereValue.value = patch.whereValue || '';
+      if ('sortField' in patch) els.sortField.value = patch.sortField || '';
+      if ('sortDirection' in patch) els.sortDirection.value = patch.sortDirection || 'asc';
+      if (patch.whereField || patch.whereValue) els.filterSection.open = true;
+      if (patch.sortField) els.sortSection.open = true;
+      postState();
+    });
     els.applyBtn.addEventListener('click', () => vscode.postMessage({ type: 'apply' }));
     els.openPreviewBtn.addEventListener('click', () => vscode.postMessage({ type: 'openPreview' }));
     els.copyBtn.addEventListener('click', async () => {

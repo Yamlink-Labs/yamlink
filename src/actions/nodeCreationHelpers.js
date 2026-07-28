@@ -5,6 +5,7 @@ const vscode = require('vscode');
 const { canonicalizeId } = require('../core/id');
 const { parseFrontmatterDocument } = require('../core/frontmatter');
 const { buildIndex, updateSingleFile, invalidateFileCache } = require('../core/index');
+const { inferReverseRelationField, mergeRelationFieldValue } = require('../intelligence/reverseRelationHelpers');
 
 function getCommonVaultFields(type, fieldsCache) {
     const fieldCounts = new Map();
@@ -175,29 +176,6 @@ function buildStarterTemplateContent(type, commonFields) {
     }
     lines.push('created:', '---', '', '');
     return lines.join('\n');
-}
-
-function inferReverseRelationField(targetType, sourceType, sourceId, fieldsCache) {
-    const normalizedSourceType = String(sourceType || '').trim().toLowerCase();
-    if (!normalizedSourceType) return null;
-
-    for (const fields of fieldsCache.values()) {
-        const noteType = String(fields?.type || '').trim().toLowerCase();
-        if (noteType !== String(targetType || '').trim().toLowerCase()) continue;
-        if (Object.prototype.hasOwnProperty.call(fields, normalizedSourceType)) return normalizedSourceType;
-        if (Object.prototype.hasOwnProperty.call(fields, `${normalizedSourceType}s`)) return `${normalizedSourceType}s`;
-    }
-
-    if (sourceId && normalizedSourceType) return normalizedSourceType;
-    return null;
-}
-
-function mergeRelationFieldValue(existingValue, targetId) {
-    const nextLink = `[[${targetId}]]`;
-    const current = String(existingValue || '').trim();
-    if (!current) return nextLink;
-    if (current.includes(nextLink)) return current;
-    return `${current}, ${nextLink}`;
 }
 
 function readExistingFieldValue(filePath, fieldName) {

@@ -5,6 +5,7 @@ name: Planet P Assault
 date: "2297-10-14"
 unit: [fleet]
 commander: [[lt-rasczak]]
+fatality: [[lt-rasczak]]
 outcome: objective-captured
 casualties: very-high
 casualty_count: 34

@@ -35,7 +35,6 @@ const { readHealthSnapshotTrend } = require('../../core/healthSnapshot');
 const { getGraphStats, getEdges, isOrphan } = require('../../core/graph');
 const { getRegistry, getRegistryStats } = require('../../registries/typeRegistry');
 const { getSchemaStats, getSchema, getSchemaTargets } = require('../../registries/schemaRegistry');
-const { getBrokenCount } = require('../../diagnostics/diagnostics');
 const { getVaultGeneration } = require('../../core/indexService');
 const { getCachedPriors, getVaultMaturity } = require('../../intelligence/vaultPriors');
 const { inferNoteRole } = require('../../intelligence/noteRolesCore');
@@ -139,6 +138,7 @@ function buildSchemaIntelligence(idIndex, fieldsCache, registry) {
 
 /** @param {{ workspaceRoot?: string }} [options] @returns {HealthStats} */
 function collectHealthStats(options = {}) {
+    const { getBrokenCount } = require('../../diagnostics/diagnostics');
     const workspaceRoot = options.workspaceRoot || null;
     const idIndex = getIndex();
     const fieldsCache = getFieldsCache();
@@ -291,6 +291,86 @@ function collectHealthStats(options = {}) {
         topRelationships,
         healthTrend
     };
+}
+
+/** @returns {object} */
+function buildVaultTrendsSnapshot() {
+    const idIndex = getIndex();
+    const fieldsCache = getFieldsCache();
+    const graphStats = getGraphStats();
+    const priors = getCachedPriors(fieldsCache, getVaultGeneration());
+    const mutationEvents = getMutationEvents();
+    const lastMutationByNote = buildLastMutationByNote(mutationEvents);
+    const lifecycleCounts = {
+        draft: 0,
+        growing: 0,
+        consolidated: 0,
+        hub: 0,
+        stale: 0
+    };
+    const avgInbound = idIndex.size > 0
+        ? (graphStats.totalBacklinks || 0) / idIndex.size
+        : 0;
+
+    for (const id of idIndex.keys()) {
+        const fields = fieldsCache.get(id);
+        const nodeType = String(fields?.type || '').trim().toLowerCase();
+        if (!fields || SYSTEM_TYPES.has(nodeType)) continue;
+        const rawLastMs = lastMutationByNote.has(id) ? Date.parse(lastMutationByNote.get(id)) : null;
+        const noteRole = inferNoteRole(fields, {
+            typeRoleMap: priors.typeRoleMap || null,
+            noteRolePriors: priors.noteRoleNamePriors || null,
+            noteRoleFieldHints: priors.noteRoleFieldHints || null
+        });
+        const lifecycle = inferLifecycleState(id, fields, {
+            idIndex,
+            fieldsCache,
+            fieldTargetTypes: priors.fieldTargetTypes,
+            typeFieldBundles: priors.typeFieldBundles,
+            noteRoleTypePriors: priors.noteRoleTypePriors,
+            noteRole,
+            noteType: nodeType,
+            inboundCount: getInboundCount(id, fieldsCache),
+            avgInbound,
+            lastMutationMs: Number.isFinite(rawLastMs) ? rawLastMs : undefined
+        });
+        lifecycleCounts[lifecycle.state] = (lifecycleCounts[lifecycle.state] || 0) + 1;
+    }
+
+    const vaultDrift = computeVaultDrift(fieldsCache, priors);
+    const driftSummary = getDriftSummary(vaultDrift);
+    const mutationBehavior = buildMutationBehavior(mutationEvents, fieldsCache);
+    const projections = buildVaultProjections({
+        fieldsCache,
+        lifecycleCounts,
+        vaultDrift,
+        driftSummary,
+        mutationEvents,
+        calibrationEvents: mutationEvents.filter((event) => event.type === 'completion_accepted'),
+        mutationBehavior,
+        priors,
+        lastMutationByNoteAll: lastMutationByNote
+    });
+
+    return {
+        generatedAt: new Date().toISOString(),
+        generation: getVaultGeneration(),
+        horizonDays: projections.scenarios?.horizonDays || 90,
+        ...projections
+    };
+}
+
+/** @param {object[]} mutationEvents @returns {Map<string,string>} */
+function buildLastMutationByNote(mutationEvents) {
+    const lastMutationByNote = new Map();
+    for (const event of mutationEvents || []) {
+        if (!event?.noteId || !event?.timestamp) continue;
+        const existing = lastMutationByNote.get(event.noteId);
+        if (!existing || event.timestamp > existing) {
+            lastMutationByNote.set(event.noteId, event.timestamp);
+        }
+    }
+    return lastMutationByNote;
 }
 
 /**
@@ -930,6 +1010,7 @@ function computeHealthScore(stats) {
 module.exports = {
     collectHealthStats,
     computeHealthScore,
+    buildVaultTrendsSnapshot,
     buildSchemaIntelligence,
     buildIntelligenceHealth,
     buildMutationBehavior

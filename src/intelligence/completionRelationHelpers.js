@@ -2,6 +2,8 @@
 
 const { getRegistry } = require('../registries/typeRegistry');
 const { getFieldsCache, getVaultGeneration } = require('../core/indexService');
+const { getBacklinks, getEdges } = require('../core/graph');
+const { resolveYamlFieldNameForLine } = require('../core/frontmatter');
 const { inferFieldRole } = require('../intelligence/fieldRoles');
 const { buildFieldFamilyRelationModel } = require('../intelligence/frontmatterIntelligence');
 const { buildObservedFields } = require('../intelligence/suggestionCore');
@@ -34,21 +36,38 @@ function getHumanLabel(id) {
     return raw.replace(/\[\[([^\]|]+)(?:\|([^\]]+))?\]\]/g, (_, target, alias) => alias || target).trim() || null;
 }
 
+/**
+ * Structured evidence for a relation candidate — the note type plus every
+ * reason it's ranked where it is. Kept separate from `item.detail` (VS
+ * Code's single-line, non-wrapping grey text) specifically so this evidence
+ * can be rendered as a real multi-line documentation card instead of being
+ * crammed into one line until it wraps mid-word.
+ * @param {string} id @param {Record<string,any>} frontmatterRelation @param {boolean} preferred
+ * @returns {{ noteType: string, reasons: string[] }}
+ */
+function buildRelationCandidateEvidence(id, frontmatterRelation, preferred) {
+    const fieldsCache = getFieldsCache();
+    const noteType = String(fieldsCache.get(String(id || '').trim().toLowerCase())?.type || '').trim();
+    const reasons = [];
+    if (!preferred && frontmatterRelation.targetType && noteType !== frontmatterRelation.targetType) {
+        reasons.push(`Expected type: **${frontmatterRelation.targetType}**`);
+    }
+    if (frontmatterRelation.localLinkedIds?.includes(id)) {
+        reasons.push('Already linked in this note');
+    }
+    if (frontmatterRelation.observedPreferredIds?.includes(id)) {
+        reasons.push(frontmatterRelation.observedReasonText || 'Commonly linked here');
+    }
+    return { noteType, reasons };
+}
+
 function buildRelationCandidateDetail(id, _idIndex, frontmatterRelation, preferred) {
     const fieldsCache = getFieldsCache();
     const noteType = String(fieldsCache.get(String(id || '').trim().toLowerCase())?.type || '').trim();
-    const parts = [];
-    if (noteType) parts.push(noteType);
     if (!preferred && frontmatterRelation.targetType && noteType !== frontmatterRelation.targetType) {
-        parts.push(`expected: ${frontmatterRelation.targetType}`);
+        return noteType ? `${noteType} · expected: ${frontmatterRelation.targetType}` : `expected: ${frontmatterRelation.targetType}`;
     }
-    if (frontmatterRelation.localLinkedIds?.includes(id)) {
-        parts.push('already linked');
-    }
-    if (frontmatterRelation.observedPreferredIds?.includes(id)) {
-        parts.push(frontmatterRelation.observedReasonText || 'commonly linked here');
-    }
-    return parts.filter(Boolean).join(' · ') || 'Yamlink note';
+    return noteType || 'Yamlink note';
 }
 
 /** @param {any[]|null|undefined} candidateIds @param {Map<string,string>|null} [idIndex] @returns {string[]} */
@@ -130,6 +149,53 @@ function collectObservedRelationUsage(fieldName, document, docType, idIndex) {
     };
 }
 
+const _SIBLING_WIKILINK_RE = /^\[\[([^\]|#]+)/;
+
+/**
+ * Structural autocomplete, part 1 — sibling-field context. If the current
+ * note already has another relation field filled in (e.g. `account:
+ * [[enotria]]` on a meeting note), candidates already connected to that same
+ * value are genuinely more likely to be right for the field being completed
+ * now (e.g. `contacts:`) than an arbitrary candidate — they're already known
+ * to be associated with something this note is already about. Only ever
+ * looks at fields that are ALREADY filled in; a note with nothing else set
+ * yet produces no boost at all (honest silence, not a guess).
+ * @param {Record<string,any>|null} noteFields - the current note's own frontmatter fields
+ * @param {string} excludeFieldName - the field currently being completed
+ * @returns {{ ids: Set<string>, evidenceByTargetId: Map<string,string> }}
+ */
+function computeSiblingContextIds(noteFields, excludeFieldName) {
+    const ids = new Set();
+    const evidenceByTargetId = new Map();
+    if (!noteFields || typeof noteFields !== 'object') return { ids, evidenceByTargetId };
+
+    const excludeKey = normalizeFrontmatterKey(excludeFieldName);
+    for (const [siblingField, rawValue] of Object.entries(noteFields)) {
+        const normalizedField = normalizeFrontmatterKey(siblingField);
+        if (!normalizedField || normalizedField === excludeKey || normalizedField === 'id' || normalizedField === 'type') continue;
+
+        const values = Array.isArray(rawValue) ? rawValue : [rawValue];
+        for (const v of values) {
+            const match = _SIBLING_WIKILINK_RE.exec(String(v || '').trim());
+            if (!match) continue;
+            const siblingTargetId = match[1].trim().toLowerCase();
+            if (!siblingTargetId) continue;
+
+            for (const edge of getBacklinks(siblingTargetId) || []) {
+                if (!edge?.sourceId) continue;
+                ids.add(edge.sourceId);
+                if (!evidenceByTargetId.has(edge.sourceId)) evidenceByTargetId.set(edge.sourceId, siblingTargetId);
+            }
+            for (const edge of getEdges(siblingTargetId) || []) {
+                if (!edge?.targetId) continue;
+                ids.add(edge.targetId);
+                if (!evidenceByTargetId.has(edge.targetId)) evidenceByTargetId.set(edge.targetId, siblingTargetId);
+            }
+        }
+    }
+    return { ids, evidenceByTargetId };
+}
+
 const _FAMILY_WIKILINK_RE = /^\[\[([^\]|#]+)/;
 
 function normalizeWeightedMap(weightMap, scale = 1) {
@@ -156,6 +222,7 @@ function buildRelationRankingHints(fieldName, targetType, preferredIds = [], obs
     const fieldsCache = getFieldsCache();
     const priors = getCachedPriors(fieldsCache, getVaultGeneration());
     const fieldKey = normalizeFrontmatterKey(fieldName);
+    const siblingContext = computeSiblingContextIds(noteFields, fieldKey);
     const ambiguity = priors.fieldAmbiguity.get(fieldKey) || null;
     const typeCounts = priors.fieldTargetTypes.get(fieldKey) || null;
     const candidateTypeScores = new Map();
@@ -261,7 +328,9 @@ function buildRelationRankingHints(fieldName, targetType, preferredIds = [], obs
         behaviorHint,
         behavioralPreferredIds,
         observedPreferredIds: canonicalizeCandidateIds(observedPreferredIds),
-        preferredIds: canonicalizeCandidateIds(preferredIds)
+        preferredIds: canonicalizeCandidateIds(preferredIds),
+        siblingContextIds: siblingContext.ids,
+        siblingContextEvidence: siblingContext.evidenceByTargetId
     };
 }
 
@@ -273,12 +342,30 @@ function resolveFrontmatterRelationCandidates(document, position, idIndex) {
     const before = line.substring(0, position.character);
     const textAfterCursor = line.substring(position.character);
     const match = before.match(/^\s*([\w-]+):\s*(\[\[?)*([^\]]*)$/);
-    if (!match) {
-        const fallbackMatch = before.match(/^\s*([^:\n]+):\s*(\[\[?)*([^\]]*)$/);
-        if (!fallbackMatch) return null;
+    if (match) {
+        return resolveFrontmatterRelationCandidatesFromMatch(document, position, idIndex, line, textAfterCursor, match);
+    }
+
+    const fallbackMatch = before.match(/^\s*([^:\n]+):\s*(\[\[?)*([^\]]*)$/);
+    if (fallbackMatch) {
         return resolveFrontmatterRelationCandidatesFromMatch(document, position, idIndex, line, textAfterCursor, fallbackMatch);
     }
-    return resolveFrontmatterRelationCandidatesFromMatch(document, position, idIndex, line, textAfterCursor, match);
+
+    // No colon on this line at all — could be a bare YAML list entry (e.g.
+    // "  - [[" under a "contacts:" field declared on a previous line). Walk
+    // upward to find the parent field name so a new entry in an existing
+    // relation list gets the same "Create <type> note" treatment a
+    // single-line field already gets, instead of silently falling through
+    // to the generic (untyped) wikilink completion path.
+    const listItemMatch = before.match(/^\s*-\s*(\[\[?)*([^\]]*)$/);
+    if (listItemMatch) {
+        const parentField = resolveYamlFieldNameForLine(document.getText().split('\n'), position.line);
+        if (parentField) {
+            const syntheticMatch = [listItemMatch[0], parentField, listItemMatch[1], listItemMatch[2]];
+            return resolveFrontmatterRelationCandidatesFromMatch(document, position, idIndex, line, textAfterCursor, syntheticMatch);
+        }
+    }
+    return null;
 }
 
 function resolveFrontmatterRelationCandidatesFromMatch(document, position, idIndex, line, textAfterCursor, match) {
@@ -516,6 +603,7 @@ function rankCandidateIds(candidateIds, partial, preferredIds = [], localLinkedI
     const observedPreferred = new Set(canonicalizeCandidateIds(rankingHints?.observedPreferredIds || []).map((id) => String(id || '').trim().toLowerCase()));
     const behavioralPreferred = new Set(canonicalizeCandidateIds(rankingHints?.behavioralPreferredIds || []).map((id) => String(id || '').trim().toLowerCase()));
     const candidateTypeScores = rankingHints?.candidateTypeScores instanceof Map ? rankingHints.candidateTypeScores : new Map();
+    const siblingContextIds = rankingHints?.siblingContextIds instanceof Set ? rankingHints.siblingContextIds : new Set();
     const ambiguity = rankingHints?.ambiguity || null;
     const relationBiasScale = ambiguity
         ? (ambiguity.linkRatio >= 0.75 ? 1.0 : ambiguity.linkRatio >= 0.5 ? 0.75 : 0.45)
@@ -530,6 +618,13 @@ function rankCandidateIds(candidateIds, partial, preferredIds = [], localLinkedI
             const typeBias = Math.round(candidateTypeScore * 260 * relationBiasScale);
             const observedBias = observedPreferred.has(canonicalId) ? 220 : 0;
             const behavioralBias = behavioralPreferred.has(canonicalId) ? 180 : 0;
+            // Structural autocomplete — sibling-field context: this candidate is
+            // already connected to a value the current note has filled in on a
+            // DIFFERENT relation field (e.g. this note's account: already links
+            // to a target this candidate also links to). Weighted between the
+            // observed-usage and preferred-type bonuses — real correlation
+            // evidence, but not as strong as an exact schema type match.
+            const siblingContextBias = siblingContextIds.has(canonicalId) ? 260 : 0;
             return {
                 id,
                 score: matchScore >= 0
@@ -539,10 +634,12 @@ function rankCandidateIds(candidateIds, partial, preferredIds = [], localLinkedI
                         + observedBias
                         + behavioralBias
                         + typeBias
+                        + siblingContextBias
                         + Math.min(500, observedIdScores.get(canonicalId) || observedIdScores.get(id) || 0)
                     : matchScore,
                 preferred: preferred.has(canonicalId),
-                local: local.has(canonicalId)
+                local: local.has(canonicalId),
+                siblingContext: siblingContextIds.has(canonicalId)
             };
         })
         .filter(entry => entry.score >= 0)
@@ -553,8 +650,10 @@ function rankCandidateIds(candidateIds, partial, preferredIds = [], localLinkedI
 module.exports = {
     getHumanLabel,
     buildRelationCandidateDetail,
+    buildRelationCandidateEvidence,
     collectLocalLinkedIds,
     collectObservedRelationUsage,
+    computeSiblingContextIds,
     resolveFrontmatterRelationCandidates,
     resolveFrontmatterRelationCandidatesFromMatch,
     resolveQueryRelationCandidates,

@@ -15,7 +15,9 @@ const { emitOutcomeEvent } = require('../runtime/mutationEventLog');
 const {
     TEMPLATES_DIR,
     loadTemplates,
-    getTemplateForType
+    getTemplateForType,
+    buildTemplateFromNote,
+    saveTemplateFile
 } = require('../core/templateRegistry');
 const {
     getCommonVaultFields,
@@ -110,7 +112,14 @@ async function handleCreateNote(deps, id, preselectedType, sourceFilePath, sourc
 
     const today = new Date().toISOString().split('T')[0];
     let content;
-    const reverseField = inferReverseRelationField(chosenType, sourceType, sourceId, getFieldsCache());
+    // Structural autocomplete, Behavior B: only auto-fill a reverse-link field
+    // when there's real vault evidence for it ('observed' — an existing note
+    // of this type already has a matching field). A 'guessed' inference has
+    // zero corroborating evidence and must never be silently written —
+    // instead it's offered as a visible, clickable follow-up below, once the
+    // note actually exists to link into. "Honest silence over wrong guesses."
+    const reverseInference = inferReverseRelationField(chosenType, sourceType, sourceId, getFieldsCache());
+    const reverseField = reverseInference?.confidence === 'observed' ? reverseInference.field : null;
 
     const templatesDir      = path.join(root, TEMPLATES_DIR);
     const templatesDirExists = fs.existsSync(templatesDir);
@@ -225,8 +234,10 @@ async function handleCreateNote(deps, id, preselectedType, sourceFilePath, sourc
     }
 
     fs.writeFileSync(filePath, content, 'utf8');
+    let reverseFieldApplied = null;
     if (content && reverseField && sourceId && !content.includes(`[[${sourceId}]]`)) {
         await writeFieldValue(filePath, reverseField, `[[${sourceId}]]`);
+        reverseFieldApplied = reverseField;
     }
     syncIndexAfterWrite(filePath);
     validateAll(getIndex);
@@ -235,9 +246,31 @@ async function handleCreateNote(deps, id, preselectedType, sourceFilePath, sourc
     const editor = await vscode.window.showTextDocument(doc, { preview: false });
     positionCursorOnFirstEmptyField(editor, doc);
 
-    vscode.window.showInformationMessage(
-        `Yamlink: Created node "${id}"${chosenType ? ` (${chosenType})` : ''}`
-    );
+    const createdMessage = `Yamlink: Created node "${id}"${chosenType ? ` (${chosenType})` : ''}`;
+    if (reverseFieldApplied) {
+        // Always visible, even in the confident case — never a silent write.
+        vscode.window.showInformationMessage(
+            `${createdMessage} — linked back to ${sourceId} via ${reverseFieldApplied}: (based on existing ${chosenType} notes)`
+        );
+    } else {
+        vscode.window.showInformationMessage(createdMessage);
+    }
+
+    // A 'guessed' inference (no vault evidence) is never auto-written — but
+    // still surfaced as a real, user-approved action, not silently dropped.
+    if (!reverseFieldApplied && reverseInference?.confidence === 'guessed' && sourceId) {
+        const guessedField = reverseInference.field;
+        const pick = await vscode.window.showInformationMessage(
+            `Yamlink: Link "${id}" back to ${sourceId} via ${guessedField}:? (no existing ${chosenType} note has this field yet, so this wasn't added automatically)`,
+            `Add ${guessedField}: [[${sourceId}]]`
+        );
+        if (pick) {
+            const existingValue = readExistingFieldValue(filePath, guessedField);
+            const nextValue = mergeRelationFieldValue(existingValue, sourceId);
+            await writeFieldValue(filePath, guessedField, nextValue);
+            syncIndexAfterWrite(filePath);
+        }
+    }
 
     return {
         id,
@@ -832,6 +865,68 @@ async function handleAddMissingTemplateFields() {
     );
 }
 
+async function handleSaveAsTemplate() {
+    const document = vscode.window.activeTextEditor?.document;
+    if (!document) {
+        vscode.window.showErrorMessage('Yamlink: No active editor.');
+        return;
+    }
+
+    const root = getPrimaryWorkspaceRoot(vscode.workspace.workspaceFolders);
+    if (!root) {
+        vscode.window.showErrorMessage('Yamlink: No workspace folder open.');
+        return;
+    }
+
+    const text = document.getText();
+    const parsed = parseFrontmatterDocument(text);
+    const noteType = String(parsed?.data?.type || '').trim().toLowerCase();
+    if (!noteType) {
+        vscode.window.showInformationMessage('Yamlink: This note has no type: field — templates are keyed by type.');
+        return;
+    }
+
+    const existing = getTemplateForType(root, noteType);
+    if (existing) {
+        const choice = await vscode.window.showWarningMessage(
+            `Yamlink: A template for type "${noteType}" already exists. Overwrite it?`,
+            { modal: true },
+            'Overwrite'
+        );
+        if (choice !== 'Overwrite') return;
+    }
+
+    const templateContent = buildTemplateFromNote(text);
+    let templatePath;
+    try {
+        templatePath = saveTemplateFile(root, noteType, templateContent, { force: true });
+    } catch (error) {
+        vscode.window.showErrorMessage('Yamlink: Failed to save template — ' + error.message);
+        return;
+    }
+
+    const noteId = canonicalizeId(String(parsed?.data?.id || '').trim()) || null;
+    if (noteId) {
+        emitOutcomeEvent({
+            type: 'template_saved',
+            noteId,
+            field: 'type',
+            newValue: noteType,
+            source: 'vscode',
+            cause: 'save_as_template'
+        });
+    }
+
+    const action = await vscode.window.showInformationMessage(
+        `Yamlink: Saved template for type "${noteType}".`,
+        'Open template'
+    );
+    if (action === 'Open template') {
+        const doc = await vscode.workspace.openTextDocument(vscode.Uri.file(templatePath));
+        await vscode.window.showTextDocument(doc, { preview: false });
+    }
+}
+
 async function handleAddFrontmatter(deps, document, suggestedId) {
     const { getIndex } = deps;
     const today = new Date().toISOString().split('T')[0];
@@ -956,6 +1051,7 @@ module.exports = {
     handleSplitNoteBody,
     handleNewNoteFromSchema,
     handleAddMissingTemplateFields,
+    handleSaveAsTemplate,
     handleAddFrontmatter,
     handleBackfillCreatedDates,
     handleOpenDailyNote

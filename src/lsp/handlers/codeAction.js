@@ -1,6 +1,7 @@
 'use strict';
 
 const { getFieldsCache, getVaultGeneration, getIndex, getAliasIndex } = require('../../core/indexService');
+const { resolveYamlFieldNameForLine } = require('../../core/frontmatter');
 const { getCachedPriors, getCommonFieldsForType } = require('../../intelligence/vaultPriors');
 const {
     resolveFrontmatterRelationCandidates,
@@ -64,19 +65,24 @@ function buildEmptyFieldQuickfixes(textDocument, range, state) {
     const isExpectedField = Boolean(schemaField) || commonFields.some((entry) => String(entry.field || '').trim().toLowerCase() === fieldName);
     if (!isExpectedField) return [];
 
-    const isRelation = String(schemaField?.type || '').trim().toLowerCase() === 'relation';
+    const idIndex = getIndex();
+    const documentAdapter = {
+        getText: () => content,
+        lineAt: (n) => ({ text: lines[n] || '' }),
+        uri: { fsPath: uriToPath(textDocument.uri) }
+    };
+    const relationState = resolveFrontmatterRelationCandidates(
+        documentAdapter, { line: lineIndex, character: lineText.length }, idIndex
+    );
+    // Direct port of viewLightbulb.js's buildTypedEmptyFieldFallbackActions —
+    // same schema-less-vault fallback: a formal schema type is sufficient but
+    // never required, since resolveFrontmatterRelationCandidates already
+    // carries the same real-usage relation inference the completion dropdown
+    // uses.
+    const isRelation = String(schemaField?.type || '').trim().toLowerCase() === 'relation' || Boolean(relationState?.targetType);
     const actions = [];
 
     if (isRelation) {
-        const idIndex = getIndex();
-        const documentAdapter = {
-            getText: () => content,
-            lineAt: (n) => ({ text: lines[n] || '' }),
-            uri: { fsPath: uriToPath(textDocument.uri) }
-        };
-        const relationState = resolveFrontmatterRelationCandidates(
-            documentAdapter, { line: lineIndex, character: lineText.length }, idIndex
-        );
         if (relationState) {
             const ranked = rankCandidateIds(
                 relationState.candidateIds,
@@ -156,16 +162,34 @@ function buildQuickFixesForDocument(textDocument, diagnostics, state, options = 
             const messageMatch = /Broken (?:link|relation): \[\[([^\]]+)\]\]/.exec(diag.message);
             const brokenId = String(diag?.data?.targetId || (messageMatch ? messageMatch[1] : '')).trim();
             if (!brokenId) continue;
-            const lineText = content.split('\n')[diag?.data?.line || 0] || '';
-            const fieldMatch = /^\s*([\w-]+)\s*:/.exec(lineText);
-            const inferredType = inferTargetTypeFromField(fieldMatch ? fieldMatch[1].toLowerCase() : '', priors) || 'note';
+            const lineIndex = diag?.data?.line || 0;
+            // Only walk upward for a parent field name inside frontmatter
+            // (data.relation === true) — a body broken-link has no YAML
+            // list-continuation concept, and scanning upward through arbitrary
+            // prose could misattribute to an unrelated "Label:"-shaped line.
+            const fieldName = diag?.data?.relation
+                ? resolveYamlFieldNameForLine(content.split('\n'), lineIndex)
+                : (() => {
+                    const lineText = content.split('\n')[lineIndex] || '';
+                    const fieldMatch = /^\s*([\w-]+)\s*:/.exec(lineText);
+                    return fieldMatch ? fieldMatch[1].toLowerCase() : null;
+                })();
+            const inferredType = inferTargetTypeFromField(fieldName || '', priors) || 'note';
+
+            // Structural autocomplete, Behavior B: only passed through when
+            // this document is itself a real Yamlink note — buildCreateNoteEdit
+            // only ever acts on it when there's real vault evidence anyway.
+            const sourceId = extractDocumentNoteId(content);
+            const sourceTypeMatch = /^type:\s+(\S+)/m.exec(content);
+            const sourceType = sourceTypeMatch ? sourceTypeMatch[1].trim().toLowerCase() : null;
+            const reverseLinkContext = sourceId && sourceType ? { sourceId, sourceType } : null;
 
             actions.push({
-                title: `Create note "${brokenId}"`,
+                title: inferredType !== 'note' ? `Create ${inferredType} note "${brokenId}"` : `Create note "${brokenId}"`,
                 kind: 'quickfix',
                 diagnostics: [diag],
                 isPreferred: true,
-                edit: buildCreateNoteEdit(state.vaultPath, brokenId, inferredType)
+                edit: buildCreateNoteEdit(state.vaultPath, brokenId, inferredType, reverseLinkContext)
             });
             continue;
         }

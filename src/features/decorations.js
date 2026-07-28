@@ -18,6 +18,15 @@ const { resolveLinkedTarget } = require('../core/id');
 const { resolveImageEmbed } = require('../core/imageEmbed');
 const { getAliasIndex } = require('../core/indexService');
 const { extractPriority } = require('../core/tasks');
+const { isDiagnosticIgnored, describeBrokenLink } = require('../diagnostics/ignoredDiagnostics');
+
+/** @param {string} text @returns {number} 0 if the note has no closed frontmatter block. */
+function computeFrontmatterEnd(text) {
+    if (!/^\s*---/.test(text)) return 0;
+    const firstDash = text.indexOf('---');
+    const closing = text.indexOf('---', firstDash + 3);
+    return closing !== -1 ? closing + 3 : 0;
+}
 
 // The [[ and ]] brackets — dimmed, no underline
 const bracketDecoration = vscode.window.createTextEditorDecorationType({
@@ -304,6 +313,7 @@ function updateDecorations(editor, getIndex) {
     const aliasIdx = getAliasIndex();
     const concealing = isConcealmentEnabled();
     const text     = editor.document.getText();
+    const frontmatterEnd = computeFrontmatterEnd(text);
     // Capture optional leading ! for embed syntax
     const regex    = /(!?)\[\[([^\]]+)\]\]/g;
 
@@ -341,11 +351,28 @@ function updateDecorations(editor, getIndex) {
         const idEnd        = bracketStart + 2 + rawInner.length; // before ]]
 
         if (!resolvedId && !resolvedImage) {
-            // Broken link — amber brackets + faded amber inner text.
-            brokenBrackets.push({ range: new vscode.Range(editor.document.positionAt(bracketStart),     editor.document.positionAt(bracketStart + 2)) });
-            brokenBrackets.push({ range: new vscode.Range(editor.document.positionAt(fullEnd - 2),      editor.document.positionAt(fullEnd)) });
-            brokenLinks.push({    range: new vscode.Range(editor.document.positionAt(idStart),          editor.document.positionAt(idEnd)) });
-            continue;
+            // Same code/message the real diagnostic uses (see
+            // ignoredDiagnostics.js's describeBrokenLink) — must match
+            // exactly, or a diagnostic the user dismissed via "Ignore this
+            // suggestion here" would still render muted here forever.
+            const id = rawInner.split('|')[0].trim();
+            const isInFrontmatter = frontmatterEnd > 0 && fullStart < frontmatterEnd;
+            const { code, message } = describeBrokenLink(id, isInFrontmatter);
+            const ignored = isDiagnosticIgnored(editor.document, {
+                range: new vscode.Range(editor.document.positionAt(fullStart), editor.document.positionAt(fullEnd)),
+                code,
+                message
+            });
+
+            if (!ignored) {
+                // Broken link — amber brackets + faded amber inner text.
+                brokenBrackets.push({ range: new vscode.Range(editor.document.positionAt(bracketStart),     editor.document.positionAt(bracketStart + 2)) });
+                brokenBrackets.push({ range: new vscode.Range(editor.document.positionAt(fullEnd - 2),      editor.document.positionAt(fullEnd)) });
+                brokenLinks.push({    range: new vscode.Range(editor.document.positionAt(idStart),          editor.document.positionAt(idEnd)) });
+                continue;
+            }
+            // Ignored — fall through to normal (unmuted) link rendering below,
+            // same as a resolved link, instead of `continue`-ing past it.
         }
 
         if (isEmbed) {
@@ -572,4 +599,4 @@ function collectCalloutDecorations(document) {
     return results;
 }
 
-module.exports = { registerDecorations, collectDateShortcutDecorations, collectResolvedDateDecorations, collectTagDecorations, collectCalloutDecorations };
+module.exports = { registerDecorations, updateDecorations, collectDateShortcutDecorations, collectResolvedDateDecorations, collectTagDecorations, collectCalloutDecorations };

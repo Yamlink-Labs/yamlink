@@ -11,9 +11,11 @@ const {
     evaluateFieldForSurface
 } = require('../../intelligence/authoringEngine');
 const { LEVEL }                                         = require('../../intelligence/fieldPlanner');
+const { buildHoverBadgeDataUri }                        = require('../../intelligence/hoverBadge');
 const {
     getHumanLabel,
     buildRelationCandidateDetail,
+    buildRelationCandidateEvidence,
     resolveFrontmatterRelationCandidates,
     rankCandidateIds
 } = require('../../intelligence/completionRelationHelpers');
@@ -79,6 +81,7 @@ function _wikilinkCompletions(partial, fieldKey) {
         label:      entry.label !== entry.id ? entry.label : entry.id,
         kind:       17, // Reference
         detail:     entry.type + (entry.status ? ` · ${entry.status}` : ''),
+        documentation: { kind: 'markdown', value: buildRelationCandidateDocumentationMarkdown(entry.id, entry.type, [], null) },
         insertText: entry.id + ']]',
         filterText: [entry.id, entry.label].concat(entry.aliases || []).join(' '),
         sortText:   String(index).padStart(4, '0') + entry.label.toLowerCase(),
@@ -293,6 +296,31 @@ function _frontmatterValueCompletions(fieldKey, valueText, priors) {
     return [];
 }
 
+// Apollo palette roles (see docs/architecture/YAMLINK-COLOR-PALETTE.md):
+// lavender = type/identity labels, mint = links/relations/connections.
+// Mirrors VS Code's buildRelationCandidateDocumentation for parity — always
+// built for every candidate, not just sibling matches, and kept out of
+// `detail` (a single-line field on this surface too) so evidence renders as
+// a real multi-line card instead of one crammed, wrapping line.
+function buildRelationCandidateDocumentationMarkdown(id, noteType, reasons, siblingTargetId) {
+    const status = String(getFieldsCache().get(String(id || '').trim().toLowerCase())?.status || '').trim();
+    const badges = [];
+    if (noteType) badges.push({ text: noteType, bg: '#C49BF0', fg: '#151617' });
+    if (status) badges.push({ text: status, bg: '#5ECFBE', fg: '#151617' });
+    if (siblingTargetId) badges.push({ text: 'connected', bg: '#C5FFBF', fg: '#151617' });
+    let value = badges.length ? `![](${buildHoverBadgeDataUri(badges)})\n\n` : '';
+    const lines = [...reasons];
+    const backlinkCount = (getBacklinks(id) || []).length;
+    if (backlinkCount > 0) {
+        lines.push(`Linked from ${backlinkCount} other note${backlinkCount === 1 ? '' : 's'}`);
+    }
+    if (siblingTargetId) {
+        lines.push(`Already connected to **${siblingTargetId}** — ranked higher because this note already links to it.`);
+    }
+    if (lines.length) value += lines.map((line) => `- ${line}`).join('\n');
+    return value;
+}
+
 // Implicit relation-value completion — offers [[id]] candidates for a relation
 // field's value before the user has typed any bracket, mirroring VS Code's
 // provideLinkAndDateCompletions. Gated through the same classifier/planner
@@ -336,10 +364,15 @@ function _relationValueCompletions(content, lines, position, filePath) {
     return ranked.slice(0, 50).map((id, index) => {
         const humanName = getHumanLabel(id);
         const preferred = frontmatterRelation.preferredIds.includes(id);
+        const detail = buildRelationCandidateDetail(id, idIndex, frontmatterRelation, preferred);
+        const siblingTargetId = frontmatterRelation.rankingHints?.siblingContextEvidence?.get(String(id || '').trim().toLowerCase());
+        const { noteType, reasons } = buildRelationCandidateEvidence(id, frontmatterRelation, preferred);
+        const documentation = { kind: 'markdown', value: buildRelationCandidateDocumentationMarkdown(id, noteType, reasons, siblingTargetId) };
         return {
             label:      humanName || id,
             kind:       17, // Reference
-            detail:     buildRelationCandidateDetail(id, idIndex, frontmatterRelation, preferred),
+            detail,
+            documentation,
             insertText: `[[${id}]]`,
             filterText: humanName ? `${id} ${humanName}` : id,
             sortText:   (preferred ? '01-' : '02-') + String(index).padStart(4, '0') + id,

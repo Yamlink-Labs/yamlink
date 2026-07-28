@@ -24,6 +24,7 @@ const Explorer = require('../src/conduit/screens/Explorer');
 const Diff = require('../src/conduit/screens/Diff');
 const Warp = require('../src/conduit/components/Warp');
 const Radar = require('../src/conduit/screens/Radar');
+const Trends = require('../src/conduit/screens/Trends');
 const Briefing = require('../src/conduit/screens/Briefing');
 const Navigator = require('../src/conduit/screens/Navigator');
 const { handleExplorerKey } = require('../src/conduit/screens/explorerInput');
@@ -901,4 +902,40 @@ test('buildExplorerDetail — a selected note renders its detail and the full ke
     const text = flattenText(content);
     assert.match(text, /Johnny Rico/);
     assert.match(text, /follow out/);
+});
+
+test('trends helpers format lane rows from projection data', () => {
+    const rows = Trends.formatLaneRows({
+        growth: { trend: 'rising', slope: 0.12, r2: 0.91, topTypes: [{ currentTotal: 5, projected90: 12 }] },
+        stale: { trend: 'steady', slope: 0, r2: 1, staleCount: 1, projected90: 1 },
+        structure: { trend: 'improving', slope: -0.02, r2: 0.7, problematic: 2, projected90: 0 }
+    });
+    assert.deepEqual(rows.map((row) => row.lane), ['growth', 'stale', 'structure']);
+    assert.equal(rows[0].status, 'rising');
+    assert.equal(rows[0].current, 5);
+    assert.equal(rows[0].projected, 12);
+    assert.equal(rows[0].r2, '0.91');
+});
+
+test('trends helpers format retrospective rows and unavailable accuracy', () => {
+    const rows = Trends.formatRetrospectiveRows({
+        growth: { retrospectiveAccuracy: { projected: 22, actual: 20, accuracy: 0.91 } },
+        stale: { retrospectiveAccuracy: null },
+        structure: { retrospectiveAccuracy: { projected: 3, actual: 2, accuracy: 0.667 } }
+    });
+    assert.equal(rows[0].accuracy, '91%');
+    assert.equal(rows[1].accuracy, 'n/a');
+    assert.equal(rows[2].accuracy, '67%');
+});
+
+test('trends helpers limit staleness forecast rows', () => {
+    const rows = Trends.formatForecastRows({
+        stale: {
+            upcoming: [
+                { noteId: 'johnny-rico', type: 'character', daysUntilStale: 4 },
+                { noteId: 'roughnecks', type: 'unit', daysUntilStale: 9 }
+            ]
+        }
+    }, 1);
+    assert.deepEqual(rows, [{ note: 'johnny-rico', type: 'character', days: 4 }]);
 });

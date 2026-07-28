@@ -119,7 +119,7 @@ require.cache.__qb_query__ = {
                     via = viaMatch[1].toLowerCase();
                     continue;
                 }
-                const whereMatch = trimmed.match(/^where\s+([\w-]+)\s*=\s*(.+)$/i);
+                const whereMatch = trimmed.match(/^where\s+([\w.-]+)\s*=\s*(.+)$/i);
                 if (whereMatch) {
                     wheres.push({
                         field: whereMatch[1].toLowerCase(),
@@ -128,7 +128,7 @@ require.cache.__qb_query__ = {
                         valueKind: whereMatch[2].includes('[[') ? 'relation' : 'string'
                     });
                 }
-                const sortMatch = trimmed.match(/^sort\s+([\w-]+)(\s+desc)?$/i);
+                const sortMatch = trimmed.match(/^sort\s+([\w.-]+)(\s+desc)?$/i);
                 if (sortMatch) {
                     sort = { field: sortMatch[1].toLowerCase(), desc: Boolean(sortMatch[2]) };
                 }
@@ -264,7 +264,9 @@ const {
     buildStateFromQuery,
     buildQueryTextFromState,
     buildPreviewFromState,
-    deriveKnownTypes
+    deriveKnownTypes,
+    buildBuilderOptions,
+    applyQueryBuilderPreset
 } = require('../src/actions/queryBuilderModel');
 
 describe('query builder helpers', () => {
@@ -347,6 +349,76 @@ describe('query builder helpers', () => {
         assert.equal(preview.summary.title, '2 rows');
         assert.deepEqual(preview.summary.columns, ['id', 'name', 'company']);
         assert.equal(preview.summary.sampleRows[0].id, 'contact-1');
+    });
+
+    test('query builder preview explains a sorted query in plain language', () => {
+        const preview = buildPreviewFromState({
+            mode: 'table',
+            type: 'contact',
+            selectMode: 'custom',
+            selectFields: ['name', 'company'],
+            sortField: '_hub_score',
+            sortDirection: 'desc'
+        });
+
+        assert.equal(
+            preview.summary.explanation,
+            'This will show 2 contact notes, sorted by hub score (highest first), with name/company columns.'
+        );
+    });
+
+    test('query builder preview explains an unsorted query without sort noise', () => {
+        const preview = buildPreviewFromState({
+            mode: 'table',
+            type: 'contact',
+            selectMode: 'none'
+        });
+
+        assert.equal(
+            preview.summary.explanation,
+            'This will show 2 contact notes, with name/company columns.'
+        );
+        assert.ok(!preview.summary.explanation.includes('sorted by'));
+    });
+
+    test('query builder preview names explicit selected columns', () => {
+        const preview = buildPreviewFromState({
+            mode: 'table',
+            type: 'contact',
+            selectMode: 'custom',
+            selectFields: ['name', 'company']
+        });
+
+        assert.equal(preview.summary.explanation.endsWith('with name/company columns.'), true);
+    });
+
+    test('query builder presets produce canonical query text', () => {
+        const base = { mode: 'table', type: 'contact', selectMode: 'none' };
+        assert.equal(
+            buildQueryTextFromState(applyQueryBuilderPreset(base, 'most-connected')),
+            '!view contact\nsort _hub_score desc'
+        );
+        assert.equal(
+            buildQueryTextFromState(applyQueryBuilderPreset(base, 'no-incoming-links')),
+            '!view contact\nwhere _inbound_count = 0'
+        );
+        assert.equal(
+            buildQueryTextFromState(applyQueryBuilderPreset(base, 'recently-modified')),
+            '!view contact\nsort file.modified desc'
+        );
+        assert.equal(
+            buildQueryTextFromState(applyQueryBuilderPreset(base, 'recently-created')),
+            '!view contact\nsort file.created desc'
+        );
+    });
+
+    test('query builder options always expose computed graph fields', () => {
+        const options = buildBuilderOptions({ mode: 'table', type: 'contact' });
+        for (const field of ['_inbound_count', '_outbound_count', '_hub_score']) {
+            assert.ok(options.fieldCandidates.includes(field));
+            assert.ok(options.groupableFields.includes(field));
+            assert.match(options.fieldDescriptions[field], /Yamlink computed field/);
+        }
     });
 
     test('query builder known types merge registry and vault types', () => {

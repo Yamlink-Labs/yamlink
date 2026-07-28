@@ -1,3 +1,5 @@
 {
-    "workbench.colorTheme": "Yamlink Night"
+    "workbench.colorTheme": "Yamlink Night",
+    "yamlink.glossaryShowZeroBacklinkTerms": true,
+    "yamlink.glossaryGroupByType": true
 }

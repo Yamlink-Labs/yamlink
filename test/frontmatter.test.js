@@ -7,7 +7,8 @@ const {
     parseFrontmatterDocument,
     setField,
     serializeFrontmatterDocument,
-    writeFrontmatterFieldSurgically
+    writeFrontmatterFieldSurgically,
+    resolveYamlFieldNameForLine
 } = require('../src/core/frontmatter');
 
 describe('frontmatter serialization', () => {
@@ -111,5 +112,43 @@ describe('writeFrontmatterFieldSurgically', () => {
         const content = '---\nid: my-note\nnotes: |\n  line one\n  line two\n---\n';
         const result = writeFrontmatterFieldSurgically(content, 'notes', 'single');
         assert.equal(result, null);
+    });
+});
+
+describe('resolveYamlFieldNameForLine', () => {
+    test('resolves a single-line field directly from its own line', () => {
+        const lines = ['---', 'id: enotria', 'type: account', 'owner: [[maria]]', '---'];
+        assert.equal(resolveYamlFieldNameForLine(lines, 3), 'owner');
+    });
+
+    test('walks upward to find the parent key for a bare YAML list-item line', () => {
+        const lines = [
+            '---', 'id: enotria', 'type: account', 'name: Enotria', 'owner:', 'contacts:',
+            '  - [[theo-theodorou]]', '  - [[cesar-gutierrez]]', '  - [[', '---'
+        ];
+        assert.equal(resolveYamlFieldNameForLine(lines, 8), 'contacts');
+    });
+
+    test('resolves correctly for the first list item, not just later ones', () => {
+        const lines = ['---', 'id: enotria', 'type: account', 'contacts:', '  - [['];
+        assert.equal(resolveYamlFieldNameForLine(lines, 4), 'contacts');
+    });
+
+    test('stops at the frontmatter boundary — never attributes to something outside it', () => {
+        const lines = ['name: Something', '---', 'id: enotria', 'type: account', 'contacts:', '  - [['];
+        // lineIndex 5 is inside frontmatter (index 1 is the opening ---); scanning
+        // upward must stop at that boundary and not read line 0 as a real key.
+        assert.equal(resolveYamlFieldNameForLine(lines, 5), 'contacts');
+    });
+
+    test('returns null when no parent key can be found (e.g. a list at the very top)', () => {
+        const lines = ['---', '  - [['];
+        assert.equal(resolveYamlFieldNameForLine(lines, 1), null);
+    });
+
+    test('returns null for an out-of-range line index', () => {
+        const lines = ['---', 'id: x', '---'];
+        assert.equal(resolveYamlFieldNameForLine(lines, 99), null);
+        assert.equal(resolveYamlFieldNameForLine(lines, -1), null);
     });
 });

@@ -2,7 +2,7 @@
 
 const vscode = require('vscode');
 const { parseAllViewQueries } = require('../engine/query');
-const { parseFrontmatter, getFieldsCache, getPathIndex, getVaultGeneration } = require('../core/indexService');
+const { parseFrontmatter, getFieldsCache, getIndex, getVaultGeneration } = require('../core/indexService');
 const { getPrimaryWorkspaceRoot } = require('../core/workspace');
 const { getTemplateForType } = require('../core/templateRegistry');
 const { extractBodyMentionedIds } = require('../intelligence/frontmatterBodyHints');
@@ -260,14 +260,25 @@ function buildTypedEmptyFieldFallbackActions(document, lineIndex, fieldName, nod
     const isExpectedField = Boolean(schemaField) || commonFields.some((entry) => String(entry.field || '').trim().toLowerCase() === normalizedField);
     if (!isExpectedField) return [];
 
-    const isRelation = String(schemaField?.type || '').trim().toLowerCase() === 'relation';
     const lineText = document.lineAt(lineIndex).text;
     const cursorPos = new vscode.Position(lineIndex, lineText.length);
+    const idIndex = getIndex();
+    const relationState = resolveFrontmatterRelationCandidates(document, cursorPos, idIndex);
+    // A formal schema declaration is sufficient but never required — most
+    // vaults, including the sample vault, have no schema notes at all
+    // ("schema amplifies, never gates"). Falling back to the same real-usage
+    // relation inference the completion dropdown already uses (targetType
+    // resolved from vault priors / observed wikilink ratio) means a
+    // never-formally-declared field like `unit:` still gets treated as a
+    // relation here — without this fallback, `isRelation` was always false
+    // on a schema-less vault, silently falling through to plain scalar-value
+    // ranking, which could surface a completely bogus, non-existent id
+    // learned from a single malformed non-bracketed value elsewhere in the
+    // vault (a real bug found from a live user report).
+    const isRelation = String(schemaField?.type || '').trim().toLowerCase() === 'relation' || Boolean(relationState?.targetType);
     const actions = [];
 
     if (isRelation) {
-        const idIndex = getPathIndex();
-        const relationState = resolveFrontmatterRelationCandidates(document, cursorPos, idIndex);
         if (relationState) {
             const ranked = rankCandidateIds(
                 relationState.candidateIds,

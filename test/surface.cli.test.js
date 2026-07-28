@@ -302,6 +302,27 @@ test('CLI health --json has expected shape', () => {
     assert.equal(typeof body.brokenLinks, 'number');
 });
 
+test('CLI trends exits 0 with human projection sections', () => {
+    const result = cli(['trends'], vaultPath);
+    assert.equal(result.status, 0);
+    assert.match(result.stdout, /Vault Trends/);
+    assert.match(result.stdout, /Trend Lines/);
+    assert.match(result.stdout, /Retrospective Accuracy/);
+    assert.match(result.stdout, /Staleness Forecast/);
+});
+
+test('CLI trends --json has expected shape', () => {
+    const result = cli(['trends', '--json'], vaultPath);
+    assert.equal(result.status, 0);
+    const body = parseJson(result.stdout);
+    assert.equal(body.ok, true);
+    assert.equal(body.horizonDays, 90);
+    assert.equal(typeof body.growth, 'object');
+    assert.equal(typeof body.stale, 'object');
+    assert.equal(typeof body.structure, 'object');
+    assert.ok(Array.isArray(body.stale.upcoming));
+});
+
 test('CLI validate exits 0 on schema-free vault', () => {
     const result = cli(['validate'], vaultPath);
     assert.equal(result.status, 0);
@@ -1428,6 +1449,101 @@ test('CLI story --since with no date exits 1', () => {
     }
 });
 
+test('CLI snapshot creates a real loadable vault snapshot', () => {
+    const vault = createVault({
+        'rico.md': '---\nid: johnny-rico\ntype: character\nname: Johnny Rico\n---\n',
+        'roughnecks.md': '---\nid: roughnecks\ntype: unit\nname: Roughnecks\n---\n'
+    });
+    try {
+        const result = cli(['snapshot', '--reason', 'test capture', '--json'], vault.dir);
+        assert.equal(result.status, 0);
+        const body = parseJson(result.stdout);
+        assert.equal(body.ok, true);
+        assert.equal(body.noteCount, 2);
+        assert.equal(body.reason, 'test capture');
+
+        const log = require('../src/runtime/mutationEventLog');
+        log.initMutationLog(path.join(vault.dir, '.yamlink', 'mutation-log.ndjson'));
+        const snapshots = log.getVaultSnapshots();
+        assert.ok(snapshots.some((snapshot) =>
+            snapshot.timestamp === body.timestamp &&
+            snapshot.notes['johnny-rico'] &&
+            snapshot.notes.roughnecks
+        ));
+    } finally {
+        vault.destroy();
+    }
+});
+
+test('CLI restore without --output does not export markdown files', () => {
+    const vault = createVault({
+        'rico.md': '---\nid: johnny-rico\ntype: character\nname: Johnny Rico\n---\n'
+    });
+    try {
+        const before = fs.readdirSync(vault.dir).filter((name) => name !== '.yamlink').sort();
+        const result = cli(['restore', new Date().toISOString()], vault.dir);
+        assert.equal(result.status, 0);
+        assert.match(result.stdout, /Writes\s+none/);
+        const after = fs.readdirSync(vault.dir).filter((name) => name !== '.yamlink').sort();
+        assert.deepEqual(after, before);
+    } finally {
+        vault.destroy();
+    }
+});
+
+test('CLI restore --output refuses the live vault root', () => {
+    const vault = createVault({
+        'rico.md': '---\nid: johnny-rico\ntype: character\nname: Johnny Rico\n---\n'
+    });
+    try {
+        const result = cli(['restore', new Date().toISOString(), '--output', vault.dir, '--json'], vault.dir);
+        assert.equal(result.status, 1);
+        const body = parseJson(result.stdout);
+        assert.equal(body.ok, false);
+        assert.equal(body.code, 'REFUSE_LIVE_VAULT');
+    } finally {
+        vault.destroy();
+    }
+});
+
+test('CLI restore --output refuses a subdirectory of the live vault, not just the exact root', () => {
+    const vault = createVault({
+        'rico.md': '---\nid: johnny-rico\ntype: character\nname: Johnny Rico\n---\n'
+    });
+    try {
+        const nestedOutput = path.join(vault.dir, 'restore-export');
+        const result = cli(['restore', new Date().toISOString(), '--output', nestedOutput, '--json'], vault.dir);
+        assert.equal(result.status, 1);
+        const body = parseJson(result.stdout);
+        assert.equal(body.ok, false);
+        assert.equal(body.code, 'REFUSE_LIVE_VAULT');
+        assert.equal(fs.existsSync(nestedOutput), false, 'must not create the export directory before refusing');
+    } finally {
+        vault.destroy();
+    }
+});
+
+test('CLI restore reports complete false when reconstruction cannot be proven exact', () => {
+    const vault = createVault({
+        'rico.md': '---\nid: johnny-rico\ntype: character\nname: Johnny Rico\n---\n'
+    });
+    try {
+        const beforeChange = new Date(Date.now() - 1000).toISOString();
+        const setResult = cli(['set', 'johnny-rico', 'rank', 'lieutenant'], vault.dir);
+        assert.equal(setResult.status, 0);
+
+        const result = cli(['restore', beforeChange, '--json'], vault.dir);
+        assert.equal(result.status, 0);
+        const body = parseJson(result.stdout);
+        assert.equal(body.ok, true);
+        assert.equal(body.complete, false);
+        assert.ok(body.incompleteCount >= 1);
+        assert.ok(body.notes.some((note) => note.id === 'johnny-rico' && note.complete === false));
+    } finally {
+        vault.destroy();
+    }
+});
+
 test('CLI story --since with an invalid date exits 1 with INVALID_PARAM', () => {
     const vault = createVault({ 'rico.md': '---\nid: johnny-rico\ntype: character\n---\n' });
     try {
@@ -1924,5 +2040,209 @@ describe('startServer — programmatic lifecycle', () => {
             () => httpGet(`http://127.0.0.1:${port}/api/types`),
             'expected connection refused after close()'
         );
+    });
+});
+
+describe('CLI template save', () => {
+    test('saves a blank-skeleton template for the note\'s type, keyed off type not filename', () => {
+        const vault = createVault({
+            'enotria.md': [
+                '---', 'id: enotria', 'type: account', 'name: Enotria',
+                'contacts:',
+                '  - [[theo-theodorou]]',
+                '  - [[cesar-gutierrez]]',
+                '---', '',
+                '## Summary', 'Real prose that should not end up in the template.', ''
+            ].join('\n')
+        });
+        try {
+            const result = cli(['template', 'save', 'enotria', '--json'], vault.dir);
+            assert.equal(result.status, 0, result.stderr);
+            const body = parseJson(result.stdout);
+            assert.equal(body.ok, true);
+            assert.equal(body.type, 'account');
+
+            const templatePath = path.join(vault.dir, '_templates', 'account.md');
+            assert.ok(fs.existsSync(templatePath));
+            const content = fs.readFileSync(templatePath, 'utf8');
+            assert.match(content, /type: account/);
+            assert.match(content, /id:\n/);
+            assert.match(content, /contacts:\n  - \[\[\]\]/);
+            assert.match(content, /## Summary/);
+            assert.doesNotMatch(content, /Real prose/);
+        } finally {
+            vault.destroy();
+        }
+    });
+
+    test('refuses to overwrite an existing template without --force', () => {
+        const vault = createVault({
+            'rico.md': '---\nid: johnny-rico\ntype: contact\nname: Johnny Rico\n---\n'
+        });
+        try {
+            fs.mkdirSync(path.join(vault.dir, '_templates'), { recursive: true });
+            fs.writeFileSync(path.join(vault.dir, '_templates', 'contact.md'), '---\nid:\ntype: contact\nhand-authored: true\n---\n', 'utf8');
+
+            const result = cli(['template', 'save', 'johnny-rico', '--json'], vault.dir);
+            assert.equal(result.status, 1);
+            const body = parseJson(result.stdout);
+            assert.equal(body.ok, false);
+            assert.equal(body.code, 'CONFLICT');
+
+            const untouched = fs.readFileSync(path.join(vault.dir, '_templates', 'contact.md'), 'utf8');
+            assert.match(untouched, /hand-authored: true/);
+        } finally {
+            vault.destroy();
+        }
+    });
+
+    test('overwrites an existing template when --force is passed', () => {
+        const vault = createVault({
+            'rico.md': '---\nid: johnny-rico\ntype: contact\nname: Johnny Rico\n---\n'
+        });
+        try {
+            fs.mkdirSync(path.join(vault.dir, '_templates'), { recursive: true });
+            fs.writeFileSync(path.join(vault.dir, '_templates', 'contact.md'), '---\nid:\ntype: contact\nold-field:\n---\n', 'utf8');
+
+            const result = cli(['template', 'save', 'johnny-rico', '--force', '--json'], vault.dir);
+            assert.equal(result.status, 0, result.stderr);
+
+            const updated = fs.readFileSync(path.join(vault.dir, '_templates', 'contact.md'), 'utf8');
+            assert.match(updated, /name: /);
+            assert.doesNotMatch(updated, /old-field:/);
+        } finally {
+            vault.destroy();
+        }
+    });
+
+    test('errors for an unknown note id', () => {
+        const vault = createVault({ 'rico.md': '---\nid: johnny-rico\ntype: contact\n---\n' });
+        try {
+            const result = cli(['template', 'save', 'no-such-note', '--json'], vault.dir);
+            assert.equal(result.status, 1);
+            const body = parseJson(result.stdout);
+            assert.equal(body.code, 'NOT_FOUND');
+        } finally {
+            vault.destroy();
+        }
+    });
+
+    test('errors for an untyped note', () => {
+        const vault = createVault({ 'blank.md': '---\nid: blank-note\n---\n' });
+        try {
+            const result = cli(['template', 'save', 'blank-note', '--json'], vault.dir);
+            assert.equal(result.status, 1);
+            const body = parseJson(result.stdout);
+            assert.equal(body.code, 'USAGE');
+        } finally {
+            vault.destroy();
+        }
+    });
+});
+
+describe('CLI glossary', () => {
+    const GLOSSARY_FIXTURE = {
+        'klendathu.md': '---\nid: klendathu\ntype: location\nname: Klendathu\n---\n\nHomeworld of the Arachnid species.\n',
+        'roughnecks.md': '---\nid: roughnecks\ntype: faction\nname: Roughnecks\ndefinition: Rasczak\'s Roughnecks.\n---\n',
+        'mobile-infantry.md': '---\nid: mobile-infantry\ntype: faction\nname: Mobile Infantry\n---\n',
+        'rico.md': '---\nid: johnny-rico\ntype: contact\nname: Johnny Rico\nunit: "[[roughnecks]]"\nhomeworld: "[[klendathu]]"\n---\n'
+    };
+
+    test('errors when no --type is given', () => {
+        const vault = createVault(GLOSSARY_FIXTURE);
+        try {
+            const result = cli(['glossary', '--json'], vault.dir);
+            assert.equal(result.status, 1);
+            const body = parseJson(result.stdout);
+            assert.equal(body.code, 'USAGE');
+        } finally {
+            vault.destroy();
+        }
+    });
+
+    test('builds an alphabetized glossary grouped by type with definitions and backlinks', () => {
+        const vault = createVault(GLOSSARY_FIXTURE);
+        try {
+            const result = cli(['glossary', '--type', 'faction,location', '--json'], vault.dir);
+            assert.equal(result.status, 0, result.stderr);
+            const body = parseJson(result.stdout);
+            assert.equal(body.ok, true);
+            assert.equal(body.entryCount, 3);
+
+            const factionGroup = body.groups.find((g) => g.type === 'faction');
+            assert.ok(factionGroup);
+            const factionTerms = factionGroup.letters.flatMap((l) => l.entries.map((e) => e.term));
+            assert.deepEqual(factionTerms, ['Mobile Infantry', 'Roughnecks']);
+
+            const roughnecks = factionGroup.letters.flatMap((l) => l.entries).find((e) => e.id === 'roughnecks');
+            assert.equal(roughnecks.definition, 'Rasczak\'s Roughnecks.');
+            assert.equal(roughnecks.definitionSource, 'field');
+            assert.deepEqual(roughnecks.backlinkIds, ['johnny-rico']);
+
+            const locationGroup = body.groups.find((g) => g.type === 'location');
+            const klendathu = locationGroup.letters.flatMap((l) => l.entries)[0];
+            assert.equal(klendathu.definitionSource, 'body');
+            assert.match(klendathu.definition, /Homeworld of the Arachnid species/);
+        } finally {
+            vault.destroy();
+        }
+    });
+
+    test('--no-group-by-type produces a single flat group', () => {
+        const vault = createVault(GLOSSARY_FIXTURE);
+        try {
+            const result = cli(['glossary', '--type', 'faction,location', '--no-group-by-type', '--json'], vault.dir);
+            assert.equal(result.status, 0, result.stderr);
+            const body = parseJson(result.stdout);
+            assert.equal(body.groups.length, 1);
+            assert.equal(body.groups[0].type, null);
+        } finally {
+            vault.destroy();
+        }
+    });
+
+    test('--hide-unreferenced omits terms with no inbound links', () => {
+        const vault = createVault(GLOSSARY_FIXTURE);
+        try {
+            const result = cli(['glossary', '--type', 'faction', '--hide-unreferenced', '--json'], vault.dir);
+            assert.equal(result.status, 0, result.stderr);
+            const body = parseJson(result.stdout);
+            assert.equal(body.entryCount, 1);
+            const term = body.groups[0].letters[0].entries[0];
+            assert.equal(term.id, 'roughnecks');
+        } finally {
+            vault.destroy();
+        }
+    });
+
+    test('prints a human-readable listing by default, with a warning when no notes match', () => {
+        const vault = createVault(GLOSSARY_FIXTURE);
+        try {
+            const match = cli(['glossary', '--type', 'faction'], vault.dir);
+            assert.equal(match.status, 0, match.stderr);
+            assert.match(match.stdout, /Roughnecks/);
+            assert.match(match.stdout, /Referenced in: johnny-rico/);
+
+            const noMatch = cli(['glossary', '--type', 'task'], vault.dir);
+            assert.equal(noMatch.status, 0);
+            assert.match(noMatch.stdout, /No notes found for type\(s\): task/);
+        } finally {
+            vault.destroy();
+        }
+    });
+
+    test('--sort-by-references ranks terms by inbound link count, no letter subheadings', () => {
+        const vault = createVault(GLOSSARY_FIXTURE);
+        try {
+            const result = cli(['glossary', '--type', 'faction', '--sort-by-references', '--json'], vault.dir);
+            assert.equal(result.status, 0, result.stderr);
+            const body = parseJson(result.stdout);
+            assert.equal(body.groups[0].letters.length, 1);
+            assert.equal(body.groups[0].letters[0].letter, null);
+            const terms = body.groups[0].letters[0].entries.map((e) => e.term);
+            assert.deepEqual(terms, ['Roughnecks', 'Mobile Infantry']);
+        } finally {
+            vault.destroy();
+        }
     });
 });

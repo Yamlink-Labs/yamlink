@@ -10,6 +10,7 @@ const {
     buildTaskLabel,
     buildGroupLabel,
     buildTaskCenterMessage,
+    buildTaskChildrenForGroup,
     filterTaskGroups,
     describeFilterState,
     buildTaskCenterStatus,
@@ -146,7 +147,7 @@ describe('taskCenter — buildGroupLabel', () => {
     test('bucket headers carry a plain-language description', () => {
         assert.deepEqual(
             buildGroupLabel({ status: 'overdue', label: 'Overdue', tasks: [{}, {}] }),
-            { label: 'Overdue', description: '2 need attention' }
+            { label: 'Overdue', description: '2 attention' }
         );
         assert.deepEqual(
             buildGroupLabel({ status: 'today', label: 'Today', tasks: [{}] }),
@@ -166,11 +167,28 @@ describe('taskCenter — buildTaskCenterMessage', () => {
             { fileId: 'b', done: false, date: TODAY },
             { fileId: 'c', done: false, date: '' }
         ], TODAY);
-        assert.equal(buildTaskCenterMessage(groups), '1 overdue · 1 today · 1 undated');
+        assert.equal(buildTaskCenterMessage(groups), 'Overdue 1 · Today 1 · Undated 1');
     });
 
     test('returns a friendly empty state when there are no tasks', () => {
         assert.equal(buildTaskCenterMessage([]), 'No tasks found in this workspace.');
+    });
+});
+
+describe('taskCenter — group children', () => {
+    test('large undated buckets show a triage row instead of dumping every task by default', () => {
+        const tasks = Array.from({ length: 8 }, (_, index) => ({ fileId: `task-${index + 1}`, done: false, date: '' }));
+        const children = buildTaskChildrenForGroup({ kind: 'group', status: 'undated', label: 'Undated', tasks });
+        assert.equal(children.length, 6);
+        assert.deepEqual(children.slice(0, 5).map((child) => child.kind), ['task', 'task', 'task', 'task', 'task']);
+        assert.deepEqual(children[5], { kind: 'more', hidden: 3 });
+    });
+
+    test('show all mode returns every undated task', () => {
+        const tasks = Array.from({ length: 8 }, (_, index) => ({ fileId: `task-${index + 1}`, done: false, date: '' }));
+        const children = buildTaskChildrenForGroup({ kind: 'group', status: 'undated', label: 'Undated', tasks }, true);
+        assert.equal(children.length, 8);
+        assert.deepEqual(children.map((child) => child.kind), Array(8).fill('task'));
     });
 });
 
@@ -214,10 +232,10 @@ describe('taskCenter — filter state', () => {
             { fileId: 'a', done: false, date: '2026-07-15' },
             { fileId: 'b', done: false, date: TODAY }
         ], TODAY);
-        assert.equal(describeFilterState({ mode: 'attention', focusStatus: 'overdue' }), 'attention · focused on overdue');
+        assert.equal(describeFilterState({ mode: 'attention', focusStatus: 'overdue' }), 'Attention · Overdue');
         assert.equal(
             buildTaskCenterStatus(filterTaskGroups(groups, { mode: 'attention', focusStatus: '' }), { mode: 'attention', focusStatus: '' }),
-            'attention — 1 overdue · 1 today'
+            'Attention — Overdue 1 · Today 1'
         );
     });
 });

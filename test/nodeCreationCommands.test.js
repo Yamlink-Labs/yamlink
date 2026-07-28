@@ -19,6 +19,7 @@ const openDocs = new Map();
 let inputQueue = [];
 let pickQueue = [];
 let warningResponseQueue = [];
+let infoResponseQueue = [];
 let _buildIndexCalls = 0;
 let invalidateCalls = [];
 let updateCalls = [];
@@ -89,6 +90,7 @@ const mockWindow = {
     },
     showInformationMessage(message, ...actions) {
         infoMessages.push(message);
+        if (infoResponseQueue.length > 0) return Promise.resolve(infoResponseQueue.shift());
         return Promise.resolve(actions[0] || undefined);
     },
     showWarningMessage(message) {
@@ -352,6 +354,7 @@ const { registerNodeCreationCommands } = require('../src/actions/codeActionsNode
     inputQueue = [];
     pickQueue = [];
     warningResponseQueue = [];
+    infoResponseQueue = [];
     _buildIndexCalls = 0;
     invalidateCalls = [];
     updateCalls = [];
@@ -445,6 +448,10 @@ describe('node creation commands', () => {
 
     test('createRelatedNote also injects the reverse account link when contact creation uses a template path', async () => {
         const context = { subscriptions: [] };
+        // The shared getFieldsCache stub already includes 'source-note', a
+        // contact note with a real 'account' field — that's the vault
+        // evidence that gives inferReverseRelationField 'observed' confidence
+        // here, so the auto-write happens the same as before this session.
         registerNodeCreationCommands(context, () => new Map(), () => new Set(['contact', 'account']));
 
         writeFiles.set(vaultPath('source-account.md'), [
@@ -486,6 +493,75 @@ describe('node creation commands', () => {
             normalizeFsPath(call.filePath) === vaultPath('source-account.md') &&
             call.field === 'contacts' &&
             call.value.includes('[[new-contact]]')
+        ));
+    });
+
+    test('createRelatedNote never auto-writes a guessed reverse-link field with zero vault evidence, but offers a visible follow-up', async () => {
+        const context = { subscriptions: [] };
+        // The shared getFieldsCache stub has no note of type 'mission' at
+        // all, so inferReverseRelationField can only fall back to a
+        // 'guessed' inference here — zero real vault evidence — which must
+        // never be auto-written.
+        registerNodeCreationCommands(context, () => new Map(), () => new Set(['account', 'mission']));
+
+        writeFiles.set(vaultPath('source-account.md'), [
+            '---',
+            'id: marketing-directo',
+            'type: account',
+            'missions: [[old-mission]]',
+            '---',
+            ''
+        ].join('\n'));
+        inputQueue.push('new-mission');
+        // First showInformationMessage call is the plain "Created" notice (no
+        // actions, response ignored); second is the guessed-field follow-up
+        // — declined here to prove no write happens without explicit consent.
+        infoResponseQueue.push(undefined, undefined);
+
+        await commandMap.get('yamlink.createRelatedNote')({
+            targetType: 'mission',
+            fieldName: 'missions',
+            sourceId: 'marketing-directo',
+            sourceFilePath: vaultPath('source-account.md'),
+            sourceType: 'account'
+        });
+
+        assert.ok(writeFiles.has(vaultPath('new-mission.md')));
+        assert.ok(!writeFieldCalls.some((call) =>
+            normalizeFsPath(call.filePath) === vaultPath('new-mission.md') &&
+            call.field === 'account'
+        ), 'a guessed reverse field must never be auto-written with zero vault evidence');
+        assert.ok(infoMessages.some((msg) => /Link "new-mission" back to marketing-directo via account:\?/.test(msg)),
+            'a visible follow-up must still be offered instead of silence');
+    });
+
+    test('createRelatedNote writes the guessed reverse-link field once the user explicitly approves the follow-up', async () => {
+        const context = { subscriptions: [] };
+        registerNodeCreationCommands(context, () => new Map(), () => new Set(['account', 'mission']));
+
+        writeFiles.set(vaultPath('source-account.md'), [
+            '---',
+            'id: marketing-directo',
+            'type: account',
+            'missions: [[old-mission]]',
+            '---',
+            ''
+        ].join('\n'));
+        inputQueue.push('new-mission');
+        infoResponseQueue.push(undefined, 'Add account: [[marketing-directo]]');
+
+        await commandMap.get('yamlink.createRelatedNote')({
+            targetType: 'mission',
+            fieldName: 'missions',
+            sourceId: 'marketing-directo',
+            sourceFilePath: vaultPath('source-account.md'),
+            sourceType: 'account'
+        });
+
+        assert.ok(writeFieldCalls.some((call) =>
+            normalizeFsPath(call.filePath) === vaultPath('new-mission.md') &&
+            call.field === 'account' &&
+            call.value === '[[marketing-directo]]'
         ));
     });
 

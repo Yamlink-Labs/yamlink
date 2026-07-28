@@ -22,10 +22,17 @@ For prose walkthroughs with example requests/responses, see [README-API.md](./RE
 | `INVALID_JSON` | 400 |
 | `INVALID_PARAM` | 400 |
 | `LIMIT_EXCEEDED` | 400 |
+| `UNAUTHORIZED` | 401 |
 | `NOT_FOUND` | 404 |
 | `METHOD_NOT_ALLOWED` | 405 |
 | `CONFLICT` | 409 |
 | `INTERNAL_ERROR` | 500 |
+
+### Authentication (opt-in)
+
+CORS is intentionally wide open (`Access-Control-Allow-Origin: *`) so browser-based local tools running on a different origin/port can call the API. By default there is **no authentication at all** — anything that can reach `127.0.0.1:<port>` can read or write the vault, including a webpage open in the same browser.
+
+Set the `YAMLINK_API_TOKEN` environment variable before starting `yamlink serve` to require every request (except the `OPTIONS` CORS preflight) to carry a matching `X-Yamlink-Token` header. Missing or mismatched tokens get `401 UNAUTHORIZED`. Unset (the default), behavior is unchanged from before this existed. `yamlink serve`'s human-readable startup output prints a loud warning whenever it starts without a token set.
 
 ## Routes
 
@@ -37,7 +44,7 @@ For prose walkthroughs with example requests/responses, see [README-API.md](./RE
 | `POST` | `/api/nodes` | — | `{ type, fields? }` | `201 { ok, id, filePath, _generation }` | `400 MISSING_PARAM` (no type), `400 INVALID_JSON`, `409 CONFLICT` (id collision) |
 | `POST` | `/api/nodes/bulk` | — | `{ notes: [{ type, fields? }] }`, max 50 | `201` (all ok) or `207` (partial) `{ created, errors, _generation }` | `400 MISSING_PARAM` (no `notes` array), `400 LIMIT_EXCEEDED` (>50) |
 | `PATCH` | `/api/nodes/bulk` | — | `{ updates: [{ id, fields }] }`, max 50 | `200` (all ok) or `207` (partial) `{ updated, errors, _generation }` | `400 MISSING_PARAM`, `400 LIMIT_EXCEEDED` |
-| `GET` | `/api/nodes/:id` | `include` (csv: `outbound,inbound,intelligence,history`), `minGeneration` (int, waits up to 3s), `at` (ISO timestamp, time-travel — see below) | — | `200` note fields + `_outbound`/`_inbound` (or requested `include` sections) | `404 NOT_FOUND` |
+| `GET` | `/api/nodes/:id` | `include` (csv: `outbound,inbound,intelligence,history,body,timestamps`), `minGeneration` (int, waits up to 3s), `at` (ISO timestamp, time-travel — see below) | — | `200` note fields + `_outbound`/`_inbound` (or requested `include` sections — `body` adds `_body` (raw body text), `timestamps` adds `_timestamps: { created, modified }` from real filesystem stat data) | `404 NOT_FOUND` |
 | `GET` | `/api/nodes/:id?at=<ts>` | `at` required for this mode | — | `200 { id, at, exists, fields, _outbound, complete, earliestReconstructableTimestamp, reason?, deletedAt? }` | `400 INVALID_PARAM` (bad timestamp), `404 NOT_FOUND` with `{ reason: "not-yet-created"\|"already-deleted"\|"no-history" }` |
 | `PATCH` | `/api/nodes/:id` | — | `{ field, value }` or `{ fields: {...} }` | `200` updated fields + `_generation` | `400 BAD_REQUEST` (no field/fields), `400 INVALID_JSON`, `404 NOT_FOUND` |
 | `DELETE` | `/api/nodes/:id` | — | — | `200 { ok, id, _generation }` | `404 NOT_FOUND` |
@@ -68,6 +75,8 @@ For prose walkthroughs with example requests/responses, see [README-API.md](./RE
 | `GET` | `/api/schema` | `type`, `page`, `limit` (max 100) | `200 { schemas, meta }` | — |
 | `GET` | `/api/types` | — | `200` — array/summary of known types | — |
 | `GET` | `/api/tasks` | `note`, `done` (`true`/`false`), `overdue` (`true`), `today` (`true`), `page`, `limit` (max 200) | `200 { tasks, meta }` | — |
+| `PATCH` | `/api/tasks` | — | `{ noteId, line, done }` (`line` 1-indexed, matches `GET /api/tasks`'s rows) | `200 { ok, changed, noteId, line, done }` | `400 MISSING_PARAM`, `400 INVALID_PARAM` (bad `line`), `404 NOT_FOUND` (unknown `noteId`) |
+| `GET` | `/api/glossary` | `types` (csv, required), `groupByType` (`true` default), `hideUnreferenced` (`true`/`false`, default shows all), `sortBy` (`alphabetical` default \| `mostReferenced`), `extraFields` (csv) | `200 { types, entryCount, groups }` — same shape as `yamlink glossary --json` | `400 MISSING_PARAM` (no `types`) |
 
 ### Mutations / History / Diff
 
@@ -88,6 +97,7 @@ For prose walkthroughs with example requests/responses, see [README-API.md](./RE
 | `GET` | `/api/intelligence/fieldCategory` | `id` + `field` (both required) | `200` — field classification | `400 MISSING_PARAM`, `404 NOT_FOUND` |
 | `GET` | `/api/intelligence/note` | `id` (required) | `200` — lifecycle + drift + arc snapshot | `400 MISSING_PARAM`, `404 NOT_FOUND` |
 | `GET` | `/api/intelligence/clusters` | — | `200` — detected pre-schema field-signature clusters | — |
+| `GET` | `/api/intelligence/trends` | — | `200` — vault projections for growth, stale, structure, retrospective accuracy, and staleness forecast | — |
 | `GET` | `/api/intelligence/lenses` | — | `200 { mostEdited, fastestGrowingTypes, ... }` | — |
 
 ### Live events

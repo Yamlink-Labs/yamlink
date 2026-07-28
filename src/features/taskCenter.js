@@ -13,6 +13,7 @@ const STATUS_GROUPS = [
 ];
 
 const FILTER_MODES = ['all', 'open', 'attention'];
+const MAX_UNDATED_VISIBLE = 5;
 
 // Fixed, closed vocabulary — mirrors src/core/tasks.js's PRIORITY_ALIASES.
 // Lower rank sorts first within a status bucket; unprioritized tasks (rank 3)
@@ -23,6 +24,14 @@ const PRIORITY_RANK = { urgent: 0, medium: 1, low: 2 };
 // unlike ThemeColor tokens which resolve differently per theme and might
 // not read clearly as "red" in every one of them.
 const PRIORITY_LABEL = { urgent: 'urgent', medium: 'medium priority', low: 'low priority' };
+
+const STATUS_LABELS = {
+    overdue: 'Overdue',
+    today: 'Today',
+    upcoming: 'Upcoming',
+    undated: 'Undated',
+    done: 'Done'
+};
 
 /** @param {{priority?: string|null}} task @returns {number} */
 function priorityRank(task) {
@@ -112,10 +121,10 @@ function describeTaskTiming(task, todayIso = getTodayIsoLocal()) {
 
 function describeGroup(node) {
     const count = node?.tasks?.length || 0;
-    if (node?.status === 'overdue') return `${count} need attention`;
+    if (node?.status === 'overdue') return `${count} attention`;
     if (node?.status === 'today') return `${count} due today`;
     if (node?.status === 'upcoming') return `${count} coming up`;
-    if (node?.status === 'undated') return `${count} unscheduled`;
+    if (node?.status === 'undated') return `${count} needs date`;
     if (node?.status === 'done') return `${count} completed`;
     return `${count} tasks`;
 }
@@ -129,8 +138,10 @@ function buildGroupLabel(node) {
 
 function buildTaskCenterMessage(groups) {
     if (!Array.isArray(groups) || groups.length === 0) return 'No tasks found in this workspace.';
-    return groups
-        .map((group) => `${group.tasks.length} ${group.status}`)
+    return STATUS_GROUPS
+        .map((statusDef) => groups.find((group) => group.status === statusDef.status))
+        .filter(Boolean)
+        .map((group) => `${STATUS_LABELS[group.status] || group.label || group.status} ${group.tasks.length}`)
         .join(' · ');
 }
 
@@ -148,16 +159,30 @@ function describeFilterState(state) {
     const mode = String(state?.mode || 'all');
     const focusStatus = String(state?.focusStatus || '').trim();
     const parts = [];
-    if (mode === 'open') parts.push('open only');
-    else if (mode === 'attention') parts.push('attention');
-    else parts.push('all tasks');
-    if (focusStatus) parts.push(`focused on ${focusStatus}`);
+    if (mode === 'open') parts.push('Open');
+    else if (mode === 'attention') parts.push('Attention');
+    else parts.push('All');
+    if (focusStatus) parts.push(STATUS_LABELS[focusStatus] || focusStatus);
     return parts.join(' · ');
 }
 
 function buildTaskCenterStatus(groups, state) {
     const summary = buildTaskCenterMessage(groups);
-    return `${describeFilterState(state)} — ${summary}`;
+    const filter = describeFilterState(state);
+    return filter === 'All' ? summary : `${filter} — ${summary}`;
+}
+
+function buildTaskChildrenForGroup(node, showAllUndated = false) {
+    if (!node || node.kind !== 'group') return [];
+    const tasks = Array.isArray(node.tasks) ? node.tasks : [];
+    if (node.status === 'undated' && !showAllUndated && tasks.length > MAX_UNDATED_VISIBLE) {
+        const visible = tasks
+            .slice(0, MAX_UNDATED_VISIBLE)
+            .map((task) => ({ kind: 'task', task }));
+        visible.push({ kind: 'more', hidden: tasks.length - MAX_UNDATED_VISIBLE });
+        return visible;
+    }
+    return tasks.map((task) => ({ kind: 'task', task }));
 }
 
 /**
@@ -197,6 +222,7 @@ function registerTaskCenterView(context) {
             this.onDidChangeTreeData = this._emitter.event;
             this._groups = null;
             this._filterState = { mode: 'all', focusStatus: '' };
+            this._showAllUndated = false;
         }
 
         refresh() {
@@ -221,18 +247,31 @@ function registerTaskCenterView(context) {
             this.refresh();
         }
 
+        showAllUndated() {
+            this._showAllUndated = true;
+            this.refresh();
+        }
+
         _ensureGroups() {
             if (this._groups) return this._groups;
             const tasks = buildTaskRows(getIndex(), getVaultGeneration());
             const grouped = groupTasks(tasks);
             this._groups = filterTaskGroups(grouped, this._filterState);
+            // Must summarize this._groups (the filtered set), not the raw
+            // `grouped` above — the tree body below is built from this._groups
+            // too, so the header has to describe the same thing that's actually
+            // visible. Passing the unfiltered `grouped` here once slipped in
+            // silently (no test exercises this exact call site, only the pure
+            // buildTaskCenterStatus() function with manually-chosen input) and
+            // produced a header showing full vault-wide counts while the tree
+            // itself only showed a filtered subset.
             if (treeView) treeView.message = buildTaskCenterStatus(this._groups, this._filterState);
             return this._groups;
         }
 
         getTreeItem(node) {
             if (node.kind === 'group') {
-                const collapsibleState = node.status === 'done'
+                const collapsibleState = node.status === 'done' || node.status === 'undated'
                     ? vscode.TreeItemCollapsibleState.Collapsed
                     : vscode.TreeItemCollapsibleState.Expanded;
                 const header = buildGroupLabel(node);
@@ -242,6 +281,21 @@ function registerTaskCenterView(context) {
                 item.tooltip = `${header.label}\n${header.description}`;
                 item.contextValue = 'yamlinkTaskGroup';
                 item.iconPath = getGroupIcon(vscode, node.status);
+                return item;
+            }
+
+            if (node.kind === 'more') {
+                const hidden = Math.max(0, Number(node.hidden || 0));
+                const item = new vscode.TreeItem(`Show ${hidden} more undated tasks`, vscode.TreeItemCollapsibleState.None);
+                item.id = 'task-center:show-more-undated';
+                item.description = 'triage later';
+                item.tooltip = 'Reveal the rest of the unscheduled tasks.';
+                item.contextValue = 'yamlinkTaskMore';
+                item.iconPath = new vscode.ThemeIcon('ellipsis', new vscode.ThemeColor('descriptionForeground'));
+                item.command = {
+                    command: 'yamlink.taskCenterShowAllUndated',
+                    title: 'Show More Undated Tasks'
+                };
                 return item;
             }
 
@@ -269,7 +323,7 @@ function registerTaskCenterView(context) {
                 return groups.map((g) => ({ kind: 'group', status: g.status, label: g.label, tasks: g.tasks }));
             }
             if (node.kind === 'group') {
-                return node.tasks.map((task) => ({ kind: 'task', task }));
+                return buildTaskChildrenForGroup(node, this._showAllUndated);
             }
             return [];
         }
@@ -298,6 +352,12 @@ function registerTaskCenterView(context) {
     context.subscriptions.push(
         vscode.commands.registerCommand('yamlink.taskCenterClearFilters', () => {
             provider.clearFilters();
+        })
+    );
+
+    context.subscriptions.push(
+        vscode.commands.registerCommand('yamlink.taskCenterShowAllUndated', () => {
+            provider.showAllUndated();
         })
     );
 
@@ -366,6 +426,7 @@ module.exports = {
     buildTaskLabel,
     buildGroupLabel,
     buildTaskCenterMessage,
+    buildTaskChildrenForGroup,
     filterTaskGroups,
     describeFilterState,
     buildTaskCenterStatus,

@@ -7,7 +7,9 @@ const { getEdges, getBacklinks } = require('../../core/graph');
 const { getMutationEvents } = require('../../runtime/mutationEventLog');
 const { buildNoteIntelligenceSnapshot } = require('../../intelligence/intelligenceSnapshots');
 const { reconstructNoteAtTime } = require('../../core/timeEngine');
-const { json, errorJson, badRequest, methodNotAllowed, readBody, coercePositiveInt, notFound } = require('../http');
+const { parseFrontmatterDocument } = require('../../core/frontmatter');
+const { readFileStatDates } = require('../../engine/queryExecutor');
+const { json, errorJson, badRequest, methodNotAllowed, parseJsonBody, requireFields, coercePositiveInt, notFound } = require('../http');
 const { writeNoteFile, applyFieldUpdates } = require('../write');
 const { appendMutationEvents, withMutationContext } = require('../../runtime/mutationEventLog');
 
@@ -145,6 +147,20 @@ function buildHistoricalOutbound(fields) {
     return outbound;
 }
 
+/**
+ * Raw, verbatim note body (everything after the closing `---`), opt-in via
+ * `?include=body`. Never cached, never lowercased — unlike the query
+ * engine's `readBody()`, which intentionally lowercases for search matching
+ * and would silently corrupt a "give me the real body text" response.
+ * @param {string|null} filePath @returns {string|null}
+ */
+function readRawBody(filePath) {
+    if (!filePath) return null;
+    try {
+        return parseFrontmatterDocument(fs.readFileSync(filePath, 'utf8')).body;
+    } catch (e) { return null; }
+}
+
 async function getNode(req, res, id, url, context) {
     if (req.method !== 'GET') { methodNotAllowed(res); return; }
 
@@ -202,17 +218,21 @@ async function getNode(req, res, id, url, context) {
     if (include.includes('inbound')) response._inbound = buildInboundComposite(id, fieldsCache);
     if (include.includes('intelligence')) response._intelligence = buildNoteIntelligenceSnapshot(id);
     if (include.includes('history')) response._history = getMutationEvents({ noteId: id, limit: 20 }).slice().reverse();
+    if (include.includes('body')) response._body = readRawBody(filePath);
+    if (include.includes('timestamps')) {
+        const stat = readFileStatDates(filePath);
+        response._timestamps = stat ? { created: stat['file.created'], modified: stat['file.modified'] } : null;
+    }
     json(res, response);
 }
 
 async function createNode(req, res, context) {
     if (req.method !== 'POST') { methodNotAllowed(res); return; }
-    let body;
-    try { body = await readBody(req); }
-    catch (_) { badRequest(res, 'Invalid JSON body', 'INVALID_JSON'); return; }
+    const body = await parseJsonBody(req, res);
+    if (!body) return;
+    if (!requireFields(body, res, ['type'])) return;
 
     const noteType = String(body.type || '').trim();
-    if (!noteType) { badRequest(res, 'Missing param: type', 'MISSING_PARAM'); return; }
 
     const extraFields = (body.fields && typeof body.fields === 'object') ? body.fields : {};
     /** @type {any} */
@@ -253,9 +273,9 @@ async function createNode(req, res, context) {
 
 async function bulkCreate(req, res, context) {
     if (req.method !== 'POST') { methodNotAllowed(res); return; }
-    let body;
-    try { body = await readBody(req); }
-    catch (_) { badRequest(res, 'Invalid JSON body', 'INVALID_JSON'); return; }
+    const body = await parseJsonBody(req, res);
+    if (!body) return;
+    if (!requireFields(body, res, ['notes'])) return;
 
     const notes = Array.isArray(body.notes) ? body.notes : null;
     if (!notes) { badRequest(res, 'Missing param: notes', 'MISSING_PARAM'); return; }
@@ -307,9 +327,8 @@ async function bulkCreate(req, res, context) {
 
 async function updateNode(req, res, id, context) {
     if (req.method !== 'PATCH') { methodNotAllowed(res); return; }
-    let body;
-    try { body = await readBody(req); }
-    catch (_) { badRequest(res, 'Invalid JSON body', 'INVALID_JSON'); return; }
+    const body = await parseJsonBody(req, res);
+    if (!body) return;
 
     const fieldMap = (body.fields && typeof body.fields === 'object')
         ? body.fields
@@ -358,9 +377,9 @@ async function updateNode(req, res, id, context) {
 
 async function bulkUpdate(req, res, context) {
     if (req.method !== 'PATCH') { methodNotAllowed(res); return; }
-    let body;
-    try { body = await readBody(req); }
-    catch (_) { badRequest(res, 'Invalid JSON body', 'INVALID_JSON'); return; }
+    const body = await parseJsonBody(req, res);
+    if (!body) return;
+    if (!requireFields(body, res, ['updates'])) return;
 
     const updates = Array.isArray(body.updates) ? body.updates : null;
     if (!updates) { badRequest(res, 'Missing param: updates', 'MISSING_PARAM'); return; }

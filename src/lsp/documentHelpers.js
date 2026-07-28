@@ -10,6 +10,7 @@ const { buildNoteArc } = require('../intelligence/noteArc');
 const { getTemplateForType } = require('../core/templateRegistry');
 const { getSchema } = require('../registries/schemaRegistry');
 const { parseFrontmatter, getFieldsCache, getVaultGeneration, getIndex } = require('../core/indexService');
+const { inferReverseRelationField } = require('../intelligence/reverseRelationHelpers');
 const { WIKILINK_RE, uriToPath } = require('./utils');
 
 function splitLines(text) {
@@ -139,13 +140,28 @@ function replaceFrontmatterFieldValues(uri, content, replacements) {
     return { changes: { [uri]: edits } };
 }
 
-function buildCreateNoteEdit(vaultPath, targetId, targetType) {
+// Structural autocomplete, Behavior B: reverseLinkContext (the note this
+// create was triggered from) only ever gets its reverse-link field embedded
+// when inferReverseRelationField returns 'observed' confidence (real vault
+// evidence). Unlike VS Code, this surface has no follow-up UI to offer a
+// 'guessed' inference for later approval — with no way to ask, the honest
+// choice is to stay silent rather than write an unconfirmed guess.
+/** @param {string} vaultPath @param {string} targetId @param {string} targetType @param {{sourceId: string, sourceType: string}} [reverseLinkContext] */
+function buildCreateNoteEdit(vaultPath, targetId, targetType, reverseLinkContext) {
     const noteType = String(targetType || 'note').trim() || 'note';
     const safeId = canonicalizeId(targetId);
     const filePath = path.join(vaultPath, safeId + '.md');
     const uri = filePath.replace(/\\/g, '/').startsWith('/')
         ? 'file://' + filePath.replace(/\\/g, '/')
         : 'file:///' + filePath.replace(/\\/g, '/');
+
+    let reverseFieldLine = '';
+    if (reverseLinkContext?.sourceId && reverseLinkContext?.sourceType) {
+        const inference = inferReverseRelationField(noteType, reverseLinkContext.sourceType, reverseLinkContext.sourceId, getFieldsCache());
+        if (inference?.confidence === 'observed') {
+            reverseFieldLine = `${inference.field}: [[${reverseLinkContext.sourceId}]]\n`;
+        }
+    }
 
     return {
         documentChanges: [
@@ -157,7 +173,7 @@ function buildCreateNoteEdit(vaultPath, targetId, targetType) {
                         start: { line: 0, character: 0 },
                         end: { line: 0, character: 0 }
                     },
-                    newText: `---\nid: ${safeId}\ntype: ${noteType}\n---\n`
+                    newText: `---\nid: ${safeId}\ntype: ${noteType}\n${reverseFieldLine}---\n`
                 }]
             }
         ]

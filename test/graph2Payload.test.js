@@ -11,6 +11,64 @@ const backlinkMap = new Map();
 const idIndex = new Map();
 const fieldsCache = new Map();
 
+function round2(value) {
+    return Math.round(Number(value || 0) * 100) / 100;
+}
+
+function computeGraphEdgeWeight(label, options = {}) {
+    const isMention = label === 'mention';
+    const reciprocalBonus = options.reciprocal ? 0.65 : 0;
+    const semanticBonus = options.sourceType && options.targetType && options.sourceType !== options.targetType ? 0.2 : 0;
+    const base = isMention ? 0.85 : 2.55;
+    return round2(base + reciprocalBonus + semanticBonus);
+}
+
+function classifyGraphEdgeStrength(label, weight) {
+    if (label === 'mention') return 'weak';
+    if (weight >= 3.2) return 'strong';
+    return 'medium';
+}
+
+function computeHubScore({ weightedDegree, relationKinds, connectedTypes, strongEdges, tagCount }) {
+    return round2((weightedDegree * 2.2) + (relationKinds * 1.4) + (connectedTypes * 1.1) + (strongEdges * 0.75) + (Math.min(tagCount, 4) * 0.25));
+}
+
+function computeNodeWeightedDegree(id) {
+    const outgoing = (edgeMap.get(id) || []).map((edge) => computeGraphEdgeWeight(edge.field === 'body' ? 'mention' : edge.field, {
+        reciprocal: (edgeMap.get(edge.targetId) || []).some((candidate) => candidate && candidate.targetId === id)
+    }));
+    const incoming = (backlinkMap.get(id) || []).map((edge) => computeGraphEdgeWeight(edge.field === 'body' ? 'mention' : edge.field, {
+        reciprocal: (edgeMap.get(edge.sourceId) || []).some((candidate) => candidate && candidate.targetId === id)
+    }));
+    return round2([...outgoing, ...incoming].reduce((sum, weight) => sum + weight, 0));
+}
+
+function computeNodeExplorerScore(id) {
+    const relatedTypes = new Set();
+    const relationFields = new Set();
+    let strongEdges = 0;
+    for (const edge of edgeMap.get(id) || []) {
+        const label = edge.field === 'body' ? 'mention' : edge.field;
+        relationFields.add(label);
+        relatedTypes.add(String((fieldsCache.get(edge.targetId) || {}).type || 'unknown'));
+        if (classifyGraphEdgeStrength(label, computeGraphEdgeWeight(label)) !== 'weak') strongEdges += 1;
+    }
+    for (const edge of backlinkMap.get(id) || []) {
+        const label = edge.field === 'body' ? 'mention' : edge.field;
+        relationFields.add(label);
+        relatedTypes.add(String((fieldsCache.get(edge.sourceId) || {}).type || 'unknown'));
+        if (classifyGraphEdgeStrength(label, computeGraphEdgeWeight(label)) !== 'weak') strongEdges += 1;
+    }
+    const tagCount = String((fieldsCache.get(id) || {}).__yamlink_tags || '').split(',').map((tag) => tag.trim()).filter(Boolean).length;
+    return computeHubScore({
+        weightedDegree: computeNodeWeightedDegree(id),
+        relationKinds: relationFields.size,
+        connectedTypes: [...relatedTypes].filter(Boolean).length,
+        strongEdges,
+        tagCount
+    });
+}
+
 require.cache.__graph2_index_stub__ = {
     id: '__graph2_index_stub__',
     filename: '__graph2_index_stub__',
@@ -27,7 +85,12 @@ require.cache.__graph2_graph_stub__ = {
     loaded: true,
     exports: {
         getEdges: (id) => edgeMap.get(id) || [],
-        getBacklinks: (id) => backlinkMap.get(id) || []
+        getBacklinks: (id) => backlinkMap.get(id) || [],
+        computeGraphEdgeWeight,
+        classifyGraphEdgeStrength,
+        computeHubScore,
+        computeNodeWeightedDegree,
+        computeNodeExplorerScore
     }
 };
 

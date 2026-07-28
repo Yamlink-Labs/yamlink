@@ -10,6 +10,7 @@ const Search = require('./screens/Search');
 const Graph = require('./screens/Graph');
 const Diff = require('./screens/Diff');
 const Radar = require('./screens/Radar');
+const Trends = require('./screens/Trends');
 const StatusBar = require('./components/StatusBar');
 const HelpOverlay = require('./components/HelpOverlay');
 const CommandPalette = require('./components/CommandPalette');
@@ -28,6 +29,7 @@ const {
     getGraph,
     getTypes,
     getHealth,
+    getTrends,
     getTasks,
     getMutations,
     getNoteIntelligence,
@@ -382,6 +384,7 @@ function App({ ink, TextInput, host, port, initialData, vaultPath }) {
         { id: 'health',    label: 'health',     description: 'Schema coverage and vault health',    action: () => navigate('health') },
         { id: 'diff',      label: 'diff',       description: 'Vault changes since last session',    action: () => navigate('diff') },
         { id: 'radar',     label: 'radar',      description: 'Radial connection map for current note', action: () => navigate('radar') },
+        { id: 'trends',    label: 'trends',     description: 'Vault projections and staleness forecast', action: () => navigate('trends') },
         { id: 'new-note',  label: 'new note',   description: 'Create a note (Explorer → [n])',      action: () => navigate('explorer') },
         { id: 'help',      label: 'help',       description: 'Show keyboard shortcuts',             action: () => setShowHelp(true) },
     ], [navigate]);
@@ -539,6 +542,7 @@ function App({ ink, TextInput, host, port, initialData, vaultPath }) {
             if (input === '7') { navigate('graph', undefined, activePaneIndex); return; }
             if (input === '8') { navigate('diff', undefined, activePaneIndex); return; }
             if (input === '9') { navigate('radar', undefined, activePaneIndex); return; }
+            if (input === '0') { navigate('trends', undefined, activePaneIndex); return; }
         }
         // Any unhandled printable char on non-text screens triggers warp navigation.
         // Ink's useInput has no stopPropagation — every mounted screen's own
@@ -702,6 +706,13 @@ function App({ ink, TextInput, host, port, initialData, vaultPath }) {
                 disabled: paneDisabled
             });
         }
+        if (paneScreen === 'trends') {
+            return React.createElement(Trends, {
+                ...common,
+                getTrends,
+                disabled: paneDisabled
+            });
+        }
         return React.createElement(Briefing, {
             ...common,
             data,
@@ -812,6 +823,7 @@ function App({ ink, TextInput, host, port, initialData, vaultPath }) {
                     { key: '[7]', action: 'Graph — traverse note connections' },
                     { key: '[8]', action: 'Diff — vault changes over time' },
                     { key: '[9]', action: 'Radar — radial connection map' },
+                    { key: '[0]', action: 'Trends — projections and stale forecast' },
                     { key: '[:/Ctrl+P]', action: 'command palette' },
                     { key: '[c]', action: 'quick capture' },
                     { key: '[m0-9]', action: 'set bookmark' },

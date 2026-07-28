@@ -101,6 +101,14 @@ function getHealth({ host, port }) {
 }
 
 /**
+ * @param {{ host: string, port: number }} options
+ * @returns {Promise<any>}
+ */
+function getTrends({ host, port }) {
+    return requestJson({ host, port, path: '/api/intelligence/trends' });
+}
+
+/**
  * @param {TaskRequestOptions} [options]
  * @returns {Promise<any[]>}
  */
@@ -411,6 +419,7 @@ module.exports = {
     getGraph,
     getTypes,
     getHealth,
+    getTrends,
     getTasks,
     getMutations,
     getNoteIntelligence,

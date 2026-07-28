@@ -278,6 +278,43 @@ describe('validateDocument', () => {
         assert.ok(diags.some(d => d.code === 'yamlink.duplicateId'));
     });
 
+    test('nearDuplicateValue diagnostic when a scalar value is a casing/whitespace near-duplicate', () => {
+        resetState();
+        _fieldsCache = new Map([
+            ['carmen', { type: 'character', homeworld: 'Buenos Aires' }]
+        ]);
+        const idIndex = new Map([['rico', {}], ['carmen', {}]]);
+        const doc = makeDoc('---\nid: rico\ntype: character\nhomeworld: buenos aires\n---\n');
+        const diags = runValidate(doc, idIndex);
+        const diag = diags.find(d => d.code === 'yamlink.nearDuplicateValue');
+        assert.ok(diag, 'expected a nearDuplicateValue diagnostic');
+        assert.equal(diag.severity, 3 /* vscode.DiagnosticSeverity.Hint */);
+        assert.match(diag.message, /Buenos Aires/);
+        assert.equal(diag.range.start.line, 3, 'diagnostic should point at the homeworld line');
+    });
+
+    test('no nearDuplicateValue diagnostic for an exact match', () => {
+        resetState();
+        _fieldsCache = new Map([
+            ['carmen', { type: 'character', homeworld: 'Buenos Aires' }]
+        ]);
+        const idIndex = new Map([['rico', {}], ['carmen', {}]]);
+        const doc = makeDoc('---\nid: rico\ntype: character\nhomeworld: Buenos Aires\n---\n');
+        const diags = runValidate(doc, idIndex);
+        assert.ok(!diags.some(d => d.code === 'yamlink.nearDuplicateValue'));
+    });
+
+    test('no nearDuplicateValue diagnostic for id, type, or relation-shaped values', () => {
+        resetState();
+        _fieldsCache = new Map([
+            ['carmen', { type: 'character', unit: '[[roughnecks]]' }]
+        ]);
+        const idIndex = new Map([['rico', {}], ['carmen', {}], ['roughnecks', {}]]);
+        const doc = makeDoc('---\nid: rico\ntype: character\nunit: [[roughnecks]]\n---\n');
+        const diags = runValidate(doc, idIndex);
+        assert.ok(!diags.some(d => d.code === 'yamlink.nearDuplicateValue'));
+    });
+
     test('malformedSchema diagnostic for schema node without target', () => {
         resetState();
         const idIndex = new Map([['my-schema', {}]]);

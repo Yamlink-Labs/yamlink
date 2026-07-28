@@ -9,13 +9,17 @@ This guide gets you from zero to a working vault, then covers queries, graph, CL
 ## 1. Install and open a workspace
 
 1. Install **Yamlink** from the VS Code marketplace.
-2. Open a folder that contains Markdown notes, or open an empty folder and let Yamlink scaffold the sample vault on first activation.
+2. Open a folder that contains Markdown notes — or an empty folder, and don't worry about having real notes yet (see the sample vault below).
 3. Open the command palette and confirm these core commands exist:
    - `Yamlink: Open Note Report`
    - `Yamlink: Open Calendar`
    - `Yamlink: Open Vault Health`
    - `Yamlink: Open Graph Workspace`
-4. Run `Yamlink: Start Guided Tour` for an interactive walkthrough covering Home, Calendar, Vault Health, Graph, and Task Center — this doc covers the same ground in more depth.
+4. Run `Yamlink: Start Guided Tour` for an interactive walkthrough covering Home, Calendar, Vault Health, Graph, and Task Center — this doc covers the same ground in more depth. Worth doing first if you'd rather click through a live tour than read.
+
+### No notes yet? Add the sample vault
+
+Run `Yamlink: Add Sample Vault` from the Command Palette at any time — it copies a real, populated sample vault (characters, missions, tasks, relations, the works) into your current workspace, so every feature in this guide has real data to try against immediately instead of an empty folder. Safe to run on a workspace that already has notes too — it only adds files, never touches anything of yours.
 
 ---
 
@@ -47,7 +51,7 @@ Hover any `[[wikilink]]` to see the target note's `type` and `status` as colored
 
 ### The `!view` block
 
-A `!view` block inside any note becomes a live interactive table:
+A `!view` block inside any note becomes a live, **editable** table — not a read-only report:
 
 ```text
 !view character
@@ -55,7 +59,9 @@ select name, unit, created
 sort name
 ```
 
-Run the view (`Yamlink: Run Active Views`) and a live table opens beside the note.
+Run the view (`Yamlink: Run Active Views`) and a live table opens beside the note. Double-click any cell to edit it directly — the change writes straight back into that note's real frontmatter, no separate save step. Text, relations (with real validation against your vault's ids), booleans, dropdowns, numbers, and dates all edit in place; `Tab`/`Shift+Tab` move between editable cells, and you can paste a whole block of spreadsheet data across multiple cells at once. Every edit is undoable.
+
+The same result set can also be viewed as a **matrix** (pick any type for the columns, ● marks a connected pair), a **bar chart**, or a **scatter plot** — a toolbar toggle in the table itself, not something you write in the query. The layout choice is remembered per query. Bar charts and scatter plots will only work if your notes' connections and structure allows it.
 
 ### Query language reference
 
@@ -142,7 +148,7 @@ Run `Yamlink: Open Graph Workspace` for the full vault view.
 What you get:
 
 - **Physics layout** — nodes organize by type cluster automatically; clusters settle and stop moving
-- **Type filter chips** — click any type chip to isolate that cluster
+- **Type filter chips** — click a type chip to toggle it in/out of the filter; click more than one to show several types together, not just isolate a single one
 - **Node inspector** — click a node to see relations, type, and key fields in the sidebar panel
 - **Keyboard traversal** — Tab/arrow keys cycle nodes when you need keyboard-only navigation
 
@@ -150,12 +156,16 @@ Navigation controls:
 
 - scroll wheel: zoom
 - click + drag background: pan
-- click node: open inspector
-- double-click node: open the linked note
+- click node: select it, show it in the inspector, **and open the note in the editor**
+- double-click node: zoom the camera in on that node (doesn't open anything)
+- select a node, then press `Enter`: open its note — same as clicking, useful after arrow-key/Tab navigation
+- right-click a node: context menu with an explicit **Open** action
+
+**Watch your vault grow** — click the **Time-lapse** button to play back how the graph formed over time, one historical checkpoint at a time. Reconstructed from real git history when your vault is a git repo (this also catches body-text mentions, not just frontmatter relations); falls back to the mutation log otherwise. The layout stays fixed the whole time — playback only reveals and hides nodes/edges over it, so nothing jumps around while you watch.
 
 ### Sidebar graph
 
-The **Yamlink Graph** sidebar panel shows the local neighborhood of the currently active note. It updates automatically as you move between notes — no commands needed. Use it for ambient awareness while you write.
+The **Yamlink Graph** sidebar panel opens showing your **whole vault** by default — the same physics layout as the Workspace graph, just docked in the sidebar instead of a full panel. Switch its scope to **Neighborhood** (or Local/Domain) to narrow it down to just the currently active note's own connections instead of the full vault. Press the recenter button (◎) to snap back to whatever note you have open.
 
 ### Graph keyboard traversal in Conduit
 
@@ -184,6 +194,13 @@ The practical flow:
 
 ## 6. Reference notes, sections, and blocks precisely
 
+Two body elements worth writing on purpose, since Yamlink treats them as real structure, not just text:
+
+- **Blockquotes** — a plain `> some text` line. Yamlink gives it a stable block ID (`q1-a3f9c2`) automatically, so it's referenceable and linkable like a heading or a task (see the table below).
+- **Callouts** — `> [!INFO] optional title`, `> [!TIP] ...`, `> [!WARNING] ...`, plus `> [!QUOTE]`, `> [!SOURCE]`, `> [!EVIDENCE]`, `> [!REFERENCE]`, `> [!NOTE]`, and `> [!DANGER]`. These render with type-specific styling and feed real signals into note-role inference and the Note Report — a `SOURCE`/`EVIDENCE`/`REFERENCE` callout nudges a note toward being read as source material, `QUOTE` toward a quoted excerpt, `WARNING`/`DANGER` toward a caution note. Not decoration — Yamlink reads what type you chose.
+
+Footnotes (`[^name]: the definition` at the bottom of a note, referenced inline as `[^name]`) get the same treatment: a stable `fn-{name}` block ID, referenceable and linkable.
+
 Three distinct reference levels:
 
 | Syntax | What it does |
@@ -201,6 +218,8 @@ Right-click anywhere in a Markdown note (or open the Command Palette) to reach a
 | `Yamlink: Copy Note ID` | copies `[[note-id]]` for the whole active note — the fastest way to link back to it from anywhere |
 | `Yamlink: Extract Selection to New Note` | select some text first — it becomes the seed/title for a brand-new note (goes through the normal Template → Schema → vault-inference flow), and the original selection is replaced with a plain `[[new-id]]` link |
 | `Yamlink: Split Note Body` | select some text first — it's moved verbatim into a new note's body (with `source: [[original-note]]` auto-set), and the original selection is replaced with an embed `![[new-id]]` so it still renders inline. Use this over "Extract Selection" when you want the moved content to keep showing in place, not just link to it |
+
+Smart Paste also helps when content starts outside Yamlink. Paste a clear spreadsheet-style table, Markdown table, JSON object, or bulleted/numbered list into a Markdown note and Yamlink asks whether to keep plain text or convert it into structured Yamlink content: a `!view` scaffold, new notes with frontmatter, a frontmatter block, or real task lines.
 
 **Copy a reference** — puts the reference on your clipboard to paste wherever you need it:
 
@@ -292,6 +311,7 @@ Open `Yamlink: Open Home` for your vault's activity stream and pulse.
 - Continue Working: recently touched notes
 - Recent Activity: timestamped mutation event feed
 - Nudge cards: broken links, untyped notes
+- Projections tab: the same Growth/Stale/Structure forecasting Vault Health shows, at full width — where the vault's trend is headed over the next 90 days, based on its own real history
 
 ### Live Note
 
@@ -329,6 +349,8 @@ yamlink set johnny-rico status active           # write a frontmatter field
 yamlink set johnny-rico status active --dry-run # preview without writing
 yamlink link johnny-rico unit roughnecks        # set a relation field
 yamlink rename johnny-rico rico                 # vault-wide ID rename
+yamlink template save johnny-rico               # save a note as a blank-skeleton template (--force to overwrite)
+yamlink glossary --type faction,location        # live alphabetized glossary of these note types
 ```
 
 **Everyday inspection:**
@@ -345,9 +367,14 @@ yamlink ls --quiet                  # revert to plain tab-separated output for s
 ```bash
 yamlink cat johnny-rico --at 2026-01-01     # reconstructed frontmatter as of that date
 yamlink story --since 2026-01-01            # vault growth story: then vs. now, fastest-growing types
+yamlink restore 2026-01-01                  # preview what the vault looked like then (writes nothing by default)
+yamlink restore 2026-01-01 --output ./export  # export reconstructed notes as real .md files into a separate folder
+yamlink snapshot                            # capture a checkpoint now, for restoring further back later (see below)
 ```
 
-`--at` is also supported on `report`, `links`, and `graph`.
+`--at` is also supported on `report`, `links`, and `graph`. `restore` never writes into the live vault — only a separate output directory you choose.
+
+**How `restore` actually works — read this before relying on it:** `restore <date>` reconstructs the vault by undoing recorded changes backward from right now, using the mutation log (`.yamlink/mutation-log.ndjson`). **This works for any recent-enough date with no snapshot required at all.** A snapshot only matters for a date *older* than the mutation log can reach on its own — the log caps at 10,000 events, and once older history is pruned past that cap, restoring that far back would normally be impossible unless a snapshot exists at or before it. `restore` automatically checks any stored snapshots and uses one if it helps — you never manually pick which snapshot to use, and you don't need to run `yamlink snapshot` before every `restore`. Run `yamlink snapshot` when you specifically want to guarantee you can restore back to *today* at some point far in the future (e.g. before a big reorganization), not as a routine step before every restore.
 
 **Automation:**
 
@@ -362,7 +389,7 @@ yamlink completions bash >> ~/.bashrc           # enable shell tab completions
 yamlink init ~/Documents/MyVault               # scaffold .yamlink/, _templates/, welcome.md
 ```
 
-**All 37 commands** with `--json`, `--dry-run`, and `--vault <path>` support. Full reference: [docs/cli/README-CLI.md](./docs/cli/README-CLI.md)
+**All 41 commands** support `--json`, `--dry-run`, and `--vault <path>`. Run `yamlink --help` for the full command list, or `yamlink <command> --help` for any command's flags.
 
 ---
 
@@ -380,7 +407,7 @@ yamlink serve                       # start the API server (port 7420 by default
 yamlink conduit                     # open Conduit in a new terminal
 ```
 
-### 9 screens
+### 10 screens
 
 Press a number key to switch screens:
 
@@ -395,6 +422,7 @@ Press a number key to switch screens:
 | `7` | Graph | Vault graph visualization in the terminal — press `v` to toggle a live spatial "constellation" layout: the focused note centered with labeled, type-colored connection lanes, updating live as relations change |
 | `8` | Diff | Compare two notes field by field |
 | `9` | Radar | Unlinked references and orphan detection |
+| `0` | Trends | Growth, stale, and structure projections from the Time Engine |
 
 ### Key operations in Explorer
 
@@ -457,7 +485,7 @@ What Yamlink ignores (no errors, just skipped):
 
 The one thing to know: Yamlink uses `id:` for graph edges and rename propagation. Obsidian uses filenames. When you're ready to unlock full rename propagation and completions, use `Yamlink: Import Obsidian Vault` (section 10 below) to add `id:` fields — or add them manually as you go. Neither is required to start using Conduit.
 
-Full Conduit reference: [docs/tui/README-TUI.md](./docs/tui/README-TUI.md)
+Press `?` inside Conduit at any time for the full in-app key-binding reference.
 
 ---
 
@@ -539,17 +567,22 @@ Add a `.yamlinkignore` file at the vault root. Changes take effect immediately �
 scratch.md
 archive/
 meeting-dump-2024.md
+*.tmp.md
+logs*/
 ```
 
-Yamlink excludes those files and folders from indexing, graphing, health analysis, and all intelligence surfaces.
+Plain names and folders match exactly; `*`, `**`, and `?` also work as wildcards — see [FEATURES.md](./FEATURES.md#yamlinkignore) for the full pattern reference. Yamlink excludes those files and folders from indexing, graphing, health analysis, and all intelligence surfaces.
+
+**Multiple folders open at once (a multi-root workspace)?** `.yamlinkignore` only governs the one folder it's placed in — it does not reach into other folders in the same workspace. To exclude an entire second folder (a sample vault you added alongside your real notes, for example), give that folder its own `.yamlinkignore` with a single `*` line.
 
 ---
 
 ## 12. Where to go next
 
 - [README.md](./README.md) — full product surface overview
-- [docs/cli/README-CLI.md](./docs/cli/README-CLI.md) — complete CLI reference (37 commands)
-- [docs/tui/README-TUI.md](./docs/tui/README-TUI.md) — full Conduit reference with key binding tables
-- [docs/api/README-API.md](./docs/api/README-API.md) — local HTTP API reference (21 endpoints)
+- [FEATURES.md](./FEATURES.md) — complete feature reference across every surface
+- [CONTRACT.md](./CONTRACT.md) — the local HTTP API's full method/path/params/error-code reference
+- `yamlink --help` / `yamlink <command> --help` — full CLI reference, in the terminal
+- `?` inside Conduit — full in-app key-binding reference
 
 Explore Note Report, Calendar, Graph, and Vault Health on your real notes as early as possible. The intelligence layer learns from your vault — it gets more useful the more notes it has to work with.

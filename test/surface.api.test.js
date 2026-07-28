@@ -7,7 +7,7 @@ const fs = require('fs');
 const path = require('path');
 const { buildIndex } = require('../src/core/index');
 const { createRouter } = require('../src/cli/commands/serve');
-const { initMutationLog } = require('../src/runtime/mutationEventLog');
+const { appendMutationEvents, initMutationLog } = require('../src/runtime/mutationEventLog');
 const { createVault } = require('./lib/vaultSim');
 
 const FIXTURE = {
@@ -729,6 +729,100 @@ test('GET /api/tasks?limit=1 — limit', async () => {
     assert.equal(response.body.meta.limit, 1);
 });
 
+test('PATCH /api/tasks — toggles a task line and reports the change (restores original state afterward)', async () => {
+    // johnny-rico.md line 9 is '- [ ] Submit mission report' (open).
+    const toggled = await request('PATCH', '/api/tasks', { noteId: 'johnny-rico', line: 9, done: true });
+    assert.equal(toggled.status, 200);
+    assert.equal(toggled.body.ok, true);
+    assert.equal(toggled.body.changed, true);
+
+    const afterToggle = await get('/api/tasks?note=johnny-rico');
+    const line9 = afterToggle.body.tasks.find((t) => /Submit mission report/.test(t.text));
+    assert.equal(line9.done, true, 'task should now report done via a fresh GET, proving the write landed for real');
+
+    // Restore original fixture state so later tests in this file (and the
+    // task-count assertions earlier in this file) aren't affected by this
+    // mutation — the shared vault/server persists across the whole file.
+    const restored = await request('PATCH', '/api/tasks', { noteId: 'johnny-rico', line: 9, done: false });
+    assert.equal(restored.body.changed, true);
+});
+
+test('PATCH /api/tasks — reports changed: false and does not error when the task already matches the requested state', async () => {
+    // Line 10 is '- [x] File debrief paperwork' — already done.
+    const response = await request('PATCH', '/api/tasks', { noteId: 'johnny-rico', line: 10, done: true });
+    assert.equal(response.status, 200);
+    assert.equal(response.body.changed, false);
+});
+
+test('PATCH /api/tasks — 404 for an unknown note id', async () => {
+    const response = await request('PATCH', '/api/tasks', { noteId: 'nobody', line: 1, done: true });
+    assert.equal(response.status, 404);
+});
+
+test('PATCH /api/tasks — 400 for a non-positive-integer line', async () => {
+    const response = await request('PATCH', '/api/tasks', { noteId: 'johnny-rico', line: -5, done: true });
+    assert.equal(response.status, 400);
+    assert.equal(response.body.code, 'INVALID_PARAM');
+});
+
+test('PATCH /api/tasks — 400 when required fields are missing', async () => {
+    const response = await request('PATCH', '/api/tasks', { noteId: 'johnny-rico' });
+    assert.equal(response.status, 400);
+});
+
+test('GET /api/nodes/:id?include=body — returns the raw note body', async () => {
+    const response = await get('/api/nodes/johnny-rico?include=body');
+    assert.equal(response.status, 200);
+    assert.equal(typeof response.body._body, 'string');
+    assert.match(response.body._body, /Submit mission report/);
+    // Never included by default (opt-in only), and never present alongside
+    // an unrelated include unless explicitly requested.
+    assert.equal(typeof (await get('/api/nodes/johnny-rico')).body._body, 'undefined');
+});
+
+test('GET /api/nodes/:id?include=timestamps — returns real filesystem dates', async () => {
+    const response = await get('/api/nodes/johnny-rico?include=timestamps');
+    assert.equal(response.status, 200);
+    assert.match(response.body._timestamps.created, /^\d{4}-\d{2}-\d{2}$/);
+    assert.match(response.body._timestamps.modified, /^\d{4}-\d{2}-\d{2}$/);
+});
+
+test('GET /api/glossary — 400 when "types" is missing', async () => {
+    const response = await get('/api/glossary');
+    assert.equal(response.status, 400);
+    assert.equal(response.body.code, 'MISSING_PARAM');
+});
+
+test('GET /api/glossary?types=unit — real entries with real backlinks', async () => {
+    const response = await get('/api/glossary?types=unit');
+    assert.equal(response.status, 200);
+    assert.equal(response.body.types.length, 1);
+    assert.ok(response.body.entryCount >= 1);
+    const allEntries = response.body.groups.flatMap((g) => g.letters.flatMap((l) => l.entries));
+    const roughnecks = allEntries.find((e) => e.id === 'roughnecks');
+    assert.ok(roughnecks, 'roughnecks (type: unit) should be a glossary entry');
+    // johnny-rico and carl-jenkins both link to roughnecks via unit:
+    assert.ok(roughnecks.backlinkIds.includes('johnny-rico'));
+    assert.ok(roughnecks.backlinkIds.includes('carl-jenkins'));
+});
+
+test('GET /api/glossary?types=unit&sortBy=mostReferenced — ranks by real backlink count, letter groups collapse', async () => {
+    const response = await get('/api/glossary?types=unit&sortBy=mostReferenced');
+    assert.equal(response.status, 200);
+    for (const group of response.body.groups) {
+        for (const letterGroup of group.letters) {
+            assert.equal(letterGroup.letter, null);
+        }
+    }
+});
+
+test('GET /api/glossary?types=unit&groupByType=false — flat, single ungrouped section', async () => {
+    const response = await get('/api/glossary?types=unit&groupByType=false');
+    assert.equal(response.status, 200);
+    assert.equal(response.body.groups.length, 1);
+    assert.equal(response.body.groups[0].type, null);
+});
+
 test('GET /api/mutations — shape', async () => {
     const response = await get('/api/mutations');
     assert.equal(response.status, 200);
@@ -791,9 +885,30 @@ test('GET /api/query?q=nonexistent+garbage — bad query', async () => {
     assert.equal(typeof response.body, 'object');
 });
 
-test('POST /api/query — 405 method not allowed', async () => {
+test('POST /api/query — valid query body matches GET shape', async () => {
+    const posted = await request('POST', '/api/query', { q: 'where type = contact sort name' });
+    const fetched = await get('/api/query?q=where+type+%3D+contact+sort+name');
+    assert.equal(posted.status, 200);
+    assert.equal(fetched.status, 200);
+    assert.equal(posted.body.query, fetched.body.query);
+    assert.equal(posted.body.count, fetched.body.count);
+    assert.deepEqual(posted.body.columns, fetched.body.columns);
+    assert.deepEqual(posted.body.rows.map((row) => row.id), fetched.body.rows.map((row) => row.id));
+});
+
+test('POST /api/query with missing q — 400', async () => {
     const response = await request('POST', '/api/query', {});
-    assert.equal(response.status, 405);
+    assert.equal(response.status, 400);
+    assert.equal(response.body.code, 'MISSING_PARAM');
+    assert.equal(response.body.error, 'Missing param: q');
+});
+
+test('GET /api/query incoming without node context returns engine error detail', async () => {
+    const response = await get('/api/query?q=' + encodeURIComponent('!view incoming contact'));
+    assert.equal(response.status, 400);
+    assert.equal(response.body.code, 'BAD_REQUEST');
+    assert.equal(response.body.error, '!view incoming requires a node context — save this file with an id: field first');
+    assert.ok(Array.isArray(response.body.warnings));
 });
 
 test('GET /api/query with no q param — 400', async () => {
@@ -902,6 +1017,22 @@ test('POST /api/nodes with missing type returns 400 MISSING_PARAM', async () => 
     const response = await request('POST', '/api/nodes', { fields: { name: 'No Type' } });
     assert.equal(response.status, 400);
     assert.equal(response.body.code, 'MISSING_PARAM');
+});
+
+test('POST /api/nodes with type: false or type: 0 returns 400 MISSING_PARAM, not a malformed note', async () => {
+    // Regression test: the shared requireFields() validation helper must reject
+    // these the same way the pre-refactor inline check did (`!String(body.type
+    // || '').trim()`) — a looser null/undefined-only check would let both slip
+    // through to writeNoteFile(), which has no validation of its own, silently
+    // creating a note with an empty `type:` in its frontmatter instead of a
+    // clean 400.
+    const falseTypeResponse = await request('POST', '/api/nodes', { type: false, fields: { name: 'Falsy Type' } });
+    assert.equal(falseTypeResponse.status, 400);
+    assert.equal(falseTypeResponse.body.code, 'MISSING_PARAM');
+
+    const zeroTypeResponse = await request('POST', '/api/nodes', { type: 0, fields: { name: 'Zero Type' } });
+    assert.equal(zeroTypeResponse.status, 400);
+    assert.equal(zeroTypeResponse.body.code, 'MISSING_PARAM');
 });
 
 test('POST /api/nodes with malformed JSON returns 400 INVALID_JSON', async () => {
@@ -1383,6 +1514,67 @@ test('GET /api/intelligence/note — 400 when id param missing', async () => {
     assert.equal(res.body.code, 'MISSING_PARAM');
 });
 
+test('GET /api/intelligence/trends returns vault trend data from mutation history', async () => {
+    const now = Date.now();
+    appendMutationEvents([
+        { timestamp: new Date(now - 70 * 86400000).toISOString(), type: 'field_changed', noteId: 'johnny-rico', field: 'status', oldValue: 'cadet', newValue: 'active' },
+        { timestamp: new Date(now - 49 * 86400000).toISOString(), type: 'field_changed', noteId: 'carl-jenkins', field: 'unit', oldValue: null, newValue: '[[roughnecks]]' },
+        { timestamp: new Date(now - 28 * 86400000).toISOString(), type: 'field_changed', noteId: 'roughnecks', field: 'name', oldValue: 'Roughnecks', newValue: 'Rasczak Roughnecks' }
+    ]);
+
+    const res = await get('/api/intelligence/trends');
+    assert.equal(res.status, 200);
+    assert.equal(res.body.horizonDays, 90);
+    assert.equal(res.body.growth.insufficientHistory, false);
+    assert.equal(typeof res.body.growth.r2, 'number');
+    assert.ok(Array.isArray(res.body.growth.topTypes));
+    assert.equal(typeof res.body.stale.summary, 'string');
+    assert.equal(typeof res.body.structure.summary, 'string');
+    assert.ok(Array.isArray(res.body.stale.upcoming));
+});
+
+test('GET /api/intelligence/trends degrades honestly with sparse history', async () => {
+    const previousLog = path.join(vault.dir, '.yamlink', 'mutation-log.ndjson');
+    const sparseVault = createVault({
+        'fresh.md': [
+            '---',
+            'id: fresh-note',
+            'type: contact',
+            'name: Fresh Note',
+            '---',
+        ].join('\n')
+    });
+    let sparseServer = null;
+    try {
+        const sparseLog = path.join(sparseVault.dir, '.yamlink', 'mutation-log.ndjson');
+        fs.mkdirSync(path.dirname(sparseLog), { recursive: true });
+        initMutationLog(sparseLog);
+        const workspaceFolders = [{ uri: { fsPath: sparseVault.dir }, name: 'sparse' }];
+        const sparseHandler = createRouter(sparseVault.dir, workspaceFolders, buildIndex);
+        sparseServer = http.createServer((req, res) => Promise.resolve(sparseHandler(req, res)));
+        await new Promise((resolve) => sparseServer.listen(0, '127.0.0.1', resolve));
+        const sparsePort = sparseServer.address().port;
+        const response = await new Promise((resolve, reject) => {
+            http.get({ host: '127.0.0.1', port: sparsePort, path: '/api/intelligence/trends' }, (res) => {
+                let raw = '';
+                res.on('data', (chunk) => { raw += chunk; });
+                res.on('end', () => resolve({ status: res.statusCode, body: JSON.parse(raw) }));
+            }).on('error', reject);
+        });
+
+        assert.equal(response.status, 200);
+        assert.equal(response.body.growth.insufficientHistory, true);
+        assert.equal(response.body.growth.r2, null);
+        assert.equal(response.body.growth.summary, 'Too little recent creation history for a growth forecast yet.');
+        assert.equal(typeof response.body.stale.summary, 'string');
+        assert.equal(typeof response.body.structure.summary, 'string');
+    } finally {
+        if (sparseServer) await new Promise((resolve) => sparseServer.close(resolve));
+        sparseVault.destroy();
+        initMutationLog(previousLog);
+    }
+});
+
 test('GET /api/intelligence/fieldCategory — 400 when field param missing', async () => {
     const res = await get('/api/intelligence/fieldCategory?id=johnny-rico');
     assert.equal(res.status, 400);
@@ -1392,6 +1584,71 @@ test('GET /api/intelligence/fieldCategory — 400 when field param missing', asy
 test('GET /api/intelligence/fieldCategory — 404 for unknown note', async () => {
     const res = await get('/api/intelligence/fieldCategory?id=nobody&field=status');
     assert.equal(res.status, 404);
+});
+
+test('YAMLINK_API_TOKEN unset (default) — every request is served with no auth check, same as before this existed', async () => {
+    // The shared `handler`/`server` for this whole file were created with no
+    // YAMLINK_API_TOKEN set — every other test in this file already proves
+    // the unauthenticated default still works. This test just makes that
+    // guarantee explicit and named, rather than only implicit in the other
+    // 130+ passing tests.
+    const response = await get('/api/health');
+    assert.equal(response.status, 200);
+});
+
+test('YAMLINK_API_TOKEN set — requests without a matching X-Yamlink-Token are rejected with 401', async () => {
+    const previousToken = process.env.YAMLINK_API_TOKEN;
+    process.env.YAMLINK_API_TOKEN = 'secret-token-123';
+    const tokenVault = createVault({ 'note.md': ['---', 'id: note', 'type: note', '---'].join('\n') });
+    let tokenServer = null;
+    try {
+        const workspaceFolders = [{ uri: { fsPath: tokenVault.dir }, name: 'token-fixture' }];
+        const tokenHandler = createRouter(tokenVault.dir, workspaceFolders, buildIndex);
+        tokenServer = http.createServer((req, res) => Promise.resolve(tokenHandler(req, res)));
+        await new Promise((resolve) => tokenServer.listen(0, '127.0.0.1', resolve));
+        const tokenPort = tokenServer.address().port;
+
+        const noToken = await new Promise((resolve, reject) => {
+            http.get({ host: '127.0.0.1', port: tokenPort, path: '/api/health' }, (res) => {
+                res.on('data', () => {});
+                res.on('end', () => resolve({ status: res.statusCode }));
+            }).on('error', reject);
+        });
+        assert.equal(noToken.status, 401);
+
+        const wrongToken = await new Promise((resolve, reject) => {
+            http.get({ host: '127.0.0.1', port: tokenPort, path: '/api/health', headers: { 'X-Yamlink-Token': 'nope' } }, (res) => {
+                res.on('data', () => {});
+                res.on('end', () => resolve({ status: res.statusCode }));
+            }).on('error', reject);
+        });
+        assert.equal(wrongToken.status, 401);
+
+        const rightToken = await new Promise((resolve, reject) => {
+            http.get({ host: '127.0.0.1', port: tokenPort, path: '/api/health', headers: { 'X-Yamlink-Token': 'secret-token-123' } }, (res) => {
+                res.on('data', () => {});
+                res.on('end', () => resolve({ status: res.statusCode }));
+            }).on('error', reject);
+        });
+        assert.equal(rightToken.status, 200);
+
+        // OPTIONS preflight must still succeed with no token — browsers never
+        // attach custom headers to the preflight itself.
+        const preflight = await new Promise((resolve, reject) => {
+            const req = http.request({ host: '127.0.0.1', port: tokenPort, path: '/api/health', method: 'OPTIONS' }, (res) => {
+                res.on('data', () => {});
+                res.on('end', () => resolve({ status: res.statusCode }));
+            });
+            req.on('error', reject);
+            req.end();
+        });
+        assert.equal(preflight.status, 204);
+    } finally {
+        if (tokenServer) await new Promise((resolve) => tokenServer.close(resolve));
+        tokenVault.destroy();
+        if (previousToken === undefined) delete process.env.YAMLINK_API_TOKEN;
+        else process.env.YAMLINK_API_TOKEN = previousToken;
+    }
 });
 
 test('CONTRACT.md documents every route in the live route table (drift guard)', () => {

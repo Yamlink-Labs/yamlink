@@ -94,6 +94,17 @@ require.cache.__completion_vscode_stub__ = {
                 return this.value;
             }
         },
+        MarkdownString: class MarkdownString {
+            constructor(value = '') {
+                this.value = value;
+                this.isTrusted = false;
+                this.supportHtml = false;
+            }
+            appendMarkdown(text) {
+                this.value += text;
+                return this;
+            }
+        },
         CompletionItemKind: {
             Event: 1,
             Snippet: 2,
@@ -140,6 +151,11 @@ require.cache.__completion_graph_stub__ = {
         getEdges(sourceId) {
             if (sourceId === 'alice-smith') return [{ field: 'account', targetId: 'acme-inc' }];
             if (sourceId === 'bob-jones') return [{ field: 'account', targetId: 'globex' }];
+            return [];
+        },
+        getBacklinks(targetId) {
+            if (targetId === 'acme-inc') return [{ field: 'account', sourceId: 'alice-smith' }];
+            if (targetId === 'globex') return [{ field: 'account', sourceId: 'bob-jones' }];
             return [];
         }
     }
@@ -481,6 +497,48 @@ describe('frontmatter relation completion', () => {
             result.rankingHints
         );
         assert.equal(ranked[0], 'roughnecks');
+    });
+
+    test('resolves the parent field name for a new entry in an existing YAML list-shaped relation field', () => {
+        // Real user-reported scenario: typing "[[" on a *new* bare list-item
+        // line under an already-established relation field (with existing
+        // entries above it on previous lines) must still resolve the field
+        // name from the "account:" line above — not fall through to the
+        // generic, untyped wikilink completion path just because this
+        // particular line has no colon on it. Reuses the already-established
+        // "account" relation field (alice-smith/bob-jones already point it at
+        // real account-type notes in the shared fixture) rather than adding a
+        // new fixture note, since a new note here would perturb vault-wide
+        // learned-priors counts other tests in this file depend on.
+        const doc = makeDocument([
+            '---',
+            'id: new-contact-note',
+            'type: contact',
+            'name: New Contact',
+            'account:',
+            '  - [[acme-inc]]',
+            '  - [[',
+            '---'
+        ].join('\n'));
+        doc.uri = { fsPath: '/vault/new-contact-note.md' };
+
+        const result = resolveFrontmatterRelationCandidates(doc, { line: 6, character: '  - [['.length }, INDEX);
+        assert.ok(result, 'must resolve a relation state for a bare list-item line, not return null');
+        assert.equal(result.fieldName, 'account');
+        assert.equal(result.targetType, 'account');
+        assert.equal(result.missingTargetType, false, 'a real, populated target type must not be reported as missing');
+    });
+
+    test('a bare list item with no resolvable parent field still returns null, not a false match', () => {
+        const doc = makeDocument([
+            '---',
+            'id: some-note',
+            '  - [[',
+            '---'
+        ].join('\n'));
+
+        const result = resolveFrontmatterRelationCandidates(doc, { line: 2, character: '  - [['.length }, INDEX);
+        assert.equal(result, null);
     });
 
     test('does not treat type fields as relation targets', () => {
@@ -1178,6 +1236,145 @@ describe('frontmatter relation completion', () => {
         assert.ok(strongGap >= mixedGap);
     });
 
+    describe('structural autocomplete — sibling-field context (rankCandidateIds)', () => {
+        test('a candidate already connected to a sibling field\'s value ranks above an unrelated candidate', () => {
+            // alice-smith already links to acme-inc (account: [[acme-inc]] in the
+            // shared fixture, plus the graph stub's getEdges/getBacklinks pair);
+            // simulating a note that already has some OTHER field pointing at
+            // acme-inc, bob-jones (linked to globex instead) should rank behind
+            // alice-smith once the sibling-context signal is wired in.
+            const ranked = rankCandidateIds(
+                ['bob-jones', 'alice-smith'],
+                '',
+                [],
+                [],
+                new Map(),
+                {
+                    candidateTypeScores: new Map(),
+                    observedPreferredIds: [],
+                    siblingContextIds: new Set(['alice-smith'])
+                }
+            );
+            assert.equal(ranked[0], 'alice-smith');
+        });
+
+        test('the sibling bias actually flips the order versus the natural alphabetical fallback', () => {
+            // Without any bias, 'alice-smith' already sorts before 'bob-jones'
+            // alphabetically — so to prove the bias has a real effect, boost the
+            // alphabetically-LATER id and confirm it overtakes the earlier one.
+            const withoutSibling = rankCandidateIds(
+                ['bob-jones', 'alice-smith'], '', [], [], new Map(),
+                { candidateTypeScores: new Map(), observedPreferredIds: [], siblingContextIds: new Set() }
+            );
+            assert.equal(withoutSibling[0], 'alice-smith', 'sanity check: alphabetical order wins with no bias at all');
+
+            const withSibling = rankCandidateIds(
+                ['bob-jones', 'alice-smith'], '', [], [], new Map(),
+                { candidateTypeScores: new Map(), observedPreferredIds: [], siblingContextIds: new Set(['bob-jones']) }
+            );
+            assert.equal(withSibling[0], 'bob-jones', 'the sibling-context bias should overtake the plain alphabetical fallback');
+        });
+
+        test('rankingHints with no siblingContextIds at all does not throw and applies zero bias', () => {
+            const ranked = rankCandidateIds(
+                ['bob-jones', 'alice-smith'], '', [], [], new Map(),
+                { candidateTypeScores: new Map(), observedPreferredIds: [] }
+            );
+            assert.deepEqual(ranked.sort(), ['alice-smith', 'bob-jones'].sort());
+        });
+    });
+
+    describe('structural autocomplete — computeSiblingContextIds', () => {
+        const { computeSiblingContextIds } = require('../src/intelligence/completionRelationHelpers');
+
+        test('finds candidates connected to a sibling field\'s wikilink value via backlinks', () => {
+            const noteFields = { type: 'meeting', account: '[[acme-inc]]' };
+            const result = computeSiblingContextIds(noteFields, 'contacts');
+            assert.ok(result.ids.has('alice-smith'), 'alice-smith links to acme-inc via account:, should be found via getBacklinks');
+            assert.equal(result.evidenceByTargetId.get('alice-smith'), 'acme-inc');
+        });
+
+        test('finds candidates connected to a sibling field\'s wikilink value via outbound edges too', () => {
+            // getEdges('alice-smith') -> acme-inc in the stub; a sibling field
+            // pointing directly at alice-smith should surface acme-inc as connected.
+            const noteFields = { type: 'note', related_contact: '[[alice-smith]]' };
+            const result = computeSiblingContextIds(noteFields, 'account');
+            assert.ok(result.ids.has('acme-inc'));
+        });
+
+        test('excludes the field currently being completed from its own sibling scan', () => {
+            const noteFields = { type: 'meeting', contacts: '[[acme-inc]]' };
+            const result = computeSiblingContextIds(noteFields, 'contacts');
+            assert.equal(result.ids.size, 0, 'the field being completed should not correlate against its own value');
+        });
+
+        test('returns an empty result when the note has no other filled relation fields', () => {
+            const result = computeSiblingContextIds({ type: 'meeting' }, 'contacts');
+            assert.equal(result.ids.size, 0);
+            assert.equal(result.evidenceByTargetId.size, 0);
+        });
+
+        test('returns an empty result for null/undefined noteFields, never throws', () => {
+            assert.equal(computeSiblingContextIds(null, 'contacts').ids.size, 0);
+            assert.equal(computeSiblingContextIds(undefined, 'contacts').ids.size, 0);
+        });
+
+        test('handles a YAML list-shaped sibling field (multiple wikilinks) by checking every entry', () => {
+            const noteFields = { type: 'meeting', attendees: ['[[alice-smith]]', '[[bob-jones]]'] };
+            const result = computeSiblingContextIds(noteFields, 'contacts');
+            assert.ok(result.ids.has('acme-inc'), 'from alice-smith\'s edge');
+            assert.ok(result.ids.has('globex'), 'from bob-jones\'s edge');
+        });
+    });
+
+    describe('structural autocomplete — relation candidate documentation card', () => {
+        const { buildRelationCandidateDocumentation } = require('../src/features/completionProviders');
+
+        test('builds a MarkdownString with an embedded SVG badge image and evidence text when there is a sibling match', () => {
+            const doc = buildRelationCandidateDocumentation('acme-inc', 'account', [], 'acme-inc');
+            assert.ok(doc.value.includes('![]('), 'should embed a markdown image');
+            assert.match(doc.value, /data:image\/svg\+xml;base64,/);
+            assert.match(doc.value, /Already connected to \*\*acme-inc\*\*/);
+        });
+
+        test('the embedded badge includes both the note-type (lavender) and connected (mint) colors', () => {
+            const doc = buildRelationCandidateDocumentation('acme-inc', 'account', [], 'acme-inc');
+            const dataUri = doc.value.match(/data:image\/svg\+xml;base64,[^)]+/)[0];
+            const svg = Buffer.from(dataUri.split(',')[1], 'base64').toString('utf8');
+            assert.match(svg, /<svg /);
+            assert.match(svg, /fill="#C49BF0"/, 'note-type badge should use the lavender identity color');
+            assert.match(svg, /fill="#C5FFBF"/, 'connected badge should use the mint relation color');
+            assert.match(svg, />account</);
+            assert.match(svg, />connected</);
+        });
+
+        test('still builds a real documentation card with a type badge even without a sibling match', () => {
+            const doc = buildRelationCandidateDocumentation('globex', 'account', [], null);
+            assert.ok(doc.value.includes('![]('), 'should still embed a type badge image');
+            const dataUri = doc.value.match(/data:image\/svg\+xml;base64,[^)]+/)[0];
+            const svg = Buffer.from(dataUri.split(',')[1], 'base64').toString('utf8');
+            assert.match(svg, /fill="#C49BF0"/);
+            assert.match(svg, />account</);
+            assert.doesNotMatch(doc.value, /connected/i);
+        });
+
+        test('evidence reasons render as a real bullet list, not crammed into one line', () => {
+            const doc = buildRelationCandidateDocumentation('acme-inc', 'account', ['Already linked in this note', 'Commonly linked here'], null);
+            assert.match(doc.value, /^- Already linked in this note$/m);
+            assert.match(doc.value, /^- Commonly linked here$/m);
+        });
+
+        test('surfaces a real backlink count from the graph, using real fixture data (acme-inc has 1 real backlink from alice-smith)', () => {
+            const doc = buildRelationCandidateDocumentation('acme-inc', 'account', [], null);
+            assert.match(doc.value, /^- Linked from 1 other note$/m);
+        });
+
+        test('a candidate with no backlinks at all does not show a bogus zero-count line', () => {
+            const doc = buildRelationCandidateDocumentation('roughnecks', 'unit', [], null);
+            assert.doesNotMatch(doc.value, /Linked from/);
+        });
+    });
+
     test('bare frontmatter relation completion stays quiet until explicitly invoked', () => {
         assert.equal(
             shouldOfferFrontmatterRelationCompletion({ hasWiki: false }, { triggerKind: 1 }),
@@ -1266,7 +1463,18 @@ describe('frontmatter relation completion', () => {
         assert.equal(items, undefined);
     });
 
-    test('provider path surfaces relation-aware completion for bare unit values on explicit invoke', () => {
+    test('generic frontmatter provider defers to the link provider for a bare (not-yet-bracketed) relation field too', () => {
+        // Real bug, found from a live screenshot: emptying an existing relation
+        // field and retyping showed every candidate TWICE. Root cause — the
+        // generic field provider (no trigger characters, called on every
+        // keystroke and on any manual/programmatic re-invoke) used to
+        // independently resolve and return the same relation candidates the
+        // dedicated link provider already returns for `:`/`[`/`@` triggers
+        // *and* for manual invoke — so VS Code merged two identical result
+        // sets into one list. Only the explicit `[[` case had a dedup guard
+        // before; a bare field (no brackets at all yet) had none. The generic
+        // provider must now stay quiet for ANY relation field, bracketed or
+        // not, deferring entirely to the link provider.
         REGISTERED_PROVIDERS.length = 0;
         const context = { subscriptions: [] };
         const unitIndex = new Map([
@@ -1294,8 +1502,50 @@ describe('frontmatter relation completion', () => {
             { line: 4, character: 'unit: '.length }
         );
 
-        assert.ok(Array.isArray(items));
-        assert.ok(items.some((item) => item.insertText === '[[roughnecks]]'));
+        assert.equal(items, undefined, 'the generic provider must not also return relation items — the link provider owns this');
+    });
+
+    test('the link provider and generic provider together never produce duplicate candidates for a bare relation field', () => {
+        // The real regression test: simulate what VS Code actually does —
+        // query every registered provider for the same position — and assert
+        // the merged result has no duplicate insertText entries. This is the
+        // scenario the two isolated per-provider tests above couldn't catch on
+        // their own, since each only checked its own provider never both together.
+        REGISTERED_PROVIDERS.length = 0;
+        const context = { subscriptions: [] };
+        const unitIndex = new Map([
+            ['johnny-rico', '/vault/johnny-rico.md'],
+            ['carmen-ibanez', '/vault/carmen-ibanez.md'],
+            ['lt-rasczak', '/vault/lt-rasczak.md'],
+            ['roughnecks', '/vault/roughnecks.md']
+        ]);
+        registerCompletion(context, () => unitIndex);
+        const linkProvider = REGISTERED_PROVIDERS.find((entry) => entry.triggerCharacters.includes('['));
+        const fieldProvider = REGISTERED_PROVIDERS.find((entry) => entry.triggerCharacters.length === 0);
+        assert.ok(linkProvider && fieldProvider);
+
+        const doc = makeDocument([
+            '---',
+            'id: carl-jenkins',
+            'type: character',
+            'name: Carl Jenkins',
+            'unit: ',
+            '---'
+        ].join('\n'));
+        doc.uri = { fsPath: '/vault/carl-jenkins.md' };
+        const position = { line: 4, character: 'unit: '.length };
+
+        // Manual invoke, no specific trigger character — exactly what the
+        // programmatic `editor.action.triggerSuggest` re-trigger produces,
+        // which is the real scenario from the bug report (clearing a field
+        // and having the suggest widget reopen itself).
+        const linkItems = linkProvider.provider.provideCompletionItems(doc, position, null, { triggerKind: 0 }) || [];
+        const fieldItems = fieldProvider.provider.provideCompletionItems(doc, position) || [];
+        const merged = [...linkItems, ...fieldItems];
+
+        const insertTexts = merged.map((item) => item.insertText).filter(Boolean);
+        assert.ok(insertTexts.includes('[[roughnecks]]'), 'roughnecks should still be suggested by someone');
+        assert.equal(insertTexts.length, new Set(insertTexts).size, 'no candidate should be suggested by both providers at once');
     });
 
     test('provider path surfaces observed scalar values for bare rank fields', () => {

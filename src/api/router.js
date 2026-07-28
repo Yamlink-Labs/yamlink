@@ -2,7 +2,27 @@
 
 const { URL } = require('url');
 
-const { CORS_HEADERS, notFound } = require('./http');
+const { CORS_HEADERS, notFound, errorJson } = require('./http');
+
+/**
+ * Opt-in shared-secret auth: set YAMLINK_API_TOKEN before running
+ * `yamlink serve` to require every request to carry a matching
+ * `X-Yamlink-Token` header. Off by default — the API has no auth at all
+ * otherwise, same as before this existed. This exists because CORS is
+ * intentionally wide open (`Access-Control-Allow-Origin: *`, needed so
+ * browser-based local tools on a different origin/port can talk to the
+ * server) — without a token, any webpage open in the same browser could
+ * read or write the vault through it. Checked here, not per-handler, so it
+ * can never be forgotten on a new route.
+ * @param {import('http').IncomingMessage} req
+ * @returns {boolean}
+ */
+function isAuthorized(req) {
+    const requiredToken = process.env.YAMLINK_API_TOKEN;
+    if (!requiredToken) return true;
+    const providedToken = req.headers['x-yamlink-token'];
+    return providedToken === requiredToken;
+}
 const { createEventBus } = require('./eventsBus');
 const { VaultService } = require('../core/vaultService');
 const { buildIndex } = require('../core/index');
@@ -14,12 +34,13 @@ const { handleHealth } = require('./handlers/health');
 const { handleTasks } = require('./handlers/tasks');
 const { handleMutations } = require('./handlers/mutations');
 const { handleEvents } = require('./handlers/events');
-const { handleArc, handleFieldCategory, handleNoteIntelligence, handleClusters } = require('./handlers/intelligence');
+const { handleArc, handleFieldCategory, handleNoteIntelligence, handleClusters, handleTrends } = require('./handlers/intelligence');
 const { handleOutbound, handleInbound, handleNeighborhood } = require('./handlers/graph-traversal');
 const { handleNodeHistory, handleNodeEvolution, handleNodeArchaeology, handleVaultLenses, handleSessionSummary } = require('./handlers/history');
 const { handleSchema } = require('./handlers/schema');
 const { handleSearch } = require('./handlers/search');
 const { handleDiff } = require('./handlers/diff');
+const { handleGlossary } = require('./handlers/glossary');
 
 /**
  * Declarative route table. Each entry is tried in order; the first entry whose
@@ -63,14 +84,16 @@ const routeDefs = [
     { method: 'ANY', path: '/api/query', handler: (req, res, _p, url) => handleQuery(req, res, url) },
     { method: 'ANY', path: '/api/graph', handler: (req, res, _p, url) => handleGraph(req, res, url) },
     { method: 'ANY', path: '/api/types', handler: (req, res) => handleTypes(req, res) },
-    { method: 'ANY', path: '/api/tasks', handler: (req, res, _p, url) => handleTasks(req, res, url) },
+    { method: 'ANY', path: '/api/tasks', handler: (req, res, _p, url, context) => handleTasks(req, res, url, context) },
     { method: 'ANY', path: '/api/mutations', handler: (req, res, _p, url, context) => handleMutations(req, res, url, context) },
     { method: 'ANY', path: '/api/health', handler: (req, res, _p, _url, context) => handleHealth(req, res, context) },
     { method: 'ANY', path: '/api/intelligence/arc', handler: (req, res, _p, url) => handleArc(req, res, url) },
     { method: 'ANY', path: '/api/intelligence/fieldCategory', handler: (req, res, _p, url) => handleFieldCategory(req, res, url) },
     { method: 'ANY', path: '/api/intelligence/note', handler: (req, res, _p, url) => handleNoteIntelligence(req, res, url) },
     { method: 'ANY', path: '/api/intelligence/clusters', handler: (req, res) => handleClusters(req, res) },
+    { method: 'ANY', path: '/api/intelligence/trends', handler: (req, res) => handleTrends(req, res) },
     { method: 'ANY', path: '/api/intelligence/lenses', handler: (req, res) => handleVaultLenses(req, res) },
+    { method: 'ANY', path: '/api/glossary', handler: (req, res, _p, url) => handleGlossary(req, res, url) },
 ];
 
 /**
@@ -116,6 +139,11 @@ function createRouter(vaultPath, workspaceFolders, _buildIndex = buildIndex, exi
         if (req.method === 'OPTIONS') {
             res.writeHead(204, CORS_HEADERS);
             res.end();
+            return;
+        }
+
+        if (!isAuthorized(req)) {
+            errorJson(res, 'UNAUTHORIZED', 'Missing or invalid X-Yamlink-Token');
             return;
         }
 

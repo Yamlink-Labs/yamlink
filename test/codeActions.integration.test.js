@@ -652,4 +652,39 @@ describe('code actions integration', () => {
         assert.ok(nextActions.every((action) => action.title !== 'Yamlink: Ignore this suggestion here'));
         assert.ok(nextActions.every((action) => action.title !== 'Yamlink: Add missing "contact" fields (name, status)'));
     });
+
+    // Real bug: a body-text broken-link diagnostic (e.g. documentation prose
+    // explaining `[[wikilink]]` syntax) never offered "Ignore this suggestion
+    // here" at all — only diagnostics inside the frontmatter block did — so
+    // there was no way to dismiss a body-text false positive.
+    test('also offers ignore action for a broken-link diagnostic on body text, not just frontmatter', () => {
+        const context = { subscriptions: [], workspaceState: mockWorkspaceState };
+        registerCodeActions(context, () => new Map(), null);
+
+        const document = createDocument([
+            '---',
+            'id: ace',
+            'type: contact',
+            '---',
+            '',
+            'Write `[[some-example]]` to link a note.'
+        ].join('\n'));
+
+        const diagnostic = {
+            source: 'yamlink',
+            code: 'yamlink.brokenLink',
+            message: 'Yamlink: ID "some-example" does not exist.',
+            range: new Range(new Position(5, 8), new Position(5, 24))
+        };
+
+        const actions = registeredProvider.provideCodeActions(
+            document,
+            { start: new Position(5, 8), end: new Position(5, 8) },
+            { diagnostics: [diagnostic] }
+        );
+
+        const ignoreAction = actions.find((action) => action.title === 'Yamlink: Ignore this suggestion here');
+        assert.ok(ignoreAction, 'expected an ignore action for a body-text broken-link diagnostic');
+        assert.deepEqual(ignoreAction.command.arguments, [document, diagnostic]);
+    });
 });

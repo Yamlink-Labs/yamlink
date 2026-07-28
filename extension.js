@@ -9,6 +9,7 @@ const { registerDefinition } = require('./src/features/definition');
 const { registerHover, registerQueryPreviewHover } = require('./src/features/hover');
 const { registerCompletion } = require('./src/features/completion');
 const { registerViewLightbulb } = require('./src/features/viewLightbulb');
+const { registerSmartPaste } = require('./src/features/smartPaste');
 const { registerDiagnostics, validateAll, validateDocument, getBrokenCount, clearAll } = require('./src/diagnostics/diagnostics');
 const { registerCodeActions } = require('./src/actions/codeActions');
 const { registerBlockReferenceCommands } = require('./src/actions/blockReferenceCommands');
@@ -17,6 +18,7 @@ const { registerDecorations } = require('./src/features/decorations');
 const { parseFrontmatterDocument } = require('./src/core/frontmatter');
 const { buildNoteExportModel, exportNotePdf } = require('./src/export/pdf');
 const { openHealthPanel, updatePanel } = require('./src/features/healthPanel');
+const { openGlossaryPanel, updatePanel: updateGlossaryPanel } = require('./src/features/glossaryPanel');
 const { maybeSuggestFieldCascade } = require('./src/features/suggestionCascade');
 const { openHomePanel, refreshHomePanel } = require('./src/features/homePanel');
 const { openViewPanel, refreshViewPanel, closeViewPanel, getOpenViewDocumentPath, setViewPanelStateListener } = require('./src/features/viewPanel');
@@ -394,6 +396,7 @@ async function activate(context) {
     registerDefinition(context, getIndex);
     registerCompletion(context, getIndex);
     registerViewLightbulb(context);
+    registerSmartPaste(context);
     registerHover(context, getIndex);
     registerQueryPreviewHover(context, getIndex);
     registerDiagnostics(context, getIndex);
@@ -428,6 +431,7 @@ async function activate(context) {
         refreshDecorations:() => decorationsProvider.refresh(),
         refreshStatusBar:  updateStatusBar,
         refreshHealthPanel:updatePanel,
+        refreshGlossaryPanel:updateGlossaryPanel,
         refreshViews:      refreshViewPanel,
         refreshGraph:      () => graphPanelController.refreshGraphPanel(),
         refreshGraphSidebar: refreshGraphSidebarView,
@@ -888,6 +892,10 @@ async function activate(context) {
 
         vscode.commands.registerCommand('yamlink.openHealthPanel', () => {
             openHealthPanel(context);
+        }),
+
+        vscode.commands.registerCommand('yamlink.openGlossaryPanel', () => {
+            openGlossaryPanel(context);
         })
     );
 
@@ -1131,7 +1139,12 @@ async function activate(context) {
             if (!parsed) return { success: false, rows: [], columns: [], warnings: [], error: 'Could not parse query' };
             return runQuery(parsed, opts.contextNodeId ?? null);
         },
-        onVaultChange: _onVaultChange.event
+        onVaultChange: _onVaultChange.event,
+        // Plugin API v1 — a third-party extension can register a read-only
+        // field-evidence source consumed via vscode.extensions.getExtension(
+        // '<publisher>.yamlink').exports.registerFieldEvidenceSource(fn).
+        // See src/intelligence/pluginRegistry.js for the exact contract.
+        registerFieldEvidenceSource: (fn) => require('./src/intelligence/pluginRegistry').registerFieldEvidenceSource(fn)
     };
 }
 

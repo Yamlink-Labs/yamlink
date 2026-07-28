@@ -8,6 +8,7 @@ const {
     buildNoteIntelligenceSnapshot
 } = require('../../intelligence/intelligenceSnapshots');
 const { detectClusters } = require('../../intelligence/clusterEmergence');
+const { buildVaultTrendsSnapshot } = require('../../features/health/healthStats');
 const { json, badRequest, methodNotAllowed, notFound } = require('../http');
 
 async function handleArc(req, res, url) {
@@ -53,9 +54,15 @@ async function handleClusters(req, res) {
     json(res, detectClusters(getFieldsCache()));
 }
 
+async function handleTrends(req, res) {
+    if (req.method !== 'GET') { methodNotAllowed(res); return; }
+    json(res, buildVaultTrendsSnapshot());
+}
+
 module.exports = {
     handleArc,
     handleFieldCategory,
     handleNoteIntelligence,
-    handleClusters
+    handleClusters,
+    handleTrends
 };

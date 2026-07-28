@@ -2,6 +2,7 @@ const vscode = require('vscode');
 const fs = require('fs');
 const { getIndex, getPathIndex, getFieldsCache } = require('../core/indexService');
 const { buildIndex, updateSingleFile, invalidateFileCache } = require('../core/index');
+const { toggleTaskLine } = require('../core/tasks');
 const { parseAllViewQueries, parseViewQuery, runQuery } = require('../engine/query');
 const { writeFieldValue } = require('../core/writeField');
 const { extractCanonicalIdFromFrontmatter } = require('../core/id');
@@ -33,18 +34,8 @@ async function toggleTaskCheckbox(filePath, lineNumber, newDone) {
     let content;
     try { content = fs.readFileSync(filePath, 'utf8'); } catch (e) { return false; }
 
-    const lines = content.replace(/\r\n/g, '\n').replace(/\r/g, '\n').split('\n');
-    const lineIdx = Number(lineNumber) - 1;
-    if (lineIdx < 0 || lineIdx >= lines.length) return false;
-
-    const original = lines[lineIdx];
-    const updated = newDone
-        ? original.replace(/^(\s*[-*]\s+)\[ \]/, '$1[x]')
-        : original.replace(/^(\s*[-*]\s+)\[x\]/i, '$1[ ]');
-    if (updated === original) return false;
-
-    lines[lineIdx] = updated;
-    const newContent = lines.join('\n');
+    const { changed, content: newContent } = toggleTaskLine(content, lineNumber, newDone);
+    if (!changed) return false;
 
     try {
         const targetUri = vscode.Uri.file(filePath);

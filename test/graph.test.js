@@ -10,6 +10,9 @@ const {
     getEdges,
     getBacklinks,
     getGraphStats,
+    computeHubScore,
+    computeNodeWeightedDegree,
+    computeNodeExplorerScore,
     isOrphan
 } = require('../src/core/graph');
 
@@ -93,6 +96,33 @@ describe('graph — basic operations', () => {
         assert.deepEqual(getEdges('rico'), []);
         assert.deepEqual(getBacklinks('roughnecks'), []);
         assert.equal(getGraphStats().totalEdges, 0);
+    });
+});
+
+describe('graph — hub scoring', () => {
+    beforeEach(() => clearGraph());
+
+    test('computeHubScore matches the graph model formula for a fixed small graph', () => {
+        registerEdges('rico', [
+            { field: 'unit', targetId: 'roughnecks' },
+            { field: 'body', targetId: 'carmen' }
+        ]);
+        registerEdges('roughnecks', [{ field: 'commander', targetId: 'rico' }]);
+        const fieldsCache = new Map([
+            ['rico', { type: 'character', __yamlink_tags: 'mobile-infantry, officer' }],
+            ['roughnecks', { type: 'unit' }],
+            ['carmen', { type: 'character' }]
+        ]);
+
+        assert.equal(computeNodeWeightedDegree('rico'), 7.25);
+        assert.equal(computeNodeExplorerScore('rico', fieldsCache), computeHubScore({
+            weightedDegree: 7.25,
+            relationKinds: 3,
+            connectedTypes: 2,
+            strongEdges: 2,
+            tagCount: 2
+        }));
+        assert.equal(computeNodeExplorerScore('rico', fieldsCache), 24.35);
     });
 });
 

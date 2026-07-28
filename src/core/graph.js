@@ -77,6 +77,98 @@ function getGraphStats() {
     };
 }
 
+/** @param {number} value @returns {number} */
+function round2(value) {
+    return Math.round(Number(value || 0) * 100) / 100;
+}
+
+/**
+ * @param {string} label
+ * @param {{ reciprocal?: boolean, sourceType?: string, targetType?: string }} [options]
+ * @returns {number}
+ */
+function computeGraphEdgeWeight(label, options = {}) {
+    const isMention = label === 'mention';
+    const reciprocalBonus = options.reciprocal ? 0.65 : 0;
+    const semanticBonus = options.sourceType && options.targetType && options.sourceType !== options.targetType ? 0.2 : 0;
+    const base = isMention ? 0.85 : 2.55;
+    return round2(base + reciprocalBonus + semanticBonus);
+}
+
+/** @param {string} label @param {number} weight @returns {'weak'|'medium'|'strong'} */
+function classifyGraphEdgeStrength(label, weight) {
+    if (label === 'mention') return 'weak';
+    if (weight >= 3.2) return 'strong';
+    return 'medium';
+}
+
+/**
+ * @param {{ weightedDegree: number, relationKinds: number, connectedTypes: number, strongEdges: number, tagCount: number }} parts
+ * @returns {number}
+ */
+function computeHubScore({ weightedDegree, relationKinds, connectedTypes, strongEdges, tagCount }) {
+    return round2(
+        (weightedDegree * 2.2) +
+        (relationKinds * 1.4) +
+        (connectedTypes * 1.1) +
+        (strongEdges * 0.75) +
+        (Math.min(tagCount, 4) * 0.25)
+    );
+}
+
+/** @param {Record<string, any>} fields @returns {string[]} */
+function getGraphNodeTags(fields = {}) {
+    const raw = String(fields.__yamlink_tags || '').trim();
+    if (!raw) return [];
+    return [...new Set(raw.split(',').map((tag) => String(tag || '').trim()).filter(Boolean))];
+}
+
+/** @param {string} id @returns {number} */
+function computeNodeWeightedDegree(id) {
+    const outgoing = (getEdges(id) || []).map((edge) => computeGraphEdgeWeight(edge.field === 'body' ? 'mention' : edge.field, {
+        reciprocal: (getEdges(edge.targetId) || []).some((candidate) => candidate && candidate.targetId === id)
+    }));
+    const incoming = (getBacklinks(id) || []).map((edge) => computeGraphEdgeWeight(edge.field === 'body' ? 'mention' : edge.field, {
+        reciprocal: (getEdges(edge.sourceId) || []).some((candidate) => candidate && candidate.targetId === id)
+    }));
+    return round2([...outgoing, ...incoming].reduce((sum, weight) => sum + weight, 0));
+}
+
+/**
+ * @param {string} id
+ * @param {Map<string, Record<string, any>>} fieldsCache
+ * @returns {number}
+ */
+function computeNodeExplorerScore(id, fieldsCache) {
+    const relatedTypes = new Set();
+    const relationFields = new Set();
+    const tags = getGraphNodeTags(fieldsCache.get(id) || {});
+    let strongEdges = 0;
+
+    for (const edge of getEdges(id) || []) {
+        const label = edge.field === 'body' ? 'mention' : edge.field;
+        const targetFields = fieldsCache.get(edge.targetId) || {};
+        relationFields.add(label);
+        relatedTypes.add(String(targetFields.type || 'unknown'));
+        if (classifyGraphEdgeStrength(label, computeGraphEdgeWeight(label)) !== 'weak') strongEdges += 1;
+    }
+    for (const edge of getBacklinks(id) || []) {
+        const label = edge.field === 'body' ? 'mention' : edge.field;
+        const sourceFields = fieldsCache.get(edge.sourceId) || {};
+        relationFields.add(label);
+        relatedTypes.add(String(sourceFields.type || 'unknown'));
+        if (classifyGraphEdgeStrength(label, computeGraphEdgeWeight(label)) !== 'weak') strongEdges += 1;
+    }
+
+    return computeHubScore({
+        weightedDegree: computeNodeWeightedDegree(id),
+        relationKinds: relationFields.size,
+        connectedTypes: [...relatedTypes].filter(Boolean).length,
+        strongEdges,
+        tagCount: tags.length
+    });
+}
+
 module.exports = {
     clearGraph,
     registerEdges,
@@ -84,5 +176,10 @@ module.exports = {
     getEdges,
     getBacklinks,
     getGraphStats,
+    computeGraphEdgeWeight,
+    classifyGraphEdgeStrength,
+    computeHubScore,
+    computeNodeWeightedDegree,
+    computeNodeExplorerScore,
     isOrphan
 };

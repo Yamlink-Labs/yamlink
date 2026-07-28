@@ -76,6 +76,18 @@ const MOCK_BACKLINKS = new Map([
     ]],
 ]);
 
+const MOCK_EDGES = new Map([
+    ['mission-klendathu', [
+        { field: 'intelligence', targetId: 'carl-jenkins' },
+        { field: 'commander', targetId: 'johnny-rico' },
+        { field: 'unit', targetId: 'roughnecks' },
+    ]],
+    ['mission-klendathu-ii', [
+        { field: 'intelligence', targetId: 'carl-jenkins' },
+        { field: 'unit', targetId: 'roughnecks' },
+    ]],
+]);
+
 // Body content keyed by filePath — used by readBody stub
 const MOCK_BODIES = new Map([
     ['/vault/mission-klendathu.md',    'fleet took massive losses from plasma bugs before anyone understood what was hitting them'],
@@ -107,6 +119,29 @@ require.cache['__stub_graph__'] = {
     id: '__stub_graph__', filename: '__stub_graph__', loaded: true,
     exports: {
         getBacklinks: (id) => MOCK_BACKLINKS.get(id) ?? [],
+        getEdges: (id) => MOCK_EDGES.get(id) ?? [],
+        computeNodeExplorerScore: (id, fieldsCache) => {
+            const edges = MOCK_EDGES.get(id) ?? [];
+            const backlinks = MOCK_BACKLINKS.get(id) ?? [];
+            const relationFields = new Set();
+            const relatedTypes = new Set();
+            let strongEdges = 0;
+            for (const edge of edges) {
+                const label = edge.field === 'body' ? 'mention' : edge.field;
+                relationFields.add(label);
+                relatedTypes.add(String((fieldsCache.get(edge.targetId) || {}).type || 'unknown'));
+                if (label !== 'mention') strongEdges += 1;
+            }
+            for (const edge of backlinks) {
+                const label = edge.field === 'body' ? 'mention' : edge.field;
+                relationFields.add(label);
+                relatedTypes.add(String((fieldsCache.get(edge.sourceId) || {}).type || 'unknown'));
+                if (label !== 'mention') strongEdges += 1;
+            }
+            const tagCount = String((fieldsCache.get(id) || {}).__yamlink_tags || '').split(',').map((tag) => tag.trim()).filter(Boolean).length;
+            const weightedDegree = (edges.length + backlinks.length) * 2.55;
+            return Math.round(((weightedDegree * 2.2) + (relationFields.size * 1.4) + (relatedTypes.size * 1.1) + (strongEdges * 0.75) + (Math.min(tagCount, 4) * 0.25)) * 100) / 100;
+        },
     }
 };
 const todayIso = getTodayIsoLocal();
@@ -1342,6 +1377,38 @@ describe('runQuery — forward — file.created and file.modified', () => {
     test('where file.created empty returns nothing (file stat always resolves)', () => {
         const r = runQuery(parseSingleViewLine('!view character where file.created is empty'));
         assert.deepEqual(ids(r), []);
+    });
+
+});
+
+describe('runQuery — forward — graph virtual fields', () => {
+
+    test('where _inbound_count > 0 matches notes with backlinks', () => {
+        const r = runQuery(parseSingleViewLine('!view character where _inbound_count > 0'));
+        assert.deepEqual(ids(r), ['carl-jenkins', 'johnny-rico']);
+    });
+
+    test('select _hub_score exposes the computed hub score as a row field', () => {
+        const r = runQuery(parseSingleViewLine('!view character select name, _hub_score'));
+        const rico = r.rows.find(row => row.id === 'johnny-rico');
+        assert.equal(r.columns.includes('_hub_score'), true);
+        assert.equal(typeof rico.fields._hub_score, 'number');
+        assert.ok(rico.fields._hub_score > 0);
+    });
+
+    test('sort _outbound_count desc orders notes by outgoing graph degree', () => {
+        const r = runQuery(parseSingleViewLine('!view mission sort _outbound_count desc'));
+        assert.deepEqual(ids(r), ['mission-klendathu', 'mission-klendathu-ii']);
+        assert.equal(r.rows[0].fields._outbound_count, 3);
+        assert.equal(r.rows[1].fields._outbound_count, 2);
+    });
+
+    test('zero-edge notes report graph virtual fields as 0', () => {
+        const r = runQuery(parseSingleViewLine('!view deal select _inbound_count, _outbound_count, _hub_score'));
+        const alpha = r.rows.find(row => row.id === 'deal-alpha');
+        assert.equal(alpha.fields._inbound_count, 0);
+        assert.equal(alpha.fields._outbound_count, 0);
+        assert.equal(alpha.fields._hub_score, 0);
     });
 
 });

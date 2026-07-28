@@ -32,6 +32,8 @@ function printHelp() {
         '  create <type>           Create a new note with optional --field pairs',
         '  diff <id1> <id2>        Compare frontmatter fields between two notes, or use --since for recent changes',
         '  story --since <date>    Vault growth story — then vs now, using the Time Engine (--quarterly for a calendar-quarter review)',
+        '  snapshot                Capture an on-demand Time Engine snapshot of the current vault',
+        '  restore <timestamp>     Preview or export a reconstructed vault state (read-only unless --output is passed)',
         '  doctor                  Comprehensive vault health and integrity pass',
         '  init [path]             Initialize a new Yamlink vault',
         '  rename <old-id> <new-id> Rename a note id and rewrite wikilinks vault-wide',
@@ -40,6 +42,7 @@ function printHelp() {
         '  health                  Vault health overview — lifecycle, drift, type distribution',
         '  mutations               Browse vault mutation history',
         '  session                 Summarize recent or explicit mutation sessions',
+        '  trends                  Vault projections — growth, stale, structure, and forecast',
         '  on <event>              Watch vault and exec a script on matching mutation events',
         '  schema list|check <type> Schema introspection',
         '  validate                Schema conformance check — required fields, dangling relations (exits 1 on failures)',
@@ -56,6 +59,8 @@ function printHelp() {
         '  pressure                Intelligence — knowledge pressure: load-bearing drafts, stale hubs, orphans',
         '  set <id> <field> <value> Set a frontmatter field on a note (use --clear to remove)',
         '  link <id> <field> <to>  Add a wikilink relation field on a note (--append to keep existing)',
+        '  template save <id>      Save an existing note as a blank-skeleton template for its type (--force to overwrite)',
+        '  glossary --type <a,b>   Alphabetized glossary of every note of the given type(s), with its own definition and backlinks',
         '  lenses                  Intelligence — vault change lenses over mutation history',
         '  conduit                 Open Yamlink Conduit in the terminal UI',
         '  completions <shell>     Print shell completion script (bash or zsh)',
@@ -75,7 +80,7 @@ function printHelp() {
         '  --rename-file           Rename the owning markdown file when it matches the old id',
         '  --format json|csv       Output format for export command (default: json)',
         '  --query "<query>"       Query string for export command',
-        '  --output <file>         Write output to file instead of stdout',
+        '  --output <path>         Write output to file instead of stdout; restore exports to a directory',
         '  --field <key=value>     Field pair for create command (repeatable)',
         '  --sort name|date|type   Sort order for ls command',
         '  --has <field>           Require a field to be present (repeatable)',
@@ -83,9 +88,15 @@ function printHelp() {
         '  --only-types <a,b>      Limit graph export to specific note types',
         '  --at <date>             Reconstruct historical state as of a date (cat, report, links, graph)',
         '  --quarterly             Since the start of the current calendar quarter (story)',
+        '  --reason <text>         Reason label for snapshot command',
         '  --type <type>           Type filter for on command',
         '  --shell bash|zsh|fish   Shell format for env command',
         '  --stream                Stream live NDJSON output where supported',
+        '  --type <a,b>            Note type(s) to include as glossary terms (glossary command)',
+        '  --no-group-by-type      Glossary: one flat A-Z list instead of a section per type',
+        '  --hide-unreferenced     Glossary: omit terms with no inbound links instead of marking them',
+        '  --extra-field <name>    Glossary: an extra frontmatter field to show per entry (repeatable)',
+        '  --sort-by-references    Glossary: rank terms by inbound link count instead of alphabetically',
         '  --help, -h              Show this help',
         '',
         'Examples:',
@@ -103,6 +114,11 @@ function printHelp() {
         '  yamlink story --since 2026-01-01 --json',
         '  yamlink story --quarterly            # since the start of the current calendar quarter',
         '  yamlink story --quarterly --json',
+        '  yamlink trends',
+        '  yamlink trends --json',
+        '  yamlink snapshot --reason "before import"',
+        '  yamlink restore 2026-07-18T12:00:00.000Z',
+        '  yamlink restore 2026-07-18T12:00:00.000Z --output ./restore-preview',
         '  yamlink init ~/notes',
         '  yamlink rename old-id new-id --dry-run --rename-file',
         '  yamlink search "rico" --type contact',
@@ -144,6 +160,11 @@ function printHelp() {
         '  yamlink set johnny-rico status --clear',
         '  yamlink link johnny-rico unit roughnecks',
         '  yamlink link johnny-rico unit roughnecks --append',
+        '  yamlink template save johnny-rico',
+        '  yamlink template save johnny-rico --force',
+        '  yamlink glossary --type faction,location',
+        '  yamlink glossary --type faction --hide-unreferenced --json',
+        '  yamlink glossary --type faction --sort-by-references',
         '',
     ].join('\n'));
 }
@@ -322,7 +343,7 @@ async function main() {
             args[i] === '--limit' || args[i] === '--id' || args[i] === '--sort' ||
             args[i] === '--has' || args[i] === '--missing' || args[i] === '--max-broken-links' ||
             args[i] === '--schema-coverage' || args[i] === '--max-stale-days' ||
-            args[i] === '--min-health-score' || args[i] === '--shell') { i++; continue; }
+            args[i] === '--min-health-score' || args[i] === '--shell' || args[i] === '--reason') { i++; continue; }
         if (args[i].startsWith('--')) continue;
         pos.push(args[i]);
     }
@@ -512,6 +533,14 @@ async function main() {
         require('./commands/story').run({ since: flagVal('--since'), quarterly: args.includes('--quarterly'), json, output: flagVal('--output') });
         break;
 
+    case 'snapshot':
+        require('./commands/snapshot').run({ reason: flagVal('--reason'), json });
+        break;
+
+    case 'restore':
+        require('./commands/restore').run({ timestamp: pos[1], output: flagVal('--output'), vaultPath, json });
+        break;
+
     case 'rename':
         await require('./commands/rename').run({
             oldId: pos[1],
@@ -561,6 +590,10 @@ async function main() {
             sessionId: flagVal('--id') || null,
             json
         });
+        break;
+
+    case 'trends':
+        require('./commands/trends').run({ json, output: flagVal('--output') });
         break;
 
     case 'schema':
@@ -701,6 +734,29 @@ async function main() {
             vaultPath, json, quiet,
             dryRun:  args.includes('--dry-run'),
             append:  args.includes('--append')
+        });
+        break;
+    }
+
+    case 'template': {
+        const subcommand = pos[1];
+        const templateId = pos[2];
+        require('./commands/template').run({
+            subcommand, id: templateId,
+            vaultPath, json,
+            force: args.includes('--force')
+        });
+        break;
+    }
+
+    case 'glossary': {
+        require('./commands/glossary').run({
+            types: flagVal('--type'),
+            groupByType: !args.includes('--no-group-by-type'),
+            showZeroBacklinkTerms: !args.includes('--hide-unreferenced'),
+            extraFields: flagVals('--extra-field'),
+            sortBy: args.includes('--sort-by-references') ? 'mostReferenced' : 'alphabetical',
+            json
         });
         break;
     }

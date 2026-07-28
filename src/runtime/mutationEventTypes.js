@@ -116,6 +116,11 @@ const MUTATION_EVENT_TYPES = new Map([
         description: 'A template\'s prompted fields were filled in during creation.',
         reconstructable: false
     }],
+    ['template_saved', {
+        category: 'outcome',
+        description: 'An existing note was saved as a new (or overwritten) blank-skeleton template for its type via Save as Template.',
+        reconstructable: false
+    }],
     ['block_reference_created', {
         category: 'outcome',
         description: 'A `note^blockId`/`note#Heading` block or section reference was inserted via a copy/insert command. Not yet surfaced in the activity feed or Note Report History tab — logged for future calibration and intelligence use (see ARCHITECTURE.md).',

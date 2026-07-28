@@ -202,12 +202,15 @@ reads as:
 - `(outcome = victory OR commander = [[carl-jenkins]])`
 - `AND date exists`
 
-### `file.created` and `file.modified`
+### Virtual fields
 
-Two implicit virtual fields are available in any query — no frontmatter required. Yamlink reads them from the file system at query time.
+Virtual fields are available in any query — no frontmatter required. Yamlink reads or computes them at query time.
 
 - **`file.created`** — the file's creation date (`YYYY-MM-DD`). Falls back to last-modified date on systems that don't preserve birthtime (git clones, some syncs).
 - **`file.modified`** — the file's last-modified date (`YYYY-MM-DD`).
+- **`_inbound_count`** — how many graph edges point to this note.
+- **`_outbound_count`** — how many graph edges this note points to.
+- **`_hub_score`** — Yamlink's weighted graph prominence score for the note. It combines inbound/outbound relationship weight, relation variety, connected note types, stronger relation edges, and tags.
 
 ```md
 !view contact
@@ -223,7 +226,14 @@ select id, type, file.modified
 sort file.modified desc
 ```
 
-Both fields support all operators: `=`, `!=`, `>=`, `<=`, `>`, `<`, `contains`, `is empty`, `exists`.
+```md
+!view character
+where _inbound_count > 0
+select name, _inbound_count, _outbound_count, _hub_score
+sort _hub_score desc
+```
+
+These fields support all operators: `=`, `!=`, `>=`, `<=`, `>`, `<`, `contains`, `is empty`, `exists`.
 
 ### `group by`
 

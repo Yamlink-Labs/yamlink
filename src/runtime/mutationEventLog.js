@@ -300,6 +300,39 @@ function getVaultSnapshots() {
     return loadVaultSnapshots(_snapshotPath);
 }
 
+/**
+ * Captures the current vault state as a Time Engine snapshot on demand.
+ * @param {string|null|undefined} [reason]
+ * @returns {{ timestamp: string, noteCount: number, snapshotPath: string|null, reason: string|null }}
+ */
+function createManualSnapshot(reason) {
+    if (!_snapshotPath) {
+        throw new Error('Mutation log is not initialized');
+    }
+    if (typeof _snapshotFieldsCacheProvider !== 'function') {
+        throw new Error('Snapshot fields provider is not initialized');
+    }
+
+    const fieldsCache = _snapshotFieldsCacheProvider();
+    if (!fieldsCache || typeof fieldsCache.entries !== 'function') {
+        throw new Error('Snapshot fields provider did not return a fields cache');
+    }
+
+    const timestamp = new Date().toISOString();
+    /** @type {Record<string, Record<string, any>|null>} */
+    const notes = {};
+    for (const [noteId, fields] of fieldsCache.entries()) {
+        notes[noteId] = fields ? { ...fields } : null;
+    }
+    appendVaultSnapshot(_snapshotPath, timestamp, notes);
+    return {
+        timestamp,
+        noteCount: Object.keys(notes).length,
+        snapshotPath: _snapshotPath,
+        reason: reason ? String(reason) : null
+    };
+}
+
 function setDefaultMutationContextProvider(provider) {
     _defaultContextProvider = typeof provider === 'function' ? provider : null;
 }
@@ -312,6 +345,7 @@ module.exports = {
     getSessionEvents,
     getVaultSnapshots,
     clearMutationEvents,
+    createManualSnapshot,
     withMutationContext,
     setDefaultMutationContextProvider,
     setSnapshotFieldsCacheProvider,

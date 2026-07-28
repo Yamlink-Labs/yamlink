@@ -11,7 +11,9 @@ const {
     getTemplateDrift,
     summarizeTemplateDrift,
     extractTemplateType,
-    extractTemplateFields
+    extractTemplateFields,
+    buildTemplateFromNote,
+    saveTemplateFile
 } = require('../src/core/templateRegistry');
 
 function makeTmpVault(files) {
@@ -143,5 +145,118 @@ describe('templateRegistry', () => {
         assert.equal(summary.get('contact').driftCount, 2);
         assert.equal(summary.get('account').driftCount, 1);
         assert.equal(summary.get('contact').notes.length, 2);
+    });
+
+    describe('buildTemplateFromNote', () => {
+        test('preserves type, blanks id, and blanks scalar values', () => {
+            const note = [
+                '---',
+                'id: acme-inc',
+                'type: account',
+                'name: Acme Inc',
+                'status: active',
+                '---',
+                ''
+            ].join('\n');
+            const result = buildTemplateFromNote(note);
+            assert.match(result, /^---\nid:\ntype: account\nname: \nstatus: \n---\n/);
+        });
+
+        test('blanks a single-line wikilink value to [[]]', () => {
+            const note = '---\nid: bob-jones\ntype: contact\naccount: [[acme-inc]]\n---\n';
+            const result = buildTemplateFromNote(note);
+            assert.match(result, /account: \[\[\]\]/);
+        });
+
+        test('collapses a YAML block-list relation field to a single blank placeholder item', () => {
+            const note = [
+                '---', 'id: enotria', 'type: account', 'name: Enotria',
+                'contacts:',
+                '  - [[theo-theodorou]]',
+                '  - [[cesar-gutierrez]]',
+                '  - [[edith-santos]]',
+                '---', ''
+            ].join('\n');
+            const result = buildTemplateFromNote(note);
+            const lines = result.split('\n');
+            const contactsIdx = lines.indexOf('contacts:');
+            assert.ok(contactsIdx !== -1, 'contacts: key preserved');
+            assert.equal(lines[contactsIdx + 1], '  - [[]]');
+            assert.equal(lines[contactsIdx + 2], '---', 'no leftover real list items after the placeholder');
+        });
+
+        test('blanks a non-wikilink block-list field to a blank list item', () => {
+            const note = [
+                '---', 'id: mission-1', 'type: mission',
+                'tags:',
+                '  - urgent',
+                '  - offworld',
+                '---', ''
+            ].join('\n');
+            const result = buildTemplateFromNote(note);
+            const lines = result.split('\n');
+            const tagsIdx = lines.indexOf('tags:');
+            assert.equal(lines[tagsIdx + 1], '  - ');
+        });
+
+        test('keeps body heading structure and drops prose', () => {
+            const note = [
+                '---', 'id: rico', 'type: character', '---',
+                '',
+                '## Summary',
+                'Some real prose specific to this note.',
+                '',
+                '## Next Steps',
+                '- a real action item',
+                ''
+            ].join('\n');
+            const result = buildTemplateFromNote(note);
+            assert.match(result, /## Summary\n## Next Steps/);
+            assert.doesNotMatch(result, /Some real prose/);
+            assert.doesNotMatch(result, /a real action item/);
+        });
+
+        test('a note with no body produces a template with a trailing blank line, no headings section', () => {
+            const note = '---\nid: x\ntype: note\n---\n';
+            const result = buildTemplateFromNote(note);
+            assert.equal(result, '---\nid:\ntype: note\n---\n\n');
+        });
+    });
+
+    describe('saveTemplateFile', () => {
+        test('writes a new template file for a type with no existing template', () => {
+            const root = fs.mkdtempSync(path.join(os.tmpdir(), 'yamlink-savetmpl-'));
+            const filePath = saveTemplateFile(root, 'contact', '---\nid:\ntype: contact\n---\n');
+            assert.ok(fs.existsSync(filePath));
+            assert.equal(path.basename(filePath), 'contact.md');
+            fs.rmSync(root, { recursive: true, force: true });
+        });
+
+        test('refuses to overwrite an existing template without force', () => {
+            const root = makeTmpVault({ 'contact.md': '---\nid:\ntype: contact\nhand-authored: true\n---\n' });
+            assert.throws(
+                () => saveTemplateFile(root, 'contact', '---\nid:\ntype: contact\n---\n'),
+                /already exists/
+            );
+            const untouched = fs.readFileSync(path.join(root, '_templates', 'contact.md'), 'utf8');
+            assert.match(untouched, /hand-authored: true/);
+            fs.rmSync(root, { recursive: true, force: true });
+        });
+
+        test('overwrites an existing template when force is set', () => {
+            const root = makeTmpVault({ 'contact.md': '---\nid:\ntype: contact\nold-field:\n---\n' });
+            saveTemplateFile(root, 'contact', '---\nid:\ntype: contact\nnew-field:\n---\n', { force: true });
+            const updated = fs.readFileSync(path.join(root, '_templates', 'contact.md'), 'utf8');
+            assert.match(updated, /new-field:/);
+            assert.doesNotMatch(updated, /old-field:/);
+            fs.rmSync(root, { recursive: true, force: true });
+        });
+
+        test('creates the _templates/ directory if it does not exist yet', () => {
+            const root = fs.mkdtempSync(path.join(os.tmpdir(), 'yamlink-notmpldir-'));
+            saveTemplateFile(root, 'account', '---\nid:\ntype: account\n---\n');
+            assert.ok(fs.existsSync(path.join(root, '_templates', 'account.md')));
+            fs.rmSync(root, { recursive: true, force: true });
+        });
     });
 });

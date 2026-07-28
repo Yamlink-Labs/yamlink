@@ -737,3 +737,47 @@ describe('fieldCategory — temporal confidence from mutation volatility', () =>
         assert.equal(withEmptyVolatility.confidence, plain.confidence);
     });
 });
+
+describe('fieldCategory — plugin evidence source (registerFieldEvidenceSource)', () => {
+    const { registerFieldEvidenceSource, clearRegisteredEvidenceSources } = require('../src/intelligence/pluginRegistry');
+    const { beforeEach, afterEach } = require('node:test');
+
+    beforeEach(() => clearRegisteredEvidenceSources());
+    afterEach(() => clearRegisteredEvidenceSources());
+
+    it('is a no-op when no plugin is registered', () => {
+        const withoutPlugin = classifyField('subject', {});
+        assert.ok(!withoutPlugin.reasons.some((r) => r.startsWith('plugin:')));
+    });
+
+    it('a registered high-confidence source nudges confidence up and surfaces its reason', () => {
+        const before = classifyField('mystery-field', {});
+        registerFieldEvidenceSource(() => ({ score: 1, reason: 'our records say this is definitely a relation' }));
+        const after = classifyField('mystery-field', {});
+
+        assert.ok(after.confidence >= before.confidence, 'confidence should not decrease from a high-confidence plugin signal');
+        assert.ok(after.reasons.some((r) => r === 'plugin: our records say this is definitely a relation'));
+    });
+
+    it('a registered low-confidence source nudges confidence down', () => {
+        const before = classifyField('subject', { fieldsCache: new Map(), fieldTargetTypes: new Map(), fieldAmbiguity: new Map() });
+        registerFieldEvidenceSource(() => ({ score: 0, reason: 'we know this is not a relation' }));
+        const after = classifyField('subject', { fieldsCache: new Map(), fieldTargetTypes: new Map(), fieldAmbiguity: new Map() });
+
+        assert.ok(after.confidence <= before.confidence);
+    });
+
+    it('a throwing plugin does not crash classification and contributes nothing', () => {
+        registerFieldEvidenceSource(() => { throw new Error('boom'); });
+        assert.doesNotThrow(() => classifyField('subject', {}));
+        const result = classifyField('subject', {});
+        assert.ok(!result.reasons.some((r) => r.startsWith('plugin:')));
+    });
+
+    it('a single plugin cannot swing confidence by more than a small, bounded amount', () => {
+        const before = classifyField('subject', {});
+        registerFieldEvidenceSource(() => ({ score: 1, reason: 'max confidence' }));
+        const after = classifyField('subject', {});
+        assert.ok(after.confidence - before.confidence <= 0.15, 'a single plugin should only ever nudge, never dominate classification');
+    });
+});

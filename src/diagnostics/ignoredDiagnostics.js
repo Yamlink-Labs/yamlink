@@ -44,6 +44,21 @@ function isDiagnosticIgnored(document, diagnostic) {
     return Boolean(key && ignoredKeys.has(key));
 }
 
+// Shared between diagnostics.js (which builds the real Diagnostic) and
+// decorations.js (which needs to check ignore state for the exact same
+// range without constructing a real vscode.Diagnostic) — both must derive
+// identical code/message for a given id, or the ignore key built from each
+// side will never match and "ignore this suggestion" will silently fail to
+// un-mute the decoration.
+function describeBrokenLink(id, isInFrontmatter) {
+    return {
+        code: isInFrontmatter ? 'yamlink.brokenRelation' : 'yamlink.brokenLink',
+        message: isInFrontmatter
+            ? `Yamlink: Relation "${id}" does not exist.`
+            : `Yamlink: ID "${id}" does not exist.`
+    };
+}
+
 async function ignoreDiagnostic(document, diagnostic) {
     const key = buildIgnoredDiagnosticKey(document, diagnostic);
     if (!key) return false;
@@ -56,5 +71,6 @@ module.exports = {
     initializeIgnoredDiagnostics,
     isDiagnosticIgnored,
     ignoreDiagnostic,
-    buildIgnoredDiagnosticKey
+    buildIgnoredDiagnosticKey,
+    describeBrokenLink
 };

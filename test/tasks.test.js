@@ -3,7 +3,7 @@
 const { test, describe } = require('node:test');
 const assert = require('node:assert/strict');
 
-const { parseTasksFromContent } = require('../src/core/tasks');
+const { parseTasksFromContent, toggleTaskLine } = require('../src/core/tasks');
 
 const NOTE_PREFIX = '---\nid: test-note\ntype: note\n---\n\n';
 
@@ -184,5 +184,54 @@ describe('tasks — parseTasksFromContent', () => {
         const tasks = parseTasksFromContent(content, 'test', '/test.md');
         assert.equal(tasks.length, 1);
         assert.match(tasks[0].text, /Body task/);
+    });
+});
+
+describe('toggleTaskLine', () => {
+    test('flips an open checkbox to done', () => {
+        const content = 'line0\n- [ ] Buy milk\nline2';
+        const result = toggleTaskLine(content, 2, true);
+        assert.equal(result.changed, true);
+        assert.equal(result.content, 'line0\n- [x] Buy milk\nline2');
+    });
+
+    test('flips a done checkbox back to open', () => {
+        const content = 'line0\n- [x] Buy milk\nline2';
+        const result = toggleTaskLine(content, 2, false);
+        assert.equal(result.changed, true);
+        assert.equal(result.content, 'line0\n- [ ] Buy milk\nline2');
+    });
+
+    test('is case-insensitive when detecting an already-done checkbox', () => {
+        const content = '- [X] Loud done marker';
+        const result = toggleTaskLine(content, 1, false);
+        assert.equal(result.changed, true);
+        assert.equal(result.content, '- [ ] Loud done marker');
+    });
+
+    test('reports unchanged when the target state already matches', () => {
+        const content = '- [x] Already done';
+        const result = toggleTaskLine(content, 1, true);
+        assert.equal(result.changed, false);
+        assert.equal(result.content, content);
+    });
+
+    test('reports unchanged for an out-of-range line number', () => {
+        const content = '- [ ] Only line';
+        const result = toggleTaskLine(content, 99, true);
+        assert.equal(result.changed, false);
+    });
+
+    test('reports unchanged for a line that is not a task at all', () => {
+        const content = 'Just a regular line';
+        const result = toggleTaskLine(content, 1, true);
+        assert.equal(result.changed, false);
+    });
+
+    test('handles CRLF line endings the same as LF', () => {
+        const content = 'line0\r\n- [ ] Buy milk\r\nline2';
+        const result = toggleTaskLine(content, 2, true);
+        assert.equal(result.changed, true);
+        assert.match(result.content, /- \[x\] Buy milk/);
     });
 });

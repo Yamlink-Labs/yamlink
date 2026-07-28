@@ -220,5 +220,6 @@ module.exports = {
     closestFieldMatch,
     closestTypeMatch,
     collectFieldCandidates,
-    collectRelationFieldCandidates
+    collectRelationFieldCandidates,
+    levenshtein
 };

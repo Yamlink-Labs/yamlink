@@ -111,6 +111,112 @@ function summarizeTemplateDrift(drift) {
     return byType;
 }
 
+function isWikilinkValue(value) {
+    return /^\[\[[^\]]*\]\]$/.test(String(value || '').trim());
+}
+
+function extractFrontmatterAndBody(content) {
+    const normalized = String(content || '').replace(/\r\n/g, '\n');
+    const match = normalized.match(/^---\n([\s\S]*?)\n---\n?([\s\S]*)$/);
+    if (!match) return { frontmatterLines: [], body: normalized };
+    return { frontmatterLines: match[1].split('\n'), body: match[2] || '' };
+}
+
+/**
+ * Builds a blank-skeleton template from an existing note's raw file content,
+ * matching the hand-authored shape every real template in `_templates/`
+ * already uses (see loadTemplates/applyTemplate above): every key is kept,
+ * every value is blanked except `type:` (the whole registry keys templates
+ * off of that value). A YAML block-list field (key on one line, `- [[x]]`
+ * items on the lines below) collapses to a single blank placeholder item
+ * instead of repeating every real entry, so the template still shows it's a
+ * list without carrying over note-specific link targets. The body keeps
+ * only its heading lines — the note's structural shape — and drops all
+ * prose, since that's inherently note-specific.
+ * @param {string} noteContent
+ * @returns {string}
+ */
+function buildTemplateFromNote(noteContent) {
+    const { frontmatterLines, body } = extractFrontmatterAndBody(noteContent);
+    const out = ['---'];
+    let i = 0;
+    while (i < frontmatterLines.length) {
+        const line = frontmatterLines[i];
+        const keyMatch = line.match(/^([\w-]+):\s*(.*)$/);
+        if (!keyMatch) { i++; continue; }
+        const [, key, rawValue] = keyMatch;
+        const value = rawValue.trim();
+        const lowerKey = key.toLowerCase();
+
+        if (lowerKey === 'type') {
+            out.push(`type: ${value}`);
+            i++;
+            continue;
+        }
+        if (lowerKey === 'id') {
+            out.push('id:');
+            i++;
+            continue;
+        }
+
+        if (!value) {
+            let j = i + 1;
+            let sawListItem = false;
+            let sawWikilinkItem = false;
+            while (j < frontmatterLines.length && /^\s*-\s*(.*)$/.test(frontmatterLines[j])) {
+                sawListItem = true;
+                const itemValue = frontmatterLines[j].match(/^\s*-\s*(.*)$/)[1].trim();
+                if (isWikilinkValue(itemValue)) sawWikilinkItem = true;
+                j++;
+            }
+            out.push(`${key}:`);
+            if (sawListItem) out.push(sawWikilinkItem ? '  - [[]]' : '  - ');
+            i = j > i + 1 ? j : i + 1;
+            continue;
+        }
+
+        out.push(isWikilinkValue(value) ? `${key}: [[]]` : `${key}: `);
+        i++;
+    }
+    out.push('---');
+
+    const headingLines = String(body || '').split('\n').filter(l => /^#{1,6}\s/.test(l));
+    if (headingLines.length) {
+        out.push('', ...headingLines);
+    }
+    out.push('', '');
+
+    return out.join('\n');
+}
+
+/**
+ * Writes a generated template to `_templates/<type>.md`. Refuses to
+ * overwrite an existing template for that type unless `force` is set —
+ * a hand-crafted template is easy to lose and hard to notice losing.
+ * @param {string} workspaceRoot
+ * @param {string} type
+ * @param {string} content
+ * @param {{ force?: boolean }} [options]
+ * @returns {string} the written file path
+ */
+function saveTemplateFile(workspaceRoot, type, content, options) {
+    const force = Boolean(options && options.force);
+    const normalizedType = String(type || '').trim().toLowerCase();
+    if (!workspaceRoot || !normalizedType) {
+        throw new Error('workspaceRoot and type are required');
+    }
+    const templatesPath = path.join(workspaceRoot, TEMPLATES_DIR);
+    if (!fs.existsSync(templatesPath)) fs.mkdirSync(templatesPath, { recursive: true });
+    const filePath = path.join(templatesPath, `${normalizedType}.md`);
+    if (fs.existsSync(filePath) && !force) {
+        const err = new Error(`Template for type "${normalizedType}" already exists at ${filePath}`);
+        /** @type {Error & { code?: string }} */ (err).code = 'TEMPLATE_EXISTS';
+        throw err;
+    }
+    fs.writeFileSync(filePath, content, 'utf8');
+    return filePath;
+}
+
 module.exports = {
     TEMPLATES_DIR,
     loadTemplates,
@@ -118,5 +224,7 @@ module.exports = {
     getTemplateDrift,
     summarizeTemplateDrift,
     extractTemplateType,
-    extractTemplateFields
+    extractTemplateFields,
+    buildTemplateFromNote,
+    saveTemplateFile
 };

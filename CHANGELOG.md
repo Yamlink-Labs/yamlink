@@ -1,6 +1,60 @@
 # Changelog
 
----
+## 0.7.5
+
+0.7.5 is about Yamlink working outside the editor as potently as it does inside it. The local API can now read a note's raw text and its real file dates, mark a task done or reopen it, and hand over the vault's glossary — the same things you can already do by hand in VS Code, now scriptable. It also has its first way to "lock the door": an optional token, since until now anything on your machine could read or write your vault through it with no login at all. A new plugin API lets another VS Code extension contribute its own small, explainable opinion to Yamlink's field-guessing, without being able to touch your notes directly.
+
+Inside the editor, the same Growth/Stale/Structure forecasting Vault Health already showed is now available everywhere — CLI, API, and a new Conduit screen — instead of being stuck in one panel. Two new graph-derived numbers (`_inbound_count`, `_outbound_count`) and a prominence score (`_hub_score`) can be used directly in queries without declaring anything. And a round of polish: Query Builder explains its own queries in plain language, Task Center's backlog view stops dominating the screen, and Yamlink's link suggestions show you *why* it's suggesting something instead of a cramped, cut-off line of text.
+
+Three more capabilities round out the release. `yamlink snapshot` and `yamlink restore` give the vault a real backup / point-in-time-recovery pair — take a checkpoint on demand, or preview (and optionally export) what the vault looked like at any past moment, without ever touching the live files. Turning any filled-in note into a reusable blank template for its type is now one CLI command, one Command Palette entry, or one right-click away. And Smart Paste notices when what you're pasting into a note is actually structured — a spreadsheet range, a Markdown table, a JSON object, a task list — and offers to convert it instead of dumping raw text into the note.
+
+### CLI
+
+- **`yamlink snapshot [--reason <text>]`** — takes an on-demand snapshot of the vault's current state, the same underlying mechanism the Time Engine already uses internally whenever the mutation log fills up. Useful as a manual checkpoint before a risky bulk edit.
+- **`yamlink restore <timestamp> [--output <path>]`** — reconstructs the vault as it looked at a past point in time. Preview-only by default (reports what would come back, writes nothing); `--output <path>` writes the reconstructed notes to a separate directory — it will never write into your live vault.
+- **`yamlink trends`** — the same Growth/Stale/Structure forecasting Vault Health already shows, now readable from the terminal: current trend, retrospective accuracy (did last quarter's projection actually hold up), and which notes are closest to going stale.
+- **`yamlink template save <id>`** — turns any existing, filled-in note into a reusable blank template for its type. Refuses to overwrite an existing template for that type unless you pass `--force`.
+- **`yamlink glossary --type <a,b>`** — an always-current, alphabetized glossary of your vault's own concept/term notes: each entry's real definition (from a `definition:`/`summary:` field, or its own first paragraph if neither exists) plus every note that links to it. Nothing is ever written to disk — it's computed fresh from the vault every time you run it.
+
+### API
+
+- **`GET /api/intelligence/trends`** — the same forecasting data as `yamlink trends`, for scripting or a custom dashboard.
+- **`GET /api/glossary?types=<a,b>`** — the same glossary data as the CLI command above, over HTTP. `types` is required (Yamlink won't guess which note types count as terms); optional `groupByType`, `sortBy`, `hideUnreferenced`, and `extraFields` params match the CLI's own flags.
+- **`PATCH /api/tasks`** — toggles one task's checkbox from outside the editor: `{ noteId, line, done }`. Uses the exact same write path as VS Code's own live tables, so a task flipped through the API shows up identically in the vault's history.
+- **`GET /api/nodes/:id?include=body`** — returns a note's raw, verbatim body text alongside its frontmatter fields, opt-in so it doesn't bloat every response by default.
+- **`GET /api/nodes/:id?include=timestamps`** — returns a note's real filesystem creation and modified dates, not just what's written in its frontmatter.
+- **`POST /api/query`** — run a `!view` query whose text is too long or awkward to put in a URL. Failed queries also now explain *why* they failed instead of a generic error.
+- **Optional authentication** — the API has always accepted any request with no login of any kind, which is fine for a purely local tool but means any other program on your machine (including a browser tab) could reach it. Set `YAMLINK_API_TOKEN` before running `yamlink serve` to require a matching `X-Yamlink-Token` header on every request going forward. This is entirely optional — leave it unset and nothing changes from before. When it's left unset, `yamlink serve` now prints a visible reminder on startup so the choice is a conscious one, not an accident.
+
+### Plugin API (new)
+
+A VS Code extension can now register its own function to contribute a small extra opinion to Yamlink's own guesswork about a frontmatter field — for example, "I think this field is a relation, here's why." This is intentionally narrow: a registered function can only read, never write to your vault; it can't see what any other registered plugin is doing; and every opinion it gives must come with a stated reason, or Yamlink discards it — the same "always explain yourself" rule every one of Yamlink's own built-in signals already follows. Its effect on any single decision is also capped, so no one plugin can override what Yamlink's own evidence already concluded. This is a first version aimed at VS Code specifically; the LSP server (used by other editors) has no equivalent third-party extension mechanism to hang this on.
+
+### VS Code
+
+- **Query Builder polish & QOL** — the builder now explains the query it's building in a plain sentence ("This will show 9 character notes, sorted by hub score, with name/status/unit columns"), offers one-click "Fast Starts" for common queries (Most connected, No incoming links, Recently modified, Recently created), and includes the new computed fields (`_inbound_count`, `_outbound_count`, `_hub_score` — see "Query engine" below) in its field picker.
+- **Task Center polish & QOL** — shorter bucket labels, and the Undated bucket (often the largest and least useful to see in full) is now collapsed by default with a "Show more" option, so a big untriaged backlog doesn't push everything else off-screen.
+- **Save a note as a template** — via the Command Palette or right-click on an open note, in addition to the CLI command above.
+- **Vault Glossary panel** — Create a glossary for your most frequented vault terms, concepts, etc. The same glossary as the CLI command above, as a dedicated VS Code panel with live search, sorting, collapsible sections, and a copy-as-Markdown button.
+- **Richer completion suggestions** — when Yamlink suggests a note to link, the suggestion now shows that note's type and status as small colored badges, plus how many other notes already link to it — replacing what used to be a single line of grey text that could get cut off entirely once there was enough to say.
+
+### Query engine
+
+- **Computed fields** — `_inbound_count`, `_outbound_count`, and `_hub_score` (the same graph-prominence score that already sizes nodes in the graph view) can now be used directly in any `!view` query's `where`, `select`, or `sort` clause, with no frontmatter declaration required — the same way `file.created`/`file.modified` already work.
+
+### Editing
+
+- **Smart paste** — pasting a spreadsheet-style table, a Markdown table, a JSON object, or a bulleted/numbered list into a note now offers to convert it instead of pasting raw text: a `!view` query, a batch of new notes (with an ID preview before anything is created), a frontmatter block, or real task lines.
+
+### Fixed
+
+- The empty-field quick-fix (lightbulb) never appeared for a relation field on a vault with no schema notes — and when it did appear, it could suggest a value that isn't a real note at all. Both fixed on VS Code and the LSP server; suggestions now always resolve to a real note.
+- Creating a note from a broken link could silently fill in a guessed link back to where it came from, even with no real evidence for which field was right. Now only filled in automatically when the vault has real evidence for it; a weaker guess is offered as a one-click confirmation on VS Code instead of being applied silently, and the LSP server (which never had this at all) now has the evidence-backed version.
+- On a small vault where several fields are used equally often, some could be silently left out of "expected fields" suggestions (including the empty-field lightbulb) purely because of alphabetical order.
+- Emptying a relation field could show every suggestion twice in the completion list.
+- `.yamlinkignore` had no wildcard support at all — `*`, `**`, and `?` were matched as literal characters, not patterns. Reported from a multi-root workspace where a folder couldn't be excluded without listing every path exactly; fixed for single-root vaults too. Note that `.yamlinkignore` still only governs the folder it's placed in — a multi-root workspace needs one per folder you want covered.
+- "Ignore this suggestion here" never appeared for a broken-link diagnostic on body text (only inside frontmatter) — so a false positive in ordinary prose (documentation explaining `[[wikilink]]` syntax, for example) had no way to be dismissed. Worse, even where the ignore quick fix did exist, dismissing it never actually changed how the text looked: the faded/muted styling was computed entirely separately from the diagnostic it was based on, with no awareness of what had been dismissed. Both fixed — the quick fix now appears for body-text broken links too, and ignoring one now un-mutes the text immediately, not just the diagnostic.
+
 
 ## [0.7.4] — Platform Depth
 
@@ -68,6 +122,7 @@ The Time Engine reaches every surface, Vault Projections rebuilt on real histori
 - PDF export had no image support at all since the command was first built. Both `![alt](path)` and `![[embed.png]]` now resolve and embed via pdfkit, falling back to a placeholder line for unsupported formats.
 - Two Stats-tab charts (Link Density, Note Growth) had no hover tooltips, unlike the rest of the tab.
 - Two Home-panel tests were silently failing, undetected because the test file was never wired into `package.json`'s test scripts.
+- A new, unresolved entry typed into an existing YAML list-shaped relation field (e.g. adding a fourth `[[...]]` under a `contacts:` block list that already has several) only ever offered the generic "Create note" quick-fix and completion suggestion, never a type-aware one like "Create contact note" — even when the vault had abundant same-field evidence. Two causes, both fixed: field-name resolution in the quick-fix (VS Code and LSP) and the live `[[` completion dropdown was single-line-only and never recognized that a bare list-item line belongs to the `key:` field declared above it; and relation-type confidence scoring undercounted every list-shaped field to a single occurrence regardless of real list length, since such lists are cached internally as one joined string rather than a real array.
 
 ### Changed (structural only — no behavior changes)
 

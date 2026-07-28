@@ -250,8 +250,45 @@ function writeFrontmatterFieldSurgically(content, key, value) {
     return `---\n${newLines.join('\n')}\n---${after}`;
 }
 
+/**
+ * Resolves which frontmatter key a given line belongs to, including YAML
+ * block-list entries whose key lives on a previous line, e.g.:
+ *
+ *   contacts:
+ *     - [[theo-theodorou]]
+ *     - [[cesar-gutierrez]]     ← lineIndex here resolves to "contacts"
+ *
+ * A single-line field (`owner: [[x]]`) resolves directly from its own line,
+ * same as before. For a bare list-item line (`  - [[x]]`, no colon on that
+ * line at all), walks upward past other list items and blank lines until it
+ * finds the nearest bare `key:` line — the parent this list hangs off of.
+ * Stops at the frontmatter boundary (`---`) or at any line that isn't part
+ * of the list, so it never misattributes to an unrelated field above it.
+ *
+ * @param {string[]} lines
+ * @param {number} lineIndex
+ * @returns {string|null}
+ */
+function resolveYamlFieldNameForLine(lines, lineIndex) {
+    if (!Array.isArray(lines) || lineIndex < 0 || lineIndex >= lines.length) return null;
+
+    const currentMatch = /^\s*([\w-]+)\s*:/.exec(lines[lineIndex] || '');
+    if (currentMatch) return currentMatch[1].toLowerCase();
+
+    for (let i = lineIndex - 1; i >= 0; i--) {
+        const line = lines[i];
+        if (line == null || /^\s*---\s*$/.test(line)) break;
+        if (/^\s*-\s/.test(line) || line.trim() === '') continue;
+        const bareKeyMatch = /^([\w-]+):\s*$/.exec(line);
+        if (bareKeyMatch) return bareKeyMatch[1].toLowerCase();
+        break;
+    }
+    return null;
+}
+
 module.exports = {
     normalizeText,
+    resolveYamlFieldNameForLine,
     parseFrontmatterDocument,
     setField,
     deleteField,

@@ -13,6 +13,7 @@ const SCREEN_LABEL = {
     graph:     '[7] Graph',
     diff:      '[8] Diff',
     radar:     '[9] Radar',
+    trends:    '[0] Trends',
 };
 
 function StatusBar({ ink, noteCount, connState, host, port, screen, splitMode, paneStatus }) {
@@ -42,7 +43,7 @@ function StatusBar({ ink, noteCount, connState, host, port, screen, splitMode, p
     const right = [
         p.faint('[?] help'),
         p.faint(` ${SYM.pipe} `),
-        p.faint('[1-9] screens'),
+        p.faint('[1-9/0] screens'),
         splitMode ? p.faint(` ${SYM.pipe} [Tab] pane`) : '',
         p.faint(` ${SYM.pipe} `),
         p.faint('[Ctrl+C] quit'),

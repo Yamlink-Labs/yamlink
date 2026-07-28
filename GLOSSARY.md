@@ -238,13 +238,13 @@ Definitions for every term used across Yamlink's surfaces, commands, and documen
 
 **Generation** — an integer that increments on every completed vault rebuild. Exposed on every API response as `X-Yamlink-Generation`. All intelligence caches are keyed by generation so stale data is structurally impossible — a cache miss is a generation mismatch, not a timeout. The generation counter is also the invalidation signal for Conduit and SSE clients.
 
-**SSE (Server-Sent Events)** — the live-update transport. `GET /api/events` opens a persistent connection; Yamlink pushes fine-grained mutation events (`note_created`, `field_changed`, `relation_added`, etc.) and a final `{ type: "rebuild", generation }` event after each index rebuild. Conduit subscribes to this stream so all nine screens update live without polling.
+**SSE (Server-Sent Events)** — the live-update transport. `GET /api/events` opens a persistent connection; Yamlink pushes fine-grained mutation events (`note_created`, `field_changed`, `relation_added`, etc.) and a final `{ type: "rebuild", generation }` event after each index rebuild. Conduit subscribes to this stream so all ten screens update live without polling.
 
 ---
 
 ## CLI
 
-**`yamlink` CLI** — a standalone terminal tool (`npm link` from the project folder) for querying, inspecting, and mutating a vault without VS Code. 37 commands. Every command supports `--vault <path>` (default: current directory) and `--json` for machine-readable output.
+**`yamlink` CLI** — a standalone terminal tool (`npm link` from the project folder) for querying, inspecting, and mutating a vault without VS Code. 41 commands. Every command supports `--vault <path>` (default: current directory) and `--json` for machine-readable output.
 
 | Command | Description |
 |---|---|
@@ -285,7 +285,7 @@ Definitions for every term used across Yamlink's surfaces, commands, and documen
 | `yamlink watch` | Persistent watcher — rebuilds on `.md` saves, prints timestamped one-liners |
 | `yamlink on <event> -- <script>` | Automation hooks: execute a script on matching mutation events. `--type` to filter |
 | `yamlink completions bash\|zsh` | Print shell completion script for tab-completion |
-| `yamlink serve` | Local HTTP API server (default port 3000). Full reference: `docs/api/README-API.md`, `CONTRACT.md` |
+| `yamlink serve` | Local HTTP API server (default port 3000). Full reference: `CONTRACT.md` |
 | `yamlink conduit` | Open the Conduit terminal UI. Requires `yamlink serve` running on the same port |
 
 ---

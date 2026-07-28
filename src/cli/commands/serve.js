@@ -102,6 +102,12 @@ async function run({ port, vaultPath, workspaceFolders, vaultService: existingVa
         fmt.row('Vault', vaultPath);
         fmt.row('Address', `http://${host}:${actualPort}`);
         fmt.blank();
+        if (!process.env.YAMLINK_API_TOKEN) {
+            console.log(fmt.warn('No YAMLINK_API_TOKEN set — this server accepts any request with no authentication.'));
+            console.log(fmt.warn('Any webpage open in a browser on this machine could read or write your vault through it.'));
+            console.log(fmt.warn('Set YAMLINK_API_TOKEN before starting the server to require it (send it back as X-Yamlink-Token).'));
+            fmt.blank();
+        }
         console.log('Read endpoints:');
         console.log('  GET    /api/nodes            ?type=&page=&limit=');
         console.log('  GET    /api/nodes/:id');

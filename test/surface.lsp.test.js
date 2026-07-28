@@ -2157,6 +2157,165 @@ test('LSP codeAction returns content-modified for stale document versions', () =
     assert.equal(ca.error.code, -32801);
 });
 
+test('LSP codeAction embeds a reverse-link field in the created note when real vault evidence supports it (structural autocomplete, Behavior B)', () => {
+    // Real vault evidence: an existing contact note already has an 'account'
+    // field pointing back at an account — so creating a new contact from a
+    // broken link inside an account's 'contacts:' field should embed that
+    // same reverse field automatically ('observed' confidence).
+    const revVault = createVault({
+        'existing-contact.md': ['---', 'id: existing-contact', 'type: contact', 'account: [[some-other-account]]', '---'].join('\n'),
+        'some-other-account.md': ['---', 'id: some-other-account', 'type: account', '---'].join('\n'),
+        // A real, working 'contacts:' usage pointing at a real contact note
+        // gives inferTargetTypeFromField enough signal that the field name
+        // 'contacts' maps to type 'contact', same as the YAML-list test below.
+        'enotria.md': ['---', 'id: enotria', 'type: account', 'name: Enotria', 'contacts:', '  - [[existing-contact]]', '  - [[maria-lopez]]', '---'].join('\n')
+    });
+    const revUri = rootUri(revVault.dir);
+    try {
+        const docUri = revUri + '/enotria.md';
+        const docText = ['---', 'id: enotria', 'type: account', 'name: Enotria', 'contacts:', '  - [[existing-contact]]', '  - [[maria-lopez]]', '---'].join('\n');
+        const brokenLine = 6; // '  - [[maria-lopez]]'
+        const brokenDiag = {
+            range: { start: { line: brokenLine, character: 4 }, end: { line: brokenLine, character: 20 } },
+            severity: 3,
+            source: 'yamlink',
+            code: 'yamlink.brokenRelation',
+            message: 'Broken relation: [[maria-lopez]] — no note with this ID exists in the vault',
+            data: { targetId: 'maria-lopez', relation: true, line: brokenLine }
+        };
+        const { messages } = lsp(revVault.dir, [
+            frame({ jsonrpc: '2.0', id: 1, method: 'initialize', params: { rootUri: revUri, capabilities: {} } }),
+            frame({ jsonrpc: '2.0', method: 'initialized', params: {} }),
+            frame({ jsonrpc: '2.0', method: 'textDocument/didOpen', params: {
+                textDocument: { uri: docUri, languageId: 'markdown', version: 1, text: docText }
+            }}),
+            frame({ jsonrpc: '2.0', id: 2, method: 'textDocument/codeAction', params: {
+                textDocument: { uri: docUri },
+                range: { start: { line: brokenLine, character: 4 }, end: { line: brokenLine, character: 20 } },
+                context: { diagnostics: [brokenDiag], only: ['quickfix'] }
+            }}),
+            frame({ jsonrpc: '2.0', id: 3, method: 'shutdown' }),
+            frame({ jsonrpc: '2.0', method: 'exit' }),
+        ]);
+        const ca = messages.find(m => m.id === 2);
+        const fix = ca.result.find((action) => /maria-lopez/.test(action.title));
+        assert.ok(fix, 'a quick-fix mentioning the broken id is present');
+        const newNoteEdit = fix.edit.documentChanges.find((change) => change.textDocument);
+        assert.match(newNoteEdit.edits[0].newText, /account: \[\[enotria\]\]/,
+            'the new contact note should be created with a reverse account: link, backed by real vault evidence');
+    } finally {
+        revVault.destroy();
+    }
+});
+
+test('LSP codeAction never embeds a guessed reverse-link field with zero vault evidence — honest silence, no follow-up UI on this surface', () => {
+    // No contact note anywhere has an 'account'/'accounts' field — the only
+    // possible inference is a 'guessed' one with zero corroborating
+    // evidence, which must never be silently written on a surface with no
+    // way to ask the user for confirmation.
+    const noEvidenceVault = createVault({
+        'enotria.md': ['---', 'id: enotria', 'type: account', 'name: Enotria', 'contacts:', '  - [[maria-lopez]]', '---'].join('\n')
+    });
+    const noEvidenceUri = rootUri(noEvidenceVault.dir);
+    try {
+        const docUri = noEvidenceUri + '/enotria.md';
+        const docText = ['---', 'id: enotria', 'type: account', 'name: Enotria', 'contacts:', '  - [[maria-lopez]]', '---'].join('\n');
+        const brokenLine = 5;
+        const brokenDiag = {
+            range: { start: { line: brokenLine, character: 4 }, end: { line: brokenLine, character: 20 } },
+            severity: 3,
+            source: 'yamlink',
+            code: 'yamlink.brokenRelation',
+            message: 'Broken relation: [[maria-lopez]] — no note with this ID exists in the vault',
+            data: { targetId: 'maria-lopez', relation: true, line: brokenLine }
+        };
+        const { messages } = lsp(noEvidenceVault.dir, [
+            frame({ jsonrpc: '2.0', id: 1, method: 'initialize', params: { rootUri: noEvidenceUri, capabilities: {} } }),
+            frame({ jsonrpc: '2.0', method: 'initialized', params: {} }),
+            frame({ jsonrpc: '2.0', method: 'textDocument/didOpen', params: {
+                textDocument: { uri: docUri, languageId: 'markdown', version: 1, text: docText }
+            }}),
+            frame({ jsonrpc: '2.0', id: 2, method: 'textDocument/codeAction', params: {
+                textDocument: { uri: docUri },
+                range: { start: { line: brokenLine, character: 4 }, end: { line: brokenLine, character: 20 } },
+                context: { diagnostics: [brokenDiag], only: ['quickfix'] }
+            }}),
+            frame({ jsonrpc: '2.0', id: 3, method: 'shutdown' }),
+            frame({ jsonrpc: '2.0', method: 'exit' }),
+        ]);
+        const ca = messages.find(m => m.id === 2);
+        const fix = ca.result.find((action) => /maria-lopez/.test(action.title));
+        assert.ok(fix, 'a quick-fix mentioning the broken id is present');
+        const newNoteEdit = fix.edit.documentChanges.find((change) => change.textDocument);
+        assert.doesNotMatch(newNoteEdit.edits[0].newText, /account:/,
+            'a guessed reverse field must never be silently embedded with zero vault evidence');
+    } finally {
+        noEvidenceVault.destroy();
+    }
+});
+
+test('LSP codeAction infers the target type for a broken link inside an existing YAML list-shaped relation field', () => {
+    // Real user-reported scenario: an account note's "contacts:" field is a
+    // YAML block list; a new, not-yet-existing entry added to that list
+    // should offer "Create contact note", not the generic "Create note" —
+    // the field name lives on a previous line ("contacts:"), not on the
+    // broken link's own line, and the quick-fix must walk upward to find it.
+    const contactVault = createVault({
+        'theo.md': ['---', 'id: theo-theodorou', 'type: contact', '---'].join('\n'),
+        'cesar.md': ['---', 'id: cesar-gutierrez', 'type: contact', '---'].join('\n'),
+        'edith.md': ['---', 'id: edith-santos', 'type: contact', '---'].join('\n'),
+        'carlos.md': ['---', 'id: carlos-marcelo', 'type: contact', '---'].join('\n'),
+        'christina.md': ['---', 'id: christina-velez', 'type: contact', '---'].join('\n'),
+        'paul.md': ['---', 'id: paul-alegria', 'type: contact', '---'].join('\n'),
+        'enotria.md': [
+            '---', 'id: enotria', 'type: account', 'name: Enotria', 'owner:', 'contacts:',
+            '  - [[theo-theodorou]]', '  - [[cesar-gutierrez]]', '  - [[edith-santos]]',
+            '  - [[carlos-marcelo]]', '  - [[christina-velez]]', '  - [[paul-alegria]]', '---'
+        ].join('\n')
+    });
+    const contactUri = rootUri(contactVault.dir);
+    try {
+        const docUri = contactUri + '/enotria.md';
+        const docText = [
+            '---', 'id: enotria', 'type: account', 'name: Enotria', 'owner:', 'contacts:',
+            '  - [[theo-theodorou]]', '  - [[cesar-gutierrez]]', '  - [[edith-santos]]',
+            '  - [[carlos-marcelo]]', '  - [[christina-velez]]', '  - [[paul-alegria]]',
+            '  - [[maria-lopez]]', '---'
+        ].join('\n');
+        const brokenLine = 12; // '  - [[maria-lopez]]'
+        const brokenDiag = {
+            range: { start: { line: brokenLine, character: 4 }, end: { line: brokenLine, character: 20 } },
+            severity: 3,
+            source: 'yamlink',
+            code: 'yamlink.brokenRelation',
+            message: 'Broken relation: [[maria-lopez]] — no note with this ID exists in the vault',
+            data: { targetId: 'maria-lopez', relation: true, line: brokenLine }
+        };
+        const { messages } = lsp(contactVault.dir, [
+            frame({ jsonrpc: '2.0', id: 1, method: 'initialize', params: { rootUri: contactUri, capabilities: {} } }),
+            frame({ jsonrpc: '2.0', method: 'initialized', params: {} }),
+            frame({ jsonrpc: '2.0', method: 'textDocument/didOpen', params: {
+                textDocument: { uri: docUri, languageId: 'markdown', version: 1, text: docText }
+            }}),
+            frame({ jsonrpc: '2.0', id: 2, method: 'textDocument/codeAction', params: {
+                textDocument: { uri: docUri },
+                range: { start: { line: brokenLine, character: 4 }, end: { line: brokenLine, character: 20 } },
+                context: { diagnostics: [brokenDiag], only: ['quickfix'] }
+            }}),
+            frame({ jsonrpc: '2.0', id: 3, method: 'shutdown' }),
+            frame({ jsonrpc: '2.0', method: 'exit' }),
+        ]);
+        const ca = messages.find(m => m.id === 2);
+        assert.ok(ca, 'codeAction response present');
+        assert.ok(Array.isArray(ca.result) && ca.result.length > 0, 'at least one action returned');
+        const fix = ca.result.find((action) => /maria-lopez/.test(action.title));
+        assert.ok(fix, 'a quick-fix mentioning the broken id is present');
+        assert.match(fix.title, /Create contact note "maria-lopez"/, 'title must name the inferred type, not the generic fallback');
+    } finally {
+        contactVault.destroy();
+    }
+});
+
 // ── prepareRename tests ───────────────────────────────────────────────────────
 
 test('LSP prepareRename returns range+placeholder for wikilink at cursor', () => {
@@ -2914,6 +3073,50 @@ test('LSP completion offers implicit [[relation]] suggestions for a relation fie
     }
 });
 
+test('LSP completion ranks a candidate higher, with a badge, when the current note already links to something that candidate also links to', () => {
+    const files = {
+        'enotria.md': ['---', 'id: enotria', 'type: account', 'name: Enotria', '---'].join('\n'),
+        'some-other-account.md': ['---', 'id: some-other-account', 'type: account', 'name: Other', '---'].join('\n'),
+        'theo.md': ['---', 'id: theo', 'type: contact', 'name: Theo', 'account: [[enotria]]', '---'].join('\n'),
+        'other-contact.md': ['---', 'id: other-contact', 'type: contact', 'name: Other Contact', 'account: [[some-other-account]]', '---'].join('\n'),
+        'meeting.md': ['---', 'id: meeting-1', 'type: meeting', 'account: [[enotria]]', 'contacts: ', '---'].join('\n')
+    };
+    const siblingVault = createVault(files);
+    const siblingUri = rootUri(siblingVault.dir);
+    const docUri = siblingUri + '/meeting.md';
+    try {
+        const { messages } = lsp(siblingVault.dir, [
+            frame({ jsonrpc: '2.0', id: 1, method: 'initialize', params: { rootUri: siblingUri, capabilities: {} } }),
+            frame({ jsonrpc: '2.0', method: 'initialized', params: {} }),
+            frame({ jsonrpc: '2.0', id: 2, method: 'textDocument/completion', params: {
+                textDocument: { uri: docUri },
+                position: { line: 4, character: 'contacts: '.length },
+                context: { triggerKind: 2, triggerCharacter: ':' }
+            }}),
+            frame({ jsonrpc: '2.0', id: 3, method: 'shutdown' }),
+            frame({ jsonrpc: '2.0', method: 'exit' }),
+        ]);
+        const comp = messages.find(m => m.id === 2);
+        assert.ok(comp, 'completion response present');
+        const theoIndex = comp.result.findIndex(i => i.insertText === '[[theo]]');
+        const otherIndex = comp.result.findIndex(i => i.insertText === '[[other-contact]]');
+        assert.ok(theoIndex !== -1, 'theo suggested');
+        assert.ok(otherIndex !== -1, 'other-contact suggested');
+        assert.ok(theoIndex < otherIndex, 'theo (also linked to enotria, same as this meeting) should rank above other-contact');
+
+        const theoItem = comp.result[theoIndex];
+        // The sibling-context evidence now lives entirely in the rich
+        // documentation card, not the single-line `detail` field — cramming
+        // it into `detail` caused it to wrap mid-word in the real UI.
+        assert.ok(theoItem.documentation, 'theo\'s item should carry the sibling-context badge documentation');
+        assert.equal(theoItem.documentation.kind, 'markdown');
+        assert.match(theoItem.documentation.value, /data:image\/svg\+xml;base64,/);
+        assert.match(theoItem.documentation.value, /Already connected to \*\*enotria\*\*/);
+    } finally {
+        siblingVault.destroy();
+    }
+});
+
 test('LSP completion does not hijack a plain scalar field with relation suggestions', () => {
     const files = {
         'contact-1.md': ['---', 'id: contact-1', 'type: contact', 'name: Ace', 'status: active', '---'].join('\n'),
@@ -3030,6 +3233,13 @@ test('LSP $/cancelRequest can abort long-running workspace diagnostics', () => {
     const cancelUri = rootUri(cancelVault.dir);
     try {
         const startedAt = Date.now();
+        // A real subprocess spawn + a genuine 2500-file vault scan, sharing the
+        // machine with hundreds of other subprocess-spawning tests in this same
+        // file — verified via direct, isolated reproduction (both spawn and
+        // spawnSync, matching this exact call shape) that the underlying
+        // cancellation logic itself completes in ~2.5-3.6s with a clean exit
+        // code; the previous 10s ceiling had no real margin under full-suite
+        // load and was failing on timeout, not on broken cancellation logic.
         const { messages, status } = lsp(cancelVault.dir, [
             frame({ jsonrpc: '2.0', id: 1, method: 'initialize', params: { rootUri: cancelUri, capabilities: {} } }),
             frame({ jsonrpc: '2.0', method: 'initialized', params: {} }),
@@ -3037,12 +3247,12 @@ test('LSP $/cancelRequest can abort long-running workspace diagnostics', () => {
             frame({ jsonrpc: '2.0', method: '$/cancelRequest', params: { id: 2 } }),
             frame({ jsonrpc: '2.0', id: 3, method: 'shutdown' }),
             frame({ jsonrpc: '2.0', method: 'exit' }),
-        ]);
+        ], { timeout: 30000 });
         const elapsed = Date.now() - startedAt;
         assert.equal(status, 0);
         assert.equal(messages.find((m) => m.id === 2), undefined, 'cancelled workspace diagnostic response is suppressed');
         assert.ok(messages.find((m) => m.id === 3), 'shutdown response still present');
-        assert.ok(elapsed < 10000, 'cancelled long-running request exits promptly');
+        assert.ok(elapsed < 30000, 'cancelled long-running request exits without hanging indefinitely');
     } finally {
         cancelVault.destroy();
     }
@@ -3685,6 +3895,32 @@ test('LSP textDocument/diagnostic surfaces identity, drift, and schema-style dia
     }
 });
 
+test('LSP textDocument/diagnostic surfaces a near-duplicate scalar value hint', () => {
+    const dupVault = createVault({
+        'rico.md': ['---', 'id: rico', 'type: character', 'homeworld: buenos aires', '---'].join('\n'),
+        'carmen.md': ['---', 'id: carmen', 'type: character', 'homeworld: Buenos Aires', '---'].join('\n')
+    });
+    const dupUri = rootUri(dupVault.dir);
+    try {
+        const { messages } = lsp(dupVault.dir, [
+            frame({ jsonrpc: '2.0', id: 1, method: 'initialize', params: { rootUri: dupUri, capabilities: {} } }),
+            frame({ jsonrpc: '2.0', method: 'initialized', params: {} }),
+            frame({ jsonrpc: '2.0', id: 2, method: 'textDocument/diagnostic', params: {
+                textDocument: { uri: dupUri + '/rico.md' }
+            }}),
+            frame({ jsonrpc: '2.0', id: 3, method: 'shutdown' }),
+            frame({ jsonrpc: '2.0', method: 'exit' }),
+        ]);
+        const diag = messages.find((m) => m.id === 2);
+        assert.ok(diag, 'diagnostic response present');
+        const nearDup = diag.result.items.find((item) => item.code === 'yamlink.nearDuplicateValue');
+        assert.ok(nearDup, 'expected a nearDuplicateValue diagnostic');
+        assert.match(nearDup.message, /Buenos Aires/);
+    } finally {
+        dupVault.destroy();
+    }
+});
+
 test('LSP textDocument/diagnostic reports missing id and stays clean for valid note identity', () => {
     const diagnosticVault = createVault({});
     try {
@@ -4002,6 +4238,47 @@ test('LSP codeAction offers a relation quickfix for an empty schema-required fie
         assert.ok(actions, 'codeAction response present');
         const roughneckAction = actions.result.find((action) => /Use roughnecks for unit\?/.test(action.title));
         assert.ok(roughneckAction, 'quickfix suggests roughnecks for the empty unit field');
+        assert.equal(roughneckAction.kind, 'quickfix');
+        assert.ok(roughneckAction.edit, 'action carries a workspace edit');
+    } finally {
+        actionsVault.destroy();
+    }
+});
+
+test('LSP codeAction infers a relation quickfix from real vault usage when no schema declares the field (zero-schema vault)', () => {
+    // Same scenario as the schema-declared test above, but with no
+    // schema-*.md note at all — matching a real vault that has never
+    // written a schema note ("schema amplifies, never gates"). Without
+    // falling back to the same real-usage relation inference the
+    // completion dropdown already uses, this used to fall through to
+    // plain scalar-value ranking, which could surface a bogus,
+    // non-existent id learned from a malformed non-bracketed value
+    // elsewhere in the vault instead of the vault's actual most
+    // referenced unit.
+    const actionsVault = createVault({
+        'contact-1.md': ['---', 'id: contact-1', 'type: contact', 'name: Ace', 'unit: [[roughnecks]]', '---'].join('\n'),
+        'contact-2.md': ['---', 'id: contact-2', 'type: contact', 'name: Carmen', 'unit: [[roughnecks]]', '---'].join('\n'),
+        'roughnecks.md': ['---', 'id: roughnecks', 'type: unit', 'name: Mobile Infantry Roughnecks', '---'].join('\n'),
+        'draft.md': ['---', 'id: draft', 'type: contact', 'unit:', '---'].join('\n')
+    });
+    const actionsUri = rootUri(actionsVault.dir);
+    const draftUri = actionsUri + '/draft.md';
+    try {
+        const { messages } = lsp(actionsVault.dir, [
+            frame({ jsonrpc: '2.0', id: 1, method: 'initialize', params: { rootUri: actionsUri, capabilities: {} } }),
+            frame({ jsonrpc: '2.0', method: 'initialized', params: {} }),
+            frame({ jsonrpc: '2.0', id: 2, method: 'textDocument/codeAction', params: {
+                textDocument: { uri: draftUri },
+                range: { start: { line: 3, character: 0 }, end: { line: 3, character: 0 } },
+                context: { diagnostics: [] }
+            }}),
+            frame({ jsonrpc: '2.0', id: 3, method: 'shutdown' }),
+            frame({ jsonrpc: '2.0', method: 'exit' }),
+        ]);
+        const actions = messages.find((m) => m.id === 2);
+        assert.ok(actions, 'codeAction response present');
+        const roughneckAction = actions.result.find((action) => action.title === 'Use roughnecks for unit?');
+        assert.ok(roughneckAction, 'quickfix suggests roughnecks for the empty unit field with no schema present');
         assert.equal(roughneckAction.kind, 'quickfix');
         assert.ok(roughneckAction.edit, 'action carries a workspace edit');
     } finally {

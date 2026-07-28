@@ -10,8 +10,9 @@ const { extractCanonicalIdFromFrontmatter, resolveLinkedTarget } = require('../c
 const { resolveImageEmbed } = require('../core/imageEmbed');
 const { getTemplateForType, extractTemplateFields, extractTemplateType, TEMPLATES_DIR } = require('../core/templateRegistry');
 const { getPrimaryWorkspaceRoot } = require('../core/workspace');
-const { initializeIgnoredDiagnostics, isDiagnosticIgnored } = require('./ignoredDiagnostics');
+const { initializeIgnoredDiagnostics, isDiagnosticIgnored, describeBrokenLink } = require('./ignoredDiagnostics');
 const { isSuppressed } = require('../core/suppressions');
+const { findNearDuplicateScalarValue } = require('../intelligence/valueNormalization');
 
 
 const MIN_VAULT_SIZE_FOR_TYPE_ADVISORY = 10;
@@ -244,6 +245,43 @@ function validateDocument(document, getIndex) {
         if (closing !== -1) frontmatterEnd = closing + 3;
     }
 
+    // ─────────────────────────────────────────────
+    // Diagnostic 1c: Near-duplicate scalar frontmatter value
+    // ─────────────────────────────────────────────
+    if (hasFrontmatter && frontmatterEnd > 0) {
+        const docType = String(getFieldsCache().get(extractCanonicalIdFromFrontmatter(text) || '')?.type || '').trim().toLowerCase() || null;
+        const fmLines = text.slice(0, frontmatterEnd).split('\n');
+        const scalarFieldPattern = /^([a-zA-Z0-9_-]+):\s*(.+)$/;
+        for (let i = 0; i < fmLines.length; i++) {
+            const lineMatch = scalarFieldPattern.exec(fmLines[i]);
+            if (!lineMatch) continue;
+            const fieldName = lineMatch[1].trim().toLowerCase();
+            const rawValue = lineMatch[2].trim().replace(/^["']|["']$/g, '');
+            if (fieldName === 'id' || fieldName === 'type' || !rawValue) continue;
+            if (/^\[\[[^\]]+\]\]$/.test(rawValue)) continue; // relation value, not a scalar
+            // The very next line being indented means this is a multi-line/array
+            // value, not a plain scalar — same guard `writeFrontmatterFieldSurgically`
+            // uses in frontmatter.js to avoid misreading structured YAML as scalar text.
+            if (i + 1 < fmLines.length && /^[ \t]/.test(fmLines[i + 1])) continue;
+
+            const nearDuplicate = findNearDuplicateScalarValue(fieldName, rawValue, docType);
+            if (!nearDuplicate || nearDuplicate.value === rawValue) continue;
+
+            const range = document.lineAt(i).range;
+            const confidenceNote = nearDuplicate.matchType === 'normalized'
+                ? 'differs only in case/spacing'
+                : 'is a close match';
+            const diagnostic = new vscode.Diagnostic(
+                range,
+                `Yamlink: "${rawValue}" ${confidenceNote} to the existing value "${nearDuplicate.value}" already used on ${fieldName} elsewhere in this vault (${nearDuplicate.count} note${nearDuplicate.count === 1 ? '' : 's'}). Consider reusing the existing value for consistency.`,
+                vscode.DiagnosticSeverity.Hint
+            );
+            diagnostic.source = "yamlink";
+            diagnostic.code   = "yamlink.nearDuplicateValue";
+            diagnostics.push(diagnostic);
+        }
+    }
+
     const linkRegex = /\[\[([^\]]+)\]\]/g;
     const aliasIndex = getAliasIndex();
     let match;
@@ -267,17 +305,10 @@ function validateDocument(document, getIndex) {
                 document.positionAt(match.index),
                 document.positionAt(match.index + match[0].length)
             );
-            const diagnostic = new vscode.Diagnostic(
-                range,
-                isInFrontmatter
-                    ? `Yamlink: Relation "${id}" does not exist.`
-                    : `Yamlink: ID "${id}" does not exist.`,
-                vscode.DiagnosticSeverity.Hint
-            );
+            const { code, message } = describeBrokenLink(id, isInFrontmatter);
+            const diagnostic = new vscode.Diagnostic(range, message, vscode.DiagnosticSeverity.Hint);
             diagnostic.source = "yamlink";
-            diagnostic.code   = isInFrontmatter
-                ? "yamlink.brokenRelation"
-                : "yamlink.brokenLink";
+            diagnostic.code   = code;
             diagnostics.push(diagnostic);
         }
     }

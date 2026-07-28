@@ -2,7 +2,7 @@
 
 const fs = require('fs');
 const { getIndex, getFieldsCache, getVaultGeneration } = require('../core/indexService');
-const { getBacklinks } = require('../core/graph');
+const { getBacklinks, getEdges, computeNodeExplorerScore } = require('../core/graph');
 const { buildTaskRows } = require('../core/tasks');
 const { normaliseDateInput, getTodayIsoLocal, addDaysIso } = require('../core/date');
 const { normalizeText } = require('../core/frontmatter');
@@ -15,6 +15,8 @@ const { classifyScalarValue, compareScalarValues } = require('./queryParser');
 
 const BODY_CACHE_MAX = 200;
 const bodyCache = new Map();
+const FILE_STAT_FIELDS = new Set(['file.created', 'file.modified']);
+const GRAPH_VIRTUAL_FIELDS = new Set(['_inbound_count', '_outbound_count', '_hub_score']);
 
 /** @returns {void} */
 function clearBodyCache() {
@@ -34,6 +36,34 @@ function readFileStatDates(filePath) {
             'file.modified': new Date(stat.mtimeMs).toISOString().split('T')[0]
         };
     } catch (e) { return null; }
+}
+
+/** @param {string} field @returns {boolean} */
+function isFileStatField(field) {
+    return FILE_STAT_FIELDS.has(field);
+}
+
+/** @param {string} field @returns {boolean} */
+function isGraphVirtualField(field) {
+    return GRAPH_VIRTUAL_FIELDS.has(field);
+}
+
+/** @param {string} field @returns {boolean} */
+function isVirtualQueryField(field) {
+    return isFileStatField(field) || isGraphVirtualField(field);
+}
+
+/**
+ * @param {string} id
+ * @param {Map<string, Record<string, any>>} fieldCache
+ * @returns {{ _inbound_count: number, _outbound_count: number, _hub_score: number }}
+ */
+function readGraphVirtualFields(id, fieldCache) {
+    return {
+        _inbound_count: (getBacklinks(id) || []).length,
+        _outbound_count: (getEdges(id) || []).length,
+        _hub_score: computeNodeExplorerScore(id, fieldCache)
+    };
 }
 
 /**
@@ -106,13 +136,13 @@ function applyTaskPreset(row, preset, todayIso) {
 function matchesCondition(cond, fields, filePath) {
     if (cond.op === 'empty') {
         if (cond.field === 'body') { const body = readBody(filePath); return body === null || body.trim() === ''; }
-        if (cond.field === 'file.created' || cond.field === 'file.modified') return readFileStatDates(filePath) === null;
+        if (isFileStatField(cond.field)) return readFileStatDates(filePath) === null;
         const raw = fields[cond.field];
         return raw == null || String(raw).trim() === '';
     }
     if (cond.op === 'exists') {
         if (cond.field === 'body') { const body = readBody(filePath); return body !== null && body.trim() !== ''; }
-        if (cond.field === 'file.created' || cond.field === 'file.modified') return readFileStatDates(filePath) !== null;
+        if (isFileStatField(cond.field)) return readFileStatDates(filePath) !== null;
         const raw = fields[cond.field];
         return raw != null && String(raw).trim() !== '';
     }
@@ -129,7 +159,7 @@ function matchesCondition(cond, fields, filePath) {
         return body !== null && body.includes(cond.value);
     }
 
-    if (cond.field === 'file.created' || cond.field === 'file.modified') {
+    if (isFileStatField(cond.field)) {
         const fsd = readFileStatDates(filePath);
         if (!fsd) return false;
         const dateIso = fsd[cond.field];
@@ -320,10 +350,13 @@ function runQuery(query, contextNodeId) {
     const rows = [];
     const fieldCache = getFieldsCache();
     const needsBody = validWheres.some(w => w.field === 'body' || w.field === 'any');
-    const needsFileStatWhere = validWheres.some(w => w.field === 'file.created' || w.field === 'file.modified');
+    const needsFileStatWhere = validWheres.some(w => isFileStatField(w.field));
     const needsFileStat = needsFileStatWhere
-        || (query.select && (query.select.includes('file.created') || query.select.includes('file.modified')))
-        || query.sort?.field === 'file.created' || query.sort?.field === 'file.modified';
+        || (query.select && query.select.some(isFileStatField))
+        || isFileStatField(query.sort?.field);
+    const needsGraphVirtual = validWheres.some(w => isGraphVirtualField(w.field))
+        || (query.select && query.select.some(isGraphVirtualField))
+        || isGraphVirtualField(query.sort?.field);
     const index = getIndex();
     const todayIso = getTodayIsoLocal();
 
@@ -347,13 +380,15 @@ function runQuery(query, contextNodeId) {
                 const nodeType = (fields.type || '').trim().toLowerCase();
                 if (query.type !== '*' && nodeType !== query.type) continue;
                 if (validWhereGroups.length > 0) {
+                    const whereFields = needsGraphVirtual ? { ...fields, ...readGraphVirtualFields(id, fieldCache) } : fields;
                     const passes = validWhereGroups.every((group) =>
-                        group.some((cond) => matchesCondition(cond, fields, (needsBody || needsFileStatWhere) ? filePath : null))
+                        group.some((cond) => matchesCondition(cond, whereFields, (needsBody || needsFileStatWhere) ? filePath : null))
                     );
                     if (!passes) continue;
                 }
                 const fileStatFields = needsFileStat ? readFileStatDates(filePath) : null;
-                rows.push({ id, fields: fileStatFields ? { ...fields, ...fileStatFields } : fields, filePath, nodeType });
+                const graphVirtualFields = needsGraphVirtual ? readGraphVirtualFields(id, fieldCache) : null;
+                rows.push({ id, fields: { ...fields, ...(fileStatFields || {}), ...(graphVirtualFields || {}) }, filePath, nodeType });
             }
         }
     } catch (e) {
@@ -361,7 +396,7 @@ function runQuery(query, contextNodeId) {
     }
 
     const fieldCandidates = collectFieldCandidates(query.type, fieldCache);
-    if (query.sort?.field && !fieldCandidates.includes(query.sort.field)) {
+    if (query.sort?.field && !fieldCandidates.includes(query.sort.field) && !isVirtualQueryField(query.sort.field)) {
         const sortSuggestion = closestFieldMatch(query.sort.field, query.type, fieldCache);
         if (sortSuggestion) {
             warnings.push(`Sort field "${query.sort.field}" is uncommon here. Try "${sortSuggestion}" instead.`);
@@ -372,4 +407,4 @@ function runQuery(query, contextNodeId) {
     return finaliseRows(query, rows, warnings);
 }
 
-module.exports = { runQuery, clearBodyCache };
+module.exports = { runQuery, clearBodyCache, readFileStatDates };

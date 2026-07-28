@@ -7,6 +7,8 @@ const { getSchema } = require('../registries/schemaRegistry');
 const { LEVEL } = require('../intelligence/fieldPlanner');
 const { getCachedPriors } = require('../intelligence/vaultPriors');
 const { evaluateFieldForSurface } = require('../intelligence/authoringEngine');
+const { buildHoverBadgeDataUri } = require('../intelligence/hoverBadge');
+const { getBacklinks } = require('../core/graph');
 const {
     CLAUSE_KEYWORDS,
     SIMPLE_VIEW_TYPES,
@@ -18,6 +20,7 @@ const {
     fieldLooksRelational,
     buildFieldInferenceDetail,
     buildRelationCandidateDetail,
+    buildRelationCandidateEvidence,
     buildAdaptiveFrontmatterContext,
     resolveFrontmatterRelationCandidates,
     resolveQueryRelationCandidates,
@@ -58,18 +61,59 @@ const {
     buildPreTypeBootstrapItems
 } = require('./completionItemBuilders');
 
-function buildFrontmatterValueItems(document, position, getIndex, completionContext) {
+// Apollo palette roles (see docs/architecture/YAMLINK-COLOR-PALETTE.md), the
+// same roles the custom hover cards already use for type/status pills.
+const RELATION_CARD_TYPE_BADGE_COLOR = { bg: '#C49BF0', fg: '#151617' };
+const RELATION_CARD_STATUS_BADGE_COLOR = { bg: '#5ECFBE', fg: '#151617' };
+const RELATION_CARD_CONNECTED_BADGE_COLOR = { bg: '#C5FFBF', fg: '#151617' };
+
+/**
+ * Structural autocomplete's visual layer — reuses the exact same SVG-badge
+ * primitive `hoverBadge.js` already uses for hover cards, since VS Code's
+ * completion widget documentation panel is a `MarkdownString` just like
+ * hover's, and already supports embedded images the same way. Pulls in the
+ * candidate's own `status` field (same field/color hover cards already show)
+ * and its real backlink count, not just its type — a candidate's card should
+ * carry as much real signal as its hover card would.
+ *
+ * Always built for every relation candidate, not just ones with a sibling
+ * match — a note-type badge plus any evidence reasons apply universally.
+ * Deliberately kept out of `item.detail` (VS Code's single-line, non-wrapping
+ * grey text), which previously accumulated type + every reason into one
+ * line until it wrapped mid-word; this renders as a real multi-line card.
+ * @param {string} id @param {string} noteType @param {string[]} reasons @param {string|null} [siblingTargetId]
+ * @returns {import('vscode').MarkdownString}
+ */
+function buildRelationCandidateDocumentation(id, noteType, reasons, siblingTargetId) {
+    const fieldsCache = getFieldsCache();
+    const status = String(fieldsCache.get(String(id || '').trim().toLowerCase())?.status || '').trim();
+    const badges = [];
+    if (noteType) badges.push({ text: noteType, ...RELATION_CARD_TYPE_BADGE_COLOR });
+    if (status) badges.push({ text: status, ...RELATION_CARD_STATUS_BADGE_COLOR });
+    if (siblingTargetId) badges.push({ text: 'connected', ...RELATION_CARD_CONNECTED_BADGE_COLOR });
+    const md = new vscode.MarkdownString();
+    if (badges.length) {
+        md.appendMarkdown(`![](${buildHoverBadgeDataUri(badges)})\n\n`);
+    }
+    const lines = [...reasons];
+    const backlinkCount = (getBacklinks(id) || []).length;
+    if (backlinkCount > 0) {
+        lines.push(`Linked from ${backlinkCount} other note${backlinkCount === 1 ? '' : 's'}`);
+    }
+    if (siblingTargetId) {
+        lines.push(`Already connected to **${siblingTargetId}** — ranked higher because this note already links to it.`);
+    }
+    if (lines.length) {
+        md.appendMarkdown(lines.map((line) => `- ${line}`).join('\n'));
+    }
+    return md;
+}
+
+function buildFrontmatterValueItems(document, position, getIndex) {
     if (!isPositionInFrontmatter(document, position.line)) return undefined;
 
     const line = document.lineAt(position.line).text;
     const textBeforeCursor = line.substring(0, position.character);
-    const explicitWikiMatch = textBeforeCursor.match(/^\s*[\w-]+:\s*\[\[[^\]]*$/);
-    if (explicitWikiMatch) {
-        // The dedicated link provider owns explicit [[... completion. If we also
-        // return relation items here, VS Code merges both providers and users
-        // see duplicate wikilink suggestions.
-        return undefined;
-    }
     const valueMatch = textBeforeCursor.match(/^\s*([\w-]+):\s*(.*?)$/);
     if (!valueMatch) return undefined;
 
@@ -77,38 +121,20 @@ function buildFrontmatterValueItems(document, position, getIndex, completionCont
     if (!fieldKey) return undefined;
 
     const idIndex = getIndex();
+    // Relation fields (bracketed or bare) are owned entirely by
+    // provideLinkAndDateCompletions — it fires for the same trigger
+    // characters ([, :, @) *and* for a manual/programmatic re-invoke (e.g.
+    // the auto-triggerSuggest this file fires after clearing a field), which
+    // means VS Code calls both providers for the exact same keystroke. This
+    // used to duplicate every relation candidate in the dropdown (each name
+    // shown twice) for any bare, not-yet-bracketed relation field — only the
+    // explicit `[[` case had a dedup guard before. Deferring unconditionally
+    // here, not just for explicit brackets, is the real fix: VS Code already
+    // filters the *first* provider's full candidate list client-side as the
+    // user keeps typing, so a second provider re-supplying the same items on
+    // every keystroke was never actually necessary.
     const relationState = resolveFrontmatterRelationCandidates(document, position, idIndex);
-    if (relationState && shouldOfferFrontmatterRelationCompletion(relationState, completionContext || { triggerKind: 0 })) {
-        const valueStart = position.character - relationState.partial.length - (relationState.wikiPrefixLength || 0);
-        const replaceRange = new vscode.Range(
-            new vscode.Position(position.line, Math.max(0, valueStart)),
-            new vscode.Position(position.line, position.character + (relationState.closingLength || 0))
-        );
-        const templateItem = buildCreateRelationTemplateItem(document, relationState);
-        if (relationState.missingTargetType) {
-            return [templateItem, buildMissingRelationItem(relationState)];
-        }
-        const items = rankCandidateIds(
-            relationState.candidateIds,
-            relationState.partial,
-            relationState.preferredIds,
-            relationState.localLinkedIds,
-            relationState.observedIdScores,
-            relationState.rankingHints
-        ).map((id) => {
-            const humanName = getHumanLabel(id);
-            const label = humanName ? { label: humanName, description: id } : id;
-            const item = new vscode.CompletionItem(label, vscode.CompletionItemKind.Reference);
-            item.insertText = `[[${id}]]`;
-            item.range = replaceRange;
-            item.filterText = humanName ? `${id} ${humanName}` : id;
-            const preferred = relationState.preferredIds.includes(id);
-            item.detail = buildRelationCandidateDetail(id, idIndex, relationState, preferred);
-            item.sortText = preferred ? `01-${id}` : `02-${id}`;
-            return item;
-        });
-        return [templateItem, ...items];
-    }
+    if (relationState) return undefined;
 
     if (isTypeLikeField(fieldKey)) return undefined;
 
@@ -178,7 +204,7 @@ function provideLinkAndDateCompletions(document, position, _token, completionCon
                 frontmatterRelation.observedIdScores,
                 frontmatterRelation.rankingHints
             )
-                .map(id => {
+                .map((id, index) => {
                     const humanName = getHumanLabel(id);
                     const label = humanName ? { label: humanName, description: id } : id;
                     const item = new vscode.CompletionItem(label, vscode.CompletionItemKind.Reference);
@@ -188,7 +214,10 @@ function provideLinkAndDateCompletions(document, position, _token, completionCon
                     item.filterText = humanName ? `${filterBase} ${humanName}` : filterBase;
                     const preferred = frontmatterRelation.preferredIds.includes(id);
                     item.detail = buildRelationCandidateDetail(id, idIndex, frontmatterRelation, preferred);
-                    item.sortText = preferred ? `01-${id}` : `02-${id}`;
+                    const siblingTargetId = frontmatterRelation.rankingHints?.siblingContextEvidence?.get(String(id || '').trim().toLowerCase());
+                    const { noteType, reasons } = buildRelationCandidateEvidence(id, frontmatterRelation, preferred);
+                    item.documentation = buildRelationCandidateDocumentation(id, noteType, reasons, siblingTargetId);
+                    item.sortText = (preferred ? '01-' : '02-') + String(index).padStart(4, '0') + id;
                     if (classification && _outcomeNoteId) {
                         item.command = {
                             command: 'yamlink._completionAccepted',
@@ -275,6 +304,7 @@ function provideLinkAndDateCompletions(document, position, _token, completionCon
                     item.filterText = humanName ? `[[${id} ${humanName}` : `[[${id}`;
                     const noteType = String(fieldsCache.get(String(id || '').trim().toLowerCase())?.type || '').trim();
                     item.detail = noteType || idIndex.get(id);
+                    item.documentation = buildRelationCandidateDocumentation(id, noteType, [], null);
                     return item;
                 });
             return [...idItems, ...aliasItems];
@@ -331,7 +361,7 @@ function provideFrontmatterFieldCompletions(document, position, getIndex) {
         if (!isPositionInFrontmatter(document, position.line)) return undefined;
         const line = document.lineAt(position.line).text;
         const trimmed = line.trimStart();
-        const valueItems = buildFrontmatterValueItems(document, position, getIndex, { triggerKind: 0 });
+        const valueItems = buildFrontmatterValueItems(document, position, getIndex);
         if (valueItems && valueItems.length) return valueItems;
         const keyMatch = trimmed.match(/^([^:\n]*)$/);
         if (!keyMatch) return undefined;
@@ -647,6 +677,7 @@ function provideQueryCompletions(document, position, getIndex) {
 }
 
 module.exports = {
+    buildRelationCandidateDocumentation,
     makeReplaceRange,
     buildMissingRelationItem,
     buildCreateRelationTemplateItem,
