@@ -381,9 +381,22 @@ function _relationValueCompletions(content, lines, position, filePath) {
     });
 }
 
-function handleCompletion(msg, state) {
+async function handleCompletion(msg, state) {
     const { textDocument, position } = msg.params || {};
     if (!textDocument || !position) { respond(msg.id, []); return; }
+
+    // A watched-file change (workspace/didChangeWatchedFiles) schedules a
+    // debounced rebuild (VaultService.notifyFileChange, ~300ms) rather than
+    // rebuilding synchronously. The server's message dispatch is
+    // fire-and-forget per frame (server.js's startTransport callback never
+    // awaits route() before reading the next frame), so a completion request
+    // arriving right after a watched-file notification could otherwise be
+    // served against the stale, pre-rebuild index. Flushing any in-flight
+    // rebuild first — the same mechanism already used before `exit` — makes
+    // completion always reflect the latest scheduled rebuild, not a race.
+    if (state && state.vaultService && typeof state.vaultService.flushPendingRebuild === 'function') {
+        await state.vaultService.flushPendingRebuild();
+    }
 
     const content = getDocumentText(state, textDocument.uri);
     const lines   = content.split('\n');

@@ -81,7 +81,7 @@ function route(msg, state) {
     if (method === 'textDocument/didOpen')              { handleDidOpen(msg, state);               return; }
     if (method === 'textDocument/didChange')            { handleDidChange(msg, state);             return; }
     if (method === 'textDocument/didClose')             { handleDidClose(msg, state);              return; }
-    if (method === 'textDocument/completion')           { handleCompletion(msg, state);            return; }
+    if (method === 'textDocument/completion')           { return handleCompletion(msg, state); }
     if (method === 'completionItem/resolve')            { handleCompletionResolve(msg, state);     return; }
     if (method === 'textDocument/hover')                { handleHover(msg, state);                 return; }
     if (method === 'textDocument/inlayHint')            { handleInlayHint(msg, state);             return; }
