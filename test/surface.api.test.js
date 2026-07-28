@@ -407,9 +407,27 @@ test('GET /api/graph — shape', async () => {
     assert.ok(response.body.edges.some((edge) => edge.from === 'johnny-rico' && edge.to === 'roughnecks'));
 });
 
+// Mutation event timestamps are plain millisecond-resolution
+// `new Date().toISOString()` with no tie-breaker (see mutationEventLog.js),
+// and timeEngine.js's reconstruction undoes events with `timestamp >
+// atTimestamp` (strict) — an event landing in the exact same millisecond as
+// a captured boundary is treated as "already happened," not undone. Two
+// PATCHes fired back-to-back with no real gap can land in the same
+// millisecond on a fast/CI machine, making this test genuinely flaky, not
+// just slow. Waiting for a real clock tick before each side of the boundary
+// removes the race without guessing a sleep duration.
+async function waitForClockTick() {
+    const start = Date.now();
+    while (Date.now() === start) {
+        await new Promise((resolve) => setImmediate(resolve));
+    }
+}
+
 test('GET /api/nodes/:id?at= reconstructs a field to its value before a later PATCH', async () => {
     await request('PATCH', '/api/nodes/johnny-rico', { field: 'status', value: 'timeline-before' });
+    await waitForClockTick();
     const afterPatch1 = new Date().toISOString();
+    await waitForClockTick();
     await request('PATCH', '/api/nodes/johnny-rico', { field: 'status', value: 'timeline-after' });
 
     const historical = await get(`/api/nodes/johnny-rico?at=${encodeURIComponent(afterPatch1)}`);
