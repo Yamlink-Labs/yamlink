@@ -68,7 +68,13 @@ function findBodyStartLine(lines) {
  */
 function extractMeaningfulBodyBlocks(content) {
     const text = String(content || '');
-    const lines = text.split('\n');
+    // Split on \r?\n, not a bare \n — a CRLF file's trailing \r otherwise
+    // survives on every line, and the heading/task regexes below anchor on
+    // $ (end of string): `.` never matches \r, so a line ending in \r can
+    // never satisfy `(.+)$` at all. Real, previously-undiscovered bug: this
+    // silently produced zero blocks (no heading/task/quote/footnote IDs at
+    // all) for any CRLF-saved note, common on Windows.
+    const lines = text.split(/\r?\n/);
     /** @type {BodyBlock[]} */
     const blocks = [];
     const bodyStartLine = findBodyStartLine(lines);

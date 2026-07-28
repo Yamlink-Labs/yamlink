@@ -684,6 +684,49 @@ describe('hover clickable wikilinks', () => {
         }
     });
 
+    // Real bug, found from a screenshot: a YAML block-list relation field
+    // (e.g. `contacts:` with several entries) is flattened by the
+    // frontmatter parser into one comma-joined string like
+    // "[[a]], [[b]], [[c]]" — a previous `isWikilink` check
+    // (`/^\[\[.+\]\]$/`) incorrectly matched this whole multi-value string
+    // as if it were a single wikilink (the greedy `.+` doesn't care about
+    // brackets in the middle), then `raw.slice(2, -2)` corrupted it by
+    // stripping only the outermost two characters on each end — silently
+    // eating the first entry's leading `[[` and the last entry's trailing
+    // `]]` while leaving the middle entry untouched.
+    test('a multi-value block-list relation field renders every entry correctly, none mangled', () => {
+        const vault = createVault({
+            'carlos-trochez.md': '---\nid: carlos-trochez\ntype: contact\nname: Carlos Trochez\n---\n',
+            // Single-line form deliberately, not a multi-line YAML block list:
+            // the real frontmatter parser flattens a block list into exactly
+            // this comma-joined string shape anyway (see `core/indexService`),
+            // which is what buildHoverDetails/renderFieldValueLinks actually
+            // operate on regardless of how it was originally authored.
+            'xmpie.md': [
+                '---',
+                'id: xmpie',
+                'type: account',
+                'contacts: [[yaron-mohaban]], [[don-scott]], [[carlos-trochez]]',
+                '---'
+            ].join('\n')
+        });
+        try {
+            const content = fs.readFileSync(path.join(vault.dir, 'xmpie.md'), 'utf8');
+            const hover = buildHoverContent('xmpie', content, path.join(vault.dir, 'xmpie.md'), vault.idIndex);
+            // Every entry's full name must survive intact — none missing a
+            // leading or trailing fragment the way the original bug produced.
+            assert.match(hover.value, /yaron\\?-mohaban/);
+            assert.match(hover.value, /don\\?-scott/);
+            assert.match(hover.value, /carlos\\?-trochez/);
+            assert.doesNotMatch(hover.value, /\[\[/);
+            assert.doesNotMatch(hover.value, /\]\]/);
+            // The one resolvable entry still becomes a real clickable link.
+            assert.match(hover.value, /\[carlos\\-trochez\]\(command:vscode\.open\?/);
+        } finally {
+            vault.destroy();
+        }
+    });
+
     test('relation-field values with an unresolvable target fall back to plain escaped bracket text, not a broken link', () => {
         const vault = createVault({
             'carlos-evert.md': [

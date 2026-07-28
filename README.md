@@ -105,6 +105,17 @@ Three things, one loop:
 - three independent visual layers that stack: **Base** (nodes sized by hub score, kind-colored, hover dims non-neighbors, click pins focus, drag repositions with live physics), **Semantic** (edges colored by relation type — person/teal, event/amber, topic/purple, container/blue — direction arrowheads, dashed weak links), **Health** (rings encode lifecycle state and structural drift, with the health legend expanding inline)
 - **time-lapse** — play back how the graph actually grew, reconstructed from real git history when available or the mutation log otherwise; see [What it looks like](#what-it-looks-like) above for detail
 
+### Block references
+
+Every meaningful body element gets a stable ID, not just headings — Yamlink can link to a specific task, quote, or footnote, not only a whole note or section.
+
+- **Headings** (`h-{slug}`), **tasks** (`t{n}-{hash}`), **blockquotes/callouts** (`q{n}-{hash}`), and **footnotes** (`fn-{id}`) all get a stable block ID automatically, computed on every index rebuild.
+- `[[note#Heading]]` links a section; `[[note^block-id]]` links a specific task, quote, or footnote. Go-to-definition lands on the exact line either way — not just the top of the note.
+- Hovering a scoped reference previews the actual heading or block content, not just the note's frontmatter.
+- Completion suggests real headings/blocks as you type `#` or `^` inside a wikilink.
+- **Copy/insert commands** — `Yamlink: Copy Scoped Reference` (pick any heading, task, quote, or footnote — the general picker), `Yamlink: Copy Section Reference` (headings only), `Yamlink: Copy Block Reference` (tasks/quotes/footnotes only), plus `Insert` variants of all three that write directly into the editor instead of the clipboard.
+- **Note Report surfaces block-level backlinks** — not just "which notes link here," but which notes link to *this exact task or quote*.
+
 ### Query
 
 - `!view` blocks inside Markdown notes
@@ -409,7 +420,11 @@ This is the fastest way to bring an existing knowledge base into Yamlink without
 
 ---
 
-## Latest release — 0.7.5
+## Latest release — 0.7.6
+
+0.7.6 is a quick follow-up mainly fixing real problems from 0.7.5: the in-editor "What's New" notice was still showing 0.7.4's release notes to every updating user, block IDs (used for hover, completion, go-to-definition, and block-level backlinks) silently stopped working entirely on any note saved with Windows line endings, and a multi-value relation field could render with corrupted, missing brackets in the hover card. Alongside those fixes, block-level backlinks — knowing which notes link to a specific task, quote, heading, or footnote inside a note, not just the note as a whole — are now reachable outside VS Code too, via `yamlink block-backlinks` and `GET /api/nodes/:id?include=blockBacklinks`.
+
+## 0.7.5
 
 - **The API reaches further outside the editor** — `GET /api/nodes/:id?include=body` returns a note's raw text, `?include=timestamps` returns its real filesystem dates, `PATCH /api/tasks` toggles a task's checkbox, and `GET /api/glossary` hands over the vault's glossary — all things you could already do by hand in VS Code, now scriptable.
 - **Optional API authentication** — set `YAMLINK_API_TOKEN` before running `yamlink serve` to require a matching `X-Yamlink-Token` header on every request. Off by default with a visible startup reminder when it's unset, since until now anything on your machine could read or write your vault through the API with no login at all.

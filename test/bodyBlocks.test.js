@@ -33,6 +33,38 @@ describe('body blocks — extractMeaningfulBodyBlocks', () => {
         assert.ok(ids.includes('fn-source-1'));
     });
 
+    // Real, previously-undiscovered bug, found while adapting the sample
+    // vault: a CRLF-saved file (common on Windows) produced ZERO blocks at
+    // all. Splitting on a bare '\n' left every line ending in a trailing
+    // '\r', and the heading/task regexes anchor on $ (end of string) with a
+    // `.` capture group — `.` never matches `\r`, so `(.+)$` could never be
+    // satisfied and every heading/task line silently failed to match.
+    test('extracts the same blocks from CRLF-joined content as LF-joined content', () => {
+        const lines = [
+            '---',
+            'id: rico',
+            'type: character',
+            '---',
+            '',
+            '## Service Record',
+            '',
+            '- [ ] Review recon logs',
+            '',
+            '> Training-yard line associated with Jean Rasczak.',
+            '',
+            '[^source-1]: Archive dossier'
+        ];
+
+        const lfBlocks = extractMeaningfulBodyBlocks(lines.join('\n'));
+        const crlfBlocks = extractMeaningfulBodyBlocks(lines.join('\r\n'));
+
+        assert.ok(lfBlocks.length > 0);
+        assert.deepEqual(
+            crlfBlocks.map((b) => b.blockId),
+            lfBlocks.map((b) => b.blockId)
+        );
+    });
+
     test('disambiguates duplicate heading slugs', () => {
         const text = [
             '# Overview',

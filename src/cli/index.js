@@ -61,6 +61,7 @@ function printHelp() {
         '  link <id> <field> <to>  Add a wikilink relation field on a note (--append to keep existing)',
         '  template save <id>      Save an existing note as a blank-skeleton template for its type (--force to overwrite)',
         '  glossary --type <a,b>   Alphabetized glossary of every note of the given type(s), with its own definition and backlinks',
+        '  block-backlinks <id>    Show notes linking to exact blocks/headings inside a note',
         '  lenses                  Intelligence — vault change lenses over mutation history',
         '  conduit                 Open Yamlink Conduit in the terminal UI',
         '  completions <shell>     Print shell completion script (bash or zsh)',
@@ -97,6 +98,7 @@ function printHelp() {
         '  --hide-unreferenced     Glossary: omit terms with no inbound links instead of marking them',
         '  --extra-field <name>    Glossary: an extra frontmatter field to show per entry (repeatable)',
         '  --sort-by-references    Glossary: rank terms by inbound link count instead of alphabetically',
+        '  --block <block-id>      Block-backlinks: only show backlinks to one exact block id',
         '  --help, -h              Show this help',
         '',
         'Examples:',
@@ -165,6 +167,8 @@ function printHelp() {
         '  yamlink glossary --type faction,location',
         '  yamlink glossary --type faction --hide-unreferenced --json',
         '  yamlink glossary --type faction --sort-by-references',
+        '  yamlink block-backlinks johnny-rico',
+        '  yamlink block-backlinks johnny-rico --block t1-ab12cd --json',
         '',
     ].join('\n'));
 }
@@ -343,7 +347,8 @@ async function main() {
             args[i] === '--limit' || args[i] === '--id' || args[i] === '--sort' ||
             args[i] === '--has' || args[i] === '--missing' || args[i] === '--max-broken-links' ||
             args[i] === '--schema-coverage' || args[i] === '--max-stale-days' ||
-            args[i] === '--min-health-score' || args[i] === '--shell' || args[i] === '--reason') { i++; continue; }
+            args[i] === '--min-health-score' || args[i] === '--shell' || args[i] === '--reason' ||
+            args[i] === '--block') { i++; continue; }
         if (args[i].startsWith('--')) continue;
         pos.push(args[i]);
     }
@@ -756,6 +761,15 @@ async function main() {
             showZeroBacklinkTerms: !args.includes('--hide-unreferenced'),
             extraFields: flagVals('--extra-field'),
             sortBy: args.includes('--sort-by-references') ? 'mostReferenced' : 'alphabetical',
+            json
+        });
+        break;
+    }
+
+    case 'block-backlinks': {
+        require('./commands/blockBacklinks').run({
+            id: pos[1],
+            blockId: flagVal('--block'),
             json
         });
         break;

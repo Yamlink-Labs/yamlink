@@ -188,7 +188,7 @@ function buildHoverContent(id, content, filePath = '', idIndex = null, anchorRaw
     const frontmatter = parseFrontmatter(content) || {};
     const title = String(frontmatter.title || frontmatter.name || id).trim();
     const badgeMarkdown = buildHoverBadgeMarkdown(frontmatter);
-    const summary = buildHoverSummary(content, frontmatter);
+    const summary = buildHoverSummary(content, frontmatter, idIndex);
     const details = buildHoverDetails(frontmatter, idIndex);
     const contextLine = buildHoverIntelligenceSummary(id, content, frontmatter);
 
@@ -196,16 +196,20 @@ function buildHoverContent(id, content, filePath = '', idIndex = null, anchorRaw
     if (badgeMarkdown) {
         md.appendMarkdown(`${badgeMarkdown}\n\n`);
     }
-    if (summary) {
-        md.appendMarkdown(`${renderInlineWikilinks(summary, idIndex)}\n\n`);
+    if (summary.text) {
+        const summaryMd = summary.rendered ? summary.text : renderInlineWikilinks(summary.text, idIndex);
+        md.appendMarkdown(`${summaryMd}\n\n`);
     }
     if (details.length) {
-        const detailLines = details.map(({ label, value, linkedPath }) => {
+        const detailLines = details.map(({ label, value }) => {
             const labelMd = escapeMarkdown(label);
-            const valueMd = linkedPath
-                ? `[${escapeMarkdown(value)}](${buildOpenNoteCommandUri(linkedPath)})`
-                : escapeMarkdown(value);
-            return `- **${labelMd}:** ${valueMd}`;
+            // renderFieldValueLinks walks every `[[...]]` occurrence in the
+            // value generically (single relation, a multi-value block-list
+            // field flattened to one joined string, or plain scalar text
+            // with none at all) and always shows a clean label — a real
+            // link when resolvable, clean plain text otherwise, never raw
+            // bracket syntax.
+            return `- **${labelMd}:** ${renderFieldValueLinks(value, idIndex)}`;
         });
         md.appendMarkdown(detailLines.join('\n'));
         md.appendMarkdown('\n\n');
@@ -303,36 +307,47 @@ function clipBlockPreviewText(value) {
 // sanitizer entirely since they're not HTML — this is the one channel that
 // gets genuinely custom typography/color inside the one legitimate hover.
 
-function buildHoverSummary(content, frontmatter) {
+/**
+ * Returns `{ text, rendered }`. When `rendered` is false, `text` is raw prose
+ * (body preview or an explicit `summary:` field) that still needs
+ * `renderInlineWikilinks` applied at the call site — body-text semantics,
+ * where a genuinely broken `[[link]]` should still show as bracket syntax.
+ * When `rendered` is true, `text` is already final, safe markdown (built
+ * from frontmatter field values via `renderFieldValueLinks`) and must not be
+ * passed through any further escaping/rendering pass, or already-escaped
+ * characters and already-built markdown links would be double-processed.
+ */
+function buildHoverSummary(content, frontmatter, idIndex) {
     const bodyPreview = extractBodyPreview(content);
-    if (bodyPreview) return bodyPreview;
+    if (bodyPreview) return { text: bodyPreview, rendered: false };
     const explicitSummary = cleanValue(frontmatter.summary);
-    if (explicitSummary) return normalizeDisplayValue(explicitSummary);
+    if (explicitSummary) return { text: normalizeDisplayValue(explicitSummary), rendered: false };
     const details = buildHoverDetails(frontmatter);
-    if (!details.length) return '';
-    return details.map(({ label, value }) => `${label}: ${value}`).join(' · ');
+    if (!details.length) return { text: '', rendered: false };
+    const text = details
+        .map(({ label, value }) => `${escapeMarkdown(label)}: ${renderFieldValueLinks(value, idIndex)}`)
+        .join(' · ');
+    return { text, rendered: true };
 }
 
 function buildHoverDetails(frontmatter, idIndex) {
+    // Deliberately returns the raw value untouched, even when it contains one
+    // or several `[[wikilink]]` occurrences — a YAML block-list relation
+    // field (e.g. `contacts:` with several entries) is flattened by the
+    // frontmatter parser into one comma-joined string like
+    // "[[a]], [[b]], [[c]]", not a real array. A previous version here
+    // special-cased "the whole raw value is a single wikilink" via
+    // `/^\[\[.+\]\]$/` — but that greedy pattern also matches a multi-value
+    // string (it merely starts with `[[` and ends with `]]`), and the
+    // subsequent `raw.slice(2, -2)` then corrupted it by stripping only the
+    // outermost brackets, silently mangling the first and last entries while
+    // leaving the middle ones intact. Rendering now happens generically via
+    // `renderFieldValueLinks` (walks every `[[...]]` occurrence, single or
+    // multiple), so there's nothing left to pre-process here.
     return prioritizedFrontmatterEntries(frontmatter)
         .filter(([key]) => !HOVER_DETAIL_SKIP_FIELDS.has(key))
         .slice(0, HOVER_MAX_DETAILS)
-        .map(([key, rawValue]) => {
-            const raw = String(rawValue || '').trim();
-            const isWikilink = /^\[\[.+\]\]$/.test(raw);
-            let linkedPath = null;
-            let display = normalizeDisplayValue(raw);
-            if (isWikilink) {
-                const inner = raw.slice(2, -2);
-                const parts = parseLinkedTargetParts(inner);
-                display = normalizeDisplayValue(parts.label || parts.target || raw);
-                if (idIndex) {
-                    const resolvedId = resolveLinkedTarget(inner, idIndex, getAliasIndex());
-                    linkedPath = resolvedId ? idIndex.get(resolvedId) || null : null;
-                }
-            }
-            return { label: key, value: display, linkedPath };
-        });
+        .map(([key, rawValue]) => ({ label: key, value: normalizeDisplayValue(String(rawValue || '').trim()) }));
 }
 
 /** @param {string} filePath @returns {string} a command:vscode.open URI that opens the file when clicked in a trusted hover */
@@ -369,6 +384,42 @@ function renderInlineWikilinks(text, idIndex) {
         result += filePath
             ? `[${escapeMarkdown(displayText)}](${buildOpenNoteCommandUri(filePath)})`
             : escapeMarkdown(`[[${inner}]]`);
+        lastIndex = match.index + match[0].length;
+    }
+    result += escapeMarkdown(raw.slice(lastIndex));
+    return result;
+}
+
+/**
+ * Renders `[[id]]` / `[[id|Alias]]` occurrences in a frontmatter field value
+ * as their clean label — a real clickable link when it resolves via idIndex,
+ * plain clean text (never raw bracket syntax) when it doesn't. Deliberately
+ * different from renderInlineWikilinks: that one is for freeform body text,
+ * where showing a genuinely broken link's raw `[[...]]` is the intentional
+ * "this is broken" signal (matching the amber broken-link decoration
+ * elsewhere). A relation field's value in the hover card is not prose — an
+ * unresolved value should still read as a clean name, not bracket syntax.
+ * @param {string} text
+ * @param {Map<string,string>|null} idIndex
+ * @returns {string}
+ */
+function renderFieldValueLinks(text, idIndex) {
+    const raw = String(text || '');
+    const aliasIdx = idIndex ? getAliasIndex() : null;
+    let result = '';
+    let lastIndex = 0;
+    INLINE_WIKILINK_RE.lastIndex = 0;
+    let match;
+    while ((match = INLINE_WIKILINK_RE.exec(raw)) !== null) {
+        result += escapeMarkdown(raw.slice(lastIndex, match.index));
+        const inner = match[1];
+        const parts = parseLinkedTargetParts(inner);
+        const displayText = parts.label || parts.target || inner;
+        const resolvedId = idIndex ? resolveLinkedTarget(inner, idIndex, aliasIdx) : null;
+        const filePath = resolvedId ? idIndex.get(resolvedId) : null;
+        result += filePath
+            ? `[${escapeMarkdown(displayText)}](${buildOpenNoteCommandUri(filePath)})`
+            : escapeMarkdown(displayText);
         lastIndex = match.index + match[0].length;
     }
     result += escapeMarkdown(raw.slice(lastIndex));

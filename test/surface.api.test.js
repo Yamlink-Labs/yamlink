@@ -23,6 +23,10 @@ const FIXTURE = {
         '- [ ] Submit mission report',
         '- [x] File debrief paperwork',
         '- [ ] Review roster',
+        '',
+        '# After Klendathu',
+        '',
+        '> Review recon logs',
     ].join('\n'),
 
     'carl-jenkins.md': [
@@ -32,6 +36,9 @@ const FIXTURE = {
         'name: Carl Jenkins',
         'unit: "[[roughnecks]]"',
         '---',
+        '',
+        'See [[johnny-rico#After Klendathu]] for the section briefing.',
+        'Follow [[johnny-rico^q1-1feuao]] for the exact recon quote.',
     ].join('\n'),
 
     'roughnecks.md': [
@@ -803,6 +810,46 @@ test('GET /api/nodes/:id?include=timestamps — returns real filesystem dates', 
     assert.equal(response.status, 200);
     assert.match(response.body._timestamps.created, /^\d{4}-\d{2}-\d{2}$/);
     assert.match(response.body._timestamps.modified, /^\d{4}-\d{2}-\d{2}$/);
+});
+
+test('GET /api/nodes/:id?include=blockBacklinks — returns section and block backlink rows', async () => {
+    const response = await get('/api/nodes/johnny-rico?include=blockBacklinks');
+    assert.equal(response.status, 200);
+    assert.equal(response.body.id, 'johnny-rico');
+    assert.ok(Array.isArray(response.body._blockBacklinks));
+
+    const heading = response.body._blockBacklinks.find((row) => row.targetKind === 'heading');
+    assert.ok(heading);
+    assert.equal(heading.targetBlockId, 'h-after-klendathu');
+    assert.equal(heading.targetLabel, 'After Klendathu');
+    assert.equal(heading.kind, 'section ref');
+    assert.equal(heading.sourceId, 'carl-jenkins');
+    assert.equal(heading.sourceLabel, 'Carl Jenkins');
+    assert.equal(heading.sourceType, 'contact');
+    assert.equal(heading.line, 8);
+
+    const quote = response.body._blockBacklinks.find((row) => row.targetKind === 'quote');
+    assert.ok(quote);
+    assert.equal(quote.targetBlockId, 'q1-1feuao');
+    assert.equal(quote.targetLabel, 'Review recon logs');
+    assert.equal(quote.kind, 'block ref');
+    assert.equal(quote.sourceId, 'carl-jenkins');
+    assert.equal(quote.line, 9);
+});
+
+test('GET /api/nodes/:id?include=blockBacklinks — zero backlinks returns an empty array', async () => {
+    const response = await get('/api/nodes/roughnecks?include=blockBacklinks');
+    assert.equal(response.status, 200);
+    assert.deepEqual(response.body._blockBacklinks, []);
+});
+
+test('GET /api/nodes/:id?include=body,blockBacklinks composes include sections', async () => {
+    const response = await get('/api/nodes/johnny-rico?include=body,blockBacklinks');
+    assert.equal(response.status, 200);
+    assert.equal(typeof response.body._body, 'string');
+    assert.ok(response.body._body.includes('After Klendathu'));
+    assert.ok(Array.isArray(response.body._blockBacklinks));
+    assert.ok(response.body._blockBacklinks.some((row) => row.targetBlockId === 'h-after-klendathu'));
 });
 
 test('GET /api/glossary — 400 when "types" is missing', async () => {

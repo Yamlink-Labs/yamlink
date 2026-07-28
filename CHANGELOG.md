@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.7.6
+
+0.7.6 is a quick follow-up release, mainly to fix real problems that shipped in 0.7.5 and should have been caught before it went out: the in-editor "What's New" notice still showed 0.7.4's release notes to every updating user, block IDs silently stopped working entirely on any note saved with Windows line endings, and a multi-value relation field could render with corrupted, missing brackets in the hover card. Alongside those fixes, block-level backlinks — knowing which notes link to a specific task, quote, heading, or footnote inside a note — are now reachable outside VS Code too, via a new CLI command and API parameter.
+
+### CLI
+
+- **`yamlink block-backlinks <note-id> [--block <block-id>]`** — shows every note linking to a specific task, quote, heading, or footnote inside the given note, not just which notes link to the note as a whole. Without `--block`, lists backlinks to every addressable block in the note; with it, filters to one exact block.
+
+### API
+
+- **`GET /api/nodes/:id?include=blockBacklinks`** — the same data as the CLI command above, over HTTP, as `_blockBacklinks: [{ targetBlockId, targetLabel, targetKind, sourceId, sourceLabel, sourceType, kind, line }]`. Composes with the other `include` values (`?include=body,blockBacklinks`, etc.).
+
+### Fixed
+
+- A note saved with Windows CRLF line endings got **zero** block IDs at all — no headings, tasks, quotes, or footnotes were recognized, silently disabling hover, completion, go-to-definition, and block backlinks for that note entirely. Caused by splitting body text on a bare `\n`, which left a trailing `\r` on every line that the block-detection patterns could never match past. Fixed; block IDs now compute correctly regardless of line-ending style.
+- A multi-value relation field (a YAML list like `contacts:` with several entries, which the frontmatter parser flattens into one comma-joined string) rendered in the hover card with the first and last entries silently corrupted — missing their leading or trailing brackets — while entries in the middle were unaffected. Caused by a check meant to detect "this value is a single wikilink" that also matched a multi-value string by accident, then stripped only the outermost two characters on each end. Fixed; every entry in a multi-value field now renders correctly and, when resolvable, as its own clickable link.
+- The in-editor "What's New" notice shown after updating still described 0.7.4, not 0.7.5 — every user who updated saw the wrong release notes. Fixed.
+
 ## 0.7.5
 
 0.7.5 is about Yamlink working outside the editor as potently as it does inside it. The local API can now read a note's raw text and its real file dates, mark a task done or reopen it, and hand over the vault's glossary — the same things you can already do by hand in VS Code, now scriptable. It also has its first way to "lock the door": an optional token, since until now anything on your machine could read or write your vault through it with no login at all. A new plugin API lets another VS Code extension contribute its own small, explainable opinion to Yamlink's field-guessing, without being able to touch your notes directly.

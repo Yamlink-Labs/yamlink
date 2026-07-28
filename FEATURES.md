@@ -280,7 +280,7 @@ yamlink completions bash|zsh                    # print shell completion script
 | Endpoint | Description |
 |---|---|
 | `GET /api/nodes` | All notes as JSON; `?type=` filter, `?page=`/`?limit=` pagination |
-| `GET /api/nodes/:id` | Single note with `_inbound`, `_outbound`, `_filePath`. `?include=outbound,inbound,intelligence,history,body,timestamps` for composite reads (`body` — 0.7.5, unreleased — adds the raw body text; `timestamps` — 0.7.5, unreleased — adds real filesystem created/modified dates); `?minGeneration=N` to wait for a generation before answering; `?at=<timestamp>` for a Time Engine historical reconstruction |
+| `GET /api/nodes/:id` | Single note with `_inbound`, `_outbound`, `_filePath`. `?include=outbound,inbound,intelligence,history,body,timestamps,blockBacklinks` for composite reads (`body` adds the raw body text; `timestamps` adds real filesystem created/modified dates; `blockBacklinks` adds which notes link to a specific task/quote/heading/footnote inside this note); `?minGeneration=N` to wait for a generation before answering; `?at=<timestamp>` for a Time Engine historical reconstruction |
 | `GET /api/nodes/:id/outbound` \| `/inbound` \| `/neighborhood` | Graph traversal — resolved outbound/inbound edges, or a multi-hop neighborhood (`?depth=1-3`) |
 | `GET /api/nodes/:id/history` \| `/evolution` \| `/archaeology?field=` | Mutation history, change-pattern summary, and per-field relation timeline for a note |
 | `POST /api/nodes` | Create a new note from `{ type, fields? }` — returns `{ ok, id, filePath }` (201) |
@@ -293,17 +293,17 @@ yamlink completions bash|zsh                    # print shell completion script
 | `GET /api/search` \| `/schema` \| `/types` | Vault search, schema introspection, type distribution |
 | `GET /api/health` | Broken link count + schema conformance |
 | `GET /api/tasks` | All vault tasks; filter by `?done=`, `?today=`, `?overdue=`, `?note=`, `?limit=` |
-| `PATCH /api/tasks` (0.7.5, unreleased) | Toggle one task's checkbox — `{ noteId, line, done }`, same write path VS Code's live tables use |
-| `GET /api/glossary?types=` (0.7.5, unreleased) | Term definitions + full backlink lists — same data the CLI/VS Code Vault Glossary compute; `?groupByType=`, `?sortBy=`, `?hideUnreferenced=`, `?extraFields=` |
+| `PATCH /api/tasks` | Toggle one task's checkbox — `{ noteId, line, done }`, same write path VS Code's live tables use |
+| `GET /api/glossary?types=` | Term definitions + full backlink lists — same data the CLI/VS Code Vault Glossary compute; `?groupByType=`, `?sortBy=`, `?hideUnreferenced=`, `?extraFields=` |
 | `GET /api/mutations` \| `/session/summary` | Recent mutation events (`?limit=`, `?since=`, `?type=`), or a summarized session |
 | `GET /api/events` | Server-Sent Events stream (filterable via `?note=`/`?noteType=`/`?type=`); pushes mutation events, `rebuild` after every vault change, and `intelligence_changed` (reactive push when derived intelligence — lifecycle/drift/arc/priors — is recomputed) |
 | `GET /api/intelligence/arc?id=` | Arc prediction — likely missing fields for a note |
 | `GET /api/intelligence/fieldCategory?id=&field=` | Field classification: category, confidence, source, reasons |
 | `GET /api/intelligence/note?id=` \| `/clusters` \| `/lenses` | Combined note intelligence snapshot; detected pre-schema field clusters; vault-wide change lenses |
 
-All responses include `X-Yamlink-Generation` (vault version integer) and `X-Yamlink-Api-Version` headers. CORS is enabled for all origins (`*`) — no authentication by default, since anything reachable at `127.0.0.1` is otherwise trusted; set `YAMLINK_API_TOKEN` (0.7.5, unreleased) before starting `yamlink serve` to require a matching `X-Yamlink-Token` header on every request. Full method/path/params/error-code reference: [`CONTRACT.md`](CONTRACT.md).
+All responses include `X-Yamlink-Generation` (vault version integer) and `X-Yamlink-Api-Version` headers. CORS is enabled for all origins (`*`) — no authentication by default, since anything reachable at `127.0.0.1` is otherwise trusted; set `YAMLINK_API_TOKEN` before starting `yamlink serve` to require a matching `X-Yamlink-Token` header on every request. Full method/path/params/error-code reference: [`CONTRACT.md`](CONTRACT.md).
 
-### Plugin API for third-party field evidence (0.7.5, unreleased)
+### Plugin API for third-party field evidence
 
 A VS Code extension can register a read-only evidence source that contributes one extra, small, explainable signal to Yamlink's own field classification — `registerFieldEvidenceSource(fn)`, reached via `vscode.extensions.getExtension('<publisher>.yamlink').exports`. Deliberately narrow: no vault writes, no visibility into other registered plugins, every signal must carry a stated reason or it's discarded, and the effect on any single field's confidence is capped small so no plugin can dominate a classification Yamlink's own evidence already made. VS-Code-only — the LSP server has no third-party extension-loading mechanism to expose this through.
 
@@ -1172,11 +1172,11 @@ Yamlink currently surfaces diagnostics for:
 - duplicate schemas
 - malformed schema nodes
 - query suggestions
-- near-duplicate scalar frontmatter values (0.7.5, unreleased — see note below, this one's still an experiment)
+- near-duplicate scalar frontmatter values (see note below, this one's still an experiment)
 
 Diagnostics appear as hints, warnings, or advisory information depending on severity.
 
-**Near-duplicate scalar value hint — experimenting with, not a committed feature yet (0.7.5, unreleased)** — while editing a plain frontmatter value (not a wikilink relation), Yamlink checks whether it's a near-duplicate of a value already used on the same field by another note of the same type — same casing/spacing difference (`Buenos Aires` vs `buenos aires`) or a close typo (`activ` vs `active`). Fires as a Hint, same severity tier as the missing-`id:` hint — never an automatic rewrite, just a nudge toward vault-wide consistency. Available identically on VS Code and the LSP server.
+**Near-duplicate scalar value hint — experimenting with, not a committed feature yet** — while editing a plain frontmatter value (not a wikilink relation), Yamlink checks whether it's a near-duplicate of a value already used on the same field by another note of the same type — same casing/spacing difference (`Buenos Aires` vs `buenos aires`) or a close typo (`activ` vs `active`). Fires as a Hint, same severity tier as the missing-`id:` hint — never an automatic rewrite, just a nudge toward vault-wide consistency. Available identically on VS Code and the LSP server.
 
 This is deliberately a small first slice, not the end state: it only compares values already sitting in your vault, one field at a time, with no cross-note "canonical value" concept and no way yet to tell Yamlink two values should always be treated as the same. What it's aimed at, concretely — a CRM vault where `Acme Inc.` and `Acme, Inc` silently split one account's activity across two spellings and no report ever catches it; a worldbuilding vault where a location name drifts across a hundred notes, three slightly different ways, without anyone noticing; a research vault where an author's name formatting varies note to note, quietly breaking "show me everything by this person." If this proves genuinely useful in real vaults, the natural next steps are a one-click "use the existing value instead" quickfix and, further out, a real canonicalization/alias layer for scalar values (something like `aliases:` already does for note identity, but for plain field values) — neither exists yet.
 

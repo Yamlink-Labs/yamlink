@@ -161,6 +161,16 @@ function readRawBody(filePath) {
     } catch (e) { return null; }
 }
 
+function buildBlockBacklinksForApi(id, filePath, idIndex, fieldsCache) {
+    if (!filePath) return [];
+    try {
+        const { buildBlockBacklinks } = require('../../features/entityHubModel');
+        return buildBlockBacklinks(id, fs.readFileSync(filePath, 'utf8'), idIndex, fieldsCache);
+    } catch (_) {
+        return [];
+    }
+}
+
 async function getNode(req, res, id, url, context) {
     if (req.method !== 'GET') { methodNotAllowed(res); return; }
 
@@ -219,6 +229,7 @@ async function getNode(req, res, id, url, context) {
     if (include.includes('intelligence')) response._intelligence = buildNoteIntelligenceSnapshot(id);
     if (include.includes('history')) response._history = getMutationEvents({ noteId: id, limit: 20 }).slice().reverse();
     if (include.includes('body')) response._body = readRawBody(filePath);
+    if (include.includes('blockbacklinks')) response._blockBacklinks = buildBlockBacklinksForApi(id, filePath, idIndex, fieldsCache);
     if (include.includes('timestamps')) {
         const stat = readFileStatDates(filePath);
         response._timestamps = stat ? { created: stat['file.created'], modified: stat['file.modified'] } : null;

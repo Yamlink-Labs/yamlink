@@ -2140,6 +2140,115 @@ describe('CLI template save', () => {
     });
 });
 
+describe('CLI block-backlinks', () => {
+    function createBlockBacklinkVault() {
+        return createVault({
+            'johnny-rico.md': [
+                '---',
+                'id: johnny-rico',
+                'type: character',
+                'name: Johnny Rico',
+                '---',
+                '',
+                '# After Klendathu',
+                '',
+                '> Review recon logs',
+            ].join('\n'),
+            'carl-jenkins.md': [
+                '---',
+                'id: carl-jenkins',
+                'type: dossier',
+                'name: Carl Jenkins',
+                'unit: "[[roughnecks]]"',
+                '---',
+                '',
+                'See [[johnny-rico#After Klendathu]] for the section briefing.',
+                'Follow [[johnny-rico^q1-1feuao]] for the exact recon quote.',
+            ].join('\n'),
+            'roughnecks.md': [
+                '---',
+                'id: roughnecks',
+                'type: unit',
+                'name: Roughnecks',
+                '---',
+            ].join('\n')
+        });
+    }
+
+    test('returns section and block backlinks as JSON', () => {
+        const vault = createBlockBacklinkVault();
+        try {
+            const result = cli(['block-backlinks', 'johnny-rico', '--json'], vault.dir);
+            assert.equal(result.status, 0);
+            const body = parseJson(result.stdout);
+            assert.equal(body.ok, true);
+            assert.equal(body.noteId, 'johnny-rico');
+            assert.equal(body.blockId, null);
+            assert.equal(body.backlinks.length, 2);
+            assert.deepEqual(body.backlinks.map((row) => row.targetBlockId), ['h-after-klendathu', 'q1-1feuao']);
+            assert.ok(body.backlinks.some((row) => row.kind === 'section ref' && row.sourceId === 'carl-jenkins' && row.line === 8));
+            assert.ok(body.backlinks.some((row) => row.kind === 'block ref' && row.sourceId === 'carl-jenkins' && row.line === 9));
+        } finally {
+            vault.destroy();
+        }
+    });
+
+    test('--block filters to one exact block id', () => {
+        const vault = createBlockBacklinkVault();
+        try {
+            const result = cli(['block-backlinks', 'johnny-rico', '--block', 'q1-1feuao', '--json'], vault.dir);
+            assert.equal(result.status, 0);
+            const body = parseJson(result.stdout);
+            assert.equal(body.blockId, 'q1-1feuao');
+            assert.equal(body.backlinks.length, 1);
+            assert.equal(body.backlinks[0].targetLabel, 'Review recon logs');
+        } finally {
+            vault.destroy();
+        }
+    });
+
+    test('human output groups by target block label and source note', () => {
+        const vault = createBlockBacklinkVault();
+        try {
+            const result = cli(['block-backlinks', 'johnny-rico'], vault.dir);
+            assert.equal(result.status, 0);
+            assert.match(result.stdout, /After Klendathu \(heading\)/);
+            assert.match(result.stdout, /Review recon logs \(quote\)/);
+            assert.match(result.stdout, /Carl Jenkins \(dossier\), line 8/);
+            assert.match(result.stdout, /Carl Jenkins \(dossier\), line 9/);
+        } finally {
+            vault.destroy();
+        }
+    });
+
+    test('zero block backlinks succeeds with an empty JSON result', () => {
+        const vault = createBlockBacklinkVault();
+        try {
+            const result = cli(['block-backlinks', 'roughnecks', '--json'], vault.dir);
+            assert.equal(result.status, 0);
+            const body = parseJson(result.stdout);
+            assert.equal(body.noteId, 'roughnecks');
+            assert.deepEqual(body.backlinks, []);
+        } finally {
+            vault.destroy();
+        }
+    });
+
+    test('unknown note id returns NOT_FOUND', () => {
+        const vault = createBlockBacklinkVault();
+        try {
+            const result = cli(['block-backlinks', 'missing-note', '--json'], vault.dir);
+            assert.equal(result.status, 1);
+            const body = parseJson(result.stdout);
+            assert.equal(body.ok, false);
+            assert.equal(body.code, 'NOT_FOUND');
+            assert.equal(body.details.id, 'missing-note');
+        } finally {
+            vault.destroy();
+        }
+    });
+});
+
 describe('CLI glossary', () => {
     const GLOSSARY_FIXTURE = {
         'klendathu.md': '---\nid: klendathu\ntype: location\nname: Klendathu\n---\n\nHomeworld of the Arachnid species.\n',
