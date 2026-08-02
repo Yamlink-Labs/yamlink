@@ -107,6 +107,7 @@ function printHelp() {
         '  --webhook <url>         Publish: POST a small JSON payload to this URL after a successful build',
         '  --force                 Publish: bypass the generation cache and rebuild everything',
         '  --help, -h              Show this help',
+        '  --version, -v           Print the installed Yamlink version',
         '',
         'Examples:',
         '  yamlink build --vault ~/vault',
@@ -337,6 +338,16 @@ async function main() {
 
     if (args.includes('--help') || args.includes('-h')) {
         printHelp();
+        return;
+    }
+
+    if (args.includes('--version') || args.includes('-v')) {
+        // Real bug found 2026-08-02: with no explicit check here, `--version`
+        // (a flag, filtered out of `command` above since it starts with `-`)
+        // left `command` undefined and fell straight into the `!command`
+        // Conduit-launch branch below — Ink then failed on non-interactive
+        // stdin instead of ever printing a version.
+        console.log(require('../../package.json').version);
         return;
     }
 

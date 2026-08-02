@@ -590,6 +590,26 @@ test('CLI export --format html --output writes a real file', () => {
     }
 });
 
+test('CLI --version prints the installed version and exits, does not fall through to Conduit', () => {
+    // Real bug: `command = args.find(a => !a.startsWith('-'))` filters out
+    // `--version` entirely (it starts with `-`), leaving `command`
+    // undefined and falling into the `!command` branch that launches
+    // Conduit — which then fails on non-interactive stdin instead of ever
+    // printing a version. Found via a real Codex verification run against
+    // a separate repo.
+    const pkg = require('../package.json');
+    const result = cli(['--version']);
+    assert.equal(result.status, 0);
+    assert.equal(result.stdout.trim(), pkg.version);
+});
+
+test('CLI -v is a shorthand for --version', () => {
+    const pkg = require('../package.json');
+    const result = cli(['-v']);
+    assert.equal(result.status, 0);
+    assert.equal(result.stdout.trim(), pkg.version);
+});
+
 test('CLI completions bash exits 0 and prints a script', () => {
     const result = cli(['completions', 'bash']);
     assert.equal(result.status, 0);

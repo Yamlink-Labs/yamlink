@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.7.8
+
+0.7.8 is a quick hotfix for a real bug found immediately after 0.7.7 shipped, caught during a real verification run of the new publishing commands in a separate repo.
+
+### Fixed
+
+- **`yamlink --version` / `-v` did nothing but crash.** The CLI had no handling for either flag at all — `command = args.find(a => !a.startsWith('-'))` filtered them out entirely, leaving `command` undefined and falling into the same path as running bare `yamlink` with no arguments, which launches Conduit. In a non-interactive terminal, Conduit's Ink UI then failed outright ("Raw mode is not supported on the current process.stdin") instead of ever printing a version. Fixed — both flags now print the installed version and exit cleanly.
+
 ## 0.7.7
 
 0.7.7 is Yamlink's first Authoring & Publishing release, moved ahead of schedule on real evidence & need: the construction of Yamlink's website (https://www.yamlink.dev - coming soon), using Yamlink as its content engine. Building its own pipeline by hand, surfaced concrete gaps in turning a vault into a real website. 

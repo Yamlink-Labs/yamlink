@@ -433,7 +433,11 @@ This is the fastest way to bring an existing knowledge base into Yamlink without
 
 ---
 
-## Current release — 0.7.7
+## Current release — 0.7.8
+
+0.7.8 is a quick hotfix for a real bug found immediately after 0.7.7 shipped: `yamlink --version`/`-v` had no handling at all and crashed instead of printing a version. Fixed — see [CHANGELOG.md](./CHANGELOG.md#078) for detail.
+
+## 0.7.7
 
 0.7.7 is Yamlink's first Authoring & Publishing release — a real, separate website project (https://www.yamlink.dev - coming soon) adopted Yamlink as its content engine ahead of schedule, and hand-building its own pipeline surfaced concrete gaps this release closes. The full feature set is built and tested.
 
