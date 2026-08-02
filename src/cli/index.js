@@ -65,7 +65,8 @@ function printHelp() {
         '  lenses                  Intelligence — vault change lenses over mutation history',
         '  conduit                 Open Yamlink Conduit in the terminal UI',
         '  completions <shell>     Print shell completion script (bash or zsh)',
-        '  export                  Export vault notes as JSON or CSV',
+        '  export                  Export vault notes as JSON/CSV, or one note as standalone HTML',
+        '  publish --out <dir>     Build a static, structured payload for a site generator (Astro/Next/Eleventy)',
         '  env                     Export shell variables for the current vault',
         '',
         'Options:',
@@ -79,8 +80,9 @@ function printHelp() {
         '  --dry-run               Preview changes without writing files',
         '  --quiet                 Suppress advisory or non-essential output',
         '  --rename-file           Rename the owning markdown file when it matches the old id',
-        '  --format json|csv       Output format for export command (default: json)',
+        '  --format json|csv|html  Output format for export command (default: json)',
         '  --query "<query>"       Query string for export command',
+        '  --id <id>               Note id for single-note HTML export',
         '  --output <path>         Write output to file instead of stdout; restore exports to a directory',
         '  --field <key=value>     Field pair for create command (repeatable)',
         '  --sort name|date|type   Sort order for ls command',
@@ -99,6 +101,11 @@ function printHelp() {
         '  --extra-field <name>    Glossary: an extra frontmatter field to show per entry (repeatable)',
         '  --sort-by-references    Glossary: rank terms by inbound link count instead of alphabetically',
         '  --block <block-id>      Block-backlinks: only show backlinks to one exact block id',
+        '  --out <dir>             Output directory for publish command (required)',
+        '  --mode preview|prod...  Publish: preview includes draft notes, production excludes them (default: production)',
+        '  --site-url <url>        Publish: base URL for sitemap.xml/feed.xml (omit to skip generating them)',
+        '  --webhook <url>         Publish: POST a small JSON payload to this URL after a successful build',
+        '  --force                 Publish: bypass the generation cache and rebuild everything',
         '  --help, -h              Show this help',
         '',
         'Examples:',
@@ -150,6 +157,10 @@ function printHelp() {
         '  eval "$(yamlink completions zsh)"',
         '  yamlink export --format csv --output notes.csv',
         '  yamlink export --query "where type = contact" --format json',
+        '  yamlink export --id johnny-rico --format html --output johnny-rico.html',
+        '  yamlink publish --out ./site-content',
+        '  yamlink publish --out ./site-content --mode preview',
+        '  yamlink publish --out ./site-content --site-url https://example.com --webhook https://example.com/deploy',
         '  eval "$(yamlink env --shell zsh)"',
         '  yamlink suggest johnny-rico',
         '  yamlink drift --type contact',
@@ -665,9 +676,22 @@ async function main() {
 
     case 'export': {
         const format = flagVal('--format') || (json ? 'json' : 'json');
+        const id = flagVal('--id');
         const query  = flagVal('--query');
         const output = flagVal('--output');
-        require('./commands/export').run({ query, format, output, json, quiet });
+        require('./commands/export').run({ id, query, format, output, json, quiet });
+        break;
+    }
+
+    case 'publish': {
+        await require('./commands/publish').run({
+            out: flagVal('--out'),
+            mode: flagVal('--mode'),
+            siteUrl: flagVal('--site-url'),
+            webhook: flagVal('--webhook'),
+            force: args.includes('--force'),
+            json, quiet
+        });
         break;
     }
 

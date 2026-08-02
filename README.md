@@ -249,6 +249,19 @@ Yamlink's keyboard-driven terminal workspace — full vault access with no brows
 - **Quick Capture**, **Peek overlay**, **note mutation history**, **graph traversal** (`]`/`[` follows the strongest outbound/inbound link), **Warp** (type any character to fuzzy-search notes, types, and commands from anywhere), and **spatial bookmarks** (`m0`–`m9` / `'0`–`'9`)
 - No polling — every screen updates live from `GET /api/events` (SSE) on each vault rebuild
 
+### Authoring & Publishing
+
+**New in 0.7.7** — turns the vault into a real content source for a static site, not just an in-editor knowledge base. Built from a real, separate website project's actual usage, not speculation.
+
+- **`yamlink publish --out <dir>`** — walks every publishable note and writes a structured JSON payload (per type, plus a manifest) a site generator like Astro, Next.js, or Eleventy can build a site from. `[[wikilinks]]` in frontmatter and body text resolve to relative site URLs; `!view` blocks resolve to a static Markdown table snapshot as of the build.
+- **`status: draft/published/archived`** is now a real publish/export-time gate, not a decorative label — a production build excludes drafts by default; `--mode preview` includes them. Read-side behavior (`!view`, completions, hover, diagnostics) never filters by it — a vault that never sets this field sees no difference anywhere.
+- **A numeric `order:` field** controls manual ordering in the published manifest — for chapters, changelog entries, or any fixed narrative sequence.
+- **`previous_ids:`** on a note generates a redirect map, so a renamed note's old URL doesn't 404 on the published site.
+- **A pre-publish safety gate** warns (without failing the build) on a published note linking to a draft/archived note, or to a link that doesn't resolve at all — skipping fenced code blocks, so a tutorial note's example syntax is never flagged.
+- Asset pass-through, an incremental build cache, a generated search index, and — with `--site-url` — `sitemap.xml` and an RSS feed all come from the same command.
+- **`yamlink export --id <id> --format html`** — one note as a standalone, self-contained HTML file, for sending a single note to someone with no Yamlink install at all.
+- **A pluggable Live Note preview target** — set `yamlink.liveNotePreviewUrl` (e.g. `http://localhost:4321/{slug}`) and Live Note embeds your destination site's own running dev server for the current note instead of Yamlink's generic rendering, staying in sync as you switch notes.
+
 ### CLI and platform
 
 Run Yamlink capabilities without VS Code — 41 commands, `--json` everywhere for scripting. Commands that list results (`ls`, `grep`, `find`, `search`, `doctor`, and others) print a real aligned table by default; add `--json` for machine output, or `--quiet` on `ls`/`grep`/`find` for the old plain tab-separated form if you're piping into `awk`/`cut`/`xargs`.
@@ -420,7 +433,13 @@ This is the fastest way to bring an existing knowledge base into Yamlink without
 
 ---
 
-## Latest release — 0.7.6
+## Current release — 0.7.7
+
+0.7.7 is Yamlink's first Authoring & Publishing release — a real, separate website project (https://www.yamlink.dev - coming soon) adopted Yamlink as its content engine ahead of schedule, and hand-building its own pipeline surfaced concrete gaps this release closes. The full feature set is built and tested.
+
+`yamlink publish --out <dir>` builds a static, structured content payload (per-note JSON, resolved links, resolved `!view` snapshots, assets, a search index, and — with `--site-url` — a sitemap and RSS feed) for a site generator like Astro, Next.js, or Eleventy to consume. `status: draft/published/archived` becomes a real gate on what gets published, not just a display label; a numeric `order:` field controls manual ordering; a declared `previous_ids:` field generates redirects for renamed notes. `yamlink export --id <id> --format html` exports a single note as a standalone HTML file, and a `yamlink.liveNotePreviewUrl` setting lets Live Note preview a note through your destination site's own rendering instead of Yamlink's generic view. See the [Authoring & Publishing](#authoring--publishing) section above for the full list.
+
+## 0.7.6
 
 0.7.6 is a quick follow-up mainly fixing real problems from 0.7.5: the in-editor "What's New" notice was still showing 0.7.4's release notes to every updating user, block IDs (used for hover, completion, go-to-definition, and block-level backlinks) silently stopped working entirely on any note saved with Windows line endings, and a multi-value relation field could render with corrupted, missing brackets in the hover card. Alongside those fixes, block-level backlinks — knowing which notes link to a specific task, quote, heading, or footnote inside a note, not just the note as a whole — are now reachable outside VS Code too, via `yamlink block-backlinks` and `GET /api/nodes/:id?include=blockBacklinks`.
 

@@ -54,7 +54,7 @@ The external URI model is the correct target for all panels. Migration is on the
 
 ### Color system
 
-The Yamlink Apollo palette is the authoritative color source for all webview surfaces. It is documented at `docs/architecture/YAMLINK-COLOR-PALETTE.md` with hex values for the Night, Dusk, and Dawn variants.
+The Yamlink Apollo palette is the authoritative color source for all webview surfaces.
 
 Core semantic roles (Night variant):
 
@@ -115,6 +115,8 @@ extension.js                    ← VS Code entry point, wires everything
 │   ├── imageEmbed.js           ← Shared `![[image.png]]` embed resolution — one source of truth for hover, diagnostics, decorations, and Ctrl+Click
 │   ├── templateRegistry.js     ← Smart Template lookup per type
 │   ├── healthSnapshot.js       ← Vault Health data model shared by panel + CLI
+│   ├── publish.js              ← 0.7.7 Authoring & Publishing: status-gate (isPublishable), slug/order convention, fence-aware wikilink→relative-URL resolution
+│   ├── buildPipeline.js        ← 0.7.7: `runBuild()` — the `yamlink publish` engine (manifest, per-type JSON, asset pass-through, generation+hash caching, redirect map, pre-publish safety warnings, sitemap/feed/search-index)
 │   └── ...
 │
 ├── src/registries/             ← Type and schema registries (typeRegistry, schemaRegistry)
@@ -161,7 +163,7 @@ extension.js                    ← VS Code entry point, wires everything
 │   ├── healthPanel.js          ← Vault Health panel
 │   ├── homePanel.js            ← Home panel (activity stream, pulse, nudges)
 │   ├── home/                   ← Home panel HTML, CSS, browser-side JS
-│   ├── liveNote.js             ← Live Note rendered sidecar (synced preview beside the editor)
+│   ├── preview/liveNotePanelController.js, liveNoteModel.js, liveNoteStyles.js, previewRenderer.js  ← Live Note rendered sidecar (synced preview beside the editor). 0.7.7: `yamlink.liveNotePreviewUrl` setting lets the panel embed a destination site's own dev server (iframe) for the current note instead of the normal rendered HTML, falling back to the normal render for a note with no resolvable `id:`
 │   ├── noteOutline.js          ← Note Outline sidebar (section tree with per-heading metadata)
 │   ├── importExternalVaults.js, importObsidian.js  ← Vault import (Obsidian/Notion/Evernote/Roam), split into src/importers/
 │   ├── graph/                  ← x-graph workspace panel (Canvas2D)
@@ -300,7 +302,8 @@ extension.js                    ← VS Code entry point, wires everything
 | `yamlink graph` | Export full vault graph as `{ nodes, edges }` JSON. `--only-types` to filter. `--at <date>` reconstructs the whole vault's nodes and edges as they existed at that moment (via `timeEngine.js`'s `reconstructVaultAtTime`/`buildHistoricalGraph`). |
 | `yamlink serve` | Local HTTP API — see below. |
 | `yamlink conduit` | Launch the Ink-based terminal UI that talks to the local API. |
-| `yamlink export` | Export vault as JSON or CSV. |
+| `yamlink publish --out <dir>` | 0.7.7 Authoring & Publishing: build a static, structured content payload for a site generator (Astro/Next/Eleventy). `--mode preview\|production`, `--site-url` (sitemap/feed), `--webhook`, `--force`. |
+| `yamlink export` | Export vault as JSON or CSV. `--id <id> --format html [--output <path>]` (0.7.7): a single note as a standalone, self-contained HTML file — resolved links, resolved `!view` snapshots, callout styling, no VS Code dependency. |
 
 ### Local HTTP API (`yamlink serve`)
 
@@ -316,13 +319,13 @@ extension.js                    ← VS Code entry point, wires everything
 
 **Generation header:** Every response includes `X-Yamlink-Generation: <n>` — an integer that increments on every completed rebuild. Clients use this to detect stale cached data.
 
-**Stability policy:** The v1 contract is documented in [`docs/api/STABILITY.md`](docs/api/STABILITY.md).
+**Stability policy:** the v1 route/response contract is documented in [`CONTRACT.md`](./CONTRACT.md); breaking changes to an existing route are avoided in favor of new `include=`/query params.
 
 **Write model:** headless surfaces now share a single `VaultService` (`src/core/vaultService.js`). API writes go to disk through the CLI-safe write layer inside `vaultService.mutate(writeFn)`, which serializes the write and the post-write rebuild as one atomic unit. Mutation events are appended to `.yamlink/mutation-log.ndjson` and fanned out immediately; when the rebuild completes, a final rebuild event is emitted and the generation header advances. File-watcher rebuilds also flow through the same service via `notifyFileChange()`.
 
 ### Conduit and LSP
 
-- **Conduit** (`yamlink conduit`, or simply `yamlink`) is a long-running terminal interface built with Ink. Nine screens (Briefing, Query, Navigator, Explorer, Health, Search, Graph, Diff, Radar), each a single keypress away. Conduit talks only to the local HTTP API and SSE stream — it imports no Yamlink internals directly. Running `yamlink` with no arguments auto-starts the API server in-process if one is not already listening on the configured port, then shuts it down on exit.
+- **Conduit** (`yamlink conduit`, or simply `yamlink`) is a long-running terminal interface built with Ink. Ten screens (Briefing, Query, Navigator, Explorer, Health, Search, Graph, Diff, Radar, Trends), each a single keypress away. Conduit talks only to the local HTTP API and SSE stream — it imports no Yamlink internals directly. Running `yamlink` with no arguments auto-starts the API server in-process if one is not already listening on the configured port, then shuts it down on exit.
 - **LSP** (`yamlink serve --lsp`) is the editor-agnostic protocol face of the same engine. It runs over stdio, not HTTP, and is the portability layer for Zed, Helix, Neovim, Emacs, and future editor integrations.
 - The practical contract goal is simple: CLI, API, Conduit, and LSP all sit on the same vault engine, so portability work should happen in shared core/intelligence layers first, not in editor-specific glue.
 
@@ -389,7 +392,7 @@ All panels use `postMessage` / `onDidReceiveMessage`. There is no shared protoco
 
 ## Mutation Event Log
 
-`src/runtime/mutationEventLog.js` — persisted NDJSON append log at `.yamlink/mutation-log.ndjson`. Event types are centrally registered in `src/runtime/mutationEventTypes.js`. Full reference, including known scaling limits and the Time Engine's reconstruction algorithm built on top of this log: [docs/architecture/TIME-ENGINE.md](./docs/architecture/TIME-ENGINE.md).
+`src/runtime/mutationEventLog.js` — persisted NDJSON append log at `.yamlink/mutation-log.ndjson`. Event types are centrally registered in `src/runtime/mutationEventTypes.js`. The Time Engine (`src/core/timeEngine.js`) reconstructs historical note/vault state by undoing these events backward from the current state.
 
 Event types: `note_created`, `note_deleted`, `note_touched`, `type_set`, `field_added`, `field_changed`, `field_removed`, `relation_added`, `relation_changed`, `relation_removed`, `completion_accepted`.
 

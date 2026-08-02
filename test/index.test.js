@@ -275,6 +275,21 @@ describe('wikilink edge extraction', () => {
         ]);
     });
 
+    test('an unclosed [[ illustrating trigger syntax in prose does not swallow the rest of the body as one broken-link target', () => {
+        // Real bug found via sample/welcome.md: "Type `[[` anywhere to
+        // trigger autocomplete." has no closing ]] on its own line. The old
+        // regex (`[^\]]+`, which matches newlines) hunted forward across
+        // paragraphs for the next ]] and captured everything in between as
+        // one giant garbled "link".
+        const edges = extractBodyLinks(
+            '---\nid: tutorial-note\ntype: article\n---\n' +
+            'Type `[[` anywhere to trigger autocomplete.\n\n' +
+            'Some unrelated paragraph of real prose here.\n\n' +
+            'A real link: [[andreas-storms]].\n'
+        );
+        assert.deepEqual(edges, [{ field: 'body', targetId: 'andreas-storms' }]);
+    });
+
     test('canonicalizes body wikilinks and strips aliases anchors and block refs', () => {
         const edges = extractBodyLinks(
             '---\nid: meeting-1\ntype: meeting\n---\n' +

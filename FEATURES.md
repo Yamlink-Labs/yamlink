@@ -64,7 +64,7 @@ Yamlink supports Obsidian-compatible callout syntax in the note body:
 | Orange — Caution | `[!WARNING]`, `[!CAUTION]` | `#E67D61` |
 | Red — Danger | `[!DANGER]`, `[!BUG]`, `[!FAILURE]` | `#FF4A6A` |
 
-Colors are sourced from the Yamlink Apollo Night palette (`docs/architecture/YAMLINK-COLOR-PALETTE.md`).
+Colors are sourced from the Yamlink Apollo Night palette.
 
 - Titles after the type marker are optional: `> [!NOTE]` and `> [!NOTE] My title` both work.
 - Callout types feed into note-role inference: `[!SOURCE]` and `[!EVIDENCE]` push toward a source/evidence role; `[!WARNING]` toward a warning signal.
@@ -259,6 +259,7 @@ yamlink doctor [--vault <path>] [--json]        # comprehensive integrity pass
 yamlink serve [--port 3000]                     # local HTTP API server
 yamlink serve --lsp --vault <path>              # JSON-RPC 2.0 LSP server over stdio
 yamlink export [--format json|csv]              # dump vault to JSON or CSV
+yamlink publish --out <dir> [--mode preview|production] [--site-url] [--webhook] [--force]  # build a static, structured content payload for a site generator
 yamlink env [--shell bash|zsh|fish]             # export shell variables for the current vault
 yamlink watch [--vault <path>]                  # watch vault, rebuild on .md changes
 yamlink on <event> [--type <type>] -- <script>  # run a script on vault mutation events
@@ -267,7 +268,7 @@ yamlink init [path]                             # scaffold a new Yamlink vault
 yamlink completions bash|zsh                    # print shell completion script
 ```
 
-41 commands total. All commands accept `--vault <path>` (defaults to current directory). Most accept `--json` for machine-readable output. `ls`/`grep`/`find` print a real aligned table by default; `--quiet` on those three restores the old plain tab-separated form for shell pipelines.
+44 commands total. All commands accept `--vault <path>` (defaults to current directory). Most accept `--json` for machine-readable output. `ls`/`grep`/`find` print a real aligned table by default; `--quiet` on those three restores the old plain tab-separated form for shell pipelines.
 
 `yamlink serve --lsp` runs the [LSP server](#lsp-server) — a persistent JSON-RPC 2.0 process for Neovim, Zed, Helix, and Emacs. See the LSP section below.
 
@@ -300,14 +301,13 @@ yamlink completions bash|zsh                    # print shell completion script
 | `GET /api/intelligence/arc?id=` | Arc prediction — likely missing fields for a note |
 | `GET /api/intelligence/fieldCategory?id=&field=` | Field classification: category, confidence, source, reasons |
 | `GET /api/intelligence/note?id=` \| `/clusters` \| `/lenses` | Combined note intelligence snapshot; detected pre-schema field clusters; vault-wide change lenses |
+| `GET /api/intelligence/trends` | Growth/Stale/Structure forecast and retrospective accuracy — the same data `yamlink trends` and Vault Health's Projections card show |
 
 All responses include `X-Yamlink-Generation` (vault version integer) and `X-Yamlink-Api-Version` headers. CORS is enabled for all origins (`*`) — no authentication by default, since anything reachable at `127.0.0.1` is otherwise trusted; set `YAMLINK_API_TOKEN` before starting `yamlink serve` to require a matching `X-Yamlink-Token` header on every request. Full method/path/params/error-code reference: [`CONTRACT.md`](CONTRACT.md).
 
 ### Plugin API for third-party field evidence
 
 A VS Code extension can register a read-only evidence source that contributes one extra, small, explainable signal to Yamlink's own field classification — `registerFieldEvidenceSource(fn)`, reached via `vscode.extensions.getExtension('<publisher>.yamlink').exports`. Deliberately narrow: no vault writes, no visibility into other registered plugins, every signal must carry a stated reason or it's discarded, and the effect on any single field's confidence is capped small so no plugin can dominate a classification Yamlink's own evidence already made. VS-Code-only — the LSP server has no third-party extension-loading mechanism to expose this through.
-
-**Publishing use case:** `yamlink serve` → Next.js / Astro site reads vault at build time via API. Notes become pages, frontmatter becomes structured metadata, wikilinks resolve to relative URLs. Vault as CMS, files stay plain Markdown.
 
 ### CI use case
 
@@ -320,6 +320,27 @@ A VS Code extension can register a read-only evidence source that contributes on
 
 - `build` catches structural errors (broken links, duplicate IDs) — always meaningful regardless of schemas
 - `validate` catches data quality issues (missing required fields per schema) — only meaningful when schemas exist
+
+### Authoring & Publishing (0.7.7, in progress)
+
+`yamlink publish --out <dir>` turns the vault into a static, structured content payload a site generator (Astro, Next.js, Eleventy, or anything else that reads JSON) can build a real website from. The vault stays the source of truth — this is a read-only projection of it, not a second content model.
+
+```bash
+yamlink publish --out ./site-content
+yamlink publish --out ./site-content --mode preview
+yamlink publish --out ./site-content --site-url https://example.com --webhook https://example.com/deploy
+```
+
+- **`status: draft/published/archived` is a real gate**, not a decorative label — a production build excludes drafts by default; `--mode preview` includes them. Nothing about `!view`, completions, hover, or diagnostics changes — a vault that never sets this field sees no difference anywhere.
+- **`[[wikilinks]]` resolve to relative site URLs**, in both frontmatter and body text; `!view` blocks resolve to a static Markdown table snapshot as of the build.
+- **`order:`** (a numeric frontmatter field) controls manual ordering in the output manifest — chapters, changelog entries, any fixed sequence.
+- **`previous_ids:`** on a note generates a redirect map, so a rename doesn't 404 an old published URL.
+- **A pre-publish safety gate** warns (without failing the build) on a published note linking to a draft/archived note, or a link that doesn't resolve — ignoring fenced-code documentation examples.
+- Referenced images are copied into the output automatically; builds are incremental (unchanged notes aren't rewritten); a search index is generated every time; `--site-url` also generates `sitemap.xml` and an RSS feed; `--webhook` notifies the destination site to redeploy.
+
+**`yamlink export --id <id> --format html [--output <path>]`** — one note (resolved links, resolved `!view` blocks, callout styling) as a standalone HTML file, no VS Code dependency, lighter than the PDF exporter.
+
+**Live Note preview target** — `yamlink.liveNotePreviewUrl` (a URL template, e.g. `http://localhost:4321/{slug}`) makes Live Note embed the destination site's own running dev server for the current note in an iframe instead of Yamlink's generic rendering, staying in sync as the active note changes. A note with no resolvable `id:` falls back to the normal rendered preview.
 
 ---
 
@@ -1350,30 +1371,49 @@ npm link
 | Command | What it does |
 |---|---|
 | `yamlink build` | Index vault, report broken links / duplicate IDs (exits 1 on issues) |
+| `yamlink doctor` | Comprehensive integrity pass: broken links, duplicate ids, malformed frontmatter, orphans, schema violations, stale notes, arc gaps |
+| `yamlink validate` | Schema conformance — exits 1 on required-field violations |
+| `yamlink status` | Compact vault snapshot: notes, edges, types, broken links, generation |
 | `yamlink briefing` | Vault pulse, overdue tasks, recent activity, arc predictions for today's notes |
+| `yamlink query "<clause>"` | Run a query using the same language as `!view` blocks; outputs an ASCII table |
+| `yamlink search <query>` | Fast lookup by id, name, title, or type; `--type` narrows results |
+| `yamlink ls` | List notes with unix-style filtering and sorting (`--type`, `--sort`) |
+| `yamlink grep <text>` | Search frontmatter values for matching text (`--field` narrows to one field) |
+| `yamlink find` | Structural search by present/missing fields (`--has`, `--missing`) |
+| `yamlink cat <id>` | Print a note's frontmatter snapshot and body; `--at <date>` for a historical snapshot |
+| `yamlink links <id>` | Outbound and inbound links for a note, with broken-link markers; `--at <date>` for outbound-only history |
+| `yamlink report <id>` | Full note report: type, lifecycle, drift, and links by field; `--at <date>` for a historical report |
+| `yamlink diff <a> <b>` | Compare two notes' field sets, or `--since <date>` for recent vault-wide changes |
+| `yamlink story --since <date>` | Vault growth story: note counts, per-type deltas, and activity since a date |
+| `yamlink restore <timestamp>` | Preview a reconstructed vault as of a past date; `--output <path>` exports as `.md` files (never into the live vault) |
+| `yamlink snapshot` | Capture a checkpoint now, for restoring further back later once the mutation log's retention window can't reach that far alone |
+| `yamlink trends` | Growth/Stale/Structure forecast and retrospective accuracy — the same data Vault Health's Projections card shows |
 | `yamlink create <type>` | Create a note non-interactively; accepts any number of `--field key=value` pairs |
 | `yamlink set <id> <field> <value>` | Write a frontmatter field on a note; `--clear` removes the field; emits mutation events |
 | `yamlink link <id> <field> <target>` | Add a `[[target]]` wikilink relation; `--append` adds to an existing multi-value field |
-| `yamlink search <query>` | Fast lookup by id, name, title, or type; `--type` narrows results |
-| `yamlink status` | Compact vault snapshot: notes, edges, types, broken links, generation |
-| `yamlink health` | Lifecycle, drift, type distribution |
-| `yamlink validate` | Schema conformance — exits 1 on required-field violations |
-| `yamlink query "<clause>"` | Run a query using the same language as `!view` blocks; outputs an ASCII table |
-| `yamlink report <id>` | Full note report: type, lifecycle, drift, and links by field |
-| `yamlink links <id>` | Outbound and inbound links for a note, with broken-link markers |
 | `yamlink rename <old> <new>` | Vault-wide ID rename; `--dry-run` previews changes without writing |
-| `yamlink schema list` | All schema notes: type, required fields, note count |
-| `yamlink schema check <type>` | Conformance check for all notes of a type against its schema |
-| `yamlink graph` | Export vault graph as `{ nodes, edges }` JSON; `--only-types` to filter |
-| `yamlink serve` | Local HTTP API server (default port 3000) |
-| `yamlink serve --lsp` | JSON-RPC 2.0 LSP server over stdio for Neovim, Zed, Helix, Emacs |
-| `yamlink export` | Dump vault to JSON or CSV; `--format json\|csv` |
-| `yamlink watch` | Watch vault for `.md` changes, rebuild on every save |
-| `yamlink on <event> -- <script>` | Run a shell script when matching mutation events fire |
-| `yamlink conduit` | Terminal UI — 10 screens; auto-starts the API server if not already running |
-| `yamlink init [path]` | Scaffold a new vault with `.yamlink/`, `_templates/`, and `welcome.md` |
 | `yamlink template save <id>` | Save an existing note as a blank-skeleton `_templates/<type>.md` template; `--force` to overwrite an existing one |
 | `yamlink glossary --type <a,b>` | Live alphabetized glossary of every note of the given type(s), with definitions and backlinks; nothing written to disk |
+| `yamlink block-backlinks <id>` | Notes linking to a specific task/quote/heading/footnote inside the given note; `--block <block-id>` filters to one exact block |
+| `yamlink mutations` | Recent mutation events from the vault log |
+| `yamlink session` | Summarize recent or explicit mutation sessions |
+| `yamlink on <event> -- <script>` | Run a shell script when matching mutation events fire |
+| `yamlink watch` | Watch vault for `.md` changes, rebuild on every save |
+| `yamlink suggest <id>` | Fields likely missing from a note |
+| `yamlink drift` | Notes structurally drifting from their type's usual shape (`--type` narrows) |
+| `yamlink stale` | Notes in a stale lifecycle state |
+| `yamlink orphans` | Notes with no inbound or outbound links |
+| `yamlink pressure` | Knowledge pressure: load-bearing drafts, stale hubs, orphans |
+| `yamlink lenses` | Vault change lenses over mutation history |
+| `yamlink schema list` | All schema notes: type, required fields, note count |
+| `yamlink schema check <type>` | Conformance check for all notes of a type against its schema |
+| `yamlink graph` | Export vault graph as `{ nodes, edges }` JSON; `--only-types` to filter; `--at <date>` for a historical reconstruction |
+| `yamlink export` | Dump vault to JSON or CSV; `--format json\|csv` |
+| `yamlink env` | Export shell variables for the current vault |
+| `yamlink serve` | Local HTTP API server (default port 3000) |
+| `yamlink serve --lsp` | JSON-RPC 2.0 LSP server over stdio for Neovim, Zed, Helix, Emacs |
+| `yamlink conduit` | Terminal UI — 10 screens; auto-starts the API server if not already running |
+| `yamlink init [path]` | Scaffold a new vault with `.yamlink/`, `_templates/`, and `welcome.md` |
 | `yamlink completions bash\|zsh` | Print shell completion script; pipe into `.bashrc` / `.zshrc` |
 
 ### Examples
@@ -1645,7 +1685,7 @@ That boundary matters for roadmap discipline.
 
 ## Design Direction
 
-Yamlink has a formalized color system — the **Yamlink Apollo palette** — applied consistently across all webview surfaces. The palette reference lives at `docs/architecture/YAMLINK-COLOR-PALETTE.md`. Three variants ship (Night, Dusk, Dawn) with the VS Code theme family.
+Yamlink has a formalized color system — the **Yamlink Apollo palette** — applied consistently across all webview surfaces. Three variants ship (Night, Dusk, Dawn) with the VS Code theme family.
 
 ### Palette semantic roles
 

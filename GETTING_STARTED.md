@@ -577,7 +577,110 @@ Plain names and folders match exactly; `*`, `**`, and `?` also work as wildcards
 
 ---
 
-## 12. Where to go next
+## 12. Publish your vault as a website
+
+**0.7.7** `yamlink publish` turns your vault into a static, structured content payload a real site generator (Astro, Next.js, Eleventy — anything that reads JSON) can build a website from. Your notes stay the source of truth; this is a read-only projection of them, not a second content model to maintain.
+
+### Run your first build
+
+From inside your vault:
+
+```bash
+yamlink publish --out ./site-content
+```
+
+Against the sample vault, this looks like:
+
+```
+Published 25 note(s) to ./site-content
+  written: 25, unchanged: 0, removed: 0
+```
+
+Look at what it wrote:
+
+```
+site-content/
+  manifest.json              # every published note's id, slug, type, title, order
+  notes/mission/mission-klendathu.json
+  notes/character/johnny-rico.json
+  ...
+  search-index.json          # id/slug/type/title/excerpt for every note
+```
+
+Open one of the per-note files — `[[wikilinks]]` in both frontmatter and body text are already resolved to relative site paths (`[[johnny-rico]]` becomes `[johnny-rico](/johnny-rico)`), and any `!view` block in the body has been resolved to a plain Markdown table snapshot, since the destination site has no Yamlink query engine of its own to run it live.
+
+### Keep some notes out of the build
+
+Add `status: draft` to a note's frontmatter and rebuild — it's excluded automatically:
+
+```yaml
+---
+id: unfinished-post
+type: article
+status: draft
+---
+```
+
+```bash
+yamlink publish --out ./site-content              # excludes draft notes
+yamlink publish --out ./site-content --mode preview # includes them, for your own preview
+```
+
+Nothing else changes — `!view`, completions, hover, and diagnostics never look at `status:`. It only matters at publish time.
+
+### Control the order of a sequence
+
+For chapters, changelog entries, or anything with a fixed narrative order, add a numeric `order:` field:
+
+```yaml
+---
+id: chapter-3
+type: chapter
+order: 3
+---
+```
+
+`manifest.json`'s note list sorts by it automatically; notes without an `order:` trail after every ordered note.
+
+### Rename a note without breaking old links
+
+Declare where a note used to live before you renamed it:
+
+```yaml
+---
+id: new-post-name
+previous_ids: old-post-name
+---
+```
+
+The next build writes `redirects.json` mapping `old-post-name` → `new-post-name`, so your site generator can serve a real redirect instead of a 404.
+
+### Check the build's own warnings
+
+Every build reports (without failing) anything a published site shouldn't silently ship — a link to a note that's still a draft, or a link that doesn't resolve at all:
+
+```
+4 pre-publish warning(s):
+    welcome → a-note-that-doesnt-exist (broken-link)
+```
+
+A tutorial note's fenced-code example showing `[[wikilink]]` syntax is never flagged — only real references outside a code block are checked.
+
+### Generate a sitemap, feed, and trigger a redeploy
+
+```bash
+yamlink publish --out ./site-content --site-url https://example.com --webhook https://example.com/deploy
+```
+
+`--site-url` adds `sitemap.xml` and an RSS `feed.xml` (from notes with a `date`/`created`/`published_at` field) to the output. `--webhook` POSTs a small JSON payload to that URL once the build succeeds — a good place to trigger your host's own redeploy.
+
+### Rebuilding is cheap
+
+A build where nothing in the vault has changed since the last one is a no-op. When something has changed, only the notes whose output actually differs get rewritten — safe to run `yamlink publish` in a loop, a pre-commit hook, or CI without worrying about redundant writes. `--force` bypasses this if you ever need a full rebuild.
+
+---
+
+## 13. Where to go next
 
 - [README.md](./README.md) — full product surface overview
 - [FEATURES.md](./FEATURES.md) — complete feature reference across every surface

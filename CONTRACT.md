@@ -2,8 +2,6 @@
 
 A machine-scannable reference for every route the local HTTP API (`yamlink serve`) exposes: method, path, query params, request/response body shape, and error codes. Generated from and cross-checked against the live route table in `src/api/router.js` (`routeDefs`) and each handler in `src/api/handlers/` — not written from memory, and should be re-verified against `routeDefs` whenever a route is added or changed.
 
-For prose walkthroughs with example requests/responses, see [README-API.md](./README-API.md). This document is the flat contract table; that one is the guided tour.
-
 ## Conventions
 
 - All responses are JSON except `GET /api/events` (`text/event-stream`).
@@ -104,7 +102,7 @@ Set the `YAMLINK_API_TOKEN` environment variable before starting `yamlink serve`
 
 | Method | Path | Query params | Response |
 |---|---|---|---|
-| `GET` | `/api/events` | `note`, `noteType`, `type` (any combination — filters the stream) | SSE. Emits `connected`, then live `field_changed`/`relation_*`/`note_created`/`note_deleted`/etc. mutation events, plus `rebuild` and `intelligence_changed` after every rebuild. See README-API.md's "Live event stream" section for full event shapes and filter semantics. |
+| `GET` | `/api/events` | `note`, `noteType`, `type` (any combination — filters the stream) | SSE. Emits `connected`, then live `field_changed`/`relation_*`/`note_created`/`note_deleted`/etc. mutation events, plus `rebuild` and `intelligence_changed` after every rebuild. |
 
 ## Not yet built
 

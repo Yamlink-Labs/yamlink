@@ -5,6 +5,7 @@ const crypto = require('crypto');
 const vscode = require('vscode');
 const { getPathIndex } = require('../../core/index');
 const { appendMutationEvents } = require('../../runtime/mutationEventLog');
+const { getSlug } = require('../../core/publish');
 const { buildLiveNoteModel, buildLiveNoteBodyHtml } = require('./liveNoteModel');
 const { rewriteImageSrcs } = require('./previewRenderer');
 const { LIVE_NOTE_STYLES, LIVE_TOOLBAR_STYLES } = require('./liveNoteStyles');
@@ -15,6 +16,9 @@ const LIVE_NOTE_VIEW_TYPE = 'yamlink.liveNote';
 function createLiveNotePanelController() {
     let panel = null;
     let lastFilePath = null;
+    let previewUrlMode = false;
+    let lastPreviewUrl = null;
+    let configListener = null;
 
     function getActiveMarkdownEditor() {
         const editor = vscode.window.activeTextEditor;
@@ -27,6 +31,26 @@ function createLiveNotePanelController() {
 
     function toJsLiteral(str) {
         return JSON.stringify(str).replace(/<\//g, '<\\/');
+    }
+
+    function readPreviewUrlTemplate() {
+        try {
+            const value = vscode.workspace.getConfiguration('yamlink').get('liveNotePreviewUrl');
+            return String(value || '').trim();
+        } catch (_) {
+            return '';
+        }
+    }
+
+    function getPreviewUrlForEditor(editor) {
+        if (!editor) return null;
+        const template = readPreviewUrlTemplate();
+        if (!template) return null;
+        const noteId = getPathIndex().get(editor.document.uri.fsPath) || null;
+        if (!noteId) return null;
+        const slug = getSlug(noteId);
+        if (!slug) return null;
+        return template.replace(/\{slug\}/g, encodeURIComponent(slug));
     }
 
     async function revealSourceLine(line) {
@@ -150,6 +174,37 @@ function createLiveNotePanelController() {
 </html>`;
     }
 
+    function buildPreviewTargetHtml(url) {
+        const nonce = crypto.randomBytes(16).toString('hex');
+        const safeUrl = escapeAttr(url || '');
+        return `<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1.0">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'nonce-${nonce}'; style-src 'unsafe-inline'; frame-src http://localhost:* https:;">
+<title>Live Note</title>
+<style>
+html,body{width:100%;height:100%;margin:0;padding:0;overflow:hidden;background:#111}
+iframe{display:block;width:100%;height:100%;border:0;background:#fff}
+</style>
+</head>
+<body>
+<iframe id="previewFrame" src="${safeUrl}" title="Live Note destination preview"></iframe>
+<script nonce="${nonce}">(function(){
+  var frame = document.getElementById('previewFrame');
+  window.addEventListener('message', function(e){
+    var msg = e.data;
+    if (!msg || msg.type !== 'live:updatePreviewUrl') return;
+    if (typeof msg.url === 'string' && frame.getAttribute('src') !== msg.url) {
+      frame.setAttribute('src', msg.url);
+    }
+  });
+}());</script>
+</body>
+</html>`;
+    }
+
     async function revealSource() {
         if (!lastFilePath) return;
         try {
@@ -189,9 +244,52 @@ function createLiveNotePanelController() {
 
     function pushModelToPanel(model) {
         if (!panel || !model) return;
+        previewUrlMode = false;
+        lastPreviewUrl = null;
         lastFilePath = model.filePath || null;
         panel.title = `Live: ${model.title}`;
         panel.webview.postMessage({ type: 'live:update', html: webviewSrc(model.html), title: model.title });
+    }
+
+    function pushPreviewUrlToPanel(url, fsPath) {
+        if (!panel || !url) return;
+        lastFilePath = fsPath || null;
+        panel.title = 'Live Note Preview';
+        if (!previewUrlMode) {
+            previewUrlMode = true;
+            lastPreviewUrl = url;
+            panel.webview.html = buildPreviewTargetHtml(url);
+            return;
+        }
+        if (lastPreviewUrl === url) return;
+        lastPreviewUrl = url;
+        panel.webview.postMessage({ type: 'live:updatePreviewUrl', url });
+    }
+
+    function refreshPanelForEditor(editor) {
+        if (!panel || !editor) return;
+        const previewUrl = getPreviewUrlForEditor(editor);
+        if (previewUrl) {
+            pushPreviewUrlToPanel(previewUrl, editor.document.uri.fsPath);
+            return;
+        }
+
+        // No resolvable preview URL for this note (either no template is
+        // configured, or this note has no id: for the template to target)
+        // — fall back to the normal rendered preview either way. A real
+        // markdown document is open; showing the "no note open" empty
+        // state here would be factually wrong.
+        const model = renderEditor(editor);
+        if (!model) return;
+        if (previewUrlMode) {
+            previewUrlMode = false;
+            lastPreviewUrl = null;
+            lastFilePath = model.filePath || null;
+            panel.title = `Live: ${model.title}`;
+            panel.webview.html = buildBootHtml(model);
+            return;
+        }
+        pushModelToPanel(model);
     }
 
     function openLiveNotePanel(context) {
@@ -199,10 +297,16 @@ function createLiveNotePanelController() {
 
         if (panel) {
             panel.reveal(vscode.ViewColumn.Beside, false);
-            if (editor) pushModelToPanel(renderEditor(editor));
+            if (editor) refreshPanelForEditor(editor);
             return;
         }
 
+        const previewTemplate = readPreviewUrlTemplate();
+        const previewUrl = editor && previewTemplate ? getPreviewUrlForEditor(editor) : null;
+        // Always compute the normal model, even when a preview template is
+        // configured — it's the correct fallback when the current note has
+        // no resolvable id (a real markdown document is open, just not one
+        // the preview URL can target), not the "no note open" empty state.
         const model = editor ? renderEditor(editor) : null;
         if (model) {
             lastFilePath = model.filePath || null;
@@ -228,7 +332,17 @@ function createLiveNotePanelController() {
             }
         );
 
-        panel.webview.html = buildBootHtml(model);
+        if (previewUrl && editor) {
+            previewUrlMode = true;
+            lastPreviewUrl = previewUrl;
+            lastFilePath = editor.document.uri.fsPath;
+            panel.title = 'Live Note Preview';
+            panel.webview.html = buildPreviewTargetHtml(previewUrl);
+        } else {
+            previewUrlMode = false;
+            lastPreviewUrl = null;
+            panel.webview.html = buildBootHtml(model);
+        }
 
         panel.webview.onDidReceiveMessage((message) => {
             if (!message) return;
@@ -248,21 +362,32 @@ function createLiveNotePanelController() {
         panel.onDidDispose(() => {
             panel = null;
             lastFilePath = null;
+            previewUrlMode = false;
+            lastPreviewUrl = null;
         }, null, context.subscriptions);
+
+        if (!configListener && typeof vscode.workspace.onDidChangeConfiguration === 'function') {
+            configListener = vscode.workspace.onDidChangeConfiguration((e) => {
+                if (e.affectsConfiguration && e.affectsConfiguration('yamlink.liveNotePreviewUrl')) {
+                    refreshLiveNotePanel();
+                }
+            });
+            context.subscriptions.push(configListener);
+        }
     }
 
     function refreshLiveNotePanel() {
         if (!panel) return;
         const editor = getActiveMarkdownEditor();
         if (!editor) return;
-        pushModelToPanel(renderEditor(editor));
+        refreshPanelForEditor(editor);
     }
 
     function refreshLiveNotePanelForDocument(document) {
         if (!panel || !document || document.languageId !== 'markdown') return;
         const editor = vscode.window.activeTextEditor;
         if (!editor || editor.document !== document) return;
-        pushModelToPanel(renderEditor(editor));
+        refreshPanelForEditor(editor);
     }
 
     return {

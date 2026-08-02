@@ -440,7 +440,15 @@ function extractBodyLinksRaw(content) {
     }
 
     const body      = content.slice(bodyStart);
-    const linkRegex = /\[\[([^\]]+)\]\]/g;
+    // [^\]\r\n] deliberately excludes newlines from the capture group. A bare
+    // `[[` in prose (e.g. "type `[[` to trigger autocomplete", illustrating
+    // the trigger character rather than opening a real link) has no closing
+    // `]]` on its own line; without the newline exclusion this regex hunts
+    // forward across paragraphs for the next `]]` anywhere in the body and
+    // treats everything in between as one giant broken-link target —
+    // confirmed against the real sample vault's welcome.md, which contains
+    // exactly this pattern.
+    const linkRegex = /\[\[([^\]\r\n]+)\]\]/g;
     let match;
 
     while ((match = linkRegex.exec(body)) !== null) {

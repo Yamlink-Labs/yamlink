@@ -1,5 +1,29 @@
 # Changelog
 
+## 0.7.7
+
+0.7.7 is Yamlink's first Authoring & Publishing release, moved ahead of schedule on real evidence & need: the construction of Yamlink's website (https://www.yamlink.dev - coming soon), using Yamlink as its content engine. Building its own pipeline by hand, surfaced concrete gaps in turning a vault into a real website. 
+### CLI
+
+- **`yamlink publish --out <dir>`** — builds a static, structured content payload from the vault for a site generator (Astro/Next/Eleventy/etc.) to consume: one JSON file per publishable note (frontmatter fields with `[[wikilinks]]` resolved to relative site URLs, body text with wikilinks resolved and `!view` blocks resolved to a static Markdown table snapshot), a manifest, a search index, and — only when `--site-url` is given — `sitemap.xml` and `feed.xml`. `--mode preview|production` controls whether draft notes are included. `--webhook <url>` POSTs a small payload after a successful build. `--force` bypasses the incremental-build cache.
+- **`yamlink export --id <id> --format html [--output <path>]`** — renders one note as a standalone, self-contained HTML file (resolved links, resolved `!view` snapshots, callout styling) — no VS Code dependency, lighter than the existing PDF exporter.
+
+### VS Code
+
+- **Pluggable Live Note preview target** — a new `yamlink.liveNotePreviewUrl` setting (a URL template like `http://localhost:4321/{slug}`). When set, Live Note embeds the destination site's own running dev server for the current note in an iframe instead of Yamlink's generic rendering, staying in sync as the active note changes. A note with no resolvable `id:` falls back to Yamlink's normal rendered preview, the same as when the setting is unset.
+
+### Added
+
+- **`status: draft/published/archived` as a real publish gate.** Previously decorative — now a note with `status: draft` is excluded from a production `yamlink publish` build by default (included with `--mode preview`); `archived` is always excluded. Read-side behavior (`!view`, completions, hover, diagnostics) is completely unaffected — a vault that never sets this field sees no difference anywhere.
+- **`order:` as a recognized manual-ordering field.** `yamlink publish`'s per-type note list sorts by it automatically when present; notes without it trail in their original order.
+- **`previous_ids:` for redirects.** A note declaring `previous_ids: old-slug` gets a `redirects.json` entry mapping the old slug to its current one, so a published site doesn't 404 old URLs after a rename.
+- **Pre-publish safety warnings.** Every `yamlink publish` build reports (without failing) any published note linking to a draft/archived note, or to a link that doesn't resolve at all — skipping fenced code blocks, so a tutorial note's example `[[wikilink]]` syntax is never flagged.
+- Asset pass-through, incremental build caching, and a generated search index are part of the same `yamlink publish` command above.
+
+### Fixed
+
+- A real, previously-shipped bug found while building the above and verifying against the sample vault: the body-wikilink extraction regex used everywhere (graph edges, diagnostics, hover, backlinks — `extractBodyLinksRaw` in `src/core/index.js`) allowed its match to span newlines. A bare `` `[[` `` used in prose to illustrate syntax (e.g. "type `[[` to trigger autocomplete," with no closing `]]` on that line) would cause the regex to hunt forward across paragraphs for the next `]]` anywhere in the note and treat everything in between as one giant, garbled "broken link" — reproduced exactly by the sample vault's own `welcome.md`. Fixed by excluding newlines from the match.
+
 ## 0.7.6
 
 0.7.6 is a quick follow-up release, mainly to fix real problems that shipped in 0.7.5 and should have been caught before it went out: the in-editor "What's New" notice still showed 0.7.4's release notes to every updating user, block IDs silently stopped working entirely on any note saved with Windows line endings, and a multi-value relation field could render with corrupted, missing brackets in the hover card. Alongside those fixes, block-level backlinks — knowing which notes link to a specific task, quote, heading, or footnote inside a note — are now reachable outside VS Code too, via a new CLI command and API parameter.

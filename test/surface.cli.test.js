@@ -521,6 +521,75 @@ test('CLI export --query filters results', () => {
     assert.equal(body[0].id, 'roughnecks');
 });
 
+test('CLI export --format html renders one note as standalone HTML with resolved links, view snapshots, and callouts', () => {
+    const vault = createVault({
+        'mission.md': [
+            '---',
+            'id: mission-klendathu',
+            'type: mission',
+            'title: Mission Klendathu',
+            'status: published',
+            '---',
+            '',
+            '# Briefing',
+            '',
+            'Assigned to [[johnny-rico|Rico]] with an unresolved [[missing-contact|Ghost]].',
+            '',
+            '> [!note] Field note',
+            '> Keep this short.',
+            '',
+            '!view character',
+            'select id, name'
+        ].join('\n'),
+        'rico.md': '---\nid: johnny-rico\ntype: character\nname: Johnny Rico\n---\n'
+    });
+    try {
+        const result = cli(['export', '--id', 'mission-klendathu', '--format', 'html'], vault.dir);
+        assert.equal(result.status, 0, result.stderr);
+        assert.match(result.stdout, /<!DOCTYPE html>/);
+        assert.match(result.stdout, /<title>Mission Klendathu<\/title>/);
+        assert.match(result.stdout, /<a href="\/johnny-rico">Rico<\/a>/);
+        assert.match(result.stdout, /Ghost/);
+        assert.doesNotMatch(result.stdout, /\[\[missing-contact\|Ghost\]\]/);
+        assert.match(result.stdout, /<table>/);
+        assert.match(result.stdout, /Johnny Rico/);
+        assert.doesNotMatch(result.stdout, /!view character/);
+        assert.match(result.stdout, /yamlink-callout-note/);
+    } finally {
+        vault.destroy();
+    }
+});
+
+test('CLI export --format html requires --id', () => {
+    const result = cli(['export', '--format', 'html', '--json'], vaultPath);
+    assert.equal(result.status, 1);
+    const body = parseJson(result.stdout);
+    assert.equal(body.code, 'USAGE');
+    assert.match(body.error, /requires --id/);
+});
+
+test('CLI export --format html returns NOT_FOUND for an unknown id', () => {
+    const result = cli(['export', '--format', 'html', '--id', 'not-real', '--json'], vaultPath);
+    assert.equal(result.status, 1);
+    const body = parseJson(result.stdout);
+    assert.equal(body.code, 'NOT_FOUND');
+    assert.equal(body.details.id, 'not-real');
+});
+
+test('CLI export --format html --output writes a real file', () => {
+    const outPath = path.join(os.tmpdir(), `yamlink-export-${Date.now()}-${Math.random().toString(16).slice(2)}.html`);
+    try {
+        const result = cli(['export', '--format', 'html', '--id', 'johnny-rico', '--output', outPath], vaultPath);
+        assert.equal(result.status, 0, result.stderr);
+        assert.equal(fs.existsSync(outPath), true);
+        const html = fs.readFileSync(outPath, 'utf8');
+        assert.match(html, /<!DOCTYPE html>/);
+        assert.match(html, /Johnny Rico/);
+    } finally {
+        fs.rmSync(outPath, { force: true });
+    }
+});
+
 test('CLI completions bash exits 0 and prints a script', () => {
     const result = cli(['completions', 'bash']);
     assert.equal(result.status, 0);
