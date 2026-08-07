@@ -244,7 +244,7 @@ Definitions for every term used across Yamlink's surfaces, commands, and documen
 
 ## CLI
 
-**`yamlink` CLI** — a standalone terminal tool (`npm link` from the project folder) for querying, inspecting, and mutating a vault without VS Code. 41 commands. Every command supports `--vault <path>` (default: current directory) and `--json` for machine-readable output.
+**`yamlink` CLI** — a standalone terminal tool (`npm link` from the project folder) for querying, inspecting, and mutating a vault without VS Code. 44 commands. Every command supports `--vault <path>` (default: current directory) and `--json` for machine-readable output.
 
 | Command | Description |
 |---|---|
@@ -280,13 +280,30 @@ Definitions for every term used across Yamlink's surfaces, commands, and documen
 | `yamlink graph` | Export full vault graph as `{ nodes, edges }` JSON. `--only-types` to filter, `--at <date>` for a historical reconstruction |
 | `yamlink schema list` | List all schema notes with governed types and note counts |
 | `yamlink schema check <type>` | Check schema conformance for all notes of a type. `--all` for every schema |
-| `yamlink export` | Export vault as JSON or CSV. `--query` to filter, `--output` to write to file |
+| `yamlink export` | Export vault as JSON or CSV. `--query` to filter, `--output` to write to file. `--id <id> --format html` exports one note as a standalone HTML file |
+| `yamlink publish --out <dir>` | Build a static, structured content payload for a site generator (Astro/Next/Eleventy). `--mode preview\|production`, `--site-url` (sitemap/feed), `--webhook`, `--force` — see the Authoring & Publishing section below |
 | `yamlink env` | Export shell variables for the current vault. `--shell bash|zsh|fish` |
 | `yamlink watch` | Persistent watcher — rebuilds on `.md` saves, prints timestamped one-liners |
 | `yamlink on <event> -- <script>` | Automation hooks: execute a script on matching mutation events. `--type` to filter |
 | `yamlink completions bash\|zsh` | Print shell completion script for tab-completion |
 | `yamlink serve` | Local HTTP API server (default port 3000). Full reference: `CONTRACT.md` |
 | `yamlink conduit` | Open the Conduit terminal UI. Requires `yamlink serve` running on the same port |
+
+---
+
+## Authoring & Publishing (0.7.7+)
+
+**`yamlink publish`** — builds a static, structured content payload from the vault (per-type JSON files, a manifest, a search index, and — with `--site-url` — `sitemap.xml`/`feed.xml`) for a site generator like Astro, Next.js, or Eleventy to consume. The vault stays the source of truth; this is a read-only projection of it, not a second content model.
+
+**Publish gate** — the `status: draft|published|archived` frontmatter field, checked only by `yamlink publish` (and `yamlink export --format html`). **Not the same concept as lifecycle state** (`draft`/`growing`/`consolidated`/`hub`/`stale`, in the Intelligence section above) even though both happen to use the word "draft" — lifecycle state is auto-inferred from a note's own structure and never affects `!view`/completions/hover/diagnostics; the publish gate is a value you set yourself, and it only ever changes what `yamlink publish` includes in its output. A vault that never sets `status:` sees no difference anywhere.
+
+**Manual ordering** — a numeric `order:` frontmatter field. `yamlink publish`'s per-type manifest list sorts by it automatically when present; notes without it trail after every ordered note in their original relative order.
+
+**Redirect map** — generated from a declared `previous_ids:` field (comma-separated old slugs) on a note, written to `redirects.json` in the publish output. Declared, not automatically inferred — Yamlink's live rename-propagation rewrites wikilinks vault-wide but doesn't persist an old→new id mapping anywhere durable.
+
+**Pre-publish safety gate** — warnings (not build failures) `yamlink publish` reports for a `[[wikilink]]` that doesn't resolve to any note (`broken-link`), or that resolves to a note currently excluded by the publish gate (`links-to-unpublished`). Skips fenced code blocks, so a tutorial note's example syntax is never flagged.
+
+**Live Note preview target** — the `yamlink.liveNotePreviewUrl` VS Code setting (a URL template like `http://localhost:4321/{slug}`). When set, Live Note embeds the destination site's own running dev server for the current note in an iframe instead of Yamlink's generic rendering.
 
 ---
 

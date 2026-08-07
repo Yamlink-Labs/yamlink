@@ -2,7 +2,7 @@
     "name": "yamlink",
     "displayName": "Yamlink",
     "description": "Turn Markdown notes into editable live tables — change a cell, it writes back to the file. Plus a knowledge graph, calendar, vault intelligence, and CLI/API/terminal access. No database, no sync.",
-    "version": "0.7.8",
+    "version": "0.7.9",
     "publisher": "yamlink",
     "author": {
         "name": "Yamlink Labs",

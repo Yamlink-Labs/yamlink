@@ -676,7 +676,7 @@ yamlink publish --out ./site-content --site-url https://example.com --webhook ht
 
 ### Rebuilding is cheap
 
-A build where nothing in the vault has changed since the last one is a no-op. When something has changed, only the notes whose output actually differs get rewritten — safe to run `yamlink publish` in a loop, a pre-commit hook, or CI without worrying about redundant writes. `--force` bypasses this if you ever need a full rebuild.
+Only the notes whose actual content changed since the last build get rewritten — everything else is left alone. Safe to run `yamlink publish` in a loop, a pre-commit hook, or CI without worrying about redundant writes, and it correctly picks up real changes (edits, new/removed notes, a `.yamlinkignore` change) every time, even across separate runs. `--force` rewrites every note regardless of whether its content changed, if you ever want a guaranteed full rebuild.
 
 ---
 

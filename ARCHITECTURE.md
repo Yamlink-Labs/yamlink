@@ -116,7 +116,7 @@ extension.js                    ← VS Code entry point, wires everything
 │   ├── templateRegistry.js     ← Smart Template lookup per type
 │   ├── healthSnapshot.js       ← Vault Health data model shared by panel + CLI
 │   ├── publish.js              ← 0.7.7 Authoring & Publishing: status-gate (isPublishable), slug/order convention, fence-aware wikilink→relative-URL resolution
-│   ├── buildPipeline.js        ← 0.7.7: `runBuild()` — the `yamlink publish` engine (manifest, per-type JSON, asset pass-through, generation+hash caching, redirect map, pre-publish safety warnings, sitemap/feed/search-index)
+│   ├── buildPipeline.js        ← 0.7.7: `runBuild()` — the `yamlink publish` engine (manifest, per-type JSON, asset pass-through, per-note content-hash caching — 0.7.9 fixed a real bug where a generation-counter check made this a no-op after the first CLI invocation — redirect map, pre-publish safety warnings, sitemap/feed/search-index)
 │   └── ...
 │
 ├── src/registries/             ← Type and schema registries (typeRegistry, schemaRegistry)

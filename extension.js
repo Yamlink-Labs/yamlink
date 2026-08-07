@@ -62,10 +62,21 @@ async function showWhatsNew(context) {
     const isFirstInstall = !context.globalState.get('yamlink.hasActivatedBefore', false);
     if (isFirstInstall) return;
 
-    const notesPath = path.join(context.extensionPath, 'WHATS_NEW.md');
-    if (!fs.existsSync(notesPath)) return;
+    const htmlPath = path.join(context.extensionPath, 'media', 'whats-new.html');
+    if (!fs.existsSync(htmlPath)) return;
 
-    await vscode.commands.executeCommand('markdown.showPreview', vscode.Uri.file(notesPath));
+    const panel = vscode.window.createWebviewPanel(
+        'yamlink.whatsNew',
+        "Yamlink — What's New",
+        vscode.ViewColumn.One,
+        { enableScripts: true, retainContextWhenHidden: false }
+    );
+    panel.webview.html = fs.readFileSync(htmlPath, 'utf8');
+    panel.webview.onDidReceiveMessage(msg => {
+        if (msg.command === 'openExternal' && msg.url) {
+            vscode.env.openExternal(vscode.Uri.parse(msg.url));
+        }
+    }, undefined, context.subscriptions);
 }
 
 const GUIDED_TOUR_ID = 'yamlink.yamlink#yamlink-tour';

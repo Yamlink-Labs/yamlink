@@ -83,7 +83,6 @@ describe('buildPipeline', () => {
             const { idIndex, fieldsCache } = buildFixture();
             const result = runBuild({ idIndex, fieldsCache, vaultGeneration: 1, outDir, mode: 'production' });
 
-            assert.equal(result.skipped, false);
             assert.equal(result.noteCount, 2);
 
             const manifest = JSON.parse(fs.readFileSync(path.join(outDir, 'manifest.json'), 'utf8'));
@@ -179,27 +178,57 @@ describe('buildPipeline', () => {
             }
         });
 
-        test('a second build with an unchanged generation is a no-op skip', () => {
+        test('a second build with truly unchanged content skips rewriting via per-note hash, not a whole-build shortcut', () => {
+            // Real bug found via Codex verification against a separate repo:
+            // `yamlink publish` is a one-shot CLI process, so vaultGeneration
+            // is always 1 at the start of every invocation regardless of what
+            // changed in the vault between runs — a whole-build check keyed
+            // on generation would report "unchanged" forever after the first
+            // real build, missing every real edit. Both calls here
+            // deliberately use the SAME generation (1), matching real CLI
+            // usage, to prove the fix doesn't regress to that behavior.
             const { idIndex, fieldsCache } = buildFixture();
-            runBuild({ idIndex, fieldsCache, vaultGeneration: 1, outDir, mode: 'production' });
+            const first = runBuild({ idIndex, fieldsCache, vaultGeneration: 1, outDir, mode: 'production' });
             const second = runBuild({ idIndex, fieldsCache, vaultGeneration: 1, outDir, mode: 'production' });
-            assert.equal(second.skipped, true);
+            assert.equal(second.notesWritten, 0);
+            assert.equal(second.notesSkipped, first.noteCount);
         });
 
-        test('--force bypasses the generation cache and rebuilds', () => {
-            const { idIndex, fieldsCache } = buildFixture();
-            runBuild({ idIndex, fieldsCache, vaultGeneration: 1, outDir, mode: 'production' });
-            const forced = runBuild({ idIndex, fieldsCache, vaultGeneration: 1, outDir, mode: 'production', force: true });
-            assert.equal(forced.skipped, false);
-        });
-
-        test('a note that flips from published to draft is removed from output on the next build', () => {
+        test('the same vaultGeneration across two calls still detects a real content change (the reported bug)', () => {
+            // Simulates two separate real `yamlink publish` invocations where
+            // vaultGeneration is 1 both times (always true for a one-shot CLI
+            // process) but the vault's actual publishable content shrank in
+            // between — e.g. a .yamlinkignore change, or a status flip.
             const { idIndex, fieldsCache } = buildFixture();
             runBuild({ idIndex, fieldsCache, vaultGeneration: 1, outDir, mode: 'production' });
             assert.ok(fs.existsSync(path.join(outDir, 'notes', 'article', 'published-note.json')));
 
             fieldsCache.set('published-note', { id: 'published-note', type: 'article', status: 'draft', title: 'Published Note' });
-            const result = runBuild({ idIndex, fieldsCache, vaultGeneration: 2, outDir, mode: 'production' });
+            const result = runBuild({ idIndex, fieldsCache, vaultGeneration: 1, outDir, mode: 'production' });
+            assert.equal(result.notesRemoved, 1);
+            assert.ok(!fs.existsSync(path.join(outDir, 'notes', 'article', 'published-note.json')));
+        });
+
+        test('--force rewrites every note even when its content hash is unchanged', () => {
+            const { idIndex, fieldsCache } = buildFixture();
+            const first = runBuild({ idIndex, fieldsCache, vaultGeneration: 1, outDir, mode: 'production' });
+            const forced = runBuild({ idIndex, fieldsCache, vaultGeneration: 1, outDir, mode: 'production', force: true });
+            assert.equal(forced.notesWritten, first.noteCount);
+            assert.equal(forced.notesSkipped, 0);
+        });
+
+        test('--force still correctly removes stale files from a genuinely previous build', () => {
+            // Real bug found alongside the one above: --force previously
+            // discarded the prior build's note-hash bookkeeping entirely
+            // (`cache = { generation: null, notes: {} }`), so even a forced
+            // rebuild had no memory of what used to be published and could
+            // never detect/remove now-stale output.
+            const { idIndex, fieldsCache } = buildFixture();
+            runBuild({ idIndex, fieldsCache, vaultGeneration: 1, outDir, mode: 'production' });
+            assert.ok(fs.existsSync(path.join(outDir, 'notes', 'article', 'published-note.json')));
+
+            fieldsCache.set('published-note', { id: 'published-note', type: 'article', status: 'draft', title: 'Published Note' });
+            const result = runBuild({ idIndex, fieldsCache, vaultGeneration: 1, outDir, mode: 'production', force: true });
             assert.equal(result.notesRemoved, 1);
             assert.ok(!fs.existsSync(path.join(outDir, 'notes', 'article', 'published-note.json')));
         });

@@ -257,19 +257,20 @@ function runBuild(options) {
     } = options;
 
     const cachePath = path.join(outDir, '.yamlink-build-cache.json');
-    const cache = force ? { generation: null, notes: {} } : readBuildCache(cachePath);
-
-    if (!force && cache.generation === vaultGeneration) {
-        return {
-            skipped: true,
-            reason: 'Vault unchanged since last build (generation ' + vaultGeneration + ')',
-            generation: vaultGeneration,
-            notesWritten: 0,
-            notesSkipped: Object.keys(cache.notes).length,
-            notesRemoved: 0,
-            warnings: []
-        };
-    }
+    // Deliberately NOT gated on vaultGeneration: `yamlink publish` is a
+    // one-shot CLI process that calls buildIndex() exactly once per
+    // invocation, so vaultGeneration is always 1 at the start of every
+    // separate run regardless of what changed in the vault between them —
+    // comparing it across process boundaries would report "unchanged" on
+    // every run after the first, forever, missing every real edit. The
+    // per-note content-hash comparison below is what's actually sound
+    // across processes, since it re-reads real file content each time.
+    // `cache` (the previous build's per-note hashes) is always read, even
+    // with --force, so stale-file cleanup below can still tell what used
+    // to be published — force only bypasses the per-note "hash unchanged,
+    // skip rewriting" shortcut, not the bookkeeping needed to detect
+    // removed/now-unpublished notes.
+    const cache = readBuildCache(cachePath);
 
     fs.mkdirSync(outDir, { recursive: true });
 
@@ -418,7 +419,6 @@ function runBuild(options) {
     fs.writeFileSync(cachePath, JSON.stringify({ generation: vaultGeneration, notes: newCacheNotes }, null, 2), 'utf8');
 
     return {
-        skipped: false,
         generation: vaultGeneration,
         mode,
         notesWritten,

@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.7.9
+
+0.7.9 is another quick hotfix, found the same way as 0.7.8: a real, live verification run of `yamlink publish` against a separate repo, this time turning up something more serious than a missing flag.
+
+### Fixed
+
+- **`yamlink publish` never detected real changes across separate runs — the entire incremental-build cache was silently broken.** `yamlink publish` is a one-shot CLI process that calls `buildIndex()` exactly once per invocation, so its vault-generation counter is always `1` at the start of every run, regardless of what changed since the last one. The build cache compared that number against the previous run's — meaning it reported "unchanged" (and skipped rewriting anything) on every run after the first, even when notes were genuinely edited, added, removed, or newly excluded by a `.yamlinkignore` change. Found via a real two-build test against a separate repo (adding a `.yamlinkignore` file and rebuilding reported no change at all until `--force` was used). Fixed: the cache now compares each note's real, current content against what was last written, which is sound across separate process runs in a way a generation counter never can be.
+- **`--force` couldn't clean up stale output from a genuinely previous build.** As a side effect of the same design, `--force` discarded all memory of what was published last time, so even a forced rebuild couldn't tell that a note had since become unpublished and needed its old output file removed. Fixed alongside the above — `--force` now rewrites every note unconditionally while still correctly detecting and removing anything now-stale.
+
 ## 0.7.8
 
 0.7.8 is a quick hotfix for a real bug found immediately after 0.7.7 shipped, caught during a real verification run of the new publishing commands in a separate repo.

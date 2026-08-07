@@ -258,7 +258,7 @@ yamlink mutations [--limit] [--since] [--type]  # recent mutation events from th
 yamlink doctor [--vault <path>] [--json]        # comprehensive integrity pass
 yamlink serve [--port 3000]                     # local HTTP API server
 yamlink serve --lsp --vault <path>              # JSON-RPC 2.0 LSP server over stdio
-yamlink export [--format json|csv]              # dump vault to JSON or CSV
+yamlink export [--format json|csv|html] [--id <id>]  # dump vault to JSON/CSV, or one note as standalone HTML with --id
 yamlink publish --out <dir> [--mode preview|production] [--site-url] [--webhook] [--force]  # build a static, structured content payload for a site generator
 yamlink env [--shell bash|zsh|fish]             # export shell variables for the current vault
 yamlink watch [--vault <path>]                  # watch vault, rebuild on .md changes
@@ -321,7 +321,7 @@ A VS Code extension can register a read-only evidence source that contributes on
 - `build` catches structural errors (broken links, duplicate IDs) — always meaningful regardless of schemas
 - `validate` catches data quality issues (missing required fields per schema) — only meaningful when schemas exist
 
-### Authoring & Publishing (0.7.7, in progress)
+### Authoring & Publishing (0.7.7)
 
 `yamlink publish --out <dir>` turns the vault into a static, structured content payload a site generator (Astro, Next.js, Eleventy, or anything else that reads JSON) can build a real website from. The vault stays the source of truth — this is a read-only projection of it, not a second content model.
 

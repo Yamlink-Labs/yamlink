@@ -74,7 +74,7 @@ async function run({ out, mode, siteUrl, webhook, force, json, quiet }) {
     }
 
     let webhookResult = null;
-    if (webhook && !result.skipped) {
+    if (webhook) {
         webhookResult = await postWebhook(webhook, {
             generation: result.generation,
             noteCount: result.noteCount,
@@ -86,11 +86,6 @@ async function run({ out, mode, siteUrl, webhook, force, json, quiet }) {
 
     if (json) {
         emitCliSuccess({ ...result, webhook: webhookResult });
-        return;
-    }
-
-    if (result.skipped) {
-        if (!quiet) emitText(fmt.ok(result.reason) + '\n');
         return;
     }
 

@@ -433,7 +433,11 @@ This is the fastest way to bring an existing knowledge base into Yamlink without
 
 ---
 
-## Current release — 0.7.8
+## Current release — 0.7.9
+
+0.7.9 is another quick hotfix, found via a real verification run of `yamlink publish` against a separate repo: the incremental-build cache never actually detected changes across separate runs, silently skipping real rebuilds after the first one. Fixed — see [CHANGELOG.md](./CHANGELOG.md#079) for detail.
+
+## 0.7.8
 
 0.7.8 is a quick hotfix for a real bug found immediately after 0.7.7 shipped: `yamlink --version`/`-v` had no handling at all and crashed instead of printing a version. Fixed — see [CHANGELOG.md](./CHANGELOG.md#078) for detail.
 
