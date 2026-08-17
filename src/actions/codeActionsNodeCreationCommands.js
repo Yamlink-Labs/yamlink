@@ -4,17 +4,25 @@ const vscode = require('vscode');
 const {
     handleCreateNote,
     handleCreateRelatedNote,
+    handleNewNote
+} = require('./nodeCreationCore');
+const {
     handleNewNodeFromTemplate,
-    handleNewNote,
-    handleNewNoteFromSelection,
-    handleSplitNoteBody,
-    handleNewNoteFromSchema,
     handleAddMissingTemplateFields,
-    handleSaveAsTemplate,
+    handleSaveAsTemplate
+} = require('./nodeCreationTemplates');
+const {
+    handleNewNoteFromSelection,
+    handleSplitNoteBody
+} = require('./nodeCreationSelection');
+const {
+    handleNewNoteFromSchema
+} = require('./nodeCreationSchema');
+const {
     handleAddFrontmatter,
     handleBackfillCreatedDates,
     handleOpenDailyNote
-} = require('./nodeCreationHandlers');
+} = require('./nodeCreationMaintenance');
 
 // Cache the last non-empty editor selection so commands can read it after any
 // dialog (QuickPick, InputBox, command palette) steals editor focus.
