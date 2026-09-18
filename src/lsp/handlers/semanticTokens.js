@@ -41,7 +41,7 @@ function semanticLegend() {
 }
 
 function frontmatterContext(content) {
-    const lines = content.split('\n');
+    const lines = String(content || '').split(/\r?\n/);
     if (!lines[0] || lines[0].trim() !== '---') return { lines, end: -1 };
     for (let i = 1; i < lines.length; i++) {
         if (lines[i] && lines[i].trim() === '---') return { lines, end: i };

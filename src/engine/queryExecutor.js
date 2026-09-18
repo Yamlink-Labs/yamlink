@@ -1,9 +1,11 @@
 'use strict';
 
 const fs = require('fs');
-const { getIndex, getFieldsCache, getVaultGeneration } = require('../core/indexService');
+const { getIndex, getFieldsCache, getVaultGeneration, getBodyLinksCache } = require('../core/indexService');
 const { getBacklinks, getEdges, computeNodeExplorerScore } = require('../core/graph');
 const { buildTaskRows } = require('../core/tasks');
+const { reconstructVaultAtTime } = require('../core/timeEngine');
+const { getMutationEvents } = require('../runtime/mutationEventLog');
 const { normaliseDateInput, getTodayIsoLocal, addDaysIso } = require('../core/date');
 const { normalizeText } = require('../core/frontmatter');
 const {
@@ -17,6 +19,35 @@ const BODY_CACHE_MAX = 200;
 const bodyCache = new Map();
 const FILE_STAT_FIELDS = new Set(['file.created', 'file.modified']);
 const GRAPH_VIRTUAL_FIELDS = new Set(['_inbound_count', '_outbound_count', '_hub_score']);
+
+/**
+ * Cycle-safe BFS from `startId`, following `getNeighborIds(id)` up to `depth`
+ * hops. Returns the union of every id reached at hop 1..depth (never the
+ * start id itself, which is hop 0). depth=1 reduces to exactly the original
+ * single-hop behavior (`getNeighborIds(startId)`, deduped into a Set).
+ * @param {string} startId
+ * @param {number} depth
+ * @param {(id: string) => string[]} getNeighborIds
+ * @returns {Set<string>}
+ */
+function collectTraversalIds(startId, depth, getNeighborIds) {
+    const visited = new Set([startId]);
+    const result = new Set();
+    let frontier = [startId];
+    for (let hop = 0; hop < depth && frontier.length > 0; hop++) {
+        const nextFrontier = [];
+        for (const id of frontier) {
+            for (const neighborId of getNeighborIds(id)) {
+                if (visited.has(neighborId)) continue;
+                visited.add(neighborId);
+                result.add(neighborId);
+                nextFrontier.push(neighborId);
+            }
+        }
+        frontier = nextFrontier;
+    }
+    return result;
+}
 
 /** @returns {void} */
 function clearBodyCache() {
@@ -233,8 +264,10 @@ function finaliseRows(query, rows, warnings) {
         if (query.sort) {
             const { field, desc } = query.sort;
             rows.sort((a, b) => {
-                const av = a.fields[field] == null ? (field === 'id' ? a.id : '') : (a.fields[field] || a.id || '');
-                const bv = b.fields[field] == null ? (field === 'id' ? b.id : '') : (b.fields[field] || b.id || '');
+                const rawA = a.fields[field];
+                const rawB = b.fields[field];
+                const av = rawA == null ? (field === 'id' ? a.id : '') : (rawA === 0 ? 0 : (rawA || a.id || ''));
+                const bv = rawB == null ? (field === 'id' ? b.id : '') : (rawB === 0 ? 0 : (rawB || b.id || ''));
                 const sampleKind = classifyScalarValue(String(av || bv || '').toLowerCase());
                 const cmp = compareScalarValues(av, bv, sampleKind);
                 return desc ? -cmp : cmp;
@@ -360,6 +393,52 @@ function runQuery(query, contextNodeId) {
     const index = getIndex();
     const todayIso = getTodayIsoLocal();
 
+    // VQL v1: graph traversal, resolved once against the target's real
+    // edges/backlinks (not per-row) into a plain id Set, so filtering stays
+    // a single Set.has() check per row in the main loop below — no
+    // different in cost than any other where-clause filter. `within N`
+    // extends this to a cycle-safe BFS unioning hops 1..N in the same
+    // direction; depth 1 (the default) is identical to the original
+    // single-hop behavior.
+    let linkedToIds = null;
+    if (query.linkedTo) {
+        linkedToIds = collectTraversalIds(query.linkedTo, query.linkedToDepth || 1, (id) => (getBacklinks(id) || []).map((edge) => edge.sourceId));
+    }
+    let linkedFromIds = null;
+    if (query.linkedFrom) {
+        linkedFromIds = collectTraversalIds(query.linkedFrom, query.linkedFromDepth || 1, (id) => (getEdges(id) || []).map((edge) => edge.targetId));
+    }
+
+    // VQL v1: temporal reconstruction. When `as of` is set, row-building
+    // reads from a historically-reconstructed field snapshot (the existing
+    // Time Engine primitive, reconstructVaultAtTime() — no new
+    // reconstruction logic, just new surfacing of it) instead of the live
+    // fieldsCache. Everything else — type filter, where, select, sort,
+    // limit — stays the same logic, just fed reconstructed fields.
+    // Computed/virtual fields (file stats, graph degree) are NOT
+    // reconstructed, a stated limitation; they still reflect current
+    // values. Does not apply to the tasks/incoming branches, and does not
+    // interact with linked_to/linked_from — traversal above still reads
+    // the live graph, explicitly out of scope for this pass.
+    let asOfFields = null;
+    if (query.asOf) {
+        const parsedMs = Date.parse(query.asOf);
+        if (!Number.isFinite(parsedMs)) {
+            warnings.push(`"as of ${query.asOf}" is not a valid date — ignoring, showing current state.`);
+        } else {
+            const isoTimestamp = new Date(parsedMs).toISOString();
+            const reconstructed = reconstructVaultAtTime(isoTimestamp, {
+                fieldsCache: fieldCache,
+                mutationEvents: getMutationEvents(),
+                bodyLinksCache: getBodyLinksCache()
+            });
+            asOfFields = new Map();
+            for (const [reconstructedId, entry] of reconstructed) {
+                if (entry.exists) asOfFields.set(reconstructedId, entry.fields || {});
+            }
+        }
+    }
+
     try {
         if (query.type === 'tasks') {
             const taskRows = buildTaskRows(index, getVaultGeneration());
@@ -374,11 +453,15 @@ function runQuery(query, contextNodeId) {
                 rows.push(taskRow);
             }
         } else {
-            for (const [id, filePath] of index.entries()) {
-                const fields = fieldCache.get(id);
+            const rowIds = asOfFields ? asOfFields.keys() : index.keys();
+            for (const id of rowIds) {
+                const filePath = index.get(id) ?? null;
+                const fields = asOfFields ? asOfFields.get(id) : fieldCache.get(id);
                 if (!fields) continue;
                 const nodeType = (fields.type || '').trim().toLowerCase();
                 if (query.type !== '*' && nodeType !== query.type) continue;
+                if (linkedToIds && !linkedToIds.has(id)) continue;
+                if (linkedFromIds && !linkedFromIds.has(id)) continue;
                 if (validWhereGroups.length > 0) {
                     const whereFields = needsGraphVirtual ? { ...fields, ...readGraphVirtualFields(id, fieldCache) } : fields;
                     const passes = validWhereGroups.every((group) =>

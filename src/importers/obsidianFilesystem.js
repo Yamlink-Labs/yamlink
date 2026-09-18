@@ -3,6 +3,7 @@
 const fs = require('fs');
 const path = require('path');
 
+const KNOWN_OBSIDIAN_CONFIG_FILES = new Set(['app.json', 'appearance.json', 'core-plugins.json', 'community-plugins.json', 'hotkeys.json', 'workspace.json']);
 const SKIP_DIRS = new Set(['.obsidian', '.git', '.trash', '.vscode', '.cursor', '.zed', 'node_modules']);
 const SKIP_FILES = new Set(['.ds_store', 'thumbs.db', 'desktop.ini']);
 
@@ -11,10 +12,21 @@ function detectObsidianVault(rootPath) {
     return fs.existsSync(path.join(rootPath, '.obsidian'));
 }
 
-function shouldSkipImportEntry(entryName, isDirectory) {
+function looksLikeObsidianConfigDir(fullPath) {
+    if (!fullPath || !fs.existsSync(fullPath)) return false;
+    let entries;
+    try {
+        entries = fs.readdirSync(fullPath, { withFileTypes: true });
+    } catch (_) {
+        return false;
+    }
+    return entries.some(entry => entry.isFile() && KNOWN_OBSIDIAN_CONFIG_FILES.has(entry.name.toLowerCase()));
+}
+
+function shouldSkipImportEntry(entryName, isDirectory, fullPath = '') {
     const normalized = String(entryName || '').trim().toLowerCase();
     if (!normalized) return true;
-    if (isDirectory) return SKIP_DIRS.has(normalized);
+    if (isDirectory) return SKIP_DIRS.has(normalized) || looksLikeObsidianConfigDir(fullPath);
     return SKIP_FILES.has(normalized);
 }
 
@@ -37,12 +49,12 @@ function copyVaultContents(sourceRoot, destinationRoot, stats = createImportStat
     }
 
     for (const entry of fs.readdirSync(sourceRoot, { withFileTypes: true })) {
-        if (shouldSkipImportEntry(entry.name, entry.isDirectory())) {
+        const sourcePath = path.join(sourceRoot, entry.name);
+        if (shouldSkipImportEntry(entry.name, entry.isDirectory(), sourcePath)) {
             stats.skipped.push(entry.name);
             continue;
         }
 
-        const sourcePath = path.join(sourceRoot, entry.name);
         const destinationPath = path.join(destinationRoot, entry.name);
 
         if (entry.isDirectory()) {
@@ -77,8 +89,8 @@ function createImportStats() {
 
 function walkVaultFiles(rootPath, onFile, relativeBase = '') {
     for (const entry of fs.readdirSync(rootPath, { withFileTypes: true })) {
-        if (shouldSkipImportEntry(entry.name, entry.isDirectory())) continue;
         const fullPath = path.join(rootPath, entry.name);
+        if (shouldSkipImportEntry(entry.name, entry.isDirectory(), fullPath)) continue;
         const relativePath = relativeBase ? path.join(relativeBase, entry.name) : entry.name;
 
         if (entry.isDirectory()) {
@@ -92,6 +104,7 @@ function walkVaultFiles(rootPath, onFile, relativeBase = '') {
 
 module.exports = {
     detectObsidianVault,
+    looksLikeObsidianConfigDir,
     shouldSkipImportEntry,
     chooseImportDestination,
     copyVaultContents,

@@ -23,6 +23,9 @@ const {
     handleBackfillCreatedDates,
     handleOpenDailyNote
 } = require('./nodeCreationMaintenance');
+const {
+    handleBulkSetFieldOnSelection
+} = require('./bulkSetSelection');
 
 // Cache the last non-empty editor selection so commands can read it after any
 // dialog (QuickPick, InputBox, command palette) steals editor focus.
@@ -77,6 +80,9 @@ function registerNodeCreationCommands(context, getIndex, getTypes) {
     );
     context.subscriptions.push(
         vscode.commands.registerCommand('yamlink.backfillCreatedDates', handleBackfillCreatedDates.bind(null, deps))
+    );
+    context.subscriptions.push(
+        vscode.commands.registerCommand('yamlink.bulkSetFieldOnSelection', handleBulkSetFieldOnSelection)
     );
 }
 

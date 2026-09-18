@@ -32,10 +32,23 @@ function formatFieldValue(value) {
 }
 
 function buildFrontmatterEntries(data) {
-    return Object.entries(data || {}).map(([key, value]) => ({
-        key,
-        value: formatFieldValue(value)
-    }));
+    // Empty fields are excluded, not shown as a "key · empty" pill — a note
+    // with several unset fields (a common, unremarkable state) previously
+    // rendered a wall of same-weight noise pills that told you nothing
+    // actionable. A field either has a real value worth glancing at, or it
+    // doesn't belong in this strip at all.
+    return Object.entries(data || {})
+        .filter(([, value]) => hasRealValue(value))
+        .map(([key, value]) => ({
+            key,
+            value: formatFieldValue(value)
+        }));
+}
+
+function hasRealValue(value) {
+    if (value === null || value === undefined || value === '') return false;
+    if (Array.isArray(value)) return value.length > 0;
+    return true;
 }
 
 function normalizeHeadingLabel(text) {
@@ -47,6 +60,7 @@ function findLiveSourceTargets(documentText) {
     const fieldLines = new Map();
     const headings = [];
     const viewLines = [];
+    const taskLines = [];
 
     let inFrontmatter = false;
     let frontmatterDone = false;
@@ -73,6 +87,11 @@ function findLiveSourceTargets(documentText) {
             viewLines.push(i);
         }
 
+        const taskMatch = line.match(/^\s*[-*]\s+\[([ xX])\]\s+/);
+        if (taskMatch) {
+            taskLines.push({ line: i, done: taskMatch[1].toLowerCase() === 'x' });
+        }
+
         const headingMatch = line.match(HEADING_RE);
         if (headingMatch) {
             headings.push({
@@ -83,7 +102,7 @@ function findLiveSourceTargets(documentText) {
         }
     }
 
-    return { fieldLines, headings, viewLines };
+    return { fieldLines, headings, viewLines, taskLines };
 }
 
 function decorateRenderedHtml(renderedHtml, targets) {
@@ -103,22 +122,43 @@ function decorateRenderedHtml(renderedHtml, targets) {
         return `<div class="view-block yl-live-view-block" data-source-line="${line}">`;
     });
 
+    // Task checklist items — markdown-it has no task-list plugin enabled
+    // here, so `- [ ] text` renders as plain `<li>[ ] text</li>`, matched
+    // sequentially against the same `[ ]`/`[x]` lines already found in
+    // findLiveSourceTargets. Previously the only click-to-source targets
+    // were headings/fields/!view blocks; actual body content — the part
+    // someone's most likely to want to jump from — had none at all.
+    let taskIndex = 0;
+    html = html.replace(/<li>\[([ xX])\]\s*([\s\S]*?)<\/li>/g, (full, _mark, inner) => {
+        const task = targets.taskLines[taskIndex++];
+        if (!task) return full;
+        const doneClass = task.done ? ' yl-live-task--done' : '';
+        return `<li class="yl-live-task${doneClass}" data-source-line="${task.line}"><button class="yl-live-task-jump" data-source-line="${task.line}" type="button">${inner}</button></li>`;
+    });
+
     return html;
 }
 
 function buildMetricChips(doc, body) {
+    // Deliberately excludes zero-value metrics rather than showing "views ·
+    // 0" — a bare zero next to four other bare numbers reads as noise, not
+    // information; a metric only earns a chip when there's something real to
+    // report. Tasks specifically show a done/total ratio instead of a raw
+    // count — "2/5" is a real, actionable read of a note's progress; "5" on
+    // its own says nothing about whether that work is finished.
     const fields = Object.keys(doc.data || {}).length;
     const links = countMatches(body, /\[\[[^\]]+\]\]/g);
-    const tasks = countMatches(body, /^\s*-\s+\[[ xX]\]/gm);
+    const tasksDone = countMatches(body, /^\s*-\s+\[[xX]\]/gm);
+    const tasksTotal = countMatches(body, /^\s*-\s+\[[ xX]\]/gm);
     const views = countMatches(body, /^\s*!view\b/gm);
     const headings = countMatches(body, /^#{1,6}\s+/gm);
-    return [
-        { label: 'fields', value: String(fields) },
-        { label: 'links', value: String(links) },
-        { label: 'tasks', value: String(tasks) },
-        { label: 'views', value: String(views) },
-        { label: 'sections', value: String(headings) }
-    ];
+    const chips = [];
+    if (fields > 0) chips.push({ label: 'fields', value: String(fields) });
+    if (links > 0) chips.push({ label: 'links', value: String(links) });
+    if (tasksTotal > 0) chips.push({ label: 'tasks', value: `${tasksDone}/${tasksTotal}` });
+    if (views > 0) chips.push({ label: 'views', value: String(views) });
+    if (headings > 0) chips.push({ label: 'sections', value: String(headings) });
+    return chips;
 }
 
 function buildLiveNoteBodyHtml(model) {

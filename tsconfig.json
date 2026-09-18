@@ -35,6 +35,7 @@
     "src/features/viewPanelEditRuntime.js",
     "src/features/viewPanelValueRuntime.js",
     "src/features/health/healthScript.js",
-    "src/features/home/homeScript.js"
+    "src/features/home/homeScript.js",
+    "src/features/graph/graphPhysicsEngine.js"
   ]
 }

@@ -1,10 +1,38 @@
 'use strict';
 
 const { getIndex, getFieldsCache, getAliasIndex, getBodyLinksCache, extractAndResolveRelationTargets } = require('../../core/indexService');
+const { buildGraphHistorySeries } = require('../../core/graphHistory');
 const { getEdges } = require('../../core/graph');
 const { reconstructVaultAtTime, buildHistoricalGraph } = require('../../core/timeEngine');
-const { getMutationEvents } = require('../../runtime/mutationEventLog');
+const { getMutationEvents, getVaultSnapshots } = require('../../runtime/mutationEventLog');
 const { json, badRequest, methodNotAllowed } = require('../http');
+
+async function handleGraphHistory(req, res, url) {
+    if (req.method !== 'GET') { methodNotAllowed(res); return; }
+
+    try {
+        const idIndex = getIndex();
+        const aliasIndex = getAliasIndex();
+        const result = buildGraphHistorySeries({
+            since: url?.searchParams?.get('since'),
+            until: url?.searchParams?.get('until'),
+            points: url?.searchParams?.get('points'),
+            interval: url?.searchParams?.get('interval')
+        }, {
+            fieldsCache: getFieldsCache(),
+            mutationEvents: getMutationEvents(),
+            snapshots: getVaultSnapshots(),
+            bodyLinksCache: getBodyLinksCache()
+        }, (value) => extractAndResolveRelationTargets(value, idIndex, aliasIndex));
+        json(res, result);
+    } catch (error) {
+        if (error?.code === 'INVALID_PARAM') {
+            badRequest(res, error.message, 'INVALID_PARAM');
+            return;
+        }
+        throw error;
+    }
+}
 
 async function handleGraph(req, res, url) {
     if (req.method !== 'GET') { methodNotAllowed(res); return; }
@@ -63,4 +91,4 @@ async function handleGraph(req, res, url) {
     });
 }
 
-module.exports = { handleGraph };
+module.exports = { handleGraph, handleGraphHistory };

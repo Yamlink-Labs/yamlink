@@ -30,7 +30,7 @@ function buildExplorerDetail(ink, state) {
 
     if (mode === 'bulk-menu') {
         title = `Bulk Actions — ${selectedIds.length} notes`;
-        const actions = ['Set field on all', 'Set status on all', 'Delete all'];
+        const actions = ['Set field on all', 'Add to list field', 'Set status on all', 'Delete all'];
         content = React.createElement(Box, { flexDirection: 'column' },
             React.createElement(Text, null, p.warn('BULK ') + p.bold(selectedIds.join(', '))),
             React.createElement(Text, null, ''),
@@ -67,6 +67,16 @@ function buildExplorerDetail(ink, state) {
             React.createElement(Text, null, p.secondary(selectedIds.join(', '))),
             React.createElement(Text, null, ''),
             React.createElement(Text, null, p.err('[y] ') + p.primary('yes, delete all') + '   ' + p.faint('[n/Esc] cancel'))
+        );
+    } else if (mode === 'bulk-delete-force-confirm') {
+        title = `Force Delete ${selectedIds.length} Notes`;
+        content = React.createElement(Box, { flexDirection: 'column' },
+            React.createElement(Text, null, p.err('DEPENDENCIES FOUND')),
+            React.createElement(Text, null, ''),
+            React.createElement(Text, null, p.secondary('One or more selected notes are still referenced by other notes.')),
+            React.createElement(Text, null, p.secondary('Deleting anyway will leave those references broken.')),
+            React.createElement(Text, null, ''),
+            React.createElement(Text, null, p.err('[y] ') + p.primary('force delete all anyway') + '   ' + p.faint('[n/Esc] cancel'))
         );
     } else if (mode === 'edit-pick') {
         title = 'Edit — Pick Field';
@@ -115,6 +125,16 @@ function buildExplorerDetail(ink, state) {
             React.createElement(Text, null, p.secondary('This will remove the note file from your vault.')),
             React.createElement(Text, null, ''),
             React.createElement(Text, null, p.err('[y] ') + p.primary('yes, delete') + '   ' + p.faint('[n/Esc] cancel'))
+        );
+    } else if (mode === 'delete-force-confirm') {
+        title = 'Force Delete';
+        content = React.createElement(Box, { flexDirection: 'column' },
+            React.createElement(Text, null, p.err('DEPENDENCIES FOUND') + ' ' + p.bold(selectedNote?.id || '')),
+            React.createElement(Text, null, ''),
+            React.createElement(Text, null, p.secondary('This note is still referenced by other notes.')),
+            React.createElement(Text, null, p.secondary('Deleting anyway will leave those references broken.')),
+            React.createElement(Text, null, ''),
+            React.createElement(Text, null, p.err('[y] ') + p.primary('force delete anyway') + '   ' + p.faint('[n/Esc] cancel'))
         );
     } else if (mode === 'link-field') {
         title = 'Add Link';

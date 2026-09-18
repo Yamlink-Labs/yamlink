@@ -83,13 +83,13 @@ function route(msg, state) {
     if (method === 'textDocument/didClose')             { handleDidClose(msg, state);              return; }
     if (method === 'textDocument/completion')           { return handleCompletion(msg, state); }
     if (method === 'completionItem/resolve')            { handleCompletionResolve(msg, state);     return; }
-    if (method === 'textDocument/hover')                { handleHover(msg, state);                 return; }
+    if (method === 'textDocument/hover')                { return handleHover(msg, state); }
     if (method === 'textDocument/inlayHint')            { handleInlayHint(msg, state);             return; }
     if (method === 'textDocument/semanticTokens/full')  { handleSemanticTokensFull(msg, state);    return; }
     if (method === 'textDocument/documentLink')         { handleDocumentLink(msg, state);          return; }
     if (method === 'textDocument/documentHighlight')    { handleDocumentHighlight(msg, state);     return; }
     if (method === 'textDocument/formatting')           { handleFormatting(msg, state);            return; }
-    if (method === 'textDocument/definition')           { handleDefinition(msg, state);            return; }
+    if (method === 'textDocument/definition')           { return handleDefinition(msg, state); }
     if (method === 'textDocument/prepareRename')        { return handlePrepareRename(msg, state); }
     if (method === 'textDocument/rename')               { return handleRename(msg, state); }
     if (method === 'textDocument/references')           { return handleReferences(msg, state); }

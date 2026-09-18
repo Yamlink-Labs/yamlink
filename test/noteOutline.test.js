@@ -63,6 +63,45 @@ describe('note outline', () => {
         assert.match(worklog.metrics.snippet, /Review \[\[johnny-rico\]\]/);
     });
 
+    test('attaches task and quote blocks to the heading section they fall under', () => {
+        const text = [
+            '# Mission',
+            '- [ ] Confirm launch window',
+            '> Rico confirms the drop zone.',
+            '## Debrief',
+            '- [x] File after-action note',
+            '> Command accepted the report.',
+            '[^out-of-scope]: Footnotes do not become outline children.'
+        ].join('\n');
+
+        const model = buildOutlineModel(text);
+        const mission = model.roots[0];
+        const debrief = mission.children[0];
+
+        assert.deepEqual(
+            mission.blocks.map(block => ({
+                type: block.type,
+                label: block.label,
+                line: block.line
+            })),
+            [
+                { type: 'task', label: 'Confirm launch window', line: 1 },
+                { type: 'quote', label: 'Rico confirms the drop zone.', line: 2 }
+            ]
+        );
+        assert.deepEqual(
+            debrief.blocks.map(block => ({
+                type: block.type,
+                label: block.label,
+                line: block.line
+            })),
+            [
+                { type: 'task', label: 'File after-action note', line: 4 },
+                { type: 'quote', label: 'Command accepted the report.', line: 5 }
+            ]
+        );
+    });
+
     test('ignores frontmatter and supports notes without headings', () => {
         const noHeadings = buildOutlineModel([
             '---',
@@ -133,6 +172,27 @@ describe('note outline', () => {
         assert.equal(filtered[0].heading.text, 'Mission');
         assert.equal(filtered[0].children.length, 1);
         assert.equal(filtered[0].children[0].heading.text, 'Evidence');
+    });
+
+    test('filters outline by matching child blocks while preserving parent headings', () => {
+        const text = [
+            '# Mission',
+            '## Evidence',
+            '- [ ] Interview Carmen',
+            '> Different quoted evidence',
+            '## Timeline',
+            '- [ ] Review flight logs'
+        ].join('\n');
+
+        const model = buildOutlineModel(text);
+        const filtered = filterOutlineRoots(model.roots, { query: 'carmen' });
+
+        assert.equal(filtered.length, 1);
+        assert.equal(filtered[0].heading.text, 'Mission');
+        assert.equal(filtered[0].children.length, 1);
+        assert.equal(filtered[0].children[0].heading.text, 'Evidence');
+        assert.equal(filtered[0].children[0].blocks.length, 1);
+        assert.equal(filtered[0].children[0].blocks[0].label, 'Interview Carmen');
     });
 
     test('filters outline by tasks, mentions, and linked signals', () => {

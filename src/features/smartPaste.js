@@ -30,6 +30,14 @@ function registerSmartPaste(context) {
          * @returns {Promise<vscode.DocumentPasteEdit[]|undefined>}
          */
         async provideDocumentPasteEdits(document, _ranges, dataTransfer) {
+            // VS Code attaches this internal marker to the clipboard whenever the copy/cut
+            // happened inside any VS Code editor (used internally for indentation/EOL/language
+            // preservation on paste). Its presence means the content came from within VS Code —
+            // e.g. moving text between two notes — not from an external source (Slack, a
+            // spreadsheet, a browser). Smart Paste's conversions only make sense for the latter,
+            // so skip straight to a normal paste whenever this marker is present.
+            if (dataTransfer.get('vscode-editor-data')) return undefined;
+
             const item = dataTransfer.get('text/plain');
             if (!item) return undefined;
 

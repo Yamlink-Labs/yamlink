@@ -74,6 +74,8 @@ function buildBootHtml(webview, extensionUri, rendererUri) {
       <span class="t-sep"></span>
       <button id="btnLabels" class="layer-btn" type="button" title="Cycle node label visibility: Auto (smart density, hides labels as the graph gets crowded) -> All (show every visible label) -> Off (hide all labels).">Labels: Auto</button>
       <span class="t-sep"></span>
+      <button id="btnHoverFocus" class="layer-btn" type="button" aria-pressed="false" title="When on, hovering or dragging a node dims everything not connected to it. Off by default so you can drag nodes around freely without the rest of the graph going dark.">Hover Focus</button>
+      <span class="t-sep"></span>
       <button id="btnTimelapse" class="layer-btn" type="button" title="Play back how this graph grew over time. Reconstructed from git history when available (includes body-text links); frontmatter relations only otherwise.">${ICON_TIMELAPSE} Time-lapse</button>
     </div>
     <div id="modeHelp" class="mode-help" role="status" aria-live="polite">Local shows the current note, then adds one layer of linked notes around it.</div>

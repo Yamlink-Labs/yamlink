@@ -22,6 +22,7 @@ Module._resolveFilename = function (request, parent, ...rest) {
 const {
     stripHtmlToMarkdownish,
     normalizeRoamText,
+    rewriteRoamReferences,
     renderRoamBlocks,
     importRoamJsonToVault,
     extractEvernoteResources,
@@ -34,10 +35,14 @@ const {
     inspectEvernoteExport,
     inspectNotionExport,
     formatExternalInspectionSummary,
+    formatImportTrustSummary,
+    buildImportTrustSection,
     parseCsvTable,
     importNotionCsvDatabases,
     rewriteNotionMarkdownLinks,
+    rewriteNotionHtmlLinks,
     postProcessNotionMarkdown,
+    postProcessNotionHtml,
     buildExternalImportReportMarkdown
 } = require('../src/features/importExternalVaults');
 
@@ -80,6 +85,26 @@ describe('importExternalVaults helpers', () => {
         assert.match(body, /\[\[planet-p\|Planet P\]\]/);
     });
 
+    test('renderRoamBlocks preserves block uids and resolves Roam block references', () => {
+        const blockTargets = new Map([
+            ['child123', { noteId: 'johnny-rico', blockId: 'child123' }]
+        ]);
+        const body = renderRoamBlocks([
+            {
+                uid: 'parent123',
+                string: 'Parent cites ((child123))',
+                children: [{ uid: 'child123', string: 'Referenced block' }]
+            }
+        ], 0, new Map(), blockTargets);
+
+        assert.match(body, /^- Parent cites \[\[johnny-rico\^child123\]\] \^parent123/m);
+        assert.match(body, /^  - Referenced block \^child123/m);
+        assert.equal(
+            rewriteRoamReferences('{{embed: ((child123))}}', new Map(), blockTargets),
+            '[[johnny-rico^child123]]'
+        );
+    });
+
     test('normalizeRoamText converts TODO and DONE macros into task syntax', () => {
         assert.equal(normalizeRoamText('{{[[TODO]]}} Call Johnny'), '[ ] Call Johnny');
         assert.equal(normalizeRoamText('{{[[DONE]]}} Filed report'), '[x] Filed report');
@@ -117,6 +142,20 @@ describe('importExternalVaults helpers', () => {
         assert.equal(resources.length, 1);
         assert.equal(resources[0].mime, 'text/plain');
         assert.equal(resources[0].fileName, 'hello.txt');
+        assert.equal(resources[0].hash, '5d41402abc4b2a76b9719d911017c592');
+    });
+
+    test('rewriteEvernoteContentLinks converts ENML todos, media, and encrypted placeholders', () => {
+        const rewritten = rewriteEvernoteContentLinks(
+            '<en-note><div><en-todo checked="true"/>Done item</div><div><en-media hash="abc" type="image/png"/></div><en-crypt hint="vault">secret</en-crypt></en-note>',
+            {
+                resourceByHash: new Map([['abc', { path: '_attachments/note/image.png', fileName: 'image.png' }]])
+            }
+        );
+
+        assert.match(rewritten, /- \[x\] Done item/);
+        assert.match(rewritten, /\[image\.png\]\(_attachments\/note\/image\.png\)/);
+        assert.match(rewritten, /Encrypted Evernote content\. Hint: vault/);
     });
 
     test('rewriteEvernoteContentLinks preserves external links and resolves internal Evernote note links', () => {
@@ -140,7 +179,7 @@ describe('importExternalVaults helpers', () => {
   <note>
     <guid>brief-guid</guid>
     <title>Mission Brief</title>
-    <content><![CDATA[<en-note><div>Briefing line</div><div>See <a href="evernote:///view/1/s1/recon-guid/recon-guid/">Recon Note</a></div><div><a href="https://example.com/source-doc">Source Doc</a></div><ul><li>Alpha</li></ul></en-note>]]></content>
+    <content><![CDATA[<en-note><div>Briefing line</div><div><en-todo/>Open task</div><div><en-media hash="5d41402abc4b2a76b9719d911017c592" type="text/plain"/></div><div>See <a href="evernote:///view/1/s1/recon-guid/recon-guid/">Recon Note</a></div><div><a href="https://example.com/source-doc">Source Doc</a></div><ul><li>Alpha</li></ul></en-note>]]></content>
     <tag>ops</tag>
     <created>20260102T030405Z</created>
     <note-attributes>
@@ -172,6 +211,8 @@ describe('importExternalVaults helpers', () => {
         assert.match(note, /author: Carmen/);
         assert.match(note, /source_url: https:\/\/example.com\/source/);
         assert.match(note, /attachments:/);
+        assert.match(note, /- \[ \] Open task/);
+        assert.match(note, /\[hello\.txt\]\(_attachments\/mission-brief\/hello\.txt\)/);
         assert.match(note, /\[\[recon-note\]\]/);
         assert.match(note, /\[Source Doc\]\(https:\/\/example.com\/source-doc\)/);
         assert.match(note, /- Alpha/);
@@ -211,6 +252,18 @@ describe('importExternalVaults helpers', () => {
         assert.match(rewritten, /\[\[johnny-rico\|Johnny\]\]/);
     });
 
+    test('rewriteNotionHtmlLinks converts exported HTML page links into wikilinks', () => {
+        const rewritten = rewriteNotionHtmlLinks(
+            '[Child](Child%201234567890abcdef1234567890abcdef.html) and [Note](Note%201234567890abcdef1234567890abcdef.md)',
+            'Parent.html',
+            new Map([['note 1234567890abcdef1234567890abcdef.md', 'note']]),
+            new Map([['child 1234567890abcdef1234567890abcdef.html', 'child']])
+        );
+
+        assert.match(rewritten, /\[\[child\|Child\]\]/);
+        assert.match(rewritten, /\[\[note\|Note\]\]/);
+    });
+
     test('postProcessNotionMarkdown stamps frontmatter and rewrites local note links', () => {
         const root = path.join(tempRoot, 'notion-processed');
         fs.mkdirSync(path.join(root, 'People'), { recursive: true });
@@ -232,6 +285,28 @@ describe('importExternalVaults helpers', () => {
         assert.match(mission, /\[\[johnny-rico\|Johnny\]\]/);
     });
 
+    test('postProcessNotionHtml converts real HTML export pages into markdown notes', () => {
+        const root = path.join(tempRoot, 'notion-html-processed');
+        fs.mkdirSync(root, { recursive: true });
+        fs.writeFileSync(
+            path.join(root, 'Child 1234567890abcdef1234567890abcdef.html'),
+            '<html><body><h1>Child</h1><p>Body line</p></body></html>'
+        );
+        fs.writeFileSync(
+            path.join(root, 'Parent 1234567890abcdef1234567890abcdef.html'),
+            '<html><body><h1>Parent</h1><p>See <a href="Child%201234567890abcdef1234567890abcdef.html">Child</a></p></body></html>'
+        );
+
+        const result = postProcessNotionHtml(root);
+
+        assert.equal(result.htmlPagesProcessed, 2);
+        const parent = fs.readFileSync(path.join(root, 'parent.md'), 'utf8');
+        assert.match(parent, /id: parent/);
+        assert.match(parent, /notion_export_format: html/);
+        assert.match(parent, /notion_source_id: 1234567890abcdef1234567890abcdef/);
+        assert.match(parent, /\[\[child\|Child\]\]/);
+    });
+
     test('parseCsvTable handles quoted cells and embedded commas', () => {
         const rows = parseCsvTable('Name,Status,Notes\n"Acme, Inc.",Active,"Line one"\n"Johnny Rico",Done,"Owns, reviews"');
 
@@ -240,6 +315,18 @@ describe('importExternalVaults helpers', () => {
             ['Acme, Inc.', 'Active', 'Line one'],
             ['Johnny Rico', 'Done', 'Owns, reviews']
         ]);
+    });
+
+    test('coerces Notion CSV cells without splitting embedded comma values', () => {
+        const statsRoot = path.join(tempRoot, 'notion-comma-import');
+        fs.mkdirSync(statsRoot, { recursive: true });
+        fs.writeFileSync(path.join(statsRoot, 'Companies.csv'), 'Name,Company\nDeal,"Acme, Inc."');
+
+        const stats = importNotionCsvDatabases(statsRoot);
+
+        assert.equal(stats.databaseRowsImported, 1);
+        const rowNote = fs.readFileSync(path.join(statsRoot, '_notion_databases', 'companies', 'deal.md'), 'utf8');
+        assert.match(rowNote, /company: Acme, Inc\./);
     });
 
     test('importNotionCsvDatabases creates row notes with typed fields and wikilinks', () => {
@@ -344,9 +431,26 @@ describe('importExternalVaults helpers', () => {
         const inspection = inspectNotionExport(root);
 
         assert.equal(inspection.markdownFiles, 1);
+        assert.equal(inspection.htmlFiles || 0, 0);
         assert.equal(inspection.csvFiles, 1);
         assert.equal(inspection.otherFiles, 1);
         assert.match(formatExternalInspectionSummary(inspection), /1 markdown/);
+    });
+
+    test('import summaries explain fit and unrecoverable export gaps', () => {
+        assert.match(formatImportTrustSummary('Notion'), /Import fit: Mixed/);
+        assert.match(formatImportTrustSummary('Evernote'), /Import fit: Good, with formatting tradeoffs/);
+        assert.match(formatImportTrustSummary('Roam Research'), /Import fit: Good for pages and blocks/);
+
+        const notionSection = buildImportTrustSection('Notion');
+        assert.match(notionSection, /## What to expect from this import/);
+        assert.match(notionSection, /relations, rollups, formulas, views, comments, permissions/);
+
+        const evernoteSection = buildImportTrustSection('Evernote');
+        assert.match(evernoteSection, /OCR text/);
+
+        const roamSection = buildImportTrustSection('Roam');
+        assert.match(roamSection, /Roam block IDs are kept/);
     });
 
     test('buildExternalImportReportMarkdown adds platform-specific normalization details', () => {
@@ -377,6 +481,8 @@ describe('importExternalVaults helpers', () => {
         }, 'Notion');
 
         assert.match(report, /# Yamlink Notion Import Report/);
+        assert.match(report, /## What to expect from this import/);
+        assert.match(report, /Import fit: \*\*Mixed\*\*/);
         assert.match(report, /## Notion normalization/);
         assert.match(report, /Database row notes generated: \*\*3\*\*/);
         assert.match(report, /normalized toward singular collection names/i);

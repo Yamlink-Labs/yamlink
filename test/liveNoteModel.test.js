@@ -39,7 +39,9 @@ describe('live note model', () => {
         assert.equal(model.frontmatter.find((entry) => entry.key === 'name').line, 3);
         assert.equal(model.metrics.find((entry) => entry.label === 'fields').value, '4');
         assert.equal(model.metrics.find((entry) => entry.label === 'links').value, '2');
-        assert.equal(model.metrics.find((entry) => entry.label === 'tasks').value, '1');
+        // Tasks show a done/total ratio, not a raw count — one open task,
+        // zero done, out of one total.
+        assert.equal(model.metrics.find((entry) => entry.label === 'tasks').value, '0/1');
         assert.equal(model.metrics.find((entry) => entry.label === 'views').value, '1');
         assert.equal(model.metrics.find((entry) => entry.label === 'sections').value, '1');
         assert.ok(model.renderedHtml.includes('view-block'));
@@ -68,5 +70,66 @@ describe('live note model', () => {
         assert.ok(html.includes('Johnny Rico'));
         assert.ok(html.includes('Rendered body'));
         assert.ok(html.includes('data-source-line="3"'));
+    });
+
+    test('empty frontmatter fields are excluded from the pill row entirely', () => {
+        const text = [
+            '---',
+            'id: johnny-rico',
+            'type: character',
+            'name: Johnny Rico',
+            'gender:',
+            'status: ',
+            '---',
+            '',
+            'Body.'
+        ].join('\n');
+
+        const model = buildLiveNoteModel(text, '/vault/johnny-rico.md', 'johnny-rico');
+        const keys = model.frontmatter.map((entry) => entry.key);
+        assert.ok(keys.includes('name'));
+        assert.ok(!keys.includes('gender'), 'blank field should not appear as a pill');
+        assert.ok(!keys.includes('status'), 'whitespace-only field should not appear as a pill');
+    });
+
+    test('metric chips omit zero-value metrics instead of showing a bare zero', () => {
+        const text = [
+            '---',
+            'id: bare-note',
+            'type: note',
+            '---',
+            '',
+            '# Just a heading',
+            '',
+            'No links, no tasks, no views here.'
+        ].join('\n');
+
+        const model = buildLiveNoteModel(text, '/vault/bare-note.md', 'bare-note');
+        const labels = model.metrics.map((entry) => entry.label);
+        assert.ok(labels.includes('fields'));
+        assert.ok(labels.includes('sections'));
+        assert.ok(!labels.includes('links'), 'zero links should not produce a metric chip');
+        assert.ok(!labels.includes('tasks'), 'zero tasks should not produce a metric chip');
+        assert.ok(!labels.includes('views'), 'zero views should not produce a metric chip');
+    });
+
+    test('task list items become click-to-source targets, marked done or open', () => {
+        const text = [
+            '---',
+            'id: johnny-rico',
+            'type: character',
+            '---',
+            '',
+            '- [ ] Open task',
+            '- [x] Done task',
+            '- Plain bullet, not a task'
+        ].join('\n');
+
+        const model = buildLiveNoteModel(text, '/vault/johnny-rico.md', 'johnny-rico');
+        assert.match(model.renderedHtml, /class="yl-live-task" data-source-line="5"/);
+        assert.match(model.renderedHtml, /class="yl-live-task yl-live-task--done" data-source-line="6"/);
+        // The plain bullet must survive untouched — no task class, no
+        // source-line attribute grafted onto content that was never a task.
+        assert.match(model.renderedHtml, /<li>Plain bullet, not a task<\/li>/);
     });
 });

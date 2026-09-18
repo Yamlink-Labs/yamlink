@@ -21,20 +21,9 @@ By the end of the Bug War he was commanding the Roughnecks — the same unit he'
 
 First rule of Mobile Infantry: everyone fights, nobody quits.
 
-- [ ] Let's see how this looks in the report #low
-- [ ] Test #urgent
-
-
 ## Missions
 
 !view mission
 where commander = [[johnny-rico]]
 sort date desc
 select name, date, unit, commander, outcome
-
-
-## Follow up
-
-First rule of Mobile Infantry: everyone fights, nobody quits. Let's put this to the test
-
-### Testing

@@ -8,7 +8,7 @@ const { URLSearchParams } = require('url');
  * @typedef {{ host: string, port: number, path: string }} ApiRequestOptions
  * @typedef {{ host?: string, port?: number, type?: string }} GetNodesOptions
  * @typedef {{ host: string, port: number, query: string }} RunQueryOptions
- * @typedef {{ host: string, port: number, id: string }} NodeRequestOptions
+ * @typedef {{ host: string, port: number, id: string, at?: string }} NodeRequestOptions
  * @typedef {{ host?: string, port?: number, done?: boolean, overdue?: boolean, today?: boolean, limit?: number }} TaskRequestOptions
  * @typedef {{ host?: string, port?: number, limit?: number, since?: string, type?: string, id?: string }} MutationRequestOptions
  * @typedef {{ host: string, port: number, onEvent: (payload: any) => void, onConnect?: () => void, onDisconnect?: () => void }} EventStreamOptions
@@ -48,11 +48,15 @@ function requestJson({ host, port, path }) {
 }
 
 /**
- * @param {GetNodesOptions} [options]
+ * @param {GetNodesOptions & { at?: string }} [options]
  * @returns {Promise<any[]>}
  */
-function getNodes({ host, port, type } = {}) {
-    const path = type && type !== 'any' ? `/api/nodes?type=${encodeURIComponent(type)}` : '/api/nodes';
+function getNodes({ host, port, type, at } = {}) {
+    const params = new URLSearchParams();
+    if (type && type !== 'any') params.set('type', type);
+    if (at) params.set('at', at);
+    const query = params.toString();
+    const path = query ? `/api/nodes?${query}` : '/api/nodes';
     return requestJson({ host, port, path }).then((body) => {
         if (Array.isArray(body)) return body;
         if (Array.isArray(body?.nodes)) return body.nodes;
@@ -69,14 +73,35 @@ function runQuery({ host, port, query }) {
 }
 
 /**
- * @param {{ host: string, port: number }} options
+ * @param {{ host: string, port: number, at?: string }} options
  * @returns {Promise<{nodes: any[], edges: any[], stats: Record<string, any>}>}
  */
-function getGraph({ host, port }) {
-    return requestJson({ host, port, path: '/api/graph' }).then((body) => ({
+function getGraph({ host, port, at }) {
+    const path = at ? `/api/graph?at=${encodeURIComponent(at)}` : '/api/graph';
+    return requestJson({ host, port, path }).then((body) => ({
         nodes: Array.isArray(body?.nodes) ? body.nodes : [],
         edges: Array.isArray(body?.edges) ? body.edges : [],
         stats: body?.stats || { nodes: 0, edges: 0, types: 0 }
+    }));
+}
+
+/**
+ * Checkpoint series for the timeline scrubber — evenly-spaced reconstructed
+ * graph snapshots between `since` and `until`, built on the same Time Engine
+ * primitives getGraph's `at` param uses for a single point.
+ * @param {{ host: string, port: number, since: string, until?: string, points?: number }} options
+ * @returns {Promise<{ since: string, until: string, points: number, snapshots: Array<{ timestamp: string, nodes: any[], edges: any[], stats: Record<string, any> }> }>}
+ */
+function getGraphHistory({ host, port, since, until, points }) {
+    const params = new URLSearchParams();
+    if (since) params.set('since', since);
+    if (until) params.set('until', until);
+    if (points) params.set('points', String(points));
+    return requestJson({ host, port, path: `/api/graph/history?${params.toString()}` }).then((body) => ({
+        since: body?.since || since,
+        until: body?.until || until,
+        points: body?.points || points,
+        snapshots: Array.isArray(body?.snapshots) ? body.snapshots : []
     }));
 }
 
@@ -158,14 +183,17 @@ function runSearch({ host, port, query, limit = 50 }) {
  * @param {NodeRequestOptions & { include?: string }} options
  * @returns {Promise<any>}
  */
-function getNode({ host, port, id, include }) {
+function getNode({ host, port, id, include, at }) {
     // Without `include`, /api/nodes/:id's `_outbound`/`_inbound` are bare
     // {field, to}/{field, from} — no `toType`/`toName` at all. Callers that
     // need real per-edge type/name info (colored graph rendering, type
     // summaries) must opt in explicitly; other callers get the exact same
     // response shape as before this parameter existed.
-    const query = include ? `?include=${encodeURIComponent(include)}` : '';
-    return requestJson({ host, port, path: `/api/nodes/${encodeURIComponent(id)}${query}` });
+    const params = new URLSearchParams();
+    if (include) params.set('include', include);
+    if (at) params.set('at', at);
+    const query = params.toString();
+    return requestJson({ host, port, path: `/api/nodes/${encodeURIComponent(id)}${query ? '?' + query : ''}` });
 }
 
 /**
@@ -277,14 +305,15 @@ function postNode({ host, port, fields }) {
 }
 
 /**
- * @param {{ host: string, port: number, id: string }} options
- * @returns {Promise<void>}
+ * @param {{ host: string, port: number, id: string, force?: boolean }} options
+ * @returns {Promise<any>}
  */
-function deleteNode({ host, port, id }) {
+function deleteNode({ host, port, id, force }) {
     return new Promise((resolve, reject) => {
+        const suffix = force ? '?force=true' : '';
         const req = http.request({
             host, port,
-            path: `/api/nodes/${encodeURIComponent(id)}`,
+            path: `/api/nodes/${encodeURIComponent(id)}${suffix}`,
             method: 'DELETE',
             headers: { 'X-Yamlink-Source': 'conduit' }
         }, (res) => {
@@ -293,10 +322,19 @@ function deleteNode({ host, port, id }) {
             res.on('data', (chunk) => { data += chunk; });
             res.on('end', () => {
                 if (res.statusCode < 200 || res.statusCode >= 300) {
-                    reject(new Error(data || `HTTP ${res.statusCode}`));
+                    try {
+                        const body = JSON.parse(data || '{}');
+                        /** @type {Error & { code?: string, dependencies?: any }} */
+                        const error = new Error(body.error || `HTTP ${res.statusCode}`);
+                        error.code = body.code;
+                        error.dependencies = body.dependencies;
+                        reject(error);
+                    } catch (_) {
+                        reject(new Error(data || `HTTP ${res.statusCode}`));
+                    }
                     return;
                 }
-                resolve();
+                try { resolve(JSON.parse(data || '{}')); } catch (_) { resolve({}); }
             });
         });
         req.on('error', reject);
@@ -417,6 +455,7 @@ module.exports = {
     runQuery,
     runSearch,
     getGraph,
+    getGraphHistory,
     getTypes,
     getHealth,
     getTrends,

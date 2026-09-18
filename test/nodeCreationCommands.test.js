@@ -29,6 +29,7 @@ let templateFiles = [];
 let createdDirectories = [];
 let schemaTargets = new Set(['contact', 'mission']);
 let mockStatResult = null;
+let adaptiveContextResult = { opportunities: null, guidance: { starterActions: [] } };
 const VAULT_ROOT = 'C:\\vault';
 
 function vaultPath(...parts) {
@@ -201,6 +202,9 @@ require.cache.__ncc_indexService__ = {
     filename: '__ncc_indexService__',
     loaded: true,
     exports: {
+        getIndex() {
+            return new Map();
+        },
         getFieldsCache() {
             return new Map([
                 ['source-note', { id: 'source-note', type: 'contact', account: '[[existing-account]]' }],
@@ -286,6 +290,17 @@ require.cache.__ncc_schemaRegistry__ = {
     }
 };
 
+require.cache.__ncc_completionAdaptiveHelpers__ = {
+    id: '__ncc_completionAdaptiveHelpers__',
+    filename: '__ncc_completionAdaptiveHelpers__',
+    loaded: true,
+    exports: {
+        buildAdaptiveFrontmatterContext() {
+            return adaptiveContextResult;
+        }
+    }
+};
+
 const realFs = require('fs');
 const realExistsSync = realFs.existsSync;
 const realReaddirSync = realFs.readdirSync;
@@ -335,6 +350,7 @@ Module._resolveFilename = function (request, parent, ...rest) {
     if (request === '../core/writeField') return '__ncc_writeField__';
     if (request === '../core/frontmatter') return '__ncc_frontmatter__';
     if (request === '../registries/schemaRegistry') return '__ncc_schemaRegistry__';
+    if (request === '../intelligence/completionAdaptiveHelpers') return '__ncc_completionAdaptiveHelpers__';
     return originalResolve(request, parent, ...rest);
 };
 
@@ -365,6 +381,7 @@ const { registerNodeCreationCommands } = require('../src/actions/codeActionsNode
     schemaTargets = new Set(['contact', 'mission']);
     mockWindow.activeTextEditor = null;
     mockStatResult = null;
+    adaptiveContextResult = { opportunities: null, guidance: { starterActions: [] } };
 });
 
 after(() => {
@@ -762,6 +779,247 @@ describe('node creation commands', () => {
         assert.equal(triggerSuggestCalls, 1);
         assert.equal(mockWindow.activeTextEditor.selection.start.line, 4);
         assert.equal(mockWindow.activeTextEditor.selection.start.character, 'account:'.length + 1);
+    });
+
+    test('addMissingTemplateFields asks which template to use when a type has multiple templates', async () => {
+        const context = { subscriptions: [] };
+        registerNodeCreationCommands(context, () => new Map(), () => new Set(['contact', 'mission']));
+
+        templateDirExists = true;
+        templateFiles = ['contact.md', 'contact-field.md'];
+        writeFiles.set(vaultPath('_templates', 'contact.md'), [
+            '---',
+            'type: contact',
+            'status:',
+            '---',
+            ''
+        ].join('\n'));
+        writeFiles.set(vaultPath('_templates', 'contact-field.md'), [
+            '---',
+            'type: contact',
+            'homeworld:',
+            'callsign:',
+            '---',
+            ''
+        ].join('\n'));
+        pickQueue.push(items => items.find(item => item.label === 'contact-field'));
+
+        const document = createDocument([
+            '---',
+            'id: ace-levy',
+            'type: contact',
+            '---'
+        ].join('\n'), vaultPath('ace-levy.md'));
+        document.save = async function save() { return true; };
+        openDocs.set(vaultPath('ace-levy.md'), document);
+        mockWindow.activeTextEditor = { document };
+
+        await commandMap.get('yamlink.addMissingTemplateFields')();
+
+        assert.match(document.getText(), /homeworld:/);
+        assert.match(document.getText(), /callsign:/);
+        assert.doesNotMatch(document.getText(), /status:/);
+    });
+
+    test('addMissingTemplateFields caps insertion at six missing fields', async () => {
+        const context = { subscriptions: [] };
+        registerNodeCreationCommands(context, () => new Map(), () => new Set(['contact', 'mission']));
+
+        templateDirExists = true;
+        templateFiles = ['contact.md'];
+        writeFiles.set(vaultPath('_templates', 'contact.md'), [
+            '---',
+            'type: contact',
+            'field-1:',
+            'field-2:',
+            'field-3:',
+            'field-4:',
+            'field-5:',
+            'field-6:',
+            'field-7:',
+            '---',
+            ''
+        ].join('\n'));
+
+        const document = createDocument([
+            '---',
+            'id: ace-levy',
+            'type: contact',
+            '---'
+        ].join('\n'), vaultPath('ace-levy.md'));
+        document.save = async function save() { return true; };
+        openDocs.set(vaultPath('ace-levy.md'), document);
+        mockWindow.activeTextEditor = { document };
+
+        await commandMap.get('yamlink.addMissingTemplateFields')();
+
+        assert.match(document.getText(), /field-6:/);
+        assert.doesNotMatch(document.getText(), /field-7:/);
+        assert.ok(infoMessages.some((message) => message.includes('Added 6 of 7 missing fields')));
+    });
+
+    test('addMissingTemplateFields offers a follow-up nudge when a separate starter action exists', async () => {
+        const context = { subscriptions: [] };
+        registerNodeCreationCommands(context, () => new Map(), () => new Set(['contact', 'mission']));
+
+        templateDirExists = true;
+        templateFiles = ['contact.md'];
+        writeFiles.set(vaultPath('_templates', 'contact.md'), [
+            '---',
+            'type: contact',
+            'status:',
+            '---',
+            ''
+        ].join('\n'));
+        adaptiveContextResult = {
+            opportunities: null,
+            guidance: {
+                starterActions: [
+                    {
+                        label: 'add unit',
+                        insertText: 'unit: [[roughnecks]]\n'
+                    }
+                ]
+            }
+        };
+
+        const document = createDocument([
+            '---',
+            'id: ace-levy',
+            'type: contact',
+            '---'
+        ].join('\n'), vaultPath('ace-levy.md'));
+        document.save = async function save() { return true; };
+        openDocs.set(vaultPath('ace-levy.md'), document);
+        mockWindow.activeTextEditor = { document };
+
+        await commandMap.get('yamlink.addMissingTemplateFields')();
+
+        assert.ok(infoMessages.some((message) => message.includes('Also suggested: add unit')));
+        assert.match(document.getText(), /status:/);
+        assert.match(document.getText(), /unit: \[\[roughnecks\]\]/);
+    });
+
+    test('addMissingTemplateFields does not nudge when the starter action repeats an inserted field', async () => {
+        const context = { subscriptions: [] };
+        registerNodeCreationCommands(context, () => new Map(), () => new Set(['contact', 'mission']));
+
+        templateDirExists = true;
+        templateFiles = ['contact.md'];
+        writeFiles.set(vaultPath('_templates', 'contact.md'), [
+            '---',
+            'type: contact',
+            'status:',
+            '---',
+            ''
+        ].join('\n'));
+        adaptiveContextResult = {
+            opportunities: null,
+            guidance: {
+                starterActions: [
+                    {
+                        label: 'add status',
+                        insertText: 'status: active\n'
+                    }
+                ]
+            }
+        };
+
+        const document = createDocument([
+            '---',
+            'id: ace-levy',
+            'type: contact',
+            '---'
+        ].join('\n'), vaultPath('ace-levy.md'));
+        document.save = async function save() { return true; };
+        openDocs.set(vaultPath('ace-levy.md'), document);
+        mockWindow.activeTextEditor = { document };
+
+        await commandMap.get('yamlink.addMissingTemplateFields')();
+
+        assert.ok(!infoMessages.some((message) => message.includes('Also suggested')));
+    });
+
+    test('bulkSetFieldOnSelection sets a scalar field across selected Markdown notes', async () => {
+        const context = { subscriptions: [] };
+        registerNodeCreationCommands(context, () => new Map(), () => new Set(['contact', 'mission']));
+
+        writeFiles.set(vaultPath('rico.md'), '---\nid: johnny-rico\ntype: character\nstatus: draft\n---\n');
+        writeFiles.set(vaultPath('carmen.md'), '---\nid: carmen-ibanez\ntype: character\nstatus: draft\n---\n');
+        inputQueue.push('status', 'ready');
+        pickQueue.push(items => items.find(item => item.label === 'Set'));
+
+        await commandMap.get('yamlink.bulkSetFieldOnSelection')(
+            { fsPath: vaultPath('rico.md') },
+            [{ fsPath: vaultPath('rico.md') }, { fsPath: vaultPath('carmen.md') }]
+        );
+
+        assert.match(writeFiles.get(vaultPath('rico.md')), /status: ready/);
+        assert.match(writeFiles.get(vaultPath('carmen.md')), /status: ready/);
+        // Cheap incremental per-file index update (syncIndexAfterWrite), same
+        // path every other VS Code write handler uses — not a full vault
+        // rebuild per selected note.
+        assert.ok(updateCalls.includes(vaultPath('rico.md')));
+        assert.ok(updateCalls.includes(vaultPath('carmen.md')));
+        assert.ok(infoMessages.some((message) => message.includes('2 succeeded, 0 failed')));
+    });
+
+    test('bulkSetFieldOnSelection adds an idempotent wikilink list relation', async () => {
+        const context = { subscriptions: [] };
+        registerNodeCreationCommands(context, () => new Map(), () => new Set(['contact', 'mission']));
+
+        writeFiles.set(vaultPath('rico.md'), '---\nid: johnny-rico\ntype: character\n---\n');
+        writeFiles.set(vaultPath('carmen.md'), '---\nid: carmen-ibanez\ntype: character\nunit:\n  - [[roughnecks]]\n---\n');
+        inputQueue.push('unit', 'roughnecks');
+        pickQueue.push(items => items.find(item => item.label === 'Add'));
+
+        await commandMap.get('yamlink.bulkSetFieldOnSelection')(
+            { fsPath: vaultPath('rico.md') },
+            [{ fsPath: vaultPath('rico.md') }, { fsPath: vaultPath('carmen.md') }]
+        );
+
+        assert.match(writeFiles.get(vaultPath('rico.md')), /unit: \["\[\[roughnecks\]\]"\]/);
+        assert.equal((writeFiles.get(vaultPath('carmen.md')).match(/\[\[roughnecks\]\]/g) || []).length, 1);
+        assert.ok(infoMessages.some((message) => message.includes('2 succeeded, 0 failed')));
+    });
+
+    test('bulkSetFieldOnSelection clears a field across selected Markdown notes', async () => {
+        const context = { subscriptions: [] };
+        registerNodeCreationCommands(context, () => new Map(), () => new Set(['contact', 'mission']));
+
+        writeFiles.set(vaultPath('rico.md'), '---\nid: johnny-rico\ntype: character\nstatus: ready\n---\n');
+        writeFiles.set(vaultPath('carmen.md'), '---\nid: carmen-ibanez\ntype: character\nstatus: ready\n---\n');
+        inputQueue.push('status');
+        pickQueue.push(items => items.find(item => item.label === 'Clear'));
+
+        await commandMap.get('yamlink.bulkSetFieldOnSelection')(
+            { fsPath: vaultPath('rico.md') },
+            [{ fsPath: vaultPath('rico.md') }, { fsPath: vaultPath('carmen.md') }]
+        );
+
+        assert.doesNotMatch(writeFiles.get(vaultPath('rico.md')), /^status:/m);
+        assert.doesNotMatch(writeFiles.get(vaultPath('carmen.md')), /^status:/m);
+    });
+
+    test('bulkSetFieldOnSelection reports one scalar add failure without aborting other notes', async () => {
+        const context = { subscriptions: [] };
+        registerNodeCreationCommands(context, () => new Map(), () => new Set(['contact', 'mission']));
+
+        writeFiles.set(vaultPath('rico.md'), '---\nid: johnny-rico\ntype: character\nunit: roughnecks\n---\n');
+        writeFiles.set(vaultPath('carmen.md'), '---\nid: carmen-ibanez\ntype: character\n---\n');
+        inputQueue.push('unit', 'roughnecks');
+        pickQueue.push(items => items.find(item => item.label === 'Add'));
+
+        const result = await commandMap.get('yamlink.bulkSetFieldOnSelection')(
+            { fsPath: vaultPath('rico.md') },
+            [{ fsPath: vaultPath('rico.md') }, { fsPath: vaultPath('carmen.md') }]
+        );
+
+        assert.equal(result.succeeded.length, 1);
+        assert.equal(result.failed.length, 1);
+        assert.match(result.failed[0].error, /scalar/);
+        assert.match(writeFiles.get(vaultPath('carmen.md')), /unit: \["\[\[roughnecks\]\]"\]/);
+        assert.ok(warningMessages.some((message) => message.includes('1 succeeded, 1 failed')));
     });
 
     test('addFrontmatter inserts a starter block into notes without frontmatter', async () => {

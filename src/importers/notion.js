@@ -12,8 +12,16 @@ const {
     ensureUniqueMarkdownPath,
     extractFirstMarkdownHeading,
     parseCsvTable,
-    stripMarkdownFormatting
+    stripMarkdownFormatting,
+    stripHtmlToMarkdownish
 } = require('./shared');
+
+const NOTION_EXPORT_ID_RE = /(?:\s+|-)([0-9a-f]{32})$/i;
+
+function extractNotionExportId(name) {
+    const match = NOTION_EXPORT_ID_RE.exec(String(name || '').trim());
+    return match ? match[1].toLowerCase() : '';
+}
 
 function stripNotionSuffix(name) {
     return String(name || '')
@@ -57,6 +65,26 @@ function buildNotionMarkdownMap(rootPath) {
     return { entries, byResolvedRelative };
 }
 
+function buildNotionHtmlMap(rootPath) {
+    const entries = [];
+    walkExternalFiles(rootPath, (fullPath, relativePath) => {
+        if (!fullPath.toLowerCase().endsWith('.html')) return;
+        const normalizedRelative = relativePath.replace(/\\/g, '/');
+        const stem = stripNotionSuffix(path.basename(normalizedRelative, '.html'));
+        const id = canonicalizeId(stem);
+        entries.push({
+            fullPath,
+            relativePath: normalizedRelative,
+            id
+        });
+    });
+    const byResolvedRelative = new Map();
+    for (const entry of entries) {
+        byResolvedRelative.set(entry.relativePath.toLowerCase(), entry.id);
+    }
+    return { entries, byResolvedRelative };
+}
+
 function rewriteNotionMarkdownLinks(text, currentRelativePath, linkMap) {
     return String(text || '').replace(/(!?)\[([^\]]+)\]\(([^)]+)\)/g, (full, bang, label, target) => {
         if (bang === '!') return full;
@@ -82,6 +110,35 @@ function rewriteNotionMarkdownLinks(text, currentRelativePath, linkMap) {
     });
 }
 
+function rewriteNotionHtmlLinks(markdownish, currentRelativePath, markdownMap, htmlMap) {
+    return rewriteNotionMarkdownLinks(String(markdownish || ''), currentRelativePath, markdownMap)
+        .replace(/\[([^\]]+)\]\(([^)]+\.html(?:#[^)]+)?)\)/gi, (full, label, target) => {
+            const parts = String(target || '').split('#');
+            let decoded = parts[0];
+            try {
+                decoded = decodeURIComponent(decoded);
+            } catch (_) {
+                decoded = decoded.replace(/%20/g, ' ');
+            }
+            const resolved = path.posix.normalize(path.posix.join(path.posix.dirname(currentRelativePath.replace(/\\/g, '/')), decoded));
+            const targetId = htmlMap.get(resolved.toLowerCase());
+            if (!targetId) return full;
+            return buildCanonicalWikilink(targetId, {
+                alias: String(label || '').trim(),
+                anchor: parts[1] ? parts[1].trim() : ''
+            });
+        });
+}
+
+function preserveHtmlAnchorsAsMarkdown(html) {
+    return String(html || '').replace(/<a\b([^>]*)href="([^"]+)"([^>]*)>([\s\S]*?)<\/a>/gi, (full, _before, href, _after, label) => {
+        const text = stripHtmlToMarkdownish(label);
+        const target = String(href || '').trim();
+        if (!text || !target) return text || full;
+        return `[${text}](${target})`;
+    });
+}
+
 function inspectNotionExport(sourceRoot) {
     const summary = {
         platform: 'Notion',
@@ -96,6 +153,10 @@ function inspectNotionExport(sourceRoot) {
             summary.markdownFiles++;
             return;
         }
+        if (lower.endsWith('.html')) {
+            summary.htmlFiles = (summary.htmlFiles || 0) + 1;
+            return;
+        }
         if (lower.endsWith('.csv')) {
             summary.csvFiles++;
             return;
@@ -103,8 +164,8 @@ function inspectNotionExport(sourceRoot) {
         summary.otherFiles++;
     });
 
-    if (!summary.markdownFiles && !summary.csvFiles) {
-        throw new Error('Notion export folder did not contain Markdown notes or CSV databases.');
+    if (!summary.markdownFiles && !summary.csvFiles && !summary.htmlFiles) {
+        throw new Error('Notion export folder did not contain Markdown notes, HTML pages, or CSV databases.');
     }
 
     return summary;
@@ -141,7 +202,7 @@ function coerceNotionCellValue(raw, titleMap) {
         return text;
     }
 
-    const segments = text.split(/\s*;\s*|\s*,\s*/).map((segment) => stripMarkdownFormatting(segment)).filter(Boolean);
+    const segments = text.split(/\s*;\s*/).map((segment) => stripMarkdownFormatting(segment)).filter(Boolean);
     if (segments.length > 1) {
         const linked = segments.map((segment) => {
             const match = titleMap?.get(segment.toLowerCase());
@@ -208,6 +269,8 @@ function importNotionCsvDatabases(rootPath) {
                 notion_database: databaseName,
                 notion_row: rowIndex
             };
+            const notionSourceId = extractNotionExportId(primaryValue);
+            if (notionSourceId) metadata.notion_source_id = notionSourceId;
             if (parentDir && parentDir !== '.') {
                 metadata.parent = canonicalizeId(stripNotionSuffix(path.basename(parentDir)));
             }
@@ -262,10 +325,12 @@ function postProcessNotionMarkdown(rootPath) {
         }
         const parsed = parseFrontmatterDocument(rewritten);
         const title = extractFirstMarkdownHeading(parsed.body) || stripNotionSuffix(path.basename(entry.relativePath, '.md'));
+        const notionSourceId = extractNotionExportId(path.basename(entry.relativePath, '.md'));
         const parentDir = path.dirname(entry.relativePath).replace(/\\/g, '/');
         let nextDoc = setField(parsed, 'id', entry.id);
         nextDoc = setField(nextDoc, 'title', title);
         nextDoc = setField(nextDoc, 'imported_from', 'notion');
+        if (notionSourceId) nextDoc = setField(nextDoc, 'notion_source_id', notionSourceId);
         if (parentDir && parentDir !== '.') {
             nextDoc = setField(nextDoc, 'parent', canonicalizeId(stripNotionSuffix(path.basename(parentDir))));
         }
@@ -277,6 +342,40 @@ function postProcessNotionMarkdown(rootPath) {
         markdownNotesProcessed: entries.length,
         frontmatterStamped,
         rewrittenLinks
+    };
+}
+
+function postProcessNotionHtml(rootPath) {
+    const markdownMap = buildNotionMarkdownMap(rootPath);
+    const htmlMap = buildNotionHtmlMap(rootPath);
+    const usedPaths = new Set();
+    let htmlPagesProcessed = 0;
+    const generatedFiles = [];
+
+    for (const entry of htmlMap.entries) {
+        const raw = fs.readFileSync(entry.fullPath, 'utf8');
+        const title = stripNotionSuffix(path.basename(entry.relativePath, '.html'));
+        const notionSourceId = extractNotionExportId(path.basename(entry.relativePath, '.html'));
+        const body = rewriteNotionHtmlLinks(stripHtmlToMarkdownish(preserveHtmlAnchorsAsMarkdown(raw)), entry.relativePath, markdownMap.byResolvedRelative, htmlMap.byResolvedRelative);
+        const parentDir = path.dirname(entry.relativePath).replace(/\\/g, '/');
+        const data = {
+            id: entry.id,
+            title,
+            imported_from: 'notion',
+            notion_export_format: 'html'
+        };
+        if (notionSourceId) data.notion_source_id = notionSourceId;
+        if (parentDir && parentDir !== '.') data.parent = canonicalizeId(stripNotionSuffix(path.basename(parentDir)));
+
+        const outputPath = ensureUniqueMarkdownPath(path.dirname(entry.fullPath), entry.id || title, usedPaths);
+        fs.writeFileSync(outputPath, buildFrontmatterMarkdown(data, body), 'utf8');
+        htmlPagesProcessed++;
+        generatedFiles.push(path.relative(rootPath, outputPath).replace(/\\/g, '/'));
+    }
+
+    return {
+        htmlPagesProcessed,
+        generatedFiles
     };
 }
 
@@ -310,8 +409,11 @@ function copyNotionExport(sourceRoot, destinationRoot, stats = createImportStats
     copyNotionExportRecursive(sourceRoot, destinationRoot, stats);
 
     const post = postProcessNotionMarkdown(destinationRoot);
+    const htmlPost = postProcessNotionHtml(destinationRoot);
     const databaseImport = importNotionCsvDatabases(destinationRoot);
     stats.markdownNotesProcessed = post.markdownNotesProcessed;
+    stats.htmlPagesProcessed = htmlPost.htmlPagesProcessed;
+    stats.generatedHtmlMarkdownFiles = htmlPost.generatedFiles;
     stats.frontmatterStamped = post.frontmatterStamped;
     stats.rewrittenLinks = post.rewrittenLinks;
     stats.csvDatabasesProcessed = databaseImport.csvDatabasesProcessed;
@@ -322,15 +424,20 @@ function copyNotionExport(sourceRoot, destinationRoot, stats = createImportStats
 
 module.exports = {
     stripNotionSuffix,
+    extractNotionExportId,
     singularizeImportedType,
     buildNotionMarkdownMap,
+    buildNotionHtmlMap,
     rewriteNotionMarkdownLinks,
+    rewriteNotionHtmlLinks,
+    preserveHtmlAnchorsAsMarkdown,
     inspectNotionExport,
     notionFieldKey,
     inferNotionPrimaryField,
     coerceNotionCellValue,
     importNotionCsvDatabases,
     postProcessNotionMarkdown,
+    postProcessNotionHtml,
     copyNotionExportRecursive,
     copyNotionExport
 };

@@ -164,9 +164,9 @@ Definitions for every term used across Yamlink's surfaces, commands, and documen
 
 **Completion** — VS Code's autocomplete surface. Yamlink populates it with relation candidates (ranked by vault context), frontmatter field names (ranked by type and role), date shortcuts (`@today`, `@tomorrow`, etc.), heading anchors, and query clause tokens.
 
-**Lightbulb (Code Action)** — a VS Code quick-fix icon that appears on fields where Yamlink has a structural suggestion: create a missing linked note, add a missing relation field, backfill frontmatter from a template, or promote a repeated body link to a frontmatter field.
+**Lightbulb (Code Action)** — a VS Code quick-fix icon that appears on fields where Yamlink has a structural suggestion: create a missing linked note, add a missing relation field, backfill frontmatter from a template, or promote a repeated body link to a frontmatter field. "Refine this view" and "Open Query Builder" are lightbulb actions on a `!view` block, not CodeLens.
 
-**CodeLens** — a subtle inline action above `!view` blocks offering "Run", "Refine", and "Query Builder" shortcuts.
+**CodeLens** — a clickable inline action shown directly above a line, distinct from the lightbulb icon. Yamlink uses it in two places: above every `!view` block ("▶ Run" / "✕ Close view"), and above every addressable block — heading, task, quote, footnote — ("Copy reference," plus "N references" when another note actually links to that specific block; non-heading blocks also get "Extract to note," added 2026-08-20).
 
 **Diagnostic** — a squiggle annotation on a note. Yamlink produces diagnostics for broken wikilinks, duplicate IDs, required schema fields that are missing, and notes that drift from their template.
 
@@ -187,7 +187,7 @@ Definitions for every term used across Yamlink's surfaces, commands, and documen
 
 **Natural language query (`yamlink.naturalQuery`)** — the "Yamlink: Query in Plain English" command. Accepts a plain-English description and generates the equivalent `!view` block using 16 sentence pattern templates and vault vocabulary injection (types, fields, values, IDs). The generated query is shown in a preview before insertion. The `!view` query language itself is unchanged — this is a generator and learning tool.
 
-**Note splitting (`yamlink.splitNoteBody`)** — "Yamlink: Extract Selection to New Note". Selected body text becomes the body of a new note; the first heading or non-blank line of the selection becomes the title; the original selection is replaced with `![[new-id]]` (an embed); `source: [[original-id]]` is written into the new note's frontmatter. Distinct from `yamlink.newNoteFromSelection`, which uses the selection as the new note's title.
+**Note splitting (`yamlink.splitNoteBody`)** — "Yamlink: Split Note Body". Selected body text becomes the body of a new note; the first heading or non-blank line of the selection becomes the title; the original selection is replaced with `![[new-id]]` (an embed); `source: [[original-id]]` is written into the new note's frontmatter. Distinct from `yamlink.newNoteFromSelection`, which uses the selection as the new note's title.
 
 **Add Missing Creation Dates (`yamlink.backfillCreatedDates`)** — scans the vault for notes without a `created:` field and writes the file system birthtime (falling back to mtime) to each. Shows a warning about birthtime reliability before writing.
 
@@ -244,7 +244,7 @@ Definitions for every term used across Yamlink's surfaces, commands, and documen
 
 ## CLI
 
-**`yamlink` CLI** — a standalone terminal tool (`npm link` from the project folder) for querying, inspecting, and mutating a vault without VS Code. 44 commands. Every command supports `--vault <path>` (default: current directory) and `--json` for machine-readable output.
+**`yamlink` CLI** — a standalone terminal tool (`npm link` from the project folder) for querying, inspecting, and mutating a vault without VS Code. 49 commands. Every command supports `--vault <path>` (default: current directory) and `--json` for machine-readable output.
 
 | Command | Description |
 |---|---|
@@ -273,7 +273,16 @@ Definitions for every term used across Yamlink's surfaces, commands, and documen
 | `yamlink stale` | Notes in a stale lifecycle state. `--type`, `--limit` |
 | `yamlink orphans` | Notes with no inbound or outbound links. `--type`, `--limit` |
 | `yamlink pressure` | Knowledge pressure: load-bearing drafts, stale hubs, orphans |
+| `yamlink signature` | Structural signature: dominant types, field-bundle rigidity, hub concentration, recent growth rate |
+| `yamlink workflow-memory --type <type>` | Repeated field pairs you add together on notes of this type, across real authoring sessions |
+| `yamlink trends` | Growth/Stale/Structure forecast and retrospective accuracy — same data as Vault Health's Projections card |
+| `yamlink glossary --type <a,b>` | Live alphabetized glossary of every note of the given type(s), with definitions and backlinks |
+| `yamlink block-backlinks <id>` | Notes linking to a specific task/quote/heading/footnote inside the given note. `--block <id>` filters to one exact block |
+| `yamlink template save <id>` | Save an existing note as a blank-skeleton `_templates/<type>.md` template. `--force` overwrites an existing one |
+| `yamlink snapshot` | Capture an on-demand Time Engine checkpoint right now. `--reason <text>` |
+| `yamlink restore <timestamp>` | Preview (default) or `--output <path>` export a vault reconstruction as `.md` files — never writes into the live vault |
 | `yamlink set <id> <field> <value>` | Set or remove a frontmatter field. `--clear`, `--dry-run`, emits mutation events |
+| `yamlink bulk-set --ids <a,b,c> --field <name>` | Apply one `--value`/`--add`/`--clear` field change across many notes in one call. Per-note failure isolation, `--dry-run`/`--json` |
 | `yamlink link <id> <field> <target>` | Add a `[[wikilink]]` relation field. `--append` for multi-value fields |
 | `yamlink create <type>` | Create a note non-interactively. `--field key=value` for any frontmatter field |
 | `yamlink rename <old> <new>` | Vault-wide ID rename + wikilink rewrite. `--dry-run`, `--rename-file` |
@@ -284,7 +293,8 @@ Definitions for every term used across Yamlink's surfaces, commands, and documen
 | `yamlink publish --out <dir>` | Build a static, structured content payload for a site generator (Astro/Next/Eleventy). `--mode preview\|production`, `--site-url` (sitemap/feed), `--webhook`, `--force` — see the Authoring & Publishing section below |
 | `yamlink env` | Export shell variables for the current vault. `--shell bash|zsh|fish` |
 | `yamlink watch` | Persistent watcher — rebuilds on `.md` saves, prints timestamped one-liners |
-| `yamlink on <event> -- <script>` | Automation hooks: execute a script on matching mutation events. `--type` to filter |
+| `yamlink on <event> -- <script>` | Automation: execute a local script on matching mutation events. `--type` to filter; `--daemon` spawns it as a real detached background process that survives closing the terminal, `--list`/`--stop <id>`/`--stop-all` manage running daemons |
+| `yamlink hooks add\|list\|remove` | Webhook registrations — the HTTP-callback counterpart to `on` (a `POST` to a URL instead of a local script). `hooks add <event> <url> [--type]` |
 | `yamlink completions bash\|zsh` | Print shell completion script for tab-completion |
 | `yamlink serve` | Local HTTP API server (default port 3000). Full reference: `CONTRACT.md` |
 | `yamlink conduit` | Open the Conduit terminal UI. Requires `yamlink serve` running on the same port |

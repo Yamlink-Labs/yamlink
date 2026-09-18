@@ -1,12 +1,16 @@
 'use strict';
 
 const vscode = require('vscode');
+const fs = require('fs');
+const path = require('path');
 const {
     extractMeaningfulBodyBlocks,
     findBodyBlockInLineRange,
     formatBlockReference
 } = require('../core/bodyBlocks');
 const { emitOutcomeEvent } = require('../runtime/mutationEventLog');
+const { canonicalizeId } = require('../core/id');
+const { getWorkspaceRootForFile, getPrimaryWorkspaceRoot } = require('../core/workspace');
 
 function describeBlockKind(block) {
     switch (block?.type) {
@@ -197,6 +201,101 @@ async function insertResolvedReference(resolved, formatter) {
     vscode.window.setStatusBarMessage(`Yamlink: Inserted ${reference}`, 3000);
 }
 
+function deriveBlockExtractTitle(block) {
+    const raw = String(block?.label || block?.text || '').trim();
+    const firstLine = raw.split('\n')[0] || '';
+    return firstLine.replace(/\*+/g, '').trim().slice(0, 80) || describeBlockKind(block);
+}
+
+/**
+ * Body-target action, distinct from the copy/insert commands above: moves a
+ * single addressable block (task/quote/footnote — not a heading, which has
+ * no bounded content range of its own) out of the current note and into a
+ * brand-new one, replacing it in place with an embed. Deliberately mirrors
+ * nodeCreationSelection.js's handleSplitNoteBody() (same frontmatter shape,
+ * same embed-replacement convention, same direct fs write with no
+ * vaultService involvement) rather than inventing a second convention —
+ * the difference is the source range comes from a known block's
+ * line/endLine instead of an arbitrary user selection.
+ */
+async function handleExtractBlockToNote(getPathIndex, preferredBlock = null) {
+    const editor = ensureActiveMarkdownEditor('extract a block to a new note');
+    if (!editor) return;
+
+    const noteId = ensureNoteId(editor, getPathIndex);
+    if (!noteId) return;
+
+    const block = await pickAddressableBlock(editor, noteId, {
+        mode: 'nonHeading',
+        title: 'Yamlink — Extract block to new note',
+        placeHolder: 'Choose a task, quote, or footnote to move into its own note',
+        preferredBlock
+    });
+    if (!block) {
+        vscode.window.showInformationMessage('Yamlink: No addressable tasks, quotes, or footnotes found.');
+        return;
+    }
+
+    const title = await vscode.window.showInputBox({
+        prompt: 'Title for the extracted note',
+        value: deriveBlockExtractTitle(block),
+        placeHolder: 'Note title',
+        validateInput: (v) => (v && v.trim()) ? null : 'Title cannot be empty'
+    });
+    if (!title) return;
+
+    const cleanId = canonicalizeId(title);
+    if (!cleanId) {
+        vscode.window.showErrorMessage('Yamlink: Could not generate a valid ID from that title.');
+        return;
+    }
+
+    const root = getWorkspaceRootForFile(vscode.workspace.workspaceFolders, editor.document.uri.fsPath)
+        || getPrimaryWorkspaceRoot(vscode.workspace.workspaceFolders);
+    if (!root) {
+        vscode.window.showErrorMessage('Yamlink: No workspace folder found. Make sure a folder is open.');
+        return;
+    }
+
+    const newFilePath = path.join(root, `${cleanId}.md`);
+    if (fs.existsSync(newFilePath)) {
+        vscode.window.showErrorMessage(`Yamlink: A note with id "${cleanId}" already exists.`);
+        return;
+    }
+
+    const lines = editor.document.getText().split('\n');
+    const blockLines = lines.slice(block.line, block.endLine + 1);
+    const bodyContent = blockLines.join('\n').trim();
+    const today = new Date().toISOString().slice(0, 10);
+    const frontmatterLines = ['---', `id: ${cleanId}`, `created: ${today}`, `source: [[${noteId}]]`, '---', ''];
+    fs.writeFileSync(newFilePath, frontmatterLines.join('\n') + bodyContent + '\n', 'utf8');
+
+    const replaceRange = new vscode.Range(
+        new vscode.Position(block.line, 0),
+        new vscode.Position(block.endLine, lines[block.endLine].length)
+    );
+    const edit = new vscode.WorkspaceEdit();
+    edit.replace(editor.document.uri, replaceRange, `![[${cleanId}]]`);
+    const editApplied = await vscode.workspace.applyEdit(edit);
+    if (!editApplied) {
+        vscode.window.showWarningMessage(`Yamlink: Created "${cleanId}" but could not replace the block — replace manually with ![[${cleanId}]].`);
+    }
+
+    emitOutcomeEvent({
+        type: 'block_reference_created',
+        noteId,
+        field: 'block_reference',
+        newValue: `![[${cleanId}]]`,
+        source: 'vscode',
+        cause: 'extract_block_to_note',
+        meta: { targetNoteId: cleanId, blockType: block.type, blockId: block.blockId }
+    });
+
+    const newDoc = await vscode.workspace.openTextDocument(newFilePath);
+    await vscode.window.showTextDocument(newDoc, { viewColumn: vscode.ViewColumn.One, preview: false });
+    vscode.window.showInformationMessage(`Yamlink: Extracted "${cleanId}" from ${describeBlockKind(block).toLowerCase()}`);
+}
+
 function registerBlockReferenceCommands(context, getPathIndex) {
     context.subscriptions.push(
         vscode.commands.registerCommand('yamlink.copyBlockReference', async () => {
@@ -217,6 +316,10 @@ function registerBlockReferenceCommands(context, getPathIndex) {
                 placeHolder: 'Choose a task, quote, or footnote from this note'
             });
             await insertResolvedReference(resolved, formatBlockReference);
+        }),
+
+        vscode.commands.registerCommand('yamlink.extractBlockToNote', async (preferredBlock) => {
+            await handleExtractBlockToNote(getPathIndex, preferredBlock || null);
         }),
 
         vscode.commands.registerCommand('yamlink.copyScopedReference', async () => {
@@ -282,6 +385,7 @@ module.exports = {
     buildBlockQuickPickItems,
     buildHeadingReference,
     buildScopedReference,
+    deriveBlockExtractTitle,
     filterBlocksByMode,
     findCurrentAddressableBlock,
     getAddressableBlocks,

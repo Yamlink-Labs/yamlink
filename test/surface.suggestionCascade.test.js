@@ -11,6 +11,7 @@ const {
     resetVscodeStubState,
     requireWithVscodeStub
 } = require('./lib/vaultSim');
+const { appendMutationEvents, clearMutationEvents, initMutationLog } = require('../src/runtime/mutationEventLog');
 const { maybeSuggestFieldCascade, resetSuggestionCascade } = requireWithVscodeStub('../src/features/suggestionCascade', require);
 
 function CONTACT(id, hasCompany) {
@@ -33,11 +34,14 @@ function readVaultFile(vault, filename) {
 
 describe('suggestion cascade', () => {
     beforeEach(() => {
+        initMutationLog(null);
+        clearMutationEvents();
         resetVscodeStubState();
         resetSuggestionCascade();
     });
 
     afterEach(() => {
+        clearMutationEvents();
         resetVscodeStubState();
         resetSuggestionCascade();
     });
@@ -96,6 +100,55 @@ describe('suggestion cascade', () => {
             // No throw, and the queued response is left untouched (nothing to assert on
             // the queue directly, but a real vault file is unaffected either way).
             assert.ok(true);
+        } finally {
+            vault.destroy();
+        }
+    });
+
+    it('falls back to workflow memory when arc has no high-confidence candidate', async () => {
+        const vault = createVault({
+            'memory-a.md': CONTACT('memory-a', false),
+            'memory-b.md': CONTACT('memory-b', false),
+            'erin.md': CONTACT('erin', false)
+        });
+        try {
+            appendMutationEvents([
+                { timestamp: '2026-01-01T10:00:00.000Z', type: 'type_set', noteId: 'memory-a', field: 'type', newValue: 'contact' },
+                { timestamp: '2026-01-01T10:01:00.000Z', type: 'field_added', noteId: 'memory-a', field: 'status', newValue: 'active' },
+                { timestamp: '2026-01-01T10:02:00.000Z', type: 'field_added', noteId: 'memory-a', field: 'callsign', newValue: 'alpha' },
+                { timestamp: '2026-01-02T10:00:00.000Z', type: 'type_set', noteId: 'memory-b', field: 'type', newValue: 'contact' },
+                { timestamp: '2026-01-02T10:01:00.000Z', type: 'field_added', noteId: 'memory-b', field: 'status', newValue: 'active' },
+                { timestamp: '2026-01-02T10:02:00.000Z', type: 'field_added', noteId: 'memory-b', field: 'callsign', newValue: 'bravo' }
+            ]);
+            queueInformationMessageResponses('Add Field');
+
+            await maybeSuggestFieldCascade('erin', 'status');
+
+            const erinText = readVaultFile(vault, 'erin.md');
+            assert.ok(erinText.includes('callsign:\n'), 'expected workflow memory to nudge callsign');
+        } finally {
+            vault.destroy();
+        }
+    });
+
+    it('keeps the arc candidate as the only nudge when arc and workflow memory both have candidates', async () => {
+        const vault = createVault(bundleFixture());
+        try {
+            appendMutationEvents([
+                { timestamp: '2026-01-01T10:00:00.000Z', type: 'type_set', noteId: 'memory-a', field: 'type', newValue: 'contact' },
+                { timestamp: '2026-01-01T10:01:00.000Z', type: 'field_added', noteId: 'memory-a', field: 'status', newValue: 'active' },
+                { timestamp: '2026-01-01T10:02:00.000Z', type: 'field_added', noteId: 'memory-a', field: 'callsign', newValue: 'alpha' },
+                { timestamp: '2026-01-02T10:00:00.000Z', type: 'type_set', noteId: 'memory-b', field: 'type', newValue: 'contact' },
+                { timestamp: '2026-01-02T10:01:00.000Z', type: 'field_added', noteId: 'memory-b', field: 'status', newValue: 'active' },
+                { timestamp: '2026-01-02T10:02:00.000Z', type: 'field_added', noteId: 'memory-b', field: 'callsign', newValue: 'bravo' }
+            ]);
+            queueInformationMessageResponses('Add Field');
+
+            await maybeSuggestFieldCascade('erin', 'status');
+
+            const erinText = readVaultFile(vault, 'erin.md');
+            assert.ok(erinText.includes('company:\n'), 'expected existing arc candidate to win');
+            assert.ok(!erinText.includes('callsign:\n'), 'workflow memory should not fire a second nudge');
         } finally {
             vault.destroy();
         }

@@ -1,3 +1,5 @@
+<div align="center">
+
 # <img src="./media/icon.png" alt="Yamlink logo" width="30" valign="middle"> Yamlink
 
 Turn plain Markdown notes into editable live tables, a knowledge graph, a calendar, and a terminal workspace — all reading the same local files. Create a living system off your Markdown.
@@ -8,6 +10,10 @@ Turn plain Markdown notes into editable live tables, a knowledge graph, a calend
 [![Rating](https://vsmarketplacebadges.dev/rating/yamlink.yamlink.svg)](https://marketplace.visualstudio.com/items?itemName=yamlink.yamlink)
 ![License](https://img.shields.io/badge/license-MIT-green)
 ![VS Code](https://img.shields.io/badge/VS%20Code-%5E1.120.0-blueviolet)
+
+**[yamlink.dev](https://www.yamlink.dev)**
+
+</div>
 
 Write a `!view` block in any note and it opens as a live, editable table — change a cell, it writes straight back to the file. The same notes also feed a knowledge graph (`[[wikilinks]]` become typed edges), a calendar, and a terminal workspace, all from plain Markdown with a stable `id:` in the frontmatter.
 
@@ -114,6 +120,8 @@ Every meaningful body element gets a stable ID, not just headings — Yamlink ca
 - Hovering a scoped reference previews the actual heading or block content, not just the note's frontmatter.
 - Completion suggests real headings/blocks as you type `#` or `^` inside a wikilink.
 - **Copy/insert commands** — `Yamlink: Copy Scoped Reference` (pick any heading, task, quote, or footnote — the general picker), `Yamlink: Copy Section Reference` (headings only), `Yamlink: Copy Block Reference` (tasks/quotes/footnotes only), plus `Insert` variants of all three that write directly into the editor instead of the clipboard.
+- **In-editor affordances** — a "Copy reference" CodeLens sits directly above every addressable block, so you don't need to already know a heading, task, quote, or footnote is referenceable. When another note actually links to that specific block, a "N references" lens appears too, jumping straight to it (or offering a picker for more than one).
+- **Extract to a new note** — `Yamlink: Extract Block to New Note` (also a CodeLens on tasks/quotes/footnotes) moves that exact block into its own note, replacing it in place with an embed.
 - **Note Report surfaces block-level backlinks** — not just "which notes link here," but which notes link to *this exact task or quote*.
 
 ### Query
@@ -264,7 +272,7 @@ Yamlink's keyboard-driven terminal workspace — full vault access with no brows
 
 ### CLI and platform
 
-Run Yamlink capabilities without VS Code — 41 commands, `--json` everywhere for scripting. Commands that list results (`ls`, `grep`, `find`, `search`, `doctor`, and others) print a real aligned table by default; add `--json` for machine output, or `--quiet` on `ls`/`grep`/`find` for the old plain tab-separated form if you're piping into `awk`/`cut`/`xargs`.
+Run Yamlink capabilities without VS Code — 49 commands, `--json` everywhere for scripting. Commands that list results (`ls`, `grep`, `find`, `search`, `doctor`, and others) print a real aligned table by default; add `--json` for machine output, or `--quiet` on `ls`/`grep`/`find` for the old plain tab-separated form if you're piping into `awk`/`cut`/`xargs`.
 
 **Vault integrity**
 
@@ -313,6 +321,7 @@ yamlink glossary --type faction,location         # live alphabetized glossary of
 yamlink mutations                        # recent mutation events from the vault log
 yamlink session                          # summarize recent or explicit mutation sessions
 yamlink on note_created -- ./sync.sh     # run a script whenever a matching mutation event fires
+yamlink hooks add note_created https://hooks.example.com/notify   # webhook counterpart to `on` — HTTP POST instead of a local script
 yamlink watch                            # watch vault for changes and rebuild the index on save
 ```
 
@@ -324,6 +333,8 @@ yamlink drift --type contact             # notes structurally drifting from thei
 yamlink stale                            # notes in a stale lifecycle state
 yamlink orphans                          # notes with no inbound or outbound links
 yamlink pressure                         # knowledge pressure: load-bearing drafts, stale hubs, orphans
+yamlink signature                        # structural signature: dominant types, field rigidity, hub concentration
+yamlink workflow-memory --type contact   # repeated field pairs you add together on notes of this type
 yamlink lenses                           # vault change lenses over mutation history
 ```
 
@@ -415,7 +426,7 @@ Yamlink can also start from an existing note system instead of a greenfield vaul
   - skips `.obsidian/` config and junk/system directories
   - reports note counts, preserved non-Markdown files, and follow-up migration opportunities
   - can apply safe missing `id:` fields and canonical wikilink rewrite passes after import
-- `Yamlink: Import Vault Export`
+- `Yamlink: Import External Vault Export`
   - choose **Roam Research**, **Notion**, or **Evernote**
   - Yamlink inspects the selected export before import so you can confirm what it found
   - Yamlink converts the export into Markdown notes shaped for Yamlink indexing
@@ -433,38 +444,21 @@ This is the fastest way to bring an existing knowledge base into Yamlink without
 
 ---
 
-## Current release — 0.7.9
+## 0.8.0
 
-0.7.9 is another quick hotfix, found via a real verification run of `yamlink publish` against a separate repo: the incremental-build cache never actually detected changes across separate runs, silently skipping real rebuilds after the first one. Fixed — see [CHANGELOG.md](./CHANGELOG.md#079) for detail.
+A large amount of real, working code for 0.8.0 already exists in this repo — not yet tagged or published, but substantial enough to be worth knowing about if you're reading this off `main`. Highlights:
 
-## 0.7.8
+- **Block-ID CodeLens** — "Copy reference" / "N references" / "Extract to note" now appear directly above every heading, task, quote, and footnote, no command palette needed.
+- **Workflow memory** — Yamlink starts noticing which fields *you* tend to fill in together, as a fallback when its existing arc-based suggestion has nothing confident to say.
+- **`yamlink signature`** — an honest, plain-language read on what shape your vault actually is: dominant types, field-bundle consistency, hub concentration, recent growth — computed from real behavior, never a forced label.
+- **`yamlink on --daemon`** — automation that survives closing the terminal, with live PID-checked status and automatic crash recovery.
+- **Multi-note field edits from all four surfaces** — CLI (`yamlink bulk-set`), the API, VS Code (Explorer multi-select), and Conduit all share one bulk set/add/clear implementation.
+- **Live inline unlinked-mention highlighting**, with one-click and bulk "link all" quick fixes.
+- **VQL: graph traversal (`linked_to`/`linked_from ... within N`) and `as of <date>` time-travel queries** inside `!view` blocks.
+- **Webhook registration** — `yamlink hooks`/`GET /api/hooks`, real HTTP delivery on vault mutation events.
+- **x-graph now reheats its physics live while you drag a node**, pulling connected neighbors along instead of staying static.
 
-0.7.8 is a quick hotfix for a real bug found immediately after 0.7.7 shipped: `yamlink --version`/`-v` had no handling at all and crashed instead of printing a version. Fixed — see [CHANGELOG.md](./CHANGELOG.md#078) for detail.
-
-## 0.7.7
-
-0.7.7 is Yamlink's first Authoring & Publishing release — a real, separate website project (https://www.yamlink.dev - coming soon) adopted Yamlink as its content engine ahead of schedule, and hand-building its own pipeline surfaced concrete gaps this release closes. The full feature set is built and tested.
-
-`yamlink publish --out <dir>` builds a static, structured content payload (per-note JSON, resolved links, resolved `!view` snapshots, assets, a search index, and — with `--site-url` — a sitemap and RSS feed) for a site generator like Astro, Next.js, or Eleventy to consume. `status: draft/published/archived` becomes a real gate on what gets published, not just a display label; a numeric `order:` field controls manual ordering; a declared `previous_ids:` field generates redirects for renamed notes. `yamlink export --id <id> --format html` exports a single note as a standalone HTML file, and a `yamlink.liveNotePreviewUrl` setting lets Live Note preview a note through your destination site's own rendering instead of Yamlink's generic view. See the [Authoring & Publishing](#authoring--publishing) section above for the full list.
-
-## 0.7.6
-
-0.7.6 is a quick follow-up mainly fixing real problems from 0.7.5: the in-editor "What's New" notice was still showing 0.7.4's release notes to every updating user, block IDs (used for hover, completion, go-to-definition, and block-level backlinks) silently stopped working entirely on any note saved with Windows line endings, and a multi-value relation field could render with corrupted, missing brackets in the hover card. Alongside those fixes, block-level backlinks — knowing which notes link to a specific task, quote, heading, or footnote inside a note, not just the note as a whole — are now reachable outside VS Code too, via `yamlink block-backlinks` and `GET /api/nodes/:id?include=blockBacklinks`.
-
-## 0.7.5
-
-- **The API reaches further outside the editor** — `GET /api/nodes/:id?include=body` returns a note's raw text, `?include=timestamps` returns its real filesystem dates, `PATCH /api/tasks` toggles a task's checkbox, and `GET /api/glossary` hands over the vault's glossary — all things you could already do by hand in VS Code, now scriptable.
-- **Optional API authentication** — set `YAMLINK_API_TOKEN` before running `yamlink serve` to require a matching `X-Yamlink-Token` header on every request. Off by default with a visible startup reminder when it's unset, since until now anything on your machine could read or write your vault through the API with no login at all.
-- **Plugin API for third-party field evidence** — another VS Code extension can register a function contributing its own small, explainable opinion to Yamlink's field-guessing (`registerFieldEvidenceSource`). Read-only, capped influence, discarded outright if it doesn't come with a stated reason.
-- **Vault Trends reaches every surface** — the Growth/Stale/Structure forecasting engine behind Vault Health's Projections card is no longer VS Code-only. `GET /api/intelligence/trends`, `yamlink trends`, and a new Conduit "Trends" screen (`0`) all return the exact same reconstructed trend data and retrospective accuracy scoring the extension panel already shows — not a second, separate model.
-- **Computed fields, Tier 1** — three read-only virtual fields, queryable in any `!view` block with no frontmatter required: `_inbound_count`, `_outbound_count`, `_hub_score` (Yamlink's own graph-prominence score, the same one that already sizes nodes in x-graph). Works in `where`, `select`, and `sort` — `!view character sort _hub_score desc` surfaces your most-connected notes without ever declaring the field.
-- **Vault snapshot/restore CLI pair**, **smart paste** — see [What it looks like](#what-it-looks-like) above and the CLI section below for detail.
-- **Save as Template** — turn any real, filled-in note into a reusable blank template for its type, from the CLI, the Command Palette, or a right-click. See [Save a note as a template](#save-a-note-as-a-template) below.
-- **Vault Glossary** — a live, always-current A–Z glossary of your vault's concept/term notes (their own definitions plus backlinks), computed fresh every time, nothing written to disk. See [Vault Glossary](#vault-glossary) below.
-- **Query Builder polish** — the visual builder now explains itself: a plain-language result summary, one-click Fast Starts (Most connected, No incoming links, Recently modified, Recently created), and the three new computed fields available in every field picker with inline explanations.
-- **Reverse-link auto-fill made honest** — creating a note from a broken link only auto-fills the link back to where it came from when the vault has real evidence for which field is right; a weaker guess is now offered as a one-click confirmation instead of being applied silently.
-
-For the full release history, see [CHANGELOG.md](./CHANGELOG.md).
+Full detail on all of it — this list is a small sample of what's actually in the `[Unreleased] — 0.8.0` section — lives in [CHANGELOG.md](./CHANGELOG.md).
 
 ---
 

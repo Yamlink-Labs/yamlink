@@ -44,9 +44,19 @@ function renderInlineFileLinks(text, idIndex, aliasIndex) {
     return result;
 }
 
-function handleHover(msg, state) {
+async function handleHover(msg, state) {
     const { textDocument, position } = msg.params || {};
     if (!textDocument || !position) { respond(msg.id, null); return; }
+
+    // Same race `handleCompletion` was fixed for: a watched-file change
+    // schedules a debounced rebuild rather than rebuilding synchronously, and
+    // the server's dispatch is fire-and-forget per frame, so a hover request
+    // arriving right after an edit could otherwise be served against the
+    // stale, pre-rebuild index. Flushing any in-flight rebuild first keeps
+    // hover results consistent with the latest scheduled rebuild.
+    if (state && state.vaultService && typeof state.vaultService.flushPendingRebuild === 'function') {
+        await state.vaultService.flushPendingRebuild();
+    }
 
     const content = getDocumentText(state, textDocument.uri);
     const lines   = content.split('\n');

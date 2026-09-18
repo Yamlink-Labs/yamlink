@@ -6,8 +6,10 @@ const { getIndex, getFieldsCache, getVaultGeneration, extractRelationTargets } =
 const { getEdges, getBacklinks } = require('../../core/graph');
 const { getMutationEvents } = require('../../runtime/mutationEventLog');
 const { buildNoteIntelligenceSnapshot } = require('../../intelligence/intelligenceSnapshots');
-const { reconstructNoteAtTime } = require('../../core/timeEngine');
+const { reconstructNoteAtTime, reconstructVaultAtTime } = require('../../core/timeEngine');
+const { getBodyLinksCache } = require('../../core/indexService');
 const { parseFrontmatterDocument } = require('../../core/frontmatter');
+const { buildDependencyPreview, describeDependencyPreview } = require('../../core/dependencies');
 const { readFileStatDates } = require('../../engine/queryExecutor');
 const { json, errorJson, badRequest, methodNotAllowed, parseJsonBody, requireFields, coercePositiveInt, notFound } = require('../http');
 const { writeNoteFile, applyFieldUpdates } = require('../write');
@@ -115,14 +117,48 @@ function appendAndEmitMutationEvents(context, events) {
     context.eventBus.emitMutationEvents(events);
 }
 
+/**
+ * Reconstructs the full node list as of a past timestamp — the list-level
+ * analog of getNode's existing single-note `?at=` support, reusing the same
+ * reconstructVaultAtTime() primitive /api/graph?at= already relies on.
+ * Unlike buildHistoricalGraph() (graph.js), this keeps every real field per
+ * note, not just {id, type, complete} — callers that need a genuinely
+ * browsable historical node list (Briefing pulse, Explorer, Navigator) need
+ * the full field set, the graph endpoint's minimal shape isn't enough.
+ * @param {string} at
+ * @returns {Array<Record<string, any>>}
+ */
+function historicalNodes(at) {
+    const reconstructed = reconstructVaultAtTime(at, {
+        fieldsCache: getFieldsCache(),
+        mutationEvents: getMutationEvents(),
+        bodyLinksCache: getBodyLinksCache()
+    });
+    const nodes = [];
+    for (const [id, entry] of reconstructed) {
+        if (!entry.exists) continue;
+        nodes.push({
+            ...buildNodeResponse(id, null, entry.fields || {}),
+            complete: entry.complete
+        });
+    }
+    return nodes;
+}
+
 async function listNodes(req, res, url) {
     if (req.method !== 'GET') { methodNotAllowed(res); return; }
     const type = url.searchParams.get('type');
     const page = coercePositiveInt(url.searchParams.get('page'), 1, 1);
     const rawLimit = coercePositiveInt(url.searchParams.get('limit'), 100, 1);
     const limit = Math.min(rawLimit, 500);
+    const at = String(url.searchParams.get('at') || '').trim();
 
-    let nodes = allNodes();
+    if (at && !Number.isFinite(Date.parse(at))) {
+        badRequest(res, 'Invalid "at" timestamp — expected ISO-8601', 'INVALID_PARAM');
+        return;
+    }
+
+    let nodes = at ? historicalNodes(at) : allNodes();
     if (type) nodes = nodes.filter((node) => (node.type || '').toLowerCase() === type.toLowerCase());
 
     const total = nodes.length;
@@ -435,10 +471,24 @@ async function bulkUpdate(req, res, context) {
     json(res, { updated, errors, _generation: getVaultGeneration() }, status);
 }
 
-async function deleteNode(req, res, id, context) {
+function hasForceDelete(req, url) {
+    const queryForce = String(url?.searchParams?.get('force') || '').trim().toLowerCase();
+    const headerForce = String(req.headers['x-yamlink-force'] || '').trim().toLowerCase();
+    return queryForce === 'true' || queryForce === '1' || headerForce === 'true' || headerForce === '1';
+}
+
+async function deleteNode(req, res, id, context, url) {
     if (req.method !== 'DELETE') { methodNotAllowed(res); return; }
     const idIndex = getIndex();
     if (!idIndex.has(id)) { notFound(res, 'Note not found: ' + id); return; }
+    const dependencies = buildDependencyPreview(id, idIndex, getFieldsCache());
+    if (dependencies.total > 0 && !hasForceDelete(req, url)) {
+        errorJson(res, 'CONFLICT', 'Delete blocked: ' + describeDependencyPreview(dependencies), {
+            code: 'DEPENDENCIES_PRESENT',
+            dependencies
+        });
+        return;
+    }
     const filePath = idIndex.get(id);
     try {
         await context.vaultService.mutate(async () => {
@@ -458,7 +508,7 @@ async function deleteNode(req, res, id, context) {
         errorJson(res, 'INTERNAL_ERROR', 'Could not delete file: ' + error.message);
         return;
     }
-    json(res, { ok: true, id, _generation: getVaultGeneration() });
+    json(res, { ok: true, id, dependencies, _generation: getVaultGeneration() });
 }
 
 module.exports = {

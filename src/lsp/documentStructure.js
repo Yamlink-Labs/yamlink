@@ -23,7 +23,7 @@ function getRootName(parsed, uri) {
 
 function buildDocumentStructure(content, uri) {
     const text = String(content || '');
-    const lines = text.split('\n');
+    const lines = text.split(/\r?\n/);
     const parsed = parseFrontmatter(text) || {};
     const headings = [];
     const headingRoots = [];

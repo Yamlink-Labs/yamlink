@@ -43,7 +43,7 @@ function escapeHtmlAttr(str) {
 }
 
 function extractFootnoteDefinitions(text) {
-    const lines = String(text || '').split('\n');
+    const lines = String(text || '').split(/\r?\n/);
     const bodyLines = [];
     const definitions = new Map();
 
@@ -95,7 +95,7 @@ const FENCE_LINE_RE = /^\s*(`{3,}|~{3,})/;
 const LIST_MARKER_RE = /^(\s*)([-*+]|\d+[.)])\s+/;
 
 function preprocessImagesForRender(text, noteDir) {
-    const lines = String(text || '').split('\n');
+    const lines = String(text || '').split(/\r?\n/);
     const out = [];
     let inFence = false;
     let fenceMarker = '';

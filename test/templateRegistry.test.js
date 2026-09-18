@@ -8,6 +8,7 @@ const path = require('path');
 const {
     loadTemplates,
     getTemplateForType,
+    getTemplatesForType,
     getTemplateDrift,
     summarizeTemplateDrift,
     extractTemplateType,
@@ -81,6 +82,17 @@ describe('templateRegistry', () => {
         fs.rmSync(root, { recursive: true, force: true });
     });
 
+    test('getTemplatesForType returns all templates with the same type', () => {
+        const root = makeTmpVault({
+            'contact.md': '---\nid:\ntype: contact\nemail:\n---\n',
+            'contact-field.md': '---\nid:\ntype: contact\nstatus:\n---\n',
+            'account.md': '---\nid:\ntype: account\nowner:\n---\n'
+        });
+        const templates = getTemplatesForType(root, 'contact');
+        assert.deepEqual(templates.map(t => t.name).sort(), ['contact', 'contact-field']);
+        fs.rmSync(root, { recursive: true, force: true });
+    });
+
     test('getTemplateDrift identifies notes missing template fields', () => {
         const root = makeTmpVault({
             'contact.md': '---\nid:\ntype: contact\nemail:\nrole:\naccount:\n---\n'
@@ -131,6 +143,19 @@ describe('templateRegistry', () => {
             ['full-contact', { type: 'contact', email: 'x@x.com', role: 'ceo' }]
         ]);
         assert.deepEqual(getTemplateDrift(root, fieldsCache), []);
+        fs.rmSync(root, { recursive: true, force: true });
+    });
+
+    test('getTemplateDrift skips a type when multiple templates match it', () => {
+        const root = makeTmpVault({
+            'contact.md': '---\nid:\ntype: contact\nemail:\n---\n',
+            'contact-alt.md': '---\nid:\ntype: contact\nrole:\n---\n'
+        });
+        const fieldsCache = new Map([
+            ['ace-levy', { type: 'contact' }]
+        ]);
+        assert.deepEqual(getTemplateDrift(root, fieldsCache), []);
+        assert.deepEqual(summarizeTemplateDrift(getTemplateDrift(root, fieldsCache)), new Map());
         fs.rmSync(root, { recursive: true, force: true });
     });
 
@@ -256,6 +281,22 @@ describe('templateRegistry', () => {
             const root = fs.mkdtempSync(path.join(os.tmpdir(), 'yamlink-notmpldir-'));
             saveTemplateFile(root, 'account', '---\nid:\ntype: account\n---\n');
             assert.ok(fs.existsSync(path.join(root, '_templates', 'account.md')));
+            fs.rmSync(root, { recursive: true, force: true });
+        });
+
+        test('writes a named template file without changing the template type', () => {
+            const root = fs.mkdtempSync(path.join(os.tmpdir(), 'yamlink-namedtmpl-'));
+            const filePath = saveTemplateFile(
+                root,
+                'contact',
+                '---\nid:\ntype: contact\nstatus:\n---\n',
+                { templateName: 'contact-field-guide' }
+            );
+            assert.equal(path.basename(filePath), 'contact-field-guide.md');
+            const loaded = getTemplatesForType(root, 'contact');
+            assert.equal(loaded.length, 1);
+            assert.equal(loaded[0].name, 'contact-field-guide');
+            assert.equal(loaded[0].type, 'contact');
             fs.rmSync(root, { recursive: true, force: true });
         });
     });

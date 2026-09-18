@@ -12,7 +12,7 @@ const { appendMutationEvents, withMutationContext } = require('../../runtime/mut
 const fmt = require('../format');
 const { emitCliError, emitCliSuccess, emitText } = require('../io');
 
-async function run({ id, field, value, vaultPath, json, quiet, dryRun, clear }) {
+async function run({ id, field, value, vaultPath, json, quiet, dryRun, clear, vaultService }) {
     if (!id || !field) {
         return emitCliError({ json, error: 'Usage: yamlink set <id> <field> <value>', code: 'USAGE', exitCode: 1 });
     }
@@ -55,18 +55,26 @@ async function run({ id, field, value, vaultPath, json, quiet, dryRun, clear }) 
         return;
     }
 
-    try { fs.writeFileSync(filePath, nextContent, 'utf8'); } catch (e) {
-        return emitCliError({ json, error: `Cannot write file: ${e.message}`, code: 'IO_ERROR', exitCode: 2 });
+    if (!vaultService) {
+        return emitCliError({ json, error: 'Vault service unavailable for set.', code: 'INTERNAL_ERROR', exitCode: 2 });
     }
 
     const eventType = !oldValue && newValue ? 'field_added'
         : oldValue && !newValue ? 'field_removed'
         : 'field_changed';
-    appendMutationEvents(withMutationContext([{
-        type: eventType, noteId: id, field,
-        oldValue: oldValue ?? null, newValue: newValue ?? null,
-        timestamp: new Date().toISOString()
-    }], { source: 'cli', cause: 'cli_set' }));
+
+    try {
+        await vaultService.mutate(async () => {
+            fs.writeFileSync(filePath, nextContent, 'utf8');
+            appendMutationEvents(withMutationContext([{
+                type: eventType, noteId: id, field,
+                oldValue: oldValue ?? null, newValue: newValue ?? null,
+                timestamp: new Date().toISOString()
+            }], { source: 'cli', cause: 'cli_set' }));
+        });
+    } catch (e) {
+        return emitCliError({ json, error: `Cannot write file: ${e.message}`, code: 'IO_ERROR', exitCode: 2 });
+    }
 
     if (json) { emitCliSuccess({ id, field, oldValue, newValue, filePath, dryRun: false }); return; }
     if (!quiet) emitText(fmt.ok(`Set ${id}.${field} = ${JSON.stringify(newValue)}\n`));

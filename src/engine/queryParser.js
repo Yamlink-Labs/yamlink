@@ -71,7 +71,7 @@ function parseSingleViewBlock(lines) {
     const clauseText = clauseLines.join(' ').trim();
 
     let select = null;
-    const selectMatch = clauseText.match(/\bselect\s+([\w,\s.-]+?)(?=\s+where\b|\s+sort\b|\s+limit\b|\s+via\b|\s+group\b|$)/i);
+    const selectMatch = clauseText.match(/\bselect\s+([\w,\s.-]+?)(?=\s+where\b|\s+sort\b|\s+limit\b|\s+via\b|\s+group\b|\s+linked_to\b|\s+linked_from\b|$)/i);
     if (selectMatch) {
         select = selectMatch[1].split(',').map(s => s.trim().toLowerCase()).filter(Boolean);
         if (select.length === 0) select = null;
@@ -89,14 +89,73 @@ function parseSingleViewBlock(lines) {
     const viaMatch = clauseText.match(/\bvia\s+([\w-]+)/i);
     if (viaMatch) via = viaMatch[1].toLowerCase();
 
+    // VQL v1: graph traversal clauses. `linked_to [[x]]` means "this row has
+    // an outbound edge to x" (row is the source); `linked_from [[x]]` means
+    // "x has an outbound edge to this row" (row is the target). An optional
+    // trailing `within N` extends either clause transitively up to N hops
+    // in the same direction (union of hops 1..N, not just exactly hop N).
+    // Omitting `within` behaves exactly as single-hop v1 did — depth
+    // defaults to 1, never null, so downstream code has one path. Capped at
+    // 5; anything outside 1-5 is a parse warning, not a crash or a silent
+    // clamp. Temporal clauses remain a real follow-up, not this pass.
+    // Reuses the same [[id]] syntax wikilinks already use, resolved against
+    // the plain id (no alias resolution in v1 — a known, stated limitation).
+    const MAX_TRAVERSAL_DEPTH = 5;
+
+    function parseTraversalDepth(withinRaw, clauseLabel, warnings) {
+        if (withinRaw === undefined) return 1;
+        const depth = parseInt(withinRaw, 10);
+        if (!Number.isFinite(depth) || depth < 1 || depth > MAX_TRAVERSAL_DEPTH) {
+            warnings.push(`"${clauseLabel} within ${withinRaw}" is out of range (1-${MAX_TRAVERSAL_DEPTH}) — ignoring "within", using a single hop.`);
+            return 1;
+        }
+        return depth;
+    }
+
+    const traversalWarnings = [];
+
+    let linkedTo = null;
+    let linkedToDepth = 1;
+    const linkedToMatch = clauseText.match(/\blinked_to\s+\[\[([^\]]+)\]\](?:\s+within\s+(\d+))?/i);
+    if (linkedToMatch) {
+        linkedTo = linkedToMatch[1].trim();
+        linkedToDepth = parseTraversalDepth(linkedToMatch[2], 'linked_to', traversalWarnings);
+    }
+
+    let linkedFrom = null;
+    let linkedFromDepth = 1;
+    const linkedFromMatch = clauseText.match(/\blinked_from\s+\[\[([^\]]+)\]\](?:\s+within\s+(\d+))?/i);
+    if (linkedFromMatch) {
+        linkedFrom = linkedFromMatch[1].trim();
+        linkedFromDepth = parseTraversalDepth(linkedFromMatch[2], 'linked_from', traversalWarnings);
+    }
+
     let groupBy = null;
     const groupByMatch = clauseText.match(/\bgroup\s+by\s+([\w-]+)(?=\s+(?:sort|limit)\b|$)/i);
     if (groupByMatch) groupBy = groupByMatch[1].toLowerCase();
 
+    // VQL v1: temporal clause. `as of <date>` reconstructs the vault's
+    // frontmatter fields as they stood at that point in time (via the Time
+    // Engine's existing reconstructVaultAtTime() — no new reconstruction
+    // logic, this is new surfacing of it). Accepts the same date vocabulary
+    // where clauses already do: a literal date or a function call
+    // (today(), days-ago(7), etc.) — resolved once here via
+    // parseScalarQueryValue, the same resolver where clauses use. Computed/
+    // virtual fields (_inbound_count, file.created, etc.) are NOT
+    // reconstructed — a stated limitation, not an oversight; they still
+    // reflect current values under `as of`. Does not apply to `incoming`
+    // queries or to linked_to/linked_from traversal in this pass.
+    let asOf = null;
+    const asOfMatch = clauseText.match(/\bas\s+of\s+([a-z][\w-]*\([^)]*\)|\S+)/i);
+    if (asOfMatch) {
+        const resolved = parseScalarQueryValue(asOfMatch[1]);
+        asOf = resolved.value || null;
+    }
+
     const wheres = [];
     const whereGroups = [];
-    const parseWarnings = [];
-    const whereBlocks = clauseText.match(/\bwhere\s+(?:(?!\b(?:where|sort|limit|select|via|group)\b).)+/gi) || [];
+    const parseWarnings = [...traversalWarnings];
+    const whereBlocks = clauseText.match(/\bwhere\s+(?:(?!\b(?:where|sort|limit|select|via|group|linked_to|linked_from|as\s+of)\b).)+/gi) || [];
     for (const block of whereBlocks) {
         const condText = block.replace(/^where\s+/i, '').trim();
         const parts = condText.split(/\s+and\s+(?=(?:[\w*.-]+\s+(?:contains\b|=|!=|>=|<=|>|<|\bis\b|\bexists\b)|#[A-Za-z][\w-]*))/i);
@@ -112,7 +171,7 @@ function parseSingleViewBlock(lines) {
         }
     }
 
-    return { type, incoming, via, select, wheres, whereGroups, where: wheres[0] ?? null, sort, limit, label, preset, shorthand, groupBy, parseWarnings };
+    return { type, incoming, via, linkedTo, linkedToDepth, linkedFrom, linkedFromDepth, asOf, select, wheres, whereGroups, where: wheres[0] ?? null, sort, limit, label, preset, shorthand, groupBy, parseWarnings };
 }
 
 /**
@@ -173,6 +232,15 @@ function buildQueryString(query) {
     if (!query.shorthand && query.type === 'tasks' && query.preset) s += ' ' + query.preset;
     if (query.label) s += ' | ' + query.label;
     if (query.via) s += ' via ' + query.via;
+    if (query.linkedTo) {
+        s += ' linked_to [[' + query.linkedTo + ']]';
+        if (query.linkedToDepth && query.linkedToDepth !== 1) s += ' within ' + query.linkedToDepth;
+    }
+    if (query.linkedFrom) {
+        s += ' linked_from [[' + query.linkedFrom + ']]';
+        if (query.linkedFromDepth && query.linkedFromDepth !== 1) s += ' within ' + query.linkedFromDepth;
+    }
+    if (query.asOf) s += ' as of ' + query.asOf;
     if (query.select) s += '\nselect ' + query.select.join(', ');
     const whereGroups = query.whereGroups && query.whereGroups.length > 0
         ? query.whereGroups

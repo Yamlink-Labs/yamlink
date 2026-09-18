@@ -20,10 +20,13 @@ const {
     stripHtmlToMarkdownish,
     parseCsvTable,
     formatExternalInspectionSummary,
+    formatImportTrustSummary,
+    buildImportTrustSection,
     buildExternalImportReportMarkdown
 } = require('../importers/shared');
 const {
     normalizeRoamText,
+    rewriteRoamReferences,
     renderRoamBlocks,
     importRoamJsonToVault,
     inspectRoamExport
@@ -44,17 +47,20 @@ const {
     inferNotionPrimaryField,
     coerceNotionCellValue,
     rewriteNotionMarkdownLinks,
+    rewriteNotionHtmlLinks,
     postProcessNotionMarkdown,
+    postProcessNotionHtml,
     importNotionCsvDatabases
 } = require('../importers/notion');
 
 async function confirmExternalImport(platform, sourcePath, inspection) {
     const summary = formatExternalInspectionSummary(inspection);
+    const trustSummary = formatImportTrustSummary(platform.label, inspection);
     const picks = [
         {
             label: `$(arrow-right) Import ${platform.label} export`,
             description: platform.description,
-            detail: summary || `Import ${path.basename(sourcePath)} into the current workspace`,
+            detail: [summary, trustSummary].filter(Boolean).join(' · ') || `Import ${path.basename(sourcePath)} into the current workspace`,
             action: 'import'
         },
         {
@@ -416,6 +422,7 @@ async function importExternalVault(context, options = {}) {
 module.exports = {
     stripHtmlToMarkdownish,
     normalizeRoamText,
+    rewriteRoamReferences,
     renderRoamBlocks,
     importRoamJsonToVault,
     extractEvernoteResources,
@@ -427,12 +434,16 @@ module.exports = {
     inspectEvernoteExport,
     inspectNotionExport,
     formatExternalInspectionSummary,
+    formatImportTrustSummary,
+    buildImportTrustSection,
     parseCsvTable,
     notionFieldKey,
     inferNotionPrimaryField,
     coerceNotionCellValue,
     rewriteNotionMarkdownLinks,
+    rewriteNotionHtmlLinks,
     postProcessNotionMarkdown,
+    postProcessNotionHtml,
     importNotionCsvDatabases,
     buildExternalImportReportMarkdown,
     importEvernoteEnexToVault,

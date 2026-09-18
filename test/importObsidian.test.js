@@ -34,6 +34,7 @@ const {
     applyMissingFilenameIds,
     buildAppliedMigrationReportMarkdown,
     rewriteFilenameStyleWikilinks,
+    rewriteFilenameStyleMarkdownLinks,
     applyCanonicalWikilinkRewrite,
     buildAppliedLinkRewriteReportMarkdown,
     buildCombinedCleanupReportMarkdown
@@ -59,6 +60,10 @@ describe('importObsidian helpers', () => {
 
     test('skips obsidian config and common junk entries', () => {
         assert.equal(shouldSkipImportEntry('.obsidian', true), true);
+        const customConfig = path.join(tempRoot, 'custom-config');
+        fs.mkdirSync(customConfig, { recursive: true });
+        fs.writeFileSync(path.join(customConfig, 'app.json'), '{}');
+        assert.equal(shouldSkipImportEntry('custom-config', true, customConfig), true);
         assert.equal(shouldSkipImportEntry('.git', true), true);
         assert.equal(shouldSkipImportEntry('.vscode', true), true);
         assert.equal(shouldSkipImportEntry('node_modules', true), true);
@@ -194,6 +199,9 @@ category: mission
         });
 
         assert.match(report, /# Yamlink Obsidian Import Report/);
+        assert.match(report, /## What to expect from this import/);
+        assert.match(report, /Import fit: \*\*Strong\*\*/);
+        assert.match(report, /Themes, hotkeys, workspace layout/);
         assert.match(report, /Filename-style links: \*\*2\*\*/);
         assert.match(report, /Likely type-like fields/);
         assert.match(report, /`category`/);
@@ -293,18 +301,33 @@ category: mission
         assert.match(rewritten.text, /\[\[planet-p#Aftermath\|ops\/Planet P\]\]/);
     });
 
+    test('rewriteFilenameStyleMarkdownLinks converts Obsidian markdown-format note links', () => {
+        const rewritten = rewriteFilenameStyleMarkdownLinks(
+            '[Johnny](People/Johnny%20Rico.md) and ![Image](assets/Johnny%20Rico.png) and [Web](https://example.com)',
+            new Map([
+                ['people/johnny rico', { id: 'johnny-rico', label: 'Johnny Rico' }]
+            ])
+        );
+
+        assert.equal(rewritten.rewrites, 1);
+        assert.match(rewritten.text, /\[\[johnny-rico\|Johnny\]\]/);
+        assert.match(rewritten.text, /!\[Image\]\(assets\/Johnny%20Rico\.png\)/);
+        assert.match(rewritten.text, /\[Web\]\(https:\/\/example.com\)/);
+    });
+
     test('applyCanonicalWikilinkRewrite rewrites imported markdown files in place', () => {
         const vaultRoot = path.join(tempRoot, 'vault');
         fs.mkdirSync(vaultRoot, { recursive: true });
         fs.writeFileSync(path.join(vaultRoot, 'johnny-rico.md'), '---\nid: johnny-rico\nname: Johnny Rico\naliases: Johnny Rico\n---\n');
-        fs.writeFileSync(path.join(vaultRoot, 'briefing.md'), '---\nid: briefing\n---\nMet [[Johnny Rico]].\n');
+        fs.writeFileSync(path.join(vaultRoot, 'briefing.md'), '---\nid: briefing\n---\nMet [[Johnny Rico]] and [Johnny](johnny-rico.md).\n');
 
         const result = applyCanonicalWikilinkRewrite(vaultRoot);
 
         assert.equal(result.changedFiles.length, 1);
-        assert.equal(result.rewritesApplied, 1);
+        assert.equal(result.rewritesApplied, 2);
         const briefing = fs.readFileSync(path.join(vaultRoot, 'briefing.md'), 'utf8');
         assert.match(briefing, /\[\[johnny-rico\|Johnny Rico\]\]/);
+        assert.match(briefing, /\[\[johnny-rico\|Johnny\]\]/);
     });
 
     test('buildAppliedLinkRewriteReportMarkdown summarizes changed files and rewrite totals', () => {

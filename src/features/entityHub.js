@@ -171,7 +171,8 @@ function renderHub(nodeId) {
             unlinkedMentions,
             noteArc,
             documentData,
-            staleConnectedNotes
+            staleConnectedNotes,
+            dependencies
         } = model;
 
         if ('title' in host) host.title = `${nodeId} · report`;
@@ -206,7 +207,8 @@ function renderHub(nodeId) {
             unlinkedMentions,
             noteArc,
             documentData,
-            staleConnectedNotes
+            staleConnectedNotes,
+            dependencies
         });
     } catch (error) {
         renderError(`Could not render report for ${nodeId}`, error);

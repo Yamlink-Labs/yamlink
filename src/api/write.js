@@ -12,6 +12,10 @@ const {
 } = require('../core/frontmatter');
 const { canonicalizeId } = require('../core/id');
 const { getIndex } = require('../core/indexService');
+const {
+    buildFieldOperation,
+    operationFromApiFieldValue
+} = require('../core/bulkFieldOperation');
 
 function extractRelationTargets(value) {
     const text = String(value ?? '');
@@ -125,9 +129,20 @@ function applyFieldUpdates(id, fieldMap) {
         content = fs.readFileSync(filePath, 'utf8');
         beforeFields = parseFrontmatterDocument(content).data || {};
     } catch (_) {}
-    let anyFailed = false;
+    const changedFields = [];
+    const fieldErrors = [];
     for (const [field, value] of Object.entries(fieldMap)) {
-        if (!writeFieldSync(filePath, field, value)) anyFailed = true;
+        try {
+            const { operation, value: operationValue } = operationFromApiFieldValue(value);
+            const current = fs.readFileSync(filePath, 'utf8');
+            const result = buildFieldOperation(current, field, operation, operationValue);
+            if (result.changed) {
+                fs.writeFileSync(filePath, result.nextContent, 'utf8');
+            }
+            changedFields.push(field);
+        } catch (error) {
+            fieldErrors.push({ field, error: error && error.message ? error.message : String(error) });
+        }
     }
     let afterFields = beforeFields;
     try {
@@ -135,10 +150,12 @@ function applyFieldUpdates(id, fieldMap) {
     } catch (_) {}
     const mutationEvents = buildFieldMutationEvents(id, beforeFields, afterFields);
     return {
-        ok: !anyFailed,
+        ok: fieldErrors.length === 0,
         filePath,
-        changedFields: Object.keys(fieldMap),
-        mutationEvents
+        changedFields,
+        mutationEvents,
+        fieldErrors,
+        error: fieldErrors.map((entry) => `${entry.field}: ${entry.error}`).join('; ')
     };
 }
 

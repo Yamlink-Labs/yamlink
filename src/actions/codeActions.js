@@ -7,7 +7,9 @@ const { getTypes } = require('../registries/typeRegistry');
 const { isOrphan } = require('../core/graph');
 const { computeSuggestionsForNode } = require('../engine/suggestions');
 const { getFieldsCache, getPathIndex, getVaultGeneration } = require('../core/indexService');
+const { getUnlinkedMentionTermIndex } = require('../features/entity/unlinkedRefs');
 const { getExpectedRelationTypes } = require('../intelligence/authoringEngine');
+const { getCachedPriors } = require('../intelligence/vaultPriors');
 const { canonicalizeId, extractCanonicalIdFromFrontmatter } = require('../core/id');
 const { getPrimaryWorkspaceRoot } = require('../core/workspace');
 const { getTemplateForType, extractTemplateFields, TEMPLATES_DIR } = require('../core/templateRegistry');
@@ -78,6 +80,40 @@ function registerCodeActions(context, getIndex) {
     initializeIgnoredDiagnostics(context);
 
     context.subscriptions.push(
+        vscode.commands.registerCommand('yamlink.linkUnlinkedMention', async (document, range, targetId) => {
+            if (!document || !range || !targetId) return;
+            const original = document.getText(range);
+            const linkText = original.trim().toLowerCase() === String(targetId).toLowerCase()
+                ? `[[${targetId}]]`
+                : `[[${targetId}|${original}]]`;
+            const edit = new vscode.WorkspaceEdit();
+            edit.replace(document.uri, range, linkText);
+            await vscode.workspace.applyEdit(edit);
+        })
+    );
+
+    context.subscriptions.push(
+        vscode.commands.registerCommand('yamlink.linkAllUnlinkedMentions', async (document, ranges, targetId) => {
+            if (!document || !Array.isArray(ranges) || !ranges.length || !targetId) return;
+            const edit = new vscode.WorkspaceEdit();
+            // Applied last-to-first so an earlier replacement's length change
+            // never shifts the position of a range still queued behind it.
+            const orderedRanges = [...ranges].sort((a, b) => b.start.line - a.start.line || b.start.character - a.start.character);
+            // Preserve original wording as a display alias per-occurrence, same
+            // as the single-mention command — a bulk action shouldn't silently
+            // normalize text the single-mention path would have kept verbatim.
+            for (const range of orderedRanges) {
+                const original = document.getText(range);
+                const linkText = original.trim().toLowerCase() === String(targetId).toLowerCase()
+                    ? `[[${targetId}]]`
+                    : `[[${targetId}|${original}]]`;
+                edit.replace(document.uri, range, linkText);
+            }
+            await vscode.workspace.applyEdit(edit);
+        })
+    );
+
+    context.subscriptions.push(
         vscode.commands.registerCommand('yamlink.suppressQuerySuggestion', (noteId, document) => {
             if (!noteId) return;
             suppressNote(noteId, 'querySuggestion');
@@ -135,6 +171,53 @@ function registerCodeActions(context, getIndex) {
                         const code = /** @type {any} */ (diagnostic.code)?.value ?? diagnostic.code;
                         return code === 'yamlink.templateDrift';
                     });
+
+                    const { collectUnlinkedMentionDecorations } = require('../features/decorations');
+                    const termIndex = getUnlinkedMentionTermIndex(getFieldsCache(), getVaultGeneration());
+                    const allMentions = collectUnlinkedMentionDecorations(document, termIndex, getIndex());
+                    const mention = allMentions.find((entry) => entry.range.intersection(range));
+                    if (mention) {
+                        const mentionText = document.getText(mention.range);
+                        const linkAction = new vscode.CodeAction(
+                            `Yamlink: Link mention to [[${mention.targetId}]]`,
+                            vscode.CodeActionKind.QuickFix
+                        );
+                        linkAction.command = {
+                            command: 'yamlink.linkUnlinkedMention',
+                            title: 'Link unlinked mention',
+                            arguments: [document, mention.range, mention.targetId]
+                        };
+                        linkAction.isPreferred = true;
+                        actions.push(linkAction);
+                        if (mentionText.trim().toLowerCase() !== String(mention.targetId).toLowerCase()) {
+                            const directAction = new vscode.CodeAction(
+                                `Yamlink: Replace mention with [[${mention.targetId}]]`,
+                                vscode.CodeActionKind.RefactorRewrite
+                            );
+                            const edit = new vscode.WorkspaceEdit();
+                            edit.replace(document.uri, mention.range, `[[${mention.targetId}]]`);
+                            directAction.edit = edit;
+                            actions.push(directAction);
+                        }
+                        // A note's name can appear unlinked several times in the same
+                        // document (a person mentioned three times in a mission log,
+                        // for instance) — before this, each one required its own
+                        // separate quickfix click. Only offered once there's a real
+                        // second occurrence to act on, not for every single mention.
+                        const sameTargetMentions = allMentions.filter((entry) => entry.targetId === mention.targetId);
+                        if (sameTargetMentions.length > 1) {
+                            const bulkAction = new vscode.CodeAction(
+                                `Yamlink: Link all ${sameTargetMentions.length} mentions of [[${mention.targetId}]] in this note`,
+                                vscode.CodeActionKind.QuickFix
+                            );
+                            bulkAction.command = {
+                                command: 'yamlink.linkAllUnlinkedMentions',
+                                title: 'Link all unlinked mentions',
+                                arguments: [document, sameTargetMentions.map((entry) => entry.range), mention.targetId]
+                            };
+                            actions.push(bulkAction);
+                        }
+                    }
 
                     const viewBlock = getViewBlockAtRange(document, range);
                     if (viewBlock && viewBlock.query) {
@@ -303,23 +386,23 @@ function registerCodeActions(context, getIndex) {
                             const sourceFields = sourceId ? (getFieldsCache().get(sourceId) || {}) : {};
                             const sourceType = sourceFields.type ? String(sourceFields.type).toLowerCase() : null;
 
+                            // Reuses vaultPriors.js's cached, generation-keyed typeFieldBundles/
+                            // typeBundleTotals instead of rescanning the whole fieldsCache inline
+                            // on every quickfix render — same ">=50% of notes of this type" bar
+                            // as before, just read from the already-computed shared prior.
+                            const EXTRA_SKIP_FIELDS = new Set(['created', 'updated', 'modified']);
                             const fieldCount = resolvedType
                                 ? (() => {
-                                    const fc = getFieldsCache();
-                                    let n = 0;
-                                    for (const f of fc.values()) {
-                                        if (String(f.type || '').toLowerCase() === resolvedType) n++;
-                                    }
-                                    const freq = new Map();
-                                    const SKIP = new Set(['id', 'type', 'created', 'updated', 'modified']);
-                                    for (const f of fc.values()) {
-                                        if (String(f.type || '').toLowerCase() !== resolvedType) continue;
-                                        for (const k of Object.keys(f)) {
-                                            if (!SKIP.has(k)) freq.set(k, (freq.get(k) || 0) + 1);
-                                        }
-                                    }
+                                    const priors = getCachedPriors(getFieldsCache(), getVaultGeneration());
+                                    const n = priors.typeBundleTotals.get(resolvedType) || 0;
                                     if (n === 0) return 0;
-                                    return [...freq.values()].filter(c => c >= Math.ceil(n * 0.5)).length;
+                                    const bundle = priors.typeFieldBundles.get(resolvedType) || new Map();
+                                    let count = 0;
+                                    for (const [field, freq] of bundle) {
+                                        if (EXTRA_SKIP_FIELDS.has(field)) continue;
+                                        if (freq >= Math.ceil(n * 0.5)) count++;
+                                    }
+                                    return count;
                                 })()
                                 : 0;
 

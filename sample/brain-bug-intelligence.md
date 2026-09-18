@@ -2,6 +2,7 @@
 id: brain-bug-intelligence
 type: dossier
 title: Brain Bug — Intelligence Summary
+definition: Evidence record for the Arachnid command intelligence discovered after Planet P.
 subject: Brain Bug Command Structure
 status: confirmed
 source: [[carl-jenkins]]

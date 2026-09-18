@@ -8,6 +8,7 @@ const {
     rankCandidateIds,
     rankScalarValues
 } = require('../../intelligence/completionRelationHelpers');
+const { collectAdaptiveFrontmatterStarterSuggestions } = require('../../intelligence/completionAdaptiveHelpers');
 const { getSchema } = require('../../registries/schemaRegistry');
 const { CONTENT_MODIFIED, isStaleDocumentRequest, getDocumentText } = require('../documentState');
 const { respond, respondError } = require('../transport');
@@ -16,6 +17,7 @@ const {
     buildCreateNoteEdit,
     buildScaffoldIdentityEdit,
     insertFieldsBeforeClosing,
+    insertRawTextBeforeClosing,
     replaceFrontmatterFieldValue,
     suggestUniqueId,
     inferSchemaTarget,
@@ -117,6 +119,72 @@ function buildEmptyFieldQuickfixes(textDocument, range, state) {
         }
     }
 
+    return actions;
+}
+
+// LSP-native, NOT a port of VS Code's viewLightbulb.js narrative-card lightbulb
+// UX (the hover-card "headline"/"why"/"bestNextStep" presentation only makes
+// sense in a webview-adjacent surface). This calls the same shared,
+// already-portable data function LSP's own completion handler already uses
+// (collectAdaptiveFrontmatterStarterSuggestions, from completionAdaptiveHelpers.js
+// — zero vscode imports anywhere in its dependency tree) but makes its own,
+// separate decisions about *when* to offer something and *how many small,
+// individually-titled actions* to present, rather than one combined bundle —
+// a shape that fits how code actions actually render in LSP-driven editors,
+// not VS Code's specific UI.
+//
+// Deliberately narrow trigger for this first pass: only fires when the
+// range is on the `type:` line and it already has a value — a single,
+// unambiguous moment (this note's shape is now knowable) rather than trying
+// to replicate VS Code's broader blank-line-anywhere-in-frontmatter trigger,
+// which carries its own ambiguity this pass isn't taking on.
+function buildAdaptiveFrontmatterQuickfixes(textDocument, range, state) {
+    if (!range || typeof range.start?.line !== 'number') return [];
+    const content = getDocumentText(state, textDocument.uri);
+    const lines = content.split('\n');
+    const lineIndex = range.start.line;
+    const lineText = lines[lineIndex] || '';
+    const typeMatch = /^type:\s*(\S.*)$/.exec(lineText);
+    if (!typeMatch) return [];
+
+    let noteType = null;
+    let seenOpeningFence = false;
+    for (const l of lines) {
+        if (l.trim() === '---') {
+            if (!seenOpeningFence) { seenOpeningFence = true; continue; }
+            break;
+        }
+        const tMatch = /^type:\s+(\S+)/.exec(l);
+        if (tMatch && !noteType) noteType = tMatch[1];
+    }
+    const docType = noteType ? String(noteType).trim().toLowerCase() : null;
+    if (!docType) return [];
+
+    const idIndex = getIndex();
+    const documentAdapter = {
+        getText: () => content,
+        uri: { fsPath: uriToPath(textDocument.uri) }
+    };
+
+    let suggestions = [];
+    try {
+        suggestions = collectAdaptiveFrontmatterStarterSuggestions(documentAdapter, docType, idIndex, getSchema, undefined);
+    } catch (_) {
+        return [];
+    }
+
+    const actions = [];
+    for (const suggestion of suggestions) {
+        if (!suggestion?.insertText) continue;
+        const edit = insertRawTextBeforeClosing(textDocument.uri, content, suggestion.insertText);
+        if (!edit) continue;
+        actions.push({
+            title: suggestion.label,
+            kind: 'quickfix',
+            isPreferred: actions.length === 0,
+            edit
+        });
+    }
     return actions;
 }
 
@@ -318,6 +386,7 @@ function handleCodeAction(msg, state) {
     if (wantsQuickFix) {
         actions.push(...buildQuickFixesForDocument(textDocument, (context && context.diagnostics) || [], state));
         actions.push(...buildEmptyFieldQuickfixes(textDocument, range, state));
+        actions.push(...buildAdaptiveFrontmatterQuickfixes(textDocument, range, state));
     }
     if (wantsRefactorRewrite) {
         actions.push(...buildRefactorActionsForDocument(textDocument, state));

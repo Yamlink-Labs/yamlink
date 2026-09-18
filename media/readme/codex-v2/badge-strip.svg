@@ -1,0 +1,40 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="112" viewBox="0 0 1280 112" role="img" aria-labelledby="title desc">
+  <title id="title">Yamlink capability badges</title>
+  <desc id="desc">Badges for Yamlink core capabilities.</desc>
+  <style>
+    text { font-family:"Roboto Flex","Roboto","Segoe UI",sans-serif; }
+    .label { fill:#E6E8EB; font-size:21px; font-weight:700; }
+    .meta { fill:#9EA3AA; font-size:12px; font-weight:650; letter-spacing:3px; }
+  </style>
+  <rect width="1280" height="112" rx="24" fill="#151617" stroke="#2B2D31"/>
+  <g transform="translate(28 24)">
+    <rect width="218" height="64" rx="16" fill="#1A1B1D" stroke="#40454C"/>
+    <circle cx="33" cy="32" r="7" fill="#C5FFBF"/>
+    <text class="label" x="56" y="31">Local first</text>
+    <text class="meta" x="56" y="51">PLAIN FILES</text>
+  </g>
+  <g transform="translate(271 24)">
+    <rect width="230" height="64" rx="16" fill="#1A1B1D" stroke="#40454C"/>
+    <circle cx="33" cy="32" r="7" fill="#5ECFBE"/>
+    <text class="label" x="56" y="31">Editable tables</text>
+    <text class="meta" x="56" y="51">WRITE BACK</text>
+  </g>
+  <g transform="translate(526 24)">
+    <rect width="206" height="64" rx="16" fill="#1A1B1D" stroke="#40454C"/>
+    <circle cx="33" cy="32" r="7" fill="#C49BF0"/>
+    <text class="label" x="56" y="31">Stable IDs</text>
+    <text class="meta" x="56" y="51">NOT FILENAMES</text>
+  </g>
+  <g transform="translate(757 24)">
+    <rect width="209" height="64" rx="16" fill="#1A1B1D" stroke="#40454C"/>
+    <circle cx="33" cy="32" r="7" fill="#E7A85A"/>
+    <text class="label" x="56" y="31">CLI + API</text>
+    <text class="meta" x="56" y="51">HEADLESS</text>
+  </g>
+  <g transform="translate(991 24)">
+    <rect width="261" height="64" rx="16" fill="#1A1B1D" stroke="#40454C"/>
+    <circle cx="33" cy="32" r="7" fill="#E67D61"/>
+    <text class="label" x="56" y="31">Publishable</text>
+    <text class="meta" x="56" y="51">STATIC-SITE READY</text>
+  </g>
+</svg>

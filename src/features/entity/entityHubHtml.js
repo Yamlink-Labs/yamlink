@@ -9,6 +9,7 @@ const {
     buildActionSection,
     buildBlockBacklinkSection,
     buildCompactRelationTableSection,
+    buildDependenciesSection,
     buildDocumentSection,
     buildEmptySection,
     buildEntityHubEmptyHtml,
@@ -50,7 +51,8 @@ function buildHubHtml({
     noteArc,
     documentData,
     blockBacklinks,
-    staleConnectedNotes
+    staleConnectedNotes,
+    dependencies
 }) {
     const webview = host.webview;
     const scriptUri = webview.asWebviewUri(vscode.Uri.joinPath(extensionUri, 'src', 'features', 'entityHubScript.js'));
@@ -62,6 +64,7 @@ function buildHubHtml({
         + outgoingGroups.reduce((n, g) => n + g.rows.length, 0)
         + taskSections.reduce((n, g) => n + g.rows.length, 0)
         + timelineRows.length
+        + Number(dependencies?.total || 0)
         + suggestions.length
         + recipes.length;
     const typeLabel = nodeFields.type ? String(nodeFields.type) : 'node';
@@ -107,6 +110,7 @@ function buildHubHtml({
     const historyHtml = buildHistorySection(historyGroups || [], historyCount || 0, historyArc || [], historySessions || [], historyEvolution || null);
     const documentHtml = buildDocumentSection(documentData);
     const staleConnectedHtml = buildStaleConnectedSection(staleConnectedNotes || []);
+    const dependenciesHtml = buildDependenciesSection(dependencies);
 
     return `<!DOCTYPE html>
 <html lang="en"><head>
@@ -132,6 +136,7 @@ function buildHubHtml({
 <div class="hub-tabs" role="tablist">
     <button class="hub-tab-btn" id="hub-tab-overview" data-tab="overview" role="tab" aria-controls="tab-overview">Overview</button>
     <button class="hub-tab-btn" id="hub-tab-links" data-tab="links" role="tab" aria-controls="tab-links">Links</button>
+    <button class="hub-tab-btn" id="hub-tab-dependencies" data-tab="dependencies" role="tab" aria-controls="tab-dependencies">Dependencies</button>
     <button class="hub-tab-btn" id="hub-tab-tasks" data-tab="tasks" role="tab" aria-controls="tab-tasks">Tasks</button>
     <button class="hub-tab-btn" id="hub-tab-views" data-tab="views" role="tab" aria-controls="tab-views">Views</button>
     <button class="hub-tab-btn" id="hub-tab-history" data-tab="history" role="tab" aria-controls="tab-history">History</button>
@@ -151,6 +156,9 @@ ${incomingSections}
 ${bodyMentionSections}
 ${blockBacklinkHtml}
 ${unlinkedMentionsHtml}
+    </div>
+    <div class="hub-tab-pane" id="tab-dependencies" role="tabpanel" aria-labelledby="hub-tab-dependencies">
+${dependenciesHtml}
     </div>
     <div class="hub-tab-pane" id="tab-tasks" role="tabpanel" aria-labelledby="hub-tab-tasks">
 ${taskHtml}

@@ -2,6 +2,7 @@
 
 const path = require('path');
 const vscode = require('vscode');
+const { formatImportTrustSummary } = require('../importers/importTrust');
 const {
     detectObsidianVault,
     shouldSkipImportEntry,
@@ -21,6 +22,7 @@ const {
     buildCanonicalWikilink,
     buildImportNoteTargetMap,
     rewriteFilenameStyleWikilinks,
+    rewriteFilenameStyleMarkdownLinks,
     applyCanonicalWikilinkRewrite,
     buildAppliedLinkRewriteReportMarkdown,
     buildCombinedCleanupReportMarkdown
@@ -28,26 +30,27 @@ const {
 
 async function showImportPreviewAndPickMode(sourceRoot, analysis, hasWorkspace) {
     const summary = buildImportPreviewSummaryLine(analysis);
+    const trustSummary = formatImportTrustSummary('Obsidian');
     const picks = [];
 
     if (hasWorkspace) {
         picks.push({
             label: '$(arrow-right) Copy into current workspace',
             description: 'Copies vault content. .obsidian/ is excluded.',
-            detail: summary,
+            detail: [summary, trustSummary].filter(Boolean).join(' · '),
             mode: 'copy'
         });
         picks.push({
             label: '$(add) Add as workspace folder',
             description: 'Adds the folder to the current multi-root workspace.',
-            detail: '.obsidian/ stays on disk but is not indexed.',
+            detail: ['.obsidian/ stays on disk but is not indexed.', trustSummary].join(' · '),
             mode: 'add'
         });
     } else {
         picks.push({
             label: '$(add) Add as workspace folder',
             description: 'Open vault as a workspace folder for Yamlink to index.',
-            detail: summary,
+            detail: [summary, trustSummary].filter(Boolean).join(' · '),
             mode: 'add'
         });
     }
@@ -325,6 +328,7 @@ module.exports = {
     buildCanonicalWikilink,
     buildImportNoteTargetMap,
     rewriteFilenameStyleWikilinks,
+    rewriteFilenameStyleMarkdownLinks,
     applyCanonicalWikilinkRewrite,
     buildAppliedLinkRewriteReportMarkdown,
     buildCombinedCleanupReportMarkdown,

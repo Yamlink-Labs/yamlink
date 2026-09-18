@@ -2,6 +2,7 @@
 
 const fs = require('fs');
 const path = require('path');
+const crypto = require('crypto');
 const { canonicalizeId } = require('../core/id');
 const { createImportStats, buildCanonicalWikilink } = require('./obsidian');
 const {
@@ -64,10 +65,12 @@ function extractEvernoteResources(noteXml) {
         const base64 = dataMatch ? dataMatch[1].replace(/\s+/g, '') : '';
         const mime = extractXmlTag(xml, 'mime');
         const fileName = extractXmlTag(xml, 'file-name');
+        const hash = base64 ? crypto.createHash('md5').update(Buffer.from(base64, 'base64')).digest('hex') : '';
         resources.push({
             mime,
             fileName,
-            base64
+            base64,
+            hash
         });
     }
     return resources;
@@ -78,7 +81,24 @@ function extractEvernoteGuid(noteXml) {
 }
 
 function rewriteEvernoteContentLinks(content, linkContext = {}) {
-    return String(content || '').replace(/<a\b([^>]*)href="([^"]+)"([^>]*)>([\s\S]*?)<\/a>/gi, (full, _before, href, _after, label) => {
+    return String(content || '')
+        .replace(/<en-todo\b([^>]*)\/>/gi, (_full, attrs) => {
+            return /\bchecked="true"/i.test(attrs) ? '- [x] ' : '- [ ] ';
+        })
+        .replace(/<en-crypt\b([^>]*)>([\s\S]*?)<\/en-crypt>/gi, (_full, attrs) => {
+            const hintMatch = /\bhint="([^"]*)"/i.exec(attrs);
+            const hint = hintMatch ? decodeHtmlEntities(hintMatch[1]).trim() : '';
+            return hint ? `[Encrypted Evernote content. Hint: ${hint}]` : '[Encrypted Evernote content]';
+        })
+        .replace(/<en-media\b([^>]*)\/>/gi, (full, attrs) => {
+            const hashMatch = /\bhash="([^"]+)"/i.exec(attrs);
+            const hash = hashMatch ? String(hashMatch[1] || '').trim().toLowerCase() : '';
+            const resource = hash ? linkContext.resourceByHash?.get(hash) : null;
+            if (!resource) return full;
+            const label = resource.fileName || path.basename(resource.path || '') || 'Attachment';
+            return `[${label}](${resource.path})`;
+        })
+        .replace(/<a\b([^>]*)href="([^"]+)"([^>]*)>([\s\S]*?)<\/a>/gi, (full, _before, href, _after, label) => {
         const textLabel = stripHtmlToMarkdownish(label) || decodeHtmlEntities(label).trim();
         const url = String(href || '').trim();
         if (!url) return textLabel || full;
@@ -107,12 +127,13 @@ function rewriteEvernoteContentLinks(content, linkContext = {}) {
     });
 }
 
-function saveEvernoteResources(noteId, noteXml, destinationRoot) {
+function saveEvernoteResourcesDetailed(noteId, noteXml, destinationRoot) {
     const resources = extractEvernoteResources(noteXml);
-    if (!resources.length) return [];
+    if (!resources.length) return { attachments: [], resourceByHash: new Map() };
     const attachmentRoot = path.join(destinationRoot, '_attachments', noteId);
     fs.mkdirSync(attachmentRoot, { recursive: true });
     const saved = [];
+    const resourceByHash = new Map();
     let counter = 0;
     for (const resource of resources) {
         const fallback = `${noteId}-attachment-${counter + 1}${extensionForMime(resource.mime)}`;
@@ -120,11 +141,23 @@ function saveEvernoteResources(noteId, noteXml, destinationRoot) {
         const outputPath = path.join(attachmentRoot, name);
         if (resource.base64) {
             fs.writeFileSync(outputPath, Buffer.from(resource.base64, 'base64'));
-            saved.push(path.relative(destinationRoot, outputPath).replace(/\\/g, '/'));
+            const relativePath = path.relative(destinationRoot, outputPath).replace(/\\/g, '/');
+            saved.push(relativePath);
+            if (resource.hash) {
+                resourceByHash.set(resource.hash, {
+                    ...resource,
+                    path: relativePath,
+                    fileName: name
+                });
+            }
             counter++;
         }
     }
-    return saved;
+    return { attachments: saved, resourceByHash };
+}
+
+function saveEvernoteResources(noteId, noteXml, destinationRoot) {
+    return saveEvernoteResourcesDetailed(noteId, noteXml, destinationRoot).attachments;
 }
 
 function importEvernoteEnexToVault(sourcePath, destinationRoot) {
@@ -160,13 +193,15 @@ function importEvernoteEnexToVault(sourcePath, destinationRoot) {
         const sourceUrl = extractXmlTag(noteXml, 'source-url');
         const sourceApplication = extractXmlTag(noteXml, 'source-application');
         const contentRaw = extractXmlTag(noteXml, 'content');
+        const id = canonicalizeId(title);
+        const savedResources = saveEvernoteResourcesDetailed(id, noteXml, destinationRoot);
         const linkedContent = rewriteEvernoteContentLinks(contentRaw.replace(/^<!\[CDATA\[/, '').replace(/\]\]>$/, ''), {
             titleToNote,
-            guidToNote
+            guidToNote,
+            resourceByHash: savedResources.resourceByHash
         });
         const body = stripHtmlToMarkdownish(linkedContent);
-        const id = canonicalizeId(title);
-        const attachments = saveEvernoteResources(id, noteXml, destinationRoot);
+        const attachments = savedResources.attachments;
         stats.attachmentsExtracted += attachments.length;
         stats.internalLinksRewritten += (body.match(/\[\[[^\]]+\]\]/g) || []).length;
         stats.externalLinksPreserved += (body.match(/\[[^\]]+\]\(https?:\/\/[^)]+\)/g) || []).length;
@@ -220,6 +255,7 @@ module.exports = {
     extractEvernoteResources,
     extractEvernoteGuid,
     rewriteEvernoteContentLinks,
+    saveEvernoteResourcesDetailed,
     saveEvernoteResources,
     importEvernoteEnexToVault,
     inspectEvernoteExport

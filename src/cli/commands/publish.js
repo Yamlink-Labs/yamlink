@@ -1,47 +1,10 @@
 'use strict';
 
-const http = require('http');
-const https = require('https');
-const { URL } = require('url');
-
 const { getIndex, getFieldsCache, getAliasIndex, getVaultGeneration } = require('../../core/indexService');
 const { runBuild } = require('../../core/buildPipeline');
 const { emitCliError, emitCliSuccess, emitText } = require('../io');
 const fmt = require('../format');
-
-/**
- * Best-effort POST of a small JSON payload to a configured webhook URL after
- * a successful build (e.g. to trigger the destination site's own redeploy).
- * Never fails the build itself — a webhook that's down or misconfigured is
- * a warning, not a build failure.
- * @param {string} url
- * @param {Record<string, any>} payload
- * @returns {Promise<{ ok: boolean, error?: string }>}
- */
-function postWebhook(url, payload) {
-    return new Promise((resolve) => {
-        let parsed;
-        try {
-            parsed = new URL(url);
-        } catch (err) {
-            resolve({ ok: false, error: 'Invalid webhook URL: ' + err.message });
-            return;
-        }
-        const client = parsed.protocol === 'https:' ? https : http;
-        const body = JSON.stringify(payload);
-        const req = client.request(parsed, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body) },
-            timeout: 5000
-        }, (res) => {
-            res.resume();
-            resolve({ ok: res.statusCode >= 200 && res.statusCode < 300, error: res.statusCode >= 300 ? 'HTTP ' + res.statusCode : undefined });
-        });
-        req.on('timeout', () => { req.destroy(); resolve({ ok: false, error: 'Webhook request timed out' }); });
-        req.on('error', (err) => resolve({ ok: false, error: err.message }));
-        req.end(body);
-    });
-}
+const { postJsonWebhook } = require('../../runtime/webhookHttp');
 
 async function run({ out, mode, siteUrl, webhook, force, json, quiet }) {
     if (!out) {
@@ -75,7 +38,7 @@ async function run({ out, mode, siteUrl, webhook, force, json, quiet }) {
 
     let webhookResult = null;
     if (webhook) {
-        webhookResult = await postWebhook(webhook, {
+        webhookResult = await postJsonWebhook(webhook, {
             generation: result.generation,
             noteCount: result.noteCount,
             notesWritten: result.notesWritten,

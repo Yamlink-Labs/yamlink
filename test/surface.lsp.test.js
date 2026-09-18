@@ -1,14 +1,60 @@
 'use strict';
 
-const { test, before, after } = require('node:test');
+const { test, describe, before, after } = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const { spawn, spawnSync } = require('child_process');
 const path = require('path');
 const { createVault } = require('./lib/vaultSim');
 const { buildTaskBlockId } = require('../src/core/bodyBlocks');
+const { buildDocumentStructure } = require('../src/lsp/documentStructure');
+const { buildSemanticTokens } = require('../src/lsp/handlers/semanticTokens');
 
 const BIN = path.resolve('bin/yamlink.js');
+
+test('LSP document structure is identical for CRLF and LF line endings', () => {
+    const lines = [
+        '---',
+        'id: structure-note',
+        'type: note',
+        '---',
+        '',
+        '# Mission Notes',
+        '',
+        'Body.'
+    ];
+
+    const lf = buildDocumentStructure(lines.join('\n'), 'file:///vault/structure-note.md');
+    const crlf = buildDocumentStructure(lines.join('\r\n'), 'file:///vault/structure-note.md');
+
+    assert.deepEqual(
+        {
+            fields: crlf.frontmatter.fields.map((field) => ({ key: field.key, value: field.value })),
+            headings: crlf.headings.map((heading) => ({ title: heading.title, level: heading.level }))
+        },
+        {
+            fields: lf.frontmatter.fields.map((field) => ({ key: field.key, value: field.value })),
+            headings: lf.headings.map((heading) => ({ title: heading.title, level: heading.level }))
+        }
+    );
+});
+
+test('LSP semantic tokens are identical for CRLF and LF frontmatter', () => {
+    const lines = [
+        '---',
+        'id: semantic-note',
+        'type: contact',
+        'status: active',
+        '---',
+        '',
+        'Body.'
+    ];
+
+    assert.deepEqual(
+        buildSemanticTokens(lines.join('\r\n')).data,
+        buildSemanticTokens(lines.join('\n')).data
+    );
+});
 
 // ── LSP frame helpers ────────────────────────────────────────────────────────
 
@@ -1840,6 +1886,200 @@ test('LSP completion includes a note created earlier in the same session after w
     }
 });
 
+test('LSP hover resolves a note created earlier in the same session after watched-file rebuild', async () => {
+    // Regression test for the same class of bug `handleCompletion` was fixed
+    // for: hover shared its fire-and-forget dispatch path but was never
+    // audited for the same race. Hovering a link to a note created moments
+    // ago, right after the watched-file notification for it, must resolve —
+    // not silently fall back to null because the response raced ahead of the
+    // debounced rebuild.
+    const liveVault = createVault({
+        'draft.md': [
+            '---',
+            'id: draft',
+            'type: note',
+            '---',
+            '',
+            'Link to [[ghost-note]]'
+        ].join('\n')
+    });
+    const liveUri = rootUri(liveVault.dir);
+    const docUri = liveUri + '/draft.md';
+    const docText = [
+        '---',
+        'id: draft',
+        'type: note',
+        '---',
+        '',
+        'Link to [[ghost-note]]'
+    ].join('\n');
+    try {
+        const { messages, status } = await lspInteractive(liveVault.dir, {
+            beforeFrames: [
+                frame({ jsonrpc: '2.0', id: 1, method: 'initialize', params: { rootUri: liveUri, capabilities: {} } }),
+                frame({ jsonrpc: '2.0', method: 'initialized', params: {} }),
+                frame({ jsonrpc: '2.0', method: 'textDocument/didOpen', params: {
+                    textDocument: { uri: docUri, languageId: 'markdown', version: 1, text: docText }
+                }})
+            ],
+            // Waits for the real `initialize` response — which itself awaits
+            // the initial vault index build — before creating ghost-note.md.
+            // A fixed delay (the default `delayMs`) isn't reliable here: real
+            // subprocess startup can exceed it, letting `mutate()` fire before
+            // the initial scan runs and making ghost-note.md already present
+            // from the very first build — which would make this test pass
+            // regardless of whether the race fix exists at all.
+            waitForResponseId: 1,
+            mutate: async () => {
+                fs.writeFileSync(path.join(liveVault.dir, 'ghost-note.md'), [
+                    '---',
+                    'id: ghost-note',
+                    'type: note',
+                    'name: Ghost Note',
+                    '---'
+                ].join('\n'), 'utf8');
+            },
+            afterFrames: [
+                frame({ jsonrpc: '2.0', method: 'workspace/didChangeWatchedFiles', params: {
+                    changes: [{ uri: liveUri + '/ghost-note.md', type: 1 }]
+                }}),
+                frame({ jsonrpc: '2.0', id: 2, method: 'textDocument/hover', params: {
+                    textDocument: { uri: docUri },
+                    position: { line: 5, character: 12 }
+                }}),
+                frame({ jsonrpc: '2.0', id: 3, method: 'shutdown' }),
+                frame({ jsonrpc: '2.0', method: 'exit' }),
+            ]
+        });
+        assert.equal(status, 0);
+        const hover = messages.find((m) => m.id === 2);
+        assert.ok(hover?.result, 'hover resolved the same-session created note after rebuild, not null');
+    } finally {
+        liveVault.destroy();
+    }
+});
+
+test('LSP go-to-definition resolves a note created earlier in the same session after watched-file rebuild', async () => {
+    const liveVault = createVault({
+        'draft.md': [
+            '---',
+            'id: draft',
+            'type: note',
+            '---',
+            '',
+            'Link to [[ghost-note]]'
+        ].join('\n')
+    });
+    const liveUri = rootUri(liveVault.dir);
+    const docUri = liveUri + '/draft.md';
+    const docText = [
+        '---',
+        'id: draft',
+        'type: note',
+        '---',
+        '',
+        'Link to [[ghost-note]]'
+    ].join('\n');
+    try {
+        const { messages, status } = await lspInteractive(liveVault.dir, {
+            beforeFrames: [
+                frame({ jsonrpc: '2.0', id: 1, method: 'initialize', params: { rootUri: liveUri, capabilities: {} } }),
+                frame({ jsonrpc: '2.0', method: 'initialized', params: {} }),
+                frame({ jsonrpc: '2.0', method: 'textDocument/didOpen', params: {
+                    textDocument: { uri: docUri, languageId: 'markdown', version: 1, text: docText }
+                }})
+            ],
+            waitForResponseId: 1,
+            mutate: async () => {
+                fs.writeFileSync(path.join(liveVault.dir, 'ghost-note.md'), [
+                    '---',
+                    'id: ghost-note',
+                    'type: note',
+                    'name: Ghost Note',
+                    '---'
+                ].join('\n'), 'utf8');
+            },
+            afterFrames: [
+                frame({ jsonrpc: '2.0', method: 'workspace/didChangeWatchedFiles', params: {
+                    changes: [{ uri: liveUri + '/ghost-note.md', type: 1 }]
+                }}),
+                frame({ jsonrpc: '2.0', id: 2, method: 'textDocument/definition', params: {
+                    textDocument: { uri: docUri },
+                    position: { line: 5, character: 12 }
+                }}),
+                frame({ jsonrpc: '2.0', id: 3, method: 'shutdown' }),
+                frame({ jsonrpc: '2.0', method: 'exit' }),
+            ]
+        });
+        assert.equal(status, 0);
+        const definition = messages.find((m) => m.id === 2);
+        assert.ok(definition?.result?.uri, 'go-to-definition resolved the same-session created note after rebuild, not null');
+        assert.ok(definition.result.uri.includes('ghost-note'), 'resolved to the newly-created note, not something else');
+    } finally {
+        liveVault.destroy();
+    }
+});
+
+test('LSP workspace/diagnostic reflects a note created earlier in the same session after watched-file rebuild', async () => {
+    const liveVault = createVault({
+        'draft.md': [
+            '---',
+            'id: draft',
+            'type: note',
+            '---',
+            '',
+            'Link to [[ghost-note]]'
+        ].join('\n')
+    });
+    const liveUri = rootUri(liveVault.dir);
+    try {
+        // Deliberately no "before" scan in beforeFrames: subprocess startup
+        // time is unpredictable, so a request queued before the process has
+        // even finished booting could get processed after `mutate()` already
+        // ran, making a "before" comparison racy in the test itself rather
+        // than a meaningful check. Matching the hover/definition tests above:
+        // the real thing being proven is that a scan requested immediately
+        // after the watched-file notification reflects the rebuild, not a
+        // stale pre-rebuild snapshot — which is exactly what would fail
+        // without the `flushPendingRebuild` fix in `handleWorkspaceDiagnostic`.
+        const { messages, status } = await lspInteractive(liveVault.dir, {
+            beforeFrames: [
+                frame({ jsonrpc: '2.0', id: 1, method: 'initialize', params: { rootUri: liveUri, capabilities: {} } }),
+                frame({ jsonrpc: '2.0', method: 'initialized', params: {} })
+            ],
+            waitForResponseId: 1,
+            mutate: async () => {
+                fs.writeFileSync(path.join(liveVault.dir, 'ghost-note.md'), [
+                    '---',
+                    'id: ghost-note',
+                    'type: note',
+                    'name: Ghost Note',
+                    '---'
+                ].join('\n'), 'utf8');
+            },
+            afterFrames: [
+                frame({ jsonrpc: '2.0', method: 'workspace/didChangeWatchedFiles', params: {
+                    changes: [{ uri: liveUri + '/ghost-note.md', type: 1 }]
+                }}),
+                frame({ jsonrpc: '2.0', id: 2, method: 'workspace/diagnostic', params: {} }),
+                frame({ jsonrpc: '2.0', id: 3, method: 'shutdown' }),
+                frame({ jsonrpc: '2.0', method: 'exit' }),
+            ]
+        });
+        assert.equal(status, 0);
+        const after = messages.find((m) => m.id === 2);
+        const afterHasGhostDiagnostic = (after?.result?.items || []).some((entry) =>
+            (entry.items || []).some((d) => d.message && d.message.includes('ghost-note'))
+        );
+        assert.ok(
+            !afterHasGhostDiagnostic,
+            'workspace scan right after the watched-file notification reflects the rebuild, not a stale pre-rebuild scan'
+        );
+    } finally {
+        liveVault.destroy();
+    }
+});
+
 // ── Capabilities tests ────────────────────────────────────────────────────────
 
 test('LSP initialize capabilities include renameProvider and codeActionProvider', () => {
@@ -2100,6 +2340,92 @@ test('LSP codeAction returns quickfix for broken-link diagnostic', () => {
     const createOp = fix.edit.documentChanges.find(c => c.kind === 'create');
     assert.ok(createOp, 'create operation present');
     assert.match(createOp.uri, /phantom-note\.md$/, 'create targets correct file');
+});
+
+describe('LSP codeAction — adaptive-frontmatter suggestions (LSP-native, not a port of viewLightbulb.js)', () => {
+    // The shared top-level FIXTURE only has one real mission note — not
+    // enough vault-pattern evidence for collectAdaptiveFrontmatterStarterSuggestions
+    // to confidently suggest anything (confirmed directly: it returned empty
+    // against that fixture). Real evidence needs a real pattern — two mission
+    // notes sharing fields — so these tests use their own dedicated vault.
+    const adaptiveFixture = {
+        'mission-klendathu.md': [
+            '---', 'id: mission-klendathu', 'type: mission',
+            'commander: "[[rico]]"', 'unit: "[[roughnecks]]"', 'date: 2297-08-01',
+            '---',
+        ].join('\n'),
+        'mission-planet-p.md': [
+            '---', 'id: mission-planet-p', 'type: mission',
+            'commander: "[[rico]]"', 'unit: "[[roughnecks]]"', 'date: 2297-09-15',
+            '---',
+        ].join('\n'),
+        'rico.md': ['---', 'id: rico', 'type: contact', '---'].join('\n'),
+        'roughnecks.md': ['---', 'id: roughnecks', 'type: unit', '---'].join('\n'),
+    };
+    let adaptiveVault;
+    let adaptiveVaultDir;
+    let adaptiveUri;
+
+    before(() => {
+        adaptiveVault = createVault(adaptiveFixture);
+        adaptiveVaultDir = adaptiveVault.dir;
+        adaptiveUri = rootUri(adaptiveVaultDir);
+    });
+
+    after(() => {
+        adaptiveVault.destroy();
+    });
+
+    test('offers a real suggestion on the type: line, drawn from real vault-pattern evidence', () => {
+        const docUri  = adaptiveUri + '/new-mission.md';
+        const docText = '---\nid: new-mission\ntype: mission\n---\n';
+        const { messages } = lsp(adaptiveVaultDir, [
+            frame({ jsonrpc: '2.0', id: 1, method: 'initialize', params: { rootUri: adaptiveUri, capabilities: {} } }),
+            frame({ jsonrpc: '2.0', method: 'initialized', params: {} }),
+            frame({ jsonrpc: '2.0', method: 'textDocument/didOpen', params: {
+                textDocument: { uri: docUri, languageId: 'markdown', version: 1, text: docText }
+            }}),
+            frame({ jsonrpc: '2.0', id: 2, method: 'textDocument/codeAction', params: {
+                textDocument: { uri: docUri },
+                range:   { start: { line: 2, character: 0 }, end: { line: 2, character: 14 } },
+                context: { diagnostics: [], only: ['quickfix'] }
+            }}),
+            frame({ jsonrpc: '2.0', id: 3, method: 'shutdown' }),
+            frame({ jsonrpc: '2.0', method: 'exit' }),
+        ]);
+        const ca = messages.find(m => m.id === 2);
+        assert.ok(ca, 'codeAction response present');
+        assert.ok(Array.isArray(ca.result), 'result is array');
+        assert.ok(ca.result.length > 0, 'at least one adaptive-frontmatter action returned from real vault-pattern evidence');
+        const action = ca.result[0];
+        assert.equal(action.kind, 'quickfix');
+        assert.match(action.title, /^Yamlink:/, 'title uses the LSP-native short label, not VS Code\'s narrative headline style');
+        assert.ok(action.edit?.changes?.[docUri]?.length, 'edit targets the open document');
+        assert.match(action.edit.changes[docUri][0].newText, /:/, 'inserted text is a real frontmatter field, not empty');
+    });
+
+    test('offers nothing adaptive-frontmatter-related on a non-type: line', () => {
+        const docUri  = adaptiveUri + '/new-mission-2.md';
+        const docText = '---\nid: new-mission-2\ntype: mission\n---\n';
+        const { messages } = lsp(adaptiveVaultDir, [
+            frame({ jsonrpc: '2.0', id: 1, method: 'initialize', params: { rootUri: adaptiveUri, capabilities: {} } }),
+            frame({ jsonrpc: '2.0', method: 'initialized', params: {} }),
+            frame({ jsonrpc: '2.0', method: 'textDocument/didOpen', params: {
+                textDocument: { uri: docUri, languageId: 'markdown', version: 1, text: docText }
+            }}),
+            frame({ jsonrpc: '2.0', id: 2, method: 'textDocument/codeAction', params: {
+                textDocument: { uri: docUri },
+                range:   { start: { line: 1, character: 0 }, end: { line: 1, character: 12 } },
+                context: { diagnostics: [], only: ['quickfix'] }
+            }}),
+            frame({ jsonrpc: '2.0', id: 3, method: 'shutdown' }),
+            frame({ jsonrpc: '2.0', method: 'exit' }),
+        ]);
+        const ca = messages.find(m => m.id === 2);
+        assert.ok(ca, 'codeAction response present');
+        const adaptive = (ca.result || []).filter((a) => String(a.title || '').startsWith('Yamlink:'));
+        assert.equal(adaptive.length, 0, 'adaptive-frontmatter suggestions are scoped to the type: line only, not every line');
+    });
 });
 
 test('LSP codeAction returns empty array when no yamlink diagnostics', () => {

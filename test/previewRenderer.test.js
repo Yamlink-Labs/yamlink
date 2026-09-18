@@ -8,6 +8,7 @@ const os = require('os');
 const { pathToFileURL } = require('url');
 
 const {
+    extractFootnoteDefinitions,
     renderNotePreview,
     preprocessImagesForRender,
     rewriteImageSrcs
@@ -42,6 +43,21 @@ describe('preview renderer footnotes', () => {
         assert.ok(html.includes('href="#yl-fn-source-1"'));
         assert.ok(html.includes('Training-yard line associated with'));
         assert.ok(!html.includes('[^source-1]:'));
+    });
+
+    test('extracts the same footnote definitions from CRLF-joined content as LF-joined content', () => {
+        const lines = [
+            'Claim with support[^source-1].',
+            '',
+            '[^source-1]: Training-yard line associated with [[jean-rasczak]].',
+            '  Continued source detail.'
+        ];
+
+        const lf = extractFootnoteDefinitions(lines.join('\n'));
+        const crlf = extractFootnoteDefinitions(lines.join('\r\n'));
+
+        assert.deepEqual([...crlf.definitions.entries()], [...lf.definitions.entries()]);
+        assert.equal(crlf.bodyText, lf.bodyText);
     });
 });
 

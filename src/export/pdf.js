@@ -223,7 +223,7 @@ function writeKeyValue(doc, key, value) {
  * @returns {Array<{type:'text',content:string}|{type:'callout',calloutType:string,title:string,content:string}|{type:'image',src:string,alt:string}>}
  */
 function parseBodySegments(text, noteDir) {
-    const lines = text.split('\n');
+    const lines = String(text || '').split(/\r?\n/);
     /** @type {Array<{type:'text',content:string}|{type:'callout',calloutType:string,title:string,content:string}|{type:'image',src:string,alt:string}>} */
     const segments = [];
     let i = 0;

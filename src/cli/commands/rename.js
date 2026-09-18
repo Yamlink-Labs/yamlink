@@ -2,7 +2,10 @@
 
 const fs = require('fs');
 const path = require('path');
+const readline = require('readline');
 const { getIndex } = require('../../core/indexService');
+const { describeDependencyPreview } = require('../../core/dependencies');
+const { parseFrontmatterDocument } = require('../../core/frontmatter');
 const fmt = require('../format');
 const { captureOutput, emitCliError, emitCliSuccess, emitText } = require('../io');
 const { appendMutationEvents, withMutationContext } = require('../../runtime/mutationEventLog');
@@ -68,7 +71,115 @@ function walkMarkdownFiles(rootDir) {
     }
 }
 
-async function run({ oldId, newId, vaultPath, vaultService, json, quiet, dryRun, renameFile }) {
+function getScalarFieldValue(value) {
+    if (value === null || value === undefined) return '';
+    if (Array.isArray(value)) return value.map(getScalarFieldValue).join(' ');
+    if (typeof value === 'object') return JSON.stringify(value);
+    return String(value);
+}
+
+function buildDependencyPreviewFromFiles(id, markdownFiles, targetPath) {
+    const rows = [];
+    const seenSources = new Set();
+    const pattern = buildRenameRegex(id);
+    for (const filePath of markdownFiles) {
+        let content = '';
+        try {
+            content = fs.readFileSync(filePath, 'utf8');
+        } catch (_) {
+            continue;
+        }
+        const sourceId = deriveNoteId(filePath, content);
+        let parsed = { data: {}, body: content };
+        try {
+            parsed = parseFrontmatterDocument(content);
+        } catch (_) {
+            parsed = { data: {}, body: content };
+        }
+        for (const [field, value] of Object.entries(parsed.data || {})) {
+            if (field === 'id' || field === 'type') continue;
+            if (!contentHasRenameMatch(pattern, getScalarFieldValue(value))) continue;
+            seenSources.add(sourceId);
+            rows.push({
+                field,
+                kind: 'frontmatter',
+                sourceId,
+                label: String(parsed.data.name || parsed.data.title || sourceId),
+                type: String(parsed.data.type || ''),
+                filePath
+            });
+        }
+        if (contentHasRenameMatch(pattern, parsed.body || '')) {
+            seenSources.add(sourceId);
+            rows.push({
+                field: 'body',
+                kind: 'body',
+                sourceId,
+                label: String(parsed.data?.name || parsed.data?.title || sourceId),
+                type: String(parsed.data?.type || ''),
+                filePath
+            });
+        }
+    }
+
+    const frontmatterTotal = rows.filter((row) => row.kind === 'frontmatter').length;
+    const bodyTotal = rows.filter((row) => row.kind === 'body').length;
+    return {
+        id,
+        targetPath,
+        total: rows.length,
+        sourceCount: seenSources.size,
+        frontmatterTotal,
+        bodyTotal,
+        groups: [],
+        rows
+    };
+}
+
+function canPrompt() {
+    return Boolean(process.stdin && process.stdin.isTTY && process.stdout && process.stdout.isTTY);
+}
+
+function promptYesNo(message) {
+    return new Promise((resolve) => {
+        const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+        rl.question(message, (answer) => {
+            rl.close();
+            resolve(/^y(es)?$/i.test(String(answer || '').trim()));
+        });
+    });
+}
+
+function buildDependencyDetails(dependencies) {
+    return {
+        dependencies,
+        dependencySummary: describeDependencyPreview(dependencies)
+    };
+}
+
+async function confirmLinkedRename({ dependencies, json, force }) {
+    if (!dependencies || dependencies.total === 0 || force) return true;
+    // Scripts, CI, and any other non-interactive caller can't answer a prompt — rename is
+    // documented as unconditional ("vault-wide ID rename"), so proceed automatically here.
+    // The dependency count is still surfaced in the human/JSON output below for visibility.
+    if (!canPrompt()) return true;
+    const summary = describeDependencyPreview(dependencies);
+    emitText(`Rename warning: ${summary}\n`);
+    const confirmed = await promptYesNo('Continue with rename? [y/N] ');
+    if (!confirmed) {
+        emitCliError({
+            json,
+            error: 'Rename cancelled.',
+            code: 'CANCELLED',
+            details: buildDependencyDetails(dependencies),
+            exitCode: 1
+        });
+        return false;
+    }
+    return true;
+}
+
+async function run({ oldId, newId, vaultPath, vaultService, json, quiet, dryRun, renameFile, force }) {
     if (!oldId || !newId) {
         emitCliError({ json, error: 'Usage: yamlink rename <old-id> <new-id>', code: 'USAGE', exitCode: 1 });
         return;
@@ -83,10 +194,16 @@ async function run({ oldId, newId, vaultPath, vaultService, json, quiet, dryRun,
         return;
     }
 
+    const markdownFiles = walkMarkdownFiles(vaultPath);
+    const dependencies = buildDependencyPreviewFromFiles(oldId, markdownFiles, targetPath);
+    if (!dryRun) {
+        const confirmed = await confirmLinkedRename({ dependencies, json, force });
+        if (!confirmed) return;
+    }
+
     const renamePattern = buildRenameRegex(oldId);
     const filesUpdated = [];
     const updatedContentByPath = new Map();
-    const markdownFiles = walkMarkdownFiles(vaultPath);
 
     for (const filePath of markdownFiles) {
         let content;
@@ -192,7 +309,8 @@ async function run({ oldId, newId, vaultPath, vaultService, json, quiet, dryRun,
         newId,
         dryRun: !!dryRun,
         filesUpdated,
-        renamed_file: renamedFile
+        renamed_file: renamedFile,
+        dependencies
     };
 
     if (json) {
@@ -208,6 +326,7 @@ async function run({ oldId, newId, vaultPath, vaultService, json, quiet, dryRun,
     emitText(captureOutput(() => {
         fmt.header(dryRun ? `Rename Preview: ${oldId} → ${newId}` : `Rename: ${oldId} → ${newId}`);
         fmt.row('Target note', targetPath);
+        fmt.row('Dependencies', describeDependencyPreview(dependencies));
         fmt.row('Files updated', filesUpdated.length);
         if (filesUpdated.length) {
             fmt.blank();

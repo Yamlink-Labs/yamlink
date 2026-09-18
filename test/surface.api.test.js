@@ -150,6 +150,48 @@ function requestRaw(method, urlPath, payload, headers = {}) {
     });
 }
 
+function createWebhookReceiver() {
+    const received = [];
+    let serverRef;
+    const ready = new Promise((resolve) => {
+        serverRef = http.createServer((req, res) => {
+            let raw = '';
+            req.on('data', (chunk) => { raw += chunk; });
+            req.on('end', () => {
+                try { received.push(JSON.parse(raw)); } catch (_) { received.push(raw); }
+                res.writeHead(204);
+                res.end();
+            });
+        });
+        serverRef.listen(0, '127.0.0.1', () => resolve(undefined));
+    });
+    return {
+        received,
+        async url() {
+            await ready;
+            return `http://127.0.0.1:${serverRef.address().port}/hook`;
+        },
+        close() {
+            return new Promise((resolve) => serverRef.close(resolve));
+        }
+    };
+}
+
+function waitFor(predicate, timeoutMs = 1500) {
+    const start = Date.now();
+    return new Promise((resolve, reject) => {
+        const tick = () => {
+            if (predicate()) { resolve(undefined); return; }
+            if (Date.now() - start > timeoutMs) {
+                reject(new Error('Timed out waiting for condition'));
+                return;
+            }
+            setTimeout(tick, 25);
+        };
+        tick();
+    });
+}
+
 function collectSseEvents(urlPath, onConnected, durationMs = 500) {
     return new Promise((resolve, reject) => {
         const req = http.request({
@@ -489,6 +531,61 @@ test('GET /api/graph?at= reconstructs historical node state and re-derives edges
 
 test('GET /api/graph?at= with an invalid timestamp — 400', async () => {
     const response = await get('/api/graph?at=not-a-real-date');
+    assert.equal(response.status, 400);
+    assert.equal(response.body.code, 'INVALID_PARAM');
+});
+
+test('GET /api/nodes?at= reconstructs the full historical node list with real fields, not just id/type', async () => {
+    const response = await get('/api/nodes?at=2020-01-01T00:00:00.000Z');
+    assert.equal(response.status, 200);
+    const rico = response.body.nodes.find((node) => node.id === 'johnny-rico');
+    assert.ok(rico);
+    assert.equal(rico.type, 'contact');
+    assert.equal(typeof rico.complete, 'boolean');
+    // Unlike /api/graph?at=, the list endpoint must carry every real
+    // reconstructed field (name, relations, etc.), not the graph endpoint's
+    // minimal {id, type, complete} shape — that's the whole point of adding
+    // this separately rather than reusing buildHistoricalGraph()'s node shape.
+    assert.ok(Object.keys(rico).length > 3);
+    assert.equal(typeof response.body.meta.total, 'number');
+});
+
+test('GET /api/nodes?at= with an invalid timestamp — 400', async () => {
+    const response = await get('/api/nodes?at=not-a-real-date');
+    assert.equal(response.status, 400);
+    assert.equal(response.body.code, 'INVALID_PARAM');
+});
+
+test('GET /api/nodes?at=&type= composes historical reconstruction with the existing type filter', async () => {
+    const response = await get('/api/nodes?at=2020-01-01T00:00:00.000Z&type=contact');
+    assert.equal(response.status, 200);
+    assert.ok(response.body.nodes.every((node) => (node.type || '').toLowerCase() === 'contact'));
+});
+
+test('GET /api/graph/history returns checkpoint snapshots across a range', async () => {
+    appendMutationEvents([
+        {
+            timestamp: '2024-01-02T00:00:00.000Z',
+            type: 'field_added',
+            noteId: 'johnny-rico',
+            field: 'unit',
+            oldValue: null,
+            newValue: '[[roughnecks]]'
+        }
+    ]);
+    const response = await get('/api/graph/history?since=2024-01-01T00:00:00.000Z&until=2024-01-03T00:00:00.000Z&points=3');
+    assert.equal(response.status, 200);
+    assert.equal(response.body.since, '2024-01-01T00:00:00.000Z');
+    assert.equal(response.body.until, '2024-01-03T00:00:00.000Z');
+    assert.equal(response.body.points, 3);
+    assert.equal(response.body.snapshots.length, 3);
+    assert.ok(response.body.snapshots.every((snapshot) => Array.isArray(snapshot.nodes) && Array.isArray(snapshot.edges)));
+    assert.equal(response.body.snapshots[0].edges.some((edge) => edge.from === 'johnny-rico' && edge.to === 'roughnecks' && edge.field === 'unit'), false);
+    assert.equal(response.body.snapshots[2].edges.some((edge) => edge.from === 'johnny-rico' && edge.to === 'roughnecks' && edge.field === 'unit'), true);
+});
+
+test('GET /api/graph/history with too many points — 400', async () => {
+    const response = await get('/api/graph/history?since=2024-01-01T00:00:00.000Z&points=51');
     assert.equal(response.status, 400);
     assert.equal(response.body.code, 'INVALID_PARAM');
 });
@@ -1408,6 +1505,59 @@ test('PATCH /api/nodes/bulk — updates 2 different notes', async () => {
     assert.equal(response.body.errors.length, 0);
 });
 
+test('PATCH /api/nodes/bulk — add mode creates wikilink lists and stays idempotent', async () => {
+    const body = {
+        updates: [
+            { id: 'johnny-rico', fields: { allies: { add: 'roughnecks' } } },
+            { id: 'carl-jenkins', fields: { allies: { add: '[[roughnecks]]' } } }
+        ]
+    };
+    const first = await request('PATCH', '/api/nodes/bulk', body);
+    const second = await request('PATCH', '/api/nodes/bulk', body);
+
+    assert.equal(first.status, 200);
+    assert.equal(second.status, 200);
+    const johnny = fs.readFileSync(path.join(vault.dir, 'johnny-rico.md'), 'utf8');
+    const carl = fs.readFileSync(path.join(vault.dir, 'carl-jenkins.md'), 'utf8');
+    assert.equal((johnny.match(/\[\[roughnecks\]\]/g) || []).length, 2);
+    assert.equal((carl.match(/\[\[roughnecks\]\]/g) || []).length, 2);
+    assert.match(johnny, /allies: \["\[\[roughnecks\]\]"\]/);
+    assert.match(carl, /allies: \["\[\[roughnecks\]\]"\]/);
+});
+
+test('PATCH /api/nodes/bulk — add mode reports scalar field failure without aborting the batch', async () => {
+    const response = await request('PATCH', '/api/nodes/bulk', {
+        updates: [
+            { id: 'johnny-rico', fields: { status: { add: 'roughnecks' } } },
+            { id: 'roughnecks', fields: { members: { add: 'johnny-rico' } } }
+        ]
+    });
+
+    assert.equal(response.status, 207);
+    assert.equal(response.body.updated.length, 1);
+    assert.equal(response.body.updated[0].id, 'roughnecks');
+    assert.equal(response.body.errors.length, 1);
+    assert.equal(response.body.errors[0].id, 'johnny-rico');
+    assert.match(response.body.errors[0].error, /scalar/);
+    const roughnecks = fs.readFileSync(path.join(vault.dir, 'roughnecks.md'), 'utf8');
+    assert.match(roughnecks, /members: \["\[\[johnny-rico\]\]"\]/);
+});
+
+test('PATCH /api/nodes/bulk — supports mixed overwrite and add fields in one update', async () => {
+    const response = await request('PATCH', '/api/nodes/bulk', {
+        updates: [
+            { id: 'carl-jenkins', fields: { status: 'mixed-update-ok', mentors: { add: 'johnny-rico' } } }
+        ]
+    });
+
+    assert.equal(response.status, 200);
+    assert.equal(response.body.updated.length, 1);
+    assert.deepEqual(response.body.updated[0].fields.sort(), ['mentors', 'status']);
+    const carl = fs.readFileSync(path.join(vault.dir, 'carl-jenkins.md'), 'utf8');
+    assert.match(carl, /status: mixed-update-ok/);
+    assert.match(carl, /mentors: \["\[\[johnny-rico\]\]"\]/);
+});
+
 test('PATCH /api/nodes/bulk — entry missing id/fields is reported as an error, valid entries still applied', async () => {
     const response = await request('PATCH', '/api/nodes/bulk', {
         updates: [
@@ -1456,6 +1606,30 @@ test('DELETE /api/nodes/:id with missing note returns 404', async () => {
     assert.equal(response.status, 404);
 });
 
+test('DELETE /api/nodes/:id blocks referenced notes unless forced', async () => {
+    const createdTarget = await request('POST', '/api/nodes', {
+        type: 'unit',
+        fields: { id: 'delete-protected-unit', name: 'Delete Protected Unit' }
+    });
+    assert.equal(createdTarget.status, 201);
+    const createdSource = await request('POST', '/api/nodes', {
+        type: 'contact',
+        fields: { id: 'delete-protected-source', unit: '[[delete-protected-unit]]' }
+    });
+    assert.equal(createdSource.status, 201);
+
+    const blocked = await request('DELETE', '/api/nodes/delete-protected-unit');
+    assert.equal(blocked.status, 409);
+    assert.equal(blocked.body.code, 'DEPENDENCIES_PRESENT');
+    assert.equal(blocked.body.dependencies.total, 1);
+    assert.equal(blocked.body.dependencies.frontmatterTotal, 1);
+
+    const forced = await request('DELETE', '/api/nodes/delete-protected-unit?force=true');
+    assert.equal(forced.status, 200);
+    assert.equal(forced.body.ok, true);
+    assert.equal(forced.body.dependencies.total, 1);
+});
+
 test('DELETE /api/nodes writes note_deleted to mutation log with noteId', async () => {
     const created = await request('POST', '/api/nodes', {
         type: 'contact',
@@ -1470,6 +1644,95 @@ test('DELETE /api/nodes writes note_deleted to mutation log with noteId', async 
     const content = fs.readFileSync(logPath, 'utf8');
     assert.match(content, /"type":"note_deleted"/);
     assert.match(content, /"noteId":"mutation-deleted-note"/);
+});
+
+test('API hooks register, list, and fire matching mutations to a webhook URL', async () => {
+    const receiver = createWebhookReceiver();
+    let hookId = null;
+    try {
+        const hookUrl = await receiver.url();
+        const created = await request('POST', '/api/hooks', {
+            url: hookUrl,
+            event: 'field_changed',
+            noteType: 'contact'
+        });
+        assert.equal(created.status, 201);
+        hookId = created.body.hook.id;
+        assert.equal(created.body.hook.event, 'field_changed');
+        assert.equal(created.body.hook.noteType, 'contact');
+
+        const listed = await request('GET', '/api/hooks');
+        assert.equal(listed.status, 200);
+        assert.ok(listed.body.hooks.some((hook) => hook.id === created.body.hook.id));
+
+        await request('PATCH', '/api/nodes/johnny-rico', { field: 'status', value: 'webhook-fired-contact' });
+        await waitFor(() => receiver.received.length === 1);
+
+        assert.equal(receiver.received[0].event, 'field_changed');
+        assert.equal(receiver.received[0].noteId, 'johnny-rico');
+        assert.equal(receiver.received[0].noteType, 'contact');
+        assert.equal(receiver.received[0].field, 'status');
+        assert.equal(receiver.received[0].newValue, 'webhook-fired-contact');
+    } finally {
+        if (hookId) await request('DELETE', `/api/hooks/${hookId}`);
+        await receiver.close();
+    }
+});
+
+test('API hooks do not fire for non-matching events', async () => {
+    const receiver = createWebhookReceiver();
+    let hookId = null;
+    try {
+        const hookUrl = await receiver.url();
+        const created = await request('POST', '/api/hooks', {
+            url: hookUrl,
+            event: 'note_created'
+        });
+        assert.equal(created.status, 201);
+        hookId = created.body.hook.id;
+
+        await request('PATCH', '/api/nodes/johnny-rico', { field: 'status', value: 'webhook-non-match' });
+        await new Promise((resolve) => setTimeout(resolve, 150));
+        assert.equal(receiver.received.length, 0);
+    } finally {
+        if (hookId) await request('DELETE', `/api/hooks/${hookId}`);
+        await receiver.close();
+    }
+});
+
+test('API hooks disabled registrations suppress delivery', async () => {
+    const receiver = createWebhookReceiver();
+    let hookId = null;
+    try {
+        const hookUrl = await receiver.url();
+        const created = await request('POST', '/api/hooks', {
+            url: hookUrl,
+            event: 'field_changed'
+        });
+        assert.equal(created.status, 201);
+        hookId = created.body.hook.id;
+
+        const disabled = await request('PATCH', `/api/hooks/${created.body.hook.id}`, { enabled: false });
+        assert.equal(disabled.status, 200);
+        assert.equal(disabled.body.hook.enabled, false);
+
+        await request('PATCH', '/api/nodes/johnny-rico', { field: 'status', value: 'webhook-disabled' });
+        await new Promise((resolve) => setTimeout(resolve, 150));
+        assert.equal(receiver.received.length, 0);
+    } finally {
+        if (hookId) await request('DELETE', `/api/hooks/${hookId}`);
+        await receiver.close();
+    }
+});
+
+test('API hooks reject invalid URL and event values with INVALID_PARAM', async () => {
+    const badUrl = await request('POST', '/api/hooks', { url: 'not a url', event: 'field_changed' });
+    assert.equal(badUrl.status, 400);
+    assert.equal(badUrl.body.code, 'INVALID_PARAM');
+
+    const badEvent = await request('POST', '/api/hooks', { url: 'https://example.com/hook', event: 'made_up_event' });
+    assert.equal(badEvent.status, 400);
+    assert.equal(badEvent.body.code, 'INVALID_PARAM');
 });
 
 test('X-Yamlink-Generation header contract', async () => {

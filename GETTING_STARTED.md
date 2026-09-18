@@ -59,7 +59,7 @@ select name, unit, created
 sort name
 ```
 
-Run the view (`Yamlink: Run Active Views`) and a live table opens beside the note. Double-click any cell to edit it directly — the change writes straight back into that note's real frontmatter, no separate save step. Text, relations (with real validation against your vault's ids), booleans, dropdowns, numbers, and dates all edit in place; `Tab`/`Shift+Tab` move between editable cells, and you can paste a whole block of spreadsheet data across multiple cells at once. Every edit is undoable.
+Run the view (`Yamlink: Run Views in Current File`) and a live table opens beside the note. Double-click any cell to edit it directly — the change writes straight back into that note's real frontmatter, no separate save step. Text, relations (with real validation against your vault's ids), booleans, dropdowns, numbers, and dates all edit in place; `Tab`/`Shift+Tab` move between editable cells, and you can paste a whole block of spreadsheet data across multiple cells at once. Every edit is undoable.
 
 The same result set can also be viewed as a **matrix** (pick any type for the columns, ● marks a connected pair), a **bar chart**, or a **scatter plot** — a toolbar toggle in the table itself, not something you write in the query. The layout choice is remembered per query. Bar charts and scatter plots will only work if your notes' connections and structure allows it.
 
@@ -80,6 +80,27 @@ sort <field> asc|desc               # sort order (default: asc)
 limit <n>                           # row cap
 group by <field>                    # group results into sections
 ```
+
+Graph traversal:
+
+```text
+linked_to [[id]]              # notes with an outbound edge to id
+linked_from [[id]]            # every note id itself points to
+linked_to [[id]] within 2     # extends either clause transitively, up to 5 hops
+linked_from [[id]] within 3   # union of everything reachable in that many hops, not just exactly that hop
+```
+
+`!view * linked_from [[project-x]] within 2` reaches everything two links away from `project-x` in one query — the notes it points to directly, and everything those notes point to. Omit `within` for a single hop (the default). Combines with a type filter and other `where` clauses, same as any other condition.
+
+Temporal reconstruction:
+
+```text
+!view mission as of 2297-08-10
+!view mission as of 2297-08-10 where outcome = ongoing
+!view mission as of days-ago(30)
+```
+
+Runs the whole query — type filter, `where`, `select`, `sort` — against each note's frontmatter as it stood on that date, not today. Accepts the same date vocabulary `where` clauses do (a literal date, `today()`, `days-ago(N)`, and so on). Computed fields (`_inbound_count`, `file.created`) still reflect current values, not historical ones. Doesn't combine with `!view incoming` at all. It does combine with `linked_to`/`linked_from`, but not into a real point-in-time traversal — the edges walked are always today's, only the field values shown get reconstructed to the past date. See `QUERY_LANGUAGE.md` for the full detail if you're relying on this combination.
 
 Date operators:
 
@@ -186,9 +207,12 @@ The practical flow:
 1. Start a note with at least `id:` and `type:`.
 2. Place the cursor on the `type:` line and open the lightbulb.
 3. Use the type-aware action: **"Use the character schema from Smart Templates"**.
-4. Yamlink inserts the learned frontmatter shape for that note type.
-5. Cursor moves to the first unresolved field.
-6. Completion can reopen automatically there if the vault has strong evidence.
+4. Yamlink inserts the learned frontmatter shape for that note type — relation fields pre-fill with a real value (e.g. `commander: [[johnny-rico]]`) when the vault has strong, consistent evidence for it, instead of an empty stub; fields with no vault evidence still insert blank. Capped at 6 fields per run — a template with more missing fields inserts the first 6 and tells you how many more are available.
+5. If more than one field is missing beyond the template's own list, and the vault has one more genuinely relevant suggestion, a separate follow-up message offers to insert it too — a real choice, not applied automatically.
+6. Cursor moves to the first unresolved field.
+7. Completion can reopen automatically there if the vault has strong evidence.
+
+**More than one template for the same type?** "Save Note as Template" offers to overwrite an existing one or save a new, distinctly-named template alongside it (e.g. `meeting-standup.md` and `meeting-retro.md`, both `type: meeting`) — useful when one type covers a few real sub-patterns. "Add missing template fields" asks which one to use when more than one matches. Template-drift warnings stay silent for a type with more than one template rather than guessing which one applies.
 
 ---
 
@@ -230,6 +254,10 @@ Smart Paste also helps when content starts outside Yamlink. Paste a clear spread
 | `Yamlink: Copy Block Reference` | pick from tasks, quotes, footnotes only (no headings) |
 
 **Insert a reference** — same three pickers, but insert directly into the editor at your cursor instead of the clipboard: `Yamlink: Insert Scoped Reference`, `Yamlink: Insert Section Reference`, `Yamlink: Insert Block Reference`.
+
+You don't need to remember any of these commands to notice a block is referenceable in the first place — a "Copy reference" link appears directly above every heading, task, quote, and footnote as you write. If another note already links to that specific block, a second "N references" link shows up next to it — click it to jump straight there.
+
+**Extract a block to its own note** — `Yamlink: Extract Block to New Note` (also a CodeLens above tasks, quotes, and footnotes) moves that exact block out of the current note and into a brand-new one, replacing it in place with an embed so it still renders where it was.
 
 **Export** — `Yamlink: Export Active Note to PDF` renders the active note (frontmatter, body, callouts, tasks) to a PDF file.
 
@@ -347,6 +375,10 @@ yamlink links --broken              # list all broken wikilinks
 ```bash
 yamlink set johnny-rico status active           # write a frontmatter field
 yamlink set johnny-rico status active --dry-run # preview without writing
+yamlink bulk-set --ids johnny-rico,carl-jenkins,dizzy-flores --field status --value ready  # set one field across many notes at once
+yamlink bulk-set --ids meeting-1,meeting-2 --field project --add roughnecks-op            # link many notes to the same target, no duplicates
+# Same add semantics over the API: PATCH /api/nodes/bulk with { "updates": [{ "id": "...", "fields": { "project": { "add": "roughnecks-op" } } }] }
+# In VS Code: select multiple notes in the Explorer, right-click -> "Yamlink: Bulk Set Field on Selected Notes"
 yamlink link johnny-rico unit roughnecks        # set a relation field
 yamlink rename johnny-rico rico                 # vault-wide ID rename
 yamlink template save johnny-rico               # save a note as a blank-skeleton template (--force to overwrite)
@@ -380,6 +412,8 @@ yamlink snapshot                            # capture a checkpoint now, for rest
 
 ```bash
 yamlink on field_changed -- ./scripts/sync.sh  # run a script on every mutation event
+yamlink on field_changed --daemon -- ./scripts/sync.sh  # same, but survives closing this terminal
+yamlink on --list                               # check what's running, with real live status
 yamlink completions bash >> ~/.bashrc           # enable shell tab completions
 ```
 
@@ -389,7 +423,7 @@ yamlink completions bash >> ~/.bashrc           # enable shell tab completions
 yamlink init ~/Documents/MyVault               # scaffold .yamlink/, _templates/, welcome.md
 ```
 
-**All 41 commands** support `--json`, `--dry-run`, and `--vault <path>`. Run `yamlink --help` for the full command list, or `yamlink <command> --help` for any command's flags.
+**All 49 commands** support `--json`, `--dry-run`, and `--vault <path>`. Run `yamlink --help` for the full command list, or `yamlink <command> --help` for any command's flags.
 
 ---
 
@@ -491,6 +525,8 @@ Press `?` inside Conduit at any time for the full in-app key-binding reference.
 
 ## 10. Import an existing vault
 
+Every import — Obsidian, Notion, Roam, Evernote — shows a one-line trust summary in the confirmation screen before you commit (what that export format preserves well, what to double-check, what it can't fully carry over regardless of how good the importer is), and the same detail as a "What to expect from this import" section in the generated import report. Worth reading before a big import, not just after.
+
 ### From Obsidian
 
 Run `Yamlink: Import Obsidian Vault`.
@@ -513,7 +549,7 @@ Follow-up actions available after import:
 
 ### From Notion
 
-Run `Yamlink: Import Vault Export` → **Notion**.
+Run `Yamlink: Import External Vault Export` → **Notion**.
 
 Export from Notion: a Markdown export folder.
 
@@ -526,7 +562,7 @@ What Yamlink does:
 
 ### From Roam Research
 
-Run `Yamlink: Import Vault Export` → **Roam Research**.
+Run `Yamlink: Import External Vault Export` → **Roam Research**.
 
 Export from Roam: a JSON page export.
 
@@ -539,7 +575,7 @@ What Yamlink does:
 
 ### From Evernote
 
-Run `Yamlink: Import Vault Export` → **Evernote**.
+Run `Yamlink: Import External Vault Export` → **Evernote**.
 
 Export from Evernote: an `.enex` file.
 

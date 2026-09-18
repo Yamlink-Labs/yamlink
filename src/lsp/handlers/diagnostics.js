@@ -17,6 +17,15 @@ async function handleTextDocumentDiagnostic(msg, state) {
 }
 
 async function handleWorkspaceDiagnostic(msg, state) {
+    // Same rebuild race `handleTextDocumentDiagnostic` above already guards
+    // against, unaudited here until now — a workspace-wide diagnostics scan
+    // reads `getIndex()` fresh per file inside `collectWorkspaceDiagnostics`,
+    // so starting it while a debounced rebuild is still in flight could scan
+    // a stale, pre-rebuild index across the whole vault instead of the
+    // freshly-edited state the client actually expects.
+    if (state && state.vaultService && typeof state.vaultService.flushPendingRebuild === 'function') {
+        await state.vaultService.flushPendingRebuild();
+    }
     respondImmediate(msg.id, {
         items: await collectWorkspaceDiagnostics(state, msg.id, {
             workDoneToken: msg?.params?.workDoneToken,

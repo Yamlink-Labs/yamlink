@@ -59,6 +59,17 @@ function getTemplateForType(workspaceRoot, type) {
 }
 
 /**
+ * @param {string} workspaceRoot
+ * @param {string} type
+ * @returns {{ name: string, filePath: string, content: string, type: string, fields: string[] }[]}
+ */
+function getTemplatesForType(workspaceRoot, type) {
+    if (!type || !workspaceRoot) return [];
+    const normalizedType = type.toLowerCase();
+    return loadTemplates(workspaceRoot).filter(t => t.type === normalizedType);
+}
+
+/**
  * Returns notes whose fields are missing keys defined in their `_templates/` counterpart.
  * Only absent keys are flagged — empty values are intentional.
  * @param {string} workspaceRoot
@@ -72,9 +83,11 @@ function getTemplateDrift(workspaceRoot, fieldsCache) {
     if (!templates.length) return [];
 
     const templateMap = new Map();
+    const templateCountByType = new Map();
     for (const t of templates) {
         if (t.type && t.fields.length > 0) {
-            templateMap.set(t.type, t.fields);
+            templateCountByType.set(t.type, (templateCountByType.get(t.type) || 0) + 1);
+            if (!templateMap.has(t.type)) templateMap.set(t.type, t.fields);
         }
     }
     if (!templateMap.size) return [];
@@ -83,6 +96,7 @@ function getTemplateDrift(workspaceRoot, fieldsCache) {
     for (const [noteId, fields] of fieldsCache) {
         const noteType = String(fields?.type || '').trim().toLowerCase();
         if (!noteType || SYSTEM_TYPES.has(noteType) || !templateMap.has(noteType)) continue;
+        if ((templateCountByType.get(noteType) || 0) > 1) continue;
 
         const templateFields = templateMap.get(noteType);
         const missingFields = templateFields.filter(f => !(f in (fields || {})));
@@ -190,24 +204,28 @@ function buildTemplateFromNote(noteContent) {
 }
 
 /**
- * Writes a generated template to `_templates/<type>.md`. Refuses to
+ * Writes a generated template to `_templates/<type>.md`, or
+ * `_templates/<templateName>.md` when an explicit template name is provided.
+ * Refuses to
  * overwrite an existing template for that type unless `force` is set —
  * a hand-crafted template is easy to lose and hard to notice losing.
  * @param {string} workspaceRoot
  * @param {string} type
  * @param {string} content
- * @param {{ force?: boolean }} [options]
+ * @param {{ force?: boolean, templateName?: string }} [options]
  * @returns {string} the written file path
  */
 function saveTemplateFile(workspaceRoot, type, content, options) {
     const force = Boolean(options && options.force);
     const normalizedType = String(type || '').trim().toLowerCase();
+    const templateName = String(options?.templateName || normalizedType).trim().toLowerCase();
     if (!workspaceRoot || !normalizedType) {
         throw new Error('workspaceRoot and type are required');
     }
+    if (!templateName) throw new Error('templateName cannot be empty');
     const templatesPath = path.join(workspaceRoot, TEMPLATES_DIR);
     if (!fs.existsSync(templatesPath)) fs.mkdirSync(templatesPath, { recursive: true });
-    const filePath = path.join(templatesPath, `${normalizedType}.md`);
+    const filePath = path.join(templatesPath, `${templateName}.md`);
     if (fs.existsSync(filePath) && !force) {
         const err = new Error(`Template for type "${normalizedType}" already exists at ${filePath}`);
         /** @type {Error & { code?: string }} */ (err).code = 'TEMPLATE_EXISTS';
@@ -221,6 +239,7 @@ module.exports = {
     TEMPLATES_DIR,
     loadTemplates,
     getTemplateForType,
+    getTemplatesForType,
     getTemplateDrift,
     summarizeTemplateDrift,
     extractTemplateType,

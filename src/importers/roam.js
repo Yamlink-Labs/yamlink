@@ -26,28 +26,58 @@ function normalizeRoamText(text) {
         .trim();
 }
 
-function rewriteRoamPageReferences(text, pageTargetMap) {
-    return String(text || '').replace(/\[\[([^\]]+)\]\]/g, (full, rawTarget) => {
-        const title = String(rawTarget || '').trim();
-        if (!title) return full;
-        const match = pageTargetMap?.get(title.toLowerCase());
-        if (match?.id) return buildCanonicalWikilink(match.id, { alias: title !== match.id ? title : '' });
-        const fallbackId = canonicalizeId(title);
-        if (!fallbackId) return full;
-        return buildCanonicalWikilink(fallbackId, { alias: title !== fallbackId ? title : '' });
-    });
+function rewriteRoamReferences(text, pageTargetMap, blockTargetMap = null) {
+    return String(text || '')
+        .replace(/\[\[([^\]]+)\]\]/g, (full, rawTarget) => {
+            const title = String(rawTarget || '').trim();
+            if (!title) return full;
+            const match = pageTargetMap?.get(title.toLowerCase());
+            if (match?.id) return buildCanonicalWikilink(match.id, { alias: title !== match.id ? title : '' });
+            const fallbackId = canonicalizeId(title);
+            if (!fallbackId) return full;
+            return buildCanonicalWikilink(fallbackId, { alias: title !== fallbackId ? title : '' });
+        })
+        .replace(/\{\{\s*(?:embed|embed-path)\s*:\s*\(\(([^)]+)\)\)\s*\}\}/gi, (_full, uid) => {
+            const target = blockTargetMap?.get(String(uid || '').trim());
+            return target ? buildCanonicalWikilink(target.noteId, { block: target.blockId }) : `((${String(uid || '').trim()}))`;
+        })
+        .replace(/\(\(([^)]+)\)\)/g, (full, rawUid) => {
+            const uid = String(rawUid || '').trim();
+            const target = blockTargetMap?.get(uid);
+            if (!target) return full;
+            return buildCanonicalWikilink(target.noteId, { block: target.blockId });
+        });
 }
 
-function renderRoamBlocks(blocks, depth = 0, pageTargetMap = null) {
+function rewriteRoamPageReferences(text, pageTargetMap) {
+    return rewriteRoamReferences(text, pageTargetMap, null);
+}
+
+function renderRoamBlocks(blocks, depth = 0, pageTargetMap = null, blockTargetMap = null) {
     if (!Array.isArray(blocks) || !blocks.length) return '';
     const lines = [];
     for (const block of blocks) {
-        const text = rewriteRoamPageReferences(normalizeRoamText(block?.string || block?.title || ''), pageTargetMap);
-        if (text) lines.push(`${'  '.repeat(depth)}- ${text}`);
-        const nested = renderRoamBlocks(block?.children || [], depth + 1, pageTargetMap);
+        const uid = String(block?.uid || '').trim();
+        const suffix = uid ? ` ^${uid}` : '';
+        const text = rewriteRoamReferences(normalizeRoamText(block?.string || block?.title || ''), pageTargetMap, blockTargetMap);
+        if (text) lines.push(`${'  '.repeat(depth)}- ${text}${suffix}`);
+        const nested = renderRoamBlocks(block?.children || [], depth + 1, pageTargetMap, blockTargetMap);
         if (nested) lines.push(nested);
     }
     return lines.join('\n');
+}
+
+function collectRoamBlockTargets(blocks, noteId, blockTargetMap) {
+    for (const block of Array.isArray(blocks) ? blocks : []) {
+        const uid = String(block?.uid || '').trim();
+        if (uid && !blockTargetMap.has(uid)) {
+            blockTargetMap.set(uid, {
+                noteId,
+                blockId: uid
+            });
+        }
+        collectRoamBlockTargets(block?.children || [], noteId, blockTargetMap);
+    }
 }
 
 function importRoamJsonToVault(sourcePath, destinationRoot) {
@@ -68,13 +98,16 @@ function importRoamJsonToVault(sourcePath, destinationRoot) {
     stats.pageReferencesNormalized = 0;
 
     const pageTargetMap = new Map();
+    const blockTargetMap = new Map();
     for (const page of parsed) {
         const title = String(page?.title || '').trim();
         if (!title) continue;
+        const id = canonicalizeId(title);
         pageTargetMap.set(title.toLowerCase(), {
-            id: canonicalizeId(title),
+            id,
             title
         });
+        collectRoamBlockTargets(page.children || [], id, blockTargetMap);
     }
 
     for (const page of parsed) {
@@ -84,8 +117,9 @@ function importRoamJsonToVault(sourcePath, destinationRoot) {
             continue;
         }
         const id = canonicalizeId(title);
-        const body = renderRoamBlocks(page.children || [], 0, pageTargetMap);
+        const body = renderRoamBlocks(page.children || [], 0, pageTargetMap, blockTargetMap);
         stats.pageReferencesNormalized += (body.match(/\[\[[^\]]+\]\]/g) || []).length;
+        stats.blockReferencesNormalized = (stats.blockReferencesNormalized || 0) + (body.match(/\[\[[^\]]+\^[^\]]+\]\]/g) || []).length;
         const dailyDate = normalizeDateTitle(title);
         const data = {
             id,
@@ -140,8 +174,10 @@ function inspectRoamExport(sourcePath) {
 module.exports = {
     normalizeDateTitle,
     normalizeRoamText,
+    rewriteRoamReferences,
     rewriteRoamPageReferences,
     renderRoamBlocks,
+    collectRoamBlockTargets,
     importRoamJsonToVault,
     inspectRoamExport
 };

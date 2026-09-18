@@ -27,6 +27,13 @@ const Module = require('module');
 const _originalResolve = Module._resolveFilename.bind(Module);
 const _infoMessageQueue = [];
 const _inputBoxQueue = [];
+const _quickPickQueue = [];
+const _clipboardWrites = [];
+const _statusBarMessages = [];
+const _registeredCommands = new Map();
+const _registeredPasteProviders = [];
+const _showTextDocumentCalls = [];
+const _showQuickPickCalls = [];
 
 function _dequeueOrUndefined(queue) {
     return queue.length ? queue.shift() : undefined;
@@ -35,8 +42,16 @@ function _dequeueOrUndefined(queue) {
 function _resetVscodeStubState() {
     _infoMessageQueue.length = 0;
     _inputBoxQueue.length = 0;
+    _quickPickQueue.length = 0;
+    _clipboardWrites.length = 0;
+    _statusBarMessages.length = 0;
+    _registeredCommands.clear();
+    _registeredPasteProviders.length = 0;
+    _showTextDocumentCalls.length = 0;
+    _showQuickPickCalls.length = 0;
     _vscodeStub.workspace.textDocuments.length = 0;
     _vscodeStub.workspace.workspaceFolders = [];
+    _vscodeStub.window.activeTextEditor = null;
 }
 
 function queueInformationMessageResponses(...responses) {
@@ -45,6 +60,34 @@ function queueInformationMessageResponses(...responses) {
 
 function queueInputBoxResponses(...responses) {
     _inputBoxQueue.push(...responses);
+}
+
+function queueQuickPickResponses(...responses) {
+    _quickPickQueue.push(...responses);
+}
+
+function getClipboardWrites() {
+    return _clipboardWrites;
+}
+
+function getStatusBarMessages() {
+    return _statusBarMessages;
+}
+
+function getRegisteredCommand(id) {
+    return _registeredCommands.get(id);
+}
+
+function getRegisteredPasteProvider() {
+    return _registeredPasteProviders.length ? _registeredPasteProviders[_registeredPasteProviders.length - 1].provider : undefined;
+}
+
+function getShowTextDocumentCalls() {
+    return _showTextDocumentCalls;
+}
+
+function getShowQuickPickCalls() {
+    return _showQuickPickCalls;
 }
 
 function requireWithVscodeStub(modulePath, parentRequire = require) {
@@ -92,14 +135,39 @@ const _vscodeStub = {
         }
     },
     window: {
+        activeTextEditor: null,
         createOutputChannel: () => ({ appendLine: () => {}, show: () => {}, clear: () => {}, dispose: () => {} }),
         onDidChangeActiveTextEditor: () => ({ dispose: () => {} }),
         showWarningMessage:          async () => undefined,
         showInformationMessage:      async () => _dequeueOrUndefined(_infoMessageQueue),
         showInputBox:                async () => _dequeueOrUndefined(_inputBoxQueue),
         showErrorMessage:            async () => undefined,
-        showTextDocument:            async (document) => ({ document })
+        showQuickPick:                async (items) => {
+            _showQuickPickCalls.push(items);
+            return _dequeueOrUndefined(_quickPickQueue);
+        },
+        showTextDocument:            async (document) => {
+            _showTextDocumentCalls.push(document?.uri?.fsPath || null);
+            const editor = { document, selection: null, revealRange() {} };
+            return editor;
+        },
+        setStatusBarMessage: (message) => {
+            _statusBarMessages.push(message);
+            return { dispose: () => {} };
+        }
     },
+    commands: {
+        registerCommand: (id, handler) => {
+            _registeredCommands.set(id, handler);
+            return { dispose: () => { _registeredCommands.delete(id); } };
+        }
+    },
+    env: {
+        clipboard: {
+            writeText: async (value) => { _clipboardWrites.push(String(value || '')); }
+        }
+    },
+    TextEditorRevealType: { Default: 0, InCenter: 1, InCenterIfOutsideViewport: 2, AtTop: 3 },
     workspace: {
         textDocuments: [],
         workspaceFolders:          [],
@@ -143,7 +211,26 @@ const _vscodeStub = {
             get:     () => [],
             has:     () => false,
             dispose: () => {}
-        })
+        }),
+        registerCodeLensProvider: () => ({ dispose: () => {} }),
+        registerDocumentPasteEditProvider: (selector, provider, options) => {
+            _registeredPasteProviders.push({ selector, provider, options });
+            return { dispose: () => {} };
+        }
+    },
+    DocumentDropOrPasteEditKind: {
+        Text: { append: (...parts) => ({ value: ['text', ...parts].join('.') }) }
+    },
+    DocumentPasteEdit: class DocumentPasteEdit {
+        constructor(insertText, title, kind) {
+            this.insertText = insertText;
+            this.title = title;
+            this.kind = kind;
+            this.additionalEdit = undefined;
+        }
+    },
+    CodeLens: class CodeLens {
+        constructor(range, command) { this.range = range; this.command = command; }
     },
     Range: class Range {
         constructor(s, e) { this.start = s; this.end = e; }
@@ -437,6 +524,13 @@ module.exports = {
     VaultInstance,
     queueInformationMessageResponses,
     queueInputBoxResponses,
+    queueQuickPickResponses,
+    getClipboardWrites,
+    getStatusBarMessages,
+    getRegisteredCommand,
+    getRegisteredPasteProvider,
+    getShowTextDocumentCalls,
+    getShowQuickPickCalls,
     resetVscodeStubState: _resetVscodeStubState,
     requireWithVscodeStub
 };

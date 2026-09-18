@@ -72,6 +72,7 @@ function Navigator({ ink, TextInput, host, port, getTypes, getNodes, onNavigate,
 
     const onStateChangeRef = React.useRef(onStateChange);
     React.useEffect(() => { onStateChangeRef.current = onStateChange; });
+    const consumedInitialIdRef = React.useRef('');
 
     const filtered = React.useMemo(
         () => nodes.filter((node) => {
@@ -155,8 +156,23 @@ function Navigator({ ink, TextInput, host, port, getTypes, getNodes, onNavigate,
 
     React.useEffect(() => {
         if (!initialId || !filtered.length) return;
+        // Navigator's own selection effect (below) pushes {noteId: selected.id}
+        // up to the parent on every cursor move, which the parent echoes straight
+        // back down as this same `initialId` prop — so without this guard, this
+        // effect re-fires on every arrow-key press (it depends on `safeCursor`,
+        // which changes on every move) and forcibly snaps the cursor back to
+        // wherever the *previous* round-trip's `initialId` pointed, fighting the
+        // user's own navigation and, since both effects feed each other, forming
+        // an unbounded render loop (confirmed: two Down presses in a row was
+        // enough to trip React's "Maximum update depth exceeded"). Only ever
+        // consume a given initialId value once — real external navigation
+        // (opening Navigator from elsewhere with a target note) still works,
+        // but the value Navigator echoed of its own accord is never reapplied.
+        if (consumedInitialIdRef.current === initialId) return;
         const index = filtered.findIndex((node) => node.id === initialId);
-        if (index !== -1 && index !== safeCursor) setCursor(index);
+        if (index === -1) return;
+        consumedInitialIdRef.current = initialId;
+        if (index !== safeCursor) setCursor(index);
     }, [filtered, initialId, safeCursor]);
 
     React.useEffect(() => {

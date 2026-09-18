@@ -124,6 +124,38 @@ function rewriteFilenameStyleWikilinks(text, noteTargetMap) {
     return { text: nextText, rewrites };
 }
 
+function rewriteFilenameStyleMarkdownLinks(text, noteTargetMap) {
+    let rewrites = 0;
+    const nextText = String(text || '').replace(/(!?)\[([^\]\n]+)\]\(([^)\n]+)\)/g, (full, bang, label, rawTarget) => {
+        if (bang === '!') return full;
+        const target = String(rawTarget || '').trim();
+        if (!target || /^[a-z][a-z0-9+.-]*:/i.test(target) || target.startsWith('#')) return full;
+
+        const [targetPath, anchor = ''] = target.split('#');
+        let decoded = targetPath;
+        try {
+            decoded = decodeURIComponent(targetPath);
+        } catch (_) {
+            decoded = targetPath.replace(/%20/g, ' ');
+        }
+        if (!/\.md$/i.test(decoded)) return full;
+
+        const normalized = normalizeWikiTarget(decoded);
+        if (!normalized) return full;
+        const resolved = noteTargetMap.get(normalized);
+        if (!resolved || !resolved.id) return full;
+
+        const replacement = buildCanonicalWikilink(resolved.id, {
+            alias: String(label || '').trim(),
+            anchor: String(anchor || '').trim()
+        });
+        if (!replacement || replacement === full) return full;
+        rewrites++;
+        return replacement;
+    });
+    return { text: nextText, rewrites };
+}
+
 function applyCanonicalWikilinkRewrite(rootPath) {
     const noteTargetMap = buildImportNoteTargetMap(rootPath);
     const changedFiles = [];
@@ -132,13 +164,15 @@ function applyCanonicalWikilinkRewrite(rootPath) {
     walkVaultFiles(rootPath, (fullPath, relativePath) => {
         if (!fullPath.toLowerCase().endsWith('.md')) return;
         const raw = fs.readFileSync(fullPath, 'utf8');
-        const rewritten = rewriteFilenameStyleWikilinks(raw, noteTargetMap);
-        if (rewritten.rewrites <= 0 || rewritten.text === raw) return;
-        fs.writeFileSync(fullPath, rewritten.text, 'utf8');
-        rewritesApplied += rewritten.rewrites;
+        const rewrittenWikilinks = rewriteFilenameStyleWikilinks(raw, noteTargetMap);
+        const rewrittenMarkdownLinks = rewriteFilenameStyleMarkdownLinks(rewrittenWikilinks.text, noteTargetMap);
+        const totalRewrites = rewrittenWikilinks.rewrites + rewrittenMarkdownLinks.rewrites;
+        if (totalRewrites <= 0 || rewrittenMarkdownLinks.text === raw) return;
+        fs.writeFileSync(fullPath, rewrittenMarkdownLinks.text, 'utf8');
+        rewritesApplied += totalRewrites;
         changedFiles.push({
             relativePath: relativePath.replace(/\\/g, '/'),
-            rewrites: rewritten.rewrites
+            rewrites: totalRewrites
         });
     });
 
@@ -154,5 +188,6 @@ module.exports = {
     buildCanonicalWikilink,
     buildImportNoteTargetMap,
     rewriteFilenameStyleWikilinks,
+    rewriteFilenameStyleMarkdownLinks,
     applyCanonicalWikilinkRewrite
 };

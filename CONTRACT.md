@@ -45,7 +45,7 @@ Set the `YAMLINK_API_TOKEN` environment variable before starting `yamlink serve`
 | `GET` | `/api/nodes/:id` | `include` (csv: `outbound,inbound,intelligence,history,body,timestamps,blockBacklinks`), `minGeneration` (int, waits up to 3s), `at` (ISO timestamp, time-travel — see below) | — | `200` note fields + `_outbound`/`_inbound` (or requested `include` sections — `body` adds `_body` (raw body text), `timestamps` adds `_timestamps: { created, modified }` from real filesystem stat data, `blockBacklinks` adds `_blockBacklinks: [{ targetBlockId, targetLabel, targetKind, sourceId, sourceLabel, sourceType, kind, line }]`) | `404 NOT_FOUND` |
 | `GET` | `/api/nodes/:id?at=<ts>` | `at` required for this mode | — | `200 { id, at, exists, fields, _outbound, complete, earliestReconstructableTimestamp, reason?, deletedAt? }` | `400 INVALID_PARAM` (bad timestamp), `404 NOT_FOUND` with `{ reason: "not-yet-created"\|"already-deleted"\|"no-history" }` |
 | `PATCH` | `/api/nodes/:id` | — | `{ field, value }` or `{ fields: {...} }` | `200` updated fields + `_generation` | `400 BAD_REQUEST` (no field/fields), `400 INVALID_JSON`, `404 NOT_FOUND` |
-| `DELETE` | `/api/nodes/:id` | — | — | `200 { ok, id, _generation }` | `404 NOT_FOUND` |
+| `DELETE` | `/api/nodes/:id` | `force=true` (or `X-Yamlink-Force: true`) bypasses dependency block | — | `200 { ok, id, dependencies, _generation }` | `409 DEPENDENCIES_PRESENT` with `dependencies`, `404 NOT_FOUND` |
 | `GET` | `/api/nodes/:id/outbound` | — | — | `200 { id, edges: [{ field, to, toType, toName }] }` | `404 NOT_FOUND` |
 | `GET` | `/api/nodes/:id/inbound` | — | — | `200 { id, edges: [{ field, from, fromType, fromName }] }` | `404 NOT_FOUND` |
 | `GET` | `/api/nodes/:id/neighborhood` | `depth` (1–3, default 1) | — | `200 { id, depth, nodes, edges, truncated? }` (`truncated: true` past 200 nodes) | `404 NOT_FOUND` |
@@ -58,6 +58,7 @@ Set the `YAMLINK_API_TOKEN` environment variable before starting `yamlink serve`
 | Method | Path | Query params | Success | Errors |
 |---|---|---|---|---|
 | `GET` | `/api/graph` | `at` (ISO timestamp, optional — historical graph) | `200 { nodes, edges, stats: { nodes, edges, types, incomplete? } }` | `400 INVALID_PARAM` (bad `at`) |
+| `GET` | `/api/graph/history` | `since` (required), `until` (optional), `points` (optional, max 50), `interval` (optional: `Nm`, `Nh`, `Nd`, `Nw`) | `200 { since, until, points, snapshots: [{ timestamp, nodes, edges, stats }] }` | `400 INVALID_PARAM` |
 
 ### Query
 
@@ -81,6 +82,10 @@ Set the `YAMLINK_API_TOKEN` environment variable before starting `yamlink serve`
 | Method | Path | Query params | Success | Errors |
 |---|---|---|---|---|
 | `GET` | `/api/mutations` | `type`, `id`, `since`, `page`, `limit` (max 200) | `200 { events, meta }` | — |
+| `GET` | `/api/hooks` | — | `200 { hooks: [{ id, url, event, noteType?, createdAt, enabled }] }` | — |
+| `POST` | `/api/hooks` | — | `{ url, event, noteType? }` | `201 { ok, hook }` | `400 INVALID_PARAM` (bad URL or unknown event), `400 INVALID_JSON` |
+| `PATCH` | `/api/hooks/:id` | — | `{ enabled }` | `200 { ok, hook }` | `404 NOT_FOUND`, `400 INVALID_JSON` |
+| `DELETE` | `/api/hooks/:id` | — | — | `200 { ok, id }` | `404 NOT_FOUND` |
 | `GET` | `/api/diff` | `from` + `to` (compare two notes) **or** `since` (ISO timestamp — all field changes after it) | `200` — see below | `400 MISSING_PARAM` (neither mode satisfied), `404 NOT_FOUND` (unknown `from`/`to`) |
 | `GET` | `/api/diff?from=&to=` | | `200 { from, to, added, removed, changed }` | |
 | `GET` | `/api/diff?since=` | | `200 { since, count, changes: [{ id, type, fields }] }` | |

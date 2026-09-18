@@ -28,7 +28,7 @@ const { VaultService } = require('../core/vaultService');
 const { buildIndex } = require('../core/index');
 const nodes = require('./handlers/nodes');
 const { handleQuery } = require('./handlers/query');
-const { handleGraph } = require('./handlers/graph');
+const { handleGraph, handleGraphHistory } = require('./handlers/graph');
 const { handleTypes } = require('./handlers/types');
 const { handleHealth } = require('./handlers/health');
 const { handleTasks } = require('./handlers/tasks');
@@ -41,6 +41,8 @@ const { handleSchema } = require('./handlers/schema');
 const { handleSearch } = require('./handlers/search');
 const { handleDiff } = require('./handlers/diff');
 const { handleGlossary } = require('./handlers/glossary');
+const hooks = require('./handlers/hooks');
+const { createWebhookDispatcher } = require('../runtime/webhooks');
 
 /**
  * Declarative route table. Each entry is tried in order; the first entry whose
@@ -60,6 +62,11 @@ const { handleGlossary } = require('./handlers/glossary');
 const routeDefs = [
     { method: 'ANY', path: '/api/events', handler: (req, res, _p, _url, context) => handleEvents(req, res, context) },
 
+    { method: 'GET', path: '/api/hooks', handler: (req, res, _p, _url, context) => hooks.listHooks(req, res, context) },
+    { method: 'POST', path: '/api/hooks', handler: (req, res, _p, _url, context) => hooks.createHook(req, res, context) },
+    { method: 'DELETE', path: '/api/hooks/:id', handler: (req, res, p, _url, context) => hooks.deleteHook(req, res, p.id, context) },
+    { method: 'PATCH', path: '/api/hooks/:id', handler: (req, res, p, _url, context) => hooks.updateHook(req, res, p.id, context) },
+
     { method: 'POST', path: '/api/nodes/bulk', handler: (req, res, _p, _url, context) => nodes.bulkCreate(req, res, context) },
     { method: 'PATCH', path: '/api/nodes/bulk', handler: (req, res, _p, _url, context) => nodes.bulkUpdate(req, res, context) },
 
@@ -68,7 +75,7 @@ const routeDefs = [
 
     { method: 'GET', path: '/api/nodes/:id', handler: (req, res, p, url, context) => nodes.getNode(req, res, p.id, url, context) },
     { method: 'PATCH', path: '/api/nodes/:id', handler: (req, res, p, _url, context) => nodes.updateNode(req, res, p.id, context) },
-    { method: 'DELETE', path: '/api/nodes/:id', handler: (req, res, p, _url, context) => nodes.deleteNode(req, res, p.id, context) },
+    { method: 'DELETE', path: '/api/nodes/:id', handler: (req, res, p, url, context) => nodes.deleteNode(req, res, p.id, context, url) },
 
     { method: 'ANY', path: '/api/nodes/:id/outbound', handler: (req, res, p) => handleOutbound(req, res, p.id) },
     { method: 'ANY', path: '/api/nodes/:id/inbound', handler: (req, res, p) => handleInbound(req, res, p.id) },
@@ -82,6 +89,7 @@ const routeDefs = [
     { method: 'ANY', path: '/api/session/summary', handler: (req, res, _p, url) => handleSessionSummary(req, res, url) },
     { method: 'ANY', path: '/api/diff', handler: (req, res, _p, url) => handleDiff(req, res, url) },
     { method: 'ANY', path: '/api/query', handler: (req, res, _p, url) => handleQuery(req, res, url) },
+    { method: 'ANY', path: '/api/graph/history', handler: (req, res, _p, url) => handleGraphHistory(req, res, url) },
     { method: 'ANY', path: '/api/graph', handler: (req, res, _p, url) => handleGraph(req, res, url) },
     { method: 'ANY', path: '/api/types', handler: (req, res) => handleTypes(req, res) },
     { method: 'ANY', path: '/api/tasks', handler: (req, res, _p, url, context) => handleTasks(req, res, url, context) },
@@ -129,6 +137,7 @@ function createRouter(vaultPath, workspaceFolders, _buildIndex = buildIndex, exi
     vaultService.onRebuild((generation) => {
         eventBus.emitRebuild(generation);
     });
+    const stopWebhookDispatcher = createWebhookDispatcher({ vaultPath, vaultService });
     const context = { vaultPath, workspaceFolders, eventBus, vaultService, ready };
 
     const handleRequest = async function(req, res) {
@@ -164,6 +173,7 @@ function createRouter(vaultPath, workspaceFolders, _buildIndex = buildIndex, exi
     handleRequest.eventBus = eventBus;
     handleRequest.vaultService = vaultService;
     handleRequest.ready = ready;
+    handleRequest.stopWebhookDispatcher = stopWebhookDispatcher;
     return handleRequest;
 }
 

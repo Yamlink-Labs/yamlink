@@ -17,6 +17,7 @@ const CommandPalette = require('./components/CommandPalette');
 const QuickCapture = require('./components/QuickCapture');
 const Peek = require('./components/Peek');
 const NoteView = require('./components/NoteView');
+const LayeredContexts = require('./components/LayeredContexts');
 const Warp = require('./components/Warp');
 const SplitPane = require('./components/SplitPane');
 const { openInEditor, readNoteBody } = require('./noteDetail');
@@ -35,10 +36,10 @@ const {
     getNoteIntelligence,
     getNeighborhood,
     getDiff,
-    patchNode,
-    patchNodesBulk,
-    postNode,
-    deleteNode,
+    patchNode: rawPatchNode,
+    patchNodesBulk: rawPatchNodesBulk,
+    postNode: rawPostNode,
+    deleteNode: rawDeleteNode,
     useEventStream
 } = require('./useApi');
 const {
@@ -48,6 +49,7 @@ const {
     readLastSessionTimestamp,
     writeLastSessionTimestamp
 } = require('./storage');
+const { pushContextLayer, popContextLayer } = require('./contextStack');
 
 function humanEventLabel(type) {
     switch (String(type || '').trim()) {
@@ -303,6 +305,7 @@ function App({ ink, TextInput, host, port, initialData, vaultPath }) {
     const [paletteItems, setPaletteItems] = React.useState([]);
     const [peek, setPeek] = React.useState({ open: false, note: null, detail: null, intelligence: null, bodyLines: [], loading: false, error: '' });
     const [noteView, setNoteView] = React.useState({ open: false, noteId: '' });
+    const [contextLayers, setContextLayers] = React.useState([]);
     const [data, setData] = React.useState(() => ({
         pulse: initialData?.pulse || {},
         typesList: initialData?.typesList || [],
@@ -334,6 +337,11 @@ function App({ ink, TextInput, host, port, initialData, vaultPath }) {
         toastTimerRef.current = setTimeout(() => setToast({ msg: '', err: false }), err ? 3000 : 2500);
     }, []);
 
+    const patchNode = rawPatchNode;
+    const patchNodesBulk = rawPatchNodesBulk;
+    const postNode = rawPostNode;
+    const deleteNode = rawDeleteNode;
+
     React.useEffect(() => {
         if (!bookmarksFile || !vaultPath) return;
         bookmarksRef.current = readScopedJson(bookmarksFile, vaultPath, {});
@@ -342,9 +350,14 @@ function App({ ink, TextInput, host, port, initialData, vaultPath }) {
     const activePaneIndexRef = React.useRef(activePaneIndex);
     React.useEffect(() => { activePaneIndexRef.current = activePaneIndex; });
 
-    const navigate = React.useCallback((target, payload, paneIndex) => {
+    const navigate = React.useCallback((target, payload, paneIndex, options = {}) => {
         const idx = typeof paneIndex === 'number' ? paneIndex : activePaneIndexRef.current;
-        setPanes((current) => updatePaneStateAt(current, idx, (pane) => updatePaneRoute(pane, target, payload)));
+        setPanes((current) => {
+            const source = current[idx] || createPaneState('briefing', {});
+            const shouldLayer = options.replace !== true && String(source.screen || '') !== String(target || '');
+            if (shouldLayer) setContextLayers((layers) => pushContextLayer(layers, source));
+            return updatePaneStateAt(current, idx, (pane) => updatePaneRoute(pane, target, payload));
+        });
     }, []);
 
     const refresh = React.useCallback(async () => {
@@ -365,8 +378,10 @@ function App({ ink, TextInput, host, port, initialData, vaultPath }) {
 
     const openNoteView = React.useCallback((id) => {
         if (!id) return;
+        const source = panes[activePaneIndex] || createPaneState('briefing', {});
+        setContextLayers((layers) => pushContextLayer(layers, source));
         setNoteView({ open: true, noteId: String(id) });
-    }, []);
+    }, [activePaneIndex, panes]);
 
     const textInputScreens = new Set(['query', 'navigator', 'search']);
     const overlayActive = showHelp || showPalette || showCapture || peek.open || noteView.open || showWarp;
@@ -414,6 +429,8 @@ function App({ ink, TextInput, host, port, initialData, vaultPath }) {
 
     const openPeek = React.useCallback((id) => {
         if (!id) return;
+        const source = panes[activePaneIndex] || createPaneState('briefing', {});
+        setContextLayers((layers) => pushContextLayer(layers, source));
         setPeek({ open: true, note: { id, label: id, type: '' }, detail: null, intelligence: null, bodyLines: [], loading: true, error: '' });
         Promise.all([
             getNode({ host, port, id }),
@@ -438,7 +455,17 @@ function App({ ink, TextInput, host, port, initialData, vaultPath }) {
         }).catch((error) => {
             setPeek({ open: true, note: null, detail: null, intelligence: null, bodyLines: [], loading: false, error: error.message || String(error) });
         });
-    }, [host, port]);
+    }, [activePaneIndex, host, panes, port]);
+
+    const peelContextLayer = React.useCallback(() => {
+        setContextLayers((layers) => {
+            const result = popContextLayer(layers);
+            if (result.pane) {
+                setPanes((current) => updatePaneStateAt(current, activePaneIndexRef.current, () => result.pane));
+            }
+            return result.stack;
+        });
+    }, []);
 
     const restoreBookmark = React.useCallback((digit) => {
         const entry = bookmarksRef.current[String(digit)];
@@ -447,17 +474,17 @@ function App({ ink, TextInput, host, port, initialData, vaultPath }) {
             return;
         }
         if (entry.screen === 'query') {
-            navigate('query', { query: entry.query || '' }, activePaneIndex);
+            navigate('query', { query: entry.query || '' }, activePaneIndex, { replace: true });
         } else if (entry.screen === 'search') {
-            navigate('search', { query: entry.query || '' }, activePaneIndex);
+            navigate('search', { query: entry.query || '' }, activePaneIndex, { replace: true });
         } else if (entry.screen === 'navigator') {
-            navigate('navigator', { query: entry.query || '', noteId: entry.noteId || '' }, activePaneIndex);
+            navigate('navigator', { query: entry.query || '', noteId: entry.noteId || '' }, activePaneIndex, { replace: true });
         } else if (entry.screen === 'graph') {
-            navigate('graph', { noteId: entry.noteId || '' }, activePaneIndex);
+            navigate('graph', { noteId: entry.noteId || '' }, activePaneIndex, { replace: true });
         } else if (entry.screen === 'explorer') {
-            navigate('explorer', { noteId: entry.noteId || '', filterText: entry.query || '', typeFilter: entry.typeFilter || 'all' }, activePaneIndex);
+            navigate('explorer', { noteId: entry.noteId || '', filterText: entry.query || '', typeFilter: entry.typeFilter || 'all' }, activePaneIndex, { replace: true });
         } else {
-            navigate(entry.screen || 'briefing', undefined, activePaneIndex);
+            navigate(entry.screen || 'briefing', undefined, activePaneIndex, { replace: true });
         }
         showToast(`→ bookmark ${digit}`);
     }, [activePaneIndex, navigate, showToast]);
@@ -533,16 +560,16 @@ function App({ ink, TextInput, host, port, initialData, vaultPath }) {
             return;
         }
         if (!textInputScreens.has(currentScreen)) {
-            if (input === '1') { navigate('briefing', undefined, activePaneIndex); return; }
-            if (input === '2') { navigate('query', undefined, activePaneIndex); return; }
-            if (input === '3') { navigate('navigator', undefined, activePaneIndex); return; }
-            if (input === '4') { navigate('explorer', undefined, activePaneIndex); return; }
-            if (input === '5') { navigate('health', undefined, activePaneIndex); return; }
-            if (input === '6') { navigate('search', undefined, activePaneIndex); return; }
-            if (input === '7') { navigate('graph', undefined, activePaneIndex); return; }
-            if (input === '8') { navigate('diff', undefined, activePaneIndex); return; }
-            if (input === '9') { navigate('radar', undefined, activePaneIndex); return; }
-            if (input === '0') { navigate('trends', undefined, activePaneIndex); return; }
+            if (input === '1') { navigate('briefing', undefined, activePaneIndex, { replace: true }); return; }
+            if (input === '2') { navigate('query', undefined, activePaneIndex, { replace: true }); return; }
+            if (input === '3') { navigate('navigator', undefined, activePaneIndex, { replace: true }); return; }
+            if (input === '4') { navigate('explorer', undefined, activePaneIndex, { replace: true }); return; }
+            if (input === '5') { navigate('health', undefined, activePaneIndex, { replace: true }); return; }
+            if (input === '6') { navigate('search', undefined, activePaneIndex, { replace: true }); return; }
+            if (input === '7') { navigate('graph', undefined, activePaneIndex, { replace: true }); return; }
+            if (input === '8') { navigate('diff', undefined, activePaneIndex, { replace: true }); return; }
+            if (input === '9') { navigate('radar', undefined, activePaneIndex, { replace: true }); return; }
+            if (input === '0') { navigate('trends', undefined, activePaneIndex, { replace: true }); return; }
         }
         // Any unhandled printable char on non-text screens triggers warp navigation.
         // Ink's useInput has no stopPropagation — every mounted screen's own
@@ -551,7 +578,7 @@ function App({ ink, TextInput, host, port, initialData, vaultPath }) {
         // here or Warp always wins (this is exactly why `navigator` is a
         // textInputScreens member: its own 'v'/'o'/'g'/'p' keys are only safe
         // because the whole catch-all is skipped for that screen).
-        const screenReservedKey = currentScreen === 'graph' && input === 'v';
+        const screenReservedKey = (currentScreen === 'graph' && input === 'v');
         if (!textInputScreens.has(currentScreen) && !screenReservedKey && input && input.charCodeAt(0) >= 32) {
             setWarpQuery(input);
             setShowWarp(true);
@@ -602,7 +629,8 @@ function App({ ink, TextInput, host, port, initialData, vaultPath }) {
         const paneScreen = pane?.screen || 'briefing';
         const paneRoute = pane?.routeState || {};
         const paneDisabled = overlayActive || (splitMode && paneIndex !== activePaneIndex);
-        const onPaneNavigate = (target, payload) => navigate(target, payload, paneIndex);
+        const screenDisabled = paneDisabled;
+        const onPaneNavigate = (target, payload, options) => navigate(target, payload, paneIndex, options);
         const common = {
             ink,
             host,
@@ -610,7 +638,9 @@ function App({ ink, TextInput, host, port, initialData, vaultPath }) {
             onNavigate: onPaneNavigate,
             onQuit: exit,
             width: splitMode ? paneWidth : undefined,
-            splitMode
+            splitMode,
+            hasLayerBack: contextLayers.length > 0,
+            onLayerBack: peelContextLayer
         };
 
         if (paneScreen === 'query') {
@@ -621,7 +651,7 @@ function App({ ink, TextInput, host, port, initialData, vaultPath }) {
                 initialQuery: paneRoute.query?.query || '',
                 onStateChange: (state) => handlePaneStateChange(paneIndex, 'query', state),
                 onNoteView: openNoteView,
-                disabled: paneDisabled
+                disabled: screenDisabled
             });
         }
         if (paneScreen === 'navigator') {
@@ -635,7 +665,7 @@ function App({ ink, TextInput, host, port, initialData, vaultPath }) {
                 onStateChange: (state) => handlePaneStateChange(paneIndex, 'navigator', state),
                 onPeek: openPeek,
                 onNoteView: openNoteView,
-                disabled: paneDisabled
+                disabled: screenDisabled
             });
         }
         if (paneScreen === 'explorer') {
@@ -658,7 +688,7 @@ function App({ ink, TextInput, host, port, initialData, vaultPath }) {
                 onStateChange: (state) => handlePaneStateChange(paneIndex, 'explorer', state),
                 onPeek: openPeek,
                 onNoteView: openNoteView,
-                disabled: paneDisabled
+                disabled: screenDisabled
             });
         }
         if (paneScreen === 'health') {
@@ -666,7 +696,7 @@ function App({ ink, TextInput, host, port, initialData, vaultPath }) {
                 ...common,
                 getHealth,
                 getTypes,
-                disabled: paneDisabled
+                disabled: screenDisabled
             });
         }
         if (paneScreen === 'search') {
@@ -676,7 +706,7 @@ function App({ ink, TextInput, host, port, initialData, vaultPath }) {
                 initialQuery: paneRoute.search?.query || '',
                 onStateChange: (state) => handlePaneStateChange(paneIndex, 'search', state),
                 onPeek: openPeek,
-                disabled: paneDisabled
+                disabled: screenDisabled
             });
         }
         if (paneScreen === 'graph') {
@@ -695,7 +725,7 @@ function App({ ink, TextInput, host, port, initialData, vaultPath }) {
                 ...common,
                 getDiff,
                 lastSessionTs,
-                disabled: paneDisabled
+                disabled: screenDisabled
             });
         }
         if (paneScreen === 'radar') {
@@ -703,14 +733,14 @@ function App({ ink, TextInput, host, port, initialData, vaultPath }) {
                 ...common,
                 centerId: paneRoute.radar?.noteId || '',
                 getNeighborhood,
-                disabled: paneDisabled
+                disabled: screenDisabled
             });
         }
         if (paneScreen === 'trends') {
             return React.createElement(Trends, {
                 ...common,
                 getTrends,
-                disabled: paneDisabled
+                disabled: screenDisabled
             });
         }
         return React.createElement(Briefing, {
@@ -719,7 +749,7 @@ function App({ ink, TextInput, host, port, initialData, vaultPath }) {
             connState,
             dataError,
             lastSessionTs,
-            disabled: paneDisabled
+            disabled: screenDisabled
         });
     }
 
@@ -778,7 +808,10 @@ function App({ ink, TextInput, host, port, initialData, vaultPath }) {
                 port,
                 getNode,
                 getNoteIntelligence,
-                onClose: () => setNoteView({ open: false, noteId: '' })
+                onClose: () => {
+                    setNoteView({ open: false, noteId: '' });
+                    peelContextLayer();
+                }
             })
             : showWarp
                 ? React.createElement(Warp, {
@@ -802,7 +835,10 @@ function App({ ink, TextInput, host, port, initialData, vaultPath }) {
                 bodyLines: peek.bodyLines,
                 loading: peek.loading,
                 error: peek.error,
-                onClose: () => setPeek({ open: false, note: null, detail: null, intelligence: null, bodyLines: [], loading: false, error: '' }),
+                onClose: () => {
+                    setPeek({ open: false, note: null, detail: null, intelligence: null, bodyLines: [], loading: false, error: '' });
+                    peelContextLayer();
+                },
                 onOpen: () => openInEditor(peek.detail?._filePath || ''),
                 onEdit: () => {
                     setPeek({ open: false, note: null, detail: null, intelligence: null, bodyLines: [], loading: false, error: '' });
@@ -810,6 +846,7 @@ function App({ ink, TextInput, host, port, initialData, vaultPath }) {
                 }
             })
             : null,
+        React.createElement(LayeredContexts, { ink, layers: contextLayers }),
         showHelp
             ? React.createElement(HelpOverlay, {
                 ink,
@@ -843,7 +880,7 @@ function App({ ink, TextInput, host, port, initialData, vaultPath }) {
                     { key: '[D]', action: 'delete note (Explorer)' },
                     { key: '[g]', action: 'graph this note (Explorer)' },
                     { key: '[r]', action: 'radar this note (Explorer)' },
-                    { key: '[Esc]', action: 'back / cancel' },
+                    { key: '[Esc]', action: 'back / cancel / peel glass layer' },
                     { key: '[?]', action: 'close help' },
                     { key: '[any letter]', action: 'warp — type to jump anywhere' },
                     { key: '[Ctrl+C]', action: 'quit' }

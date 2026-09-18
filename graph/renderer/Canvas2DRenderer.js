@@ -102,6 +102,10 @@ export class Canvas2DRenderer {
     this._selectedId  = null;
     this._drag        = null;  // camera pan drag
     this._nodeDrag    = null;  // node drag { id }
+    // Off by default: hovering/dragging a node dims everything not connected
+    // to it. A click-to-select focus (_selectedId) always dims regardless of
+    // this flag — that's a deliberate action, not incidental hover/drag.
+    this._hoverFocusEnabled = false;
     this._pendingNodeDrag = null;
     this._pointerDown = null;
     this._panMomentum = null;
@@ -220,6 +224,19 @@ export class Canvas2DRenderer {
 
   getLabelMode() {
     return this._labelMode;
+  }
+
+  /**
+   * Off by default. When enabled, hovering or dragging a node dims everything
+   * not connected to it (the pre-existing focus behavior). When disabled,
+   * only an explicit click-to-select still dims the rest — hover and drag no
+   * longer do, so nodes can be dragged around freely without the rest of the
+   * graph going dark.
+   * @param {boolean} enabled
+   */
+  setHoverFocus(enabled) {
+    this._hoverFocusEnabled = !!enabled;
+    this._dirty = true;
   }
 
   /**
@@ -344,7 +361,10 @@ export class Canvas2DRenderer {
     ctx.translate(cx, cy);
     ctx.scale(zoom, zoom);
 
-    const focusId  = (this._nodeDrag && this._nodeDrag.id) || this._hoveredId || this._selectedId;
+    const hoverDragId = this._hoverFocusEnabled
+      ? ((this._nodeDrag && this._nodeDrag.id) || this._hoveredId)
+      : null;
+    const focusId  = hoverDragId || this._selectedId;
     const hasFocus = !!focusId;
     const hasSearch = this._searchQuery.length > 0;
 
@@ -892,6 +912,12 @@ export class Canvas2DRenderer {
         this._opts.onNodeDragEnd?.(dragId, w.x, w.y);
         this._nodeDrag    = null;
         this._pendingNodeDrag = null;
+        // A drag writes directly into this._positions without going through
+        // updatePositions(), so the spatial hit-test grid goes stale the moment
+        // a node moves far enough to cross into a different grid cell — the next
+        // click on it silently misses forever, since _hitTest only rebuilds this
+        // index from load()/updatePositions(), never after a manual drag.
+        this._rebuildSpatialIndex();
         this._finishPointerInteraction(e.pointerId);
         if (isClick) {
           this._selectedId = dragId === this._selectedId ? null : dragId;

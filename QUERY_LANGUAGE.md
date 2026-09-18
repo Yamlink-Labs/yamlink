@@ -281,6 +281,68 @@ Only for incoming queries.
 via account
 ```
 
+### `linked_to` / `linked_from` / `within`
+
+Graph traversal — filters to notes reachable through real outbound edges, not just a field match.
+
+```md
+!view * linked_to [[johnny-rico]]
+```
+
+Every note with an outbound edge to `johnny-rico` — the reverse of `linked_from`.
+
+```md
+!view * linked_from [[mission-klendathu]]
+```
+
+Every note `mission-klendathu` itself points to.
+
+Add `within N` to either clause to reach further than one hop — the union of everything reachable across 1 to N hops, not just exactly hop N:
+
+```md
+!view * linked_from [[project-x]] within 2
+```
+
+Notes `project-x` points to directly, and everything those notes point to. `N` is capped at 5; omitting `within` is a single hop (the default), identical to the plain form above. Combines with `where` and a type filter like any other condition:
+
+```md
+!view unit linked_from [[mission-klendathu]] within 2
+where status = active
+```
+
+`linked_to` and `linked_from` can appear together in one query — they intersect (AND), not union.
+
+Notes:
+- Resolved against the plain `[[id]]`, no alias resolution yet
+- A cycle in the graph is handled safely — traversal tracks visited ids, never loops or double-counts
+- An out-of-range `within` value (outside 1–5) degrades to a single hop with a warning, not an error
+
+### `as of`
+
+Temporal reconstruction — runs the whole query against each note's frontmatter as it stood on a past date, not today.
+
+```md
+!view mission as of 2297-08-10
+```
+
+```md
+!view mission as of 2297-08-10
+where outcome = ongoing
+```
+
+Accepts the same date vocabulary `where` clauses do — a literal date or a function call:
+
+```md
+!view mission as of days-ago(30)
+```
+
+Notes:
+- Reconstructs frontmatter fields only. Virtual/computed fields (`file.created`, `_inbound_count`, `_hub_score`, etc.) still reflect current values, not historical ones
+- Does not combine with `!view incoming` — that form takes a separate code path with its own early return and never reaches `as of` at all
+- **Combines with `linked_to`/`linked_from`, but not into a true point-in-time traversal — verify this is what you want before relying on it.** The graph edges `linked_to`/`linked_from` walk are always today's edges (`getBacklinks()`/`getEdges()` read the live graph, not a historical one); `as of` only reconstructs the *field values* shown for whichever notes that live-edge walk already selected. In other words: "notes that currently have an edge to X, with their fields as they stood on the given date" — not "notes that had an edge to X as of that date." No warning is currently shown when you combine them, so the distinction is easy to miss.
+- An invalid date degrades to a warning and current-state results, not an error
+- Built on the same reconstruction engine `yamlink cat --at`/`yamlink graph --at`/`GET /api/graph?at=` already use — this is the same historical state, surfaced inside the query language itself
+
 ---
 
 ## Presentation layouts (table / matrix / bar / scatter)
@@ -324,6 +386,8 @@ Switch layouts from the **Layout** toolbar group in the View Panel, or via `Yaml
   - `days-ago(<n>)`
   - `add-days(<n>)`
 - date functions resolve to real dates before filtering, but Yamlink preserves the function syntax when rebuilding the query text
+- `linked_to [[id]]` / `linked_from [[id]]` filter to notes reachable through real graph edges; add `within N` (capped at 5) to reach more than one hop
+- `as of <date>` reconstructs the query's results as of a past date (frontmatter fields only, not computed/virtual fields)
 
 ---
 

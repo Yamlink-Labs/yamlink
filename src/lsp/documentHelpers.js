@@ -82,6 +82,28 @@ function insertFieldsBeforeClosing(uri, content, fields) {
     };
 }
 
+// Sibling to insertFieldsBeforeClosing above, for callers that already have
+// a fully-formed `key: value\n` (or multi-line) string to insert verbatim —
+// the adaptive-frontmatter suggestion engine's insertText values (e.g.
+// "commander: [[\n" for a relation field awaiting a target) aren't a plain
+// key/value pair insertFieldsBeforeClosing's field-list shape can represent.
+function insertRawTextBeforeClosing(uri, content, rawText) {
+    const frontmatter = findFrontmatter(content);
+    if (!frontmatter || !rawText) return null;
+
+    return {
+        changes: {
+            [uri]: [{
+                range: {
+                    start: { line: frontmatter.closingLineIndex, character: 0 },
+                    end: { line: frontmatter.closingLineIndex, character: 0 }
+                },
+                newText: rawText
+            }]
+        }
+    };
+}
+
 function replaceFrontmatterFieldValue(uri, content, key, newValue) {
     const text = String(content || '');
     const lines = splitLines(text);
@@ -451,6 +473,7 @@ module.exports = {
     findFrontmatter,
     buildFullDocumentEdit,
     insertFieldsBeforeClosing,
+    insertRawTextBeforeClosing,
     replaceFrontmatterFieldValue,
     replaceFrontmatterFieldValues,
     buildCreateNoteEdit,

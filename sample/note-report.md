@@ -2,6 +2,7 @@
 id: note-report
 type: dossier
 title: Note Report Test — Johnny Rico Profile
+definition: Guided demo note for testing Note Report, dossier views, tasks, and glossary entries.
 subject: [[johnny-rico]]
 mission: [[mission-klendathu]]
 status: drafting
@@ -47,6 +48,10 @@ This note is missing some fields that other dossier notes typically have. Open N
 ## Test: Unlinked References
 
 Open `roughnecks.md` and find the phrase "note-report" if it appears there in plain text (without a wikilink). That plain mention will appear in this note's Links tab under "Unlinked mentions".
+
+## Test: Vault Glossary
+
+Run `Yamlink: Open Vault Glossary`. In settings, set `yamlink.glossaryTypes` to `["dossier"]`. The glossary will use each dossier's `title` as the term and `definition` as the plain-English explanation.
 
 ---
 

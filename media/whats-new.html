@@ -32,7 +32,7 @@ body{font-family:var(--mono);background:var(--bg0);color:var(--tx0);display:grid
 .tw{font-size:11px;font-weight:600;letter-spacing:.1em;color:var(--tx0);text-transform:uppercase;margin-left:9px;}
 .ts{color:var(--tx3);margin:0 8px;}
 .tlab{font-size:9.5px;letter-spacing:.14em;color:var(--tx2);text-transform:uppercase;}
-.tv{font-size:11px;color:var(--orange);letter-spacing:.05em;font-weight:600;margin-left:14px;}
+.tv{font-size:11px;color:var(--acc);letter-spacing:.05em;font-weight:600;margin-left:14px;}
 .theme-sw{display:flex;align-items:center;gap:7px;}
 .tlb{font-size:9px;letter-spacing:.16em;color:var(--tx3);text-transform:uppercase;margin-right:3px;}
 .dot{width:10px;height:10px;border-radius:50%;cursor:pointer;border:1.5px solid transparent;transition:transform 130ms,border-color 130ms;}
@@ -47,13 +47,13 @@ body{font-family:var(--mono);background:var(--bg0);color:var(--tx0);display:grid
 .ndiv{height:1px;background:var(--div);margin:4px 14px 8px;}
 .sec-group{flex:1;padding:16px 0 0;overflow-y:auto;}
 .ni{display:flex;align-items:center;gap:9px;padding:7px 14px;cursor:pointer;border-left:2px solid transparent;user-select:none;position:relative;overflow:hidden;}
-.ni:hover{background:var(--bg2);}.ni.on{border-left-color:var(--orange);background:var(--bg2);}
+.ni:hover{background:var(--bg2);}.ni.on{border-left-color:var(--acc);background:var(--bg2);}
 .ni{transition:background 160ms ease,color 160ms ease;}
 .nn{font-size:9px;color:var(--tx3);letter-spacing:.04em;width:16px;flex-shrink:0;}
-.ni.on .nn{color:var(--orange);}
+.ni.on .nn{color:var(--acc);}
 .nt{font-size:10px;letter-spacing:.1em;color:var(--tx2);text-transform:uppercase;}
 .ni.on .nt{color:var(--tx0);}
-.nprog{position:absolute;bottom:0;left:2px;right:0;height:1px;background:var(--orange);transform-origin:left;transform:scaleX(0);transition:transform 80ms linear;}
+.nprog{position:absolute;bottom:0;left:2px;right:0;height:1px;background:var(--acc);transform-origin:left;transform:scaleX(0);transition:transform 80ms linear;}
 
 /* Releases drawer */
 .rel-drawer{border-top:1px solid var(--div);flex-shrink:0;}
@@ -66,14 +66,14 @@ body{font-family:var(--mono);background:var(--bg0);color:var(--tx0);display:grid
 .rel-body.open{display:block;}
 .vi{display:flex;align-items:center;justify-content:space-between;padding:6px 14px;cursor:pointer;border-left:2px solid transparent;user-select:none;}
 .vi:hover{background:var(--bg2);}
-.vi.on{border-left-color:var(--orange);}
+.vi.on{border-left-color:var(--acc);}
 .vi-ver{font-size:10px;color:var(--tx2);letter-spacing:.06em;}
-.vi.on .vi-ver{color:var(--orange);}
+.vi.on .vi-ver{color:var(--acc);}
 .vi-tag{font-size:8px;letter-spacing:.08em;color:var(--tx3);text-transform:uppercase;}
 
 /* ── Reading progress ── */
 #readprog{position:sticky;top:0;height:2px;background:var(--div);z-index:10;flex-shrink:0;}
-#readprog-fill{height:100%;background:var(--orange);width:0%;transition:width 80ms linear;}
+#readprog-fill{height:100%;background:var(--acc);width:0%;transition:width 80ms linear;}
 
 /* ── Main ── */
 #main{overflow-y:auto;display:flex;flex-direction:column;min-height:0;}
@@ -82,7 +82,7 @@ body{font-family:var(--mono);background:var(--bg0);color:var(--tx0);display:grid
 .sec.on{display:block;}.sec.visible{opacity:1;transform:translateY(0);}
 
 /* ── Typography ── */
-.eye{font-size:9.5px;letter-spacing:.2em;color:var(--orange);text-transform:uppercase;margin-bottom:16px;}
+.eye{font-size:9.5px;letter-spacing:.2em;color:var(--acc);text-transform:uppercase;margin-bottom:16px;}
 h1{font-family:var(--sans);font-size:30px;font-weight:600;line-height:1.2;color:var(--tx0);letter-spacing:-.025em;text-wrap:balance;max-width:520px;}
 h2{font-family:var(--sans);font-size:20px;font-weight:600;line-height:1.3;color:var(--tx0);letter-spacing:-.02em;}
 h3{font-family:var(--sans);font-size:14px;font-weight:600;color:var(--tx0);letter-spacing:-.01em;margin-bottom:8px;}
@@ -124,7 +124,7 @@ h3{font-family:var(--sans);font-size:14px;font-weight:600;color:var(--tx0);lette
 .ri:first-child{border-top:1px solid var(--div);}
 .ri-n{font-family:var(--sans);font-size:13px;color:var(--tx0);}
 .ri-a{font-size:10px;color:var(--tx3);}
-.ri:hover .ri-n{color:var(--orange);}.ri:hover .ri-a{color:var(--orange);}
+.ri:hover .ri-n{color:var(--acc);}.ri:hover .ri-a{color:var(--acc);}
 .ref-meta{font-size:10px;color:var(--tx3);letter-spacing:.08em;margin-top:28px;}
 .next-card{margin-top:36px;border:1px solid var(--div);padding:20px 24px;background:var(--bg1);position:relative;overflow:hidden;}
 .next-card::before{content:'';position:absolute;top:0;left:0;right:0;height:1px;background:linear-gradient(90deg,var(--acc) 0%,transparent 60%);}
@@ -144,9 +144,38 @@ ic.am{color:var(--amber);}ic.or{color:var(--orange);}
 .pr-items{list-style:none;margin-top:20px;}
 .pr-item{display:flex;align-items:baseline;gap:10px;padding:9px 0;border-bottom:1px solid var(--div);}
 .pr-item:first-child{border-top:1px solid var(--div);}
-.pr-bullet{width:4px;height:4px;border-radius:50%;background:var(--orange);flex-shrink:0;margin-top:6px;}
+.pr-bullet{width:4px;height:4px;border-radius:50%;background:var(--acc);flex-shrink:0;margin-top:6px;}
 .pr-text{font-family:var(--sans);font-size:13px;color:var(--tx1);line-height:1.6;}
+.pr-text b{color:var(--tx0);font-weight:600;}
 .pr-text ic{font-size:11px;}
+
+/* ── Highlights: mosaic ── */
+.mosaic{display:grid;grid-template-columns:repeat(4,1fr);grid-auto-rows:minmax(84px,auto);gap:10px;margin-top:28px;}
+.tile{border:1px solid var(--div);background:var(--bg1);padding:16px 18px;display:flex;flex-direction:column;overflow:hidden;}
+.tile-lg{grid-column:span 2;grid-row:span 2;padding:24px 26px;justify-content:center;position:relative;}
+.tile-md{grid-column:span 2;grid-row:span 1;justify-content:center;position:relative;}
+.tile-toggle{position:absolute;top:14px;right:14px;width:22px;height:22px;display:flex;align-items:center;justify-content:center;border:1px solid var(--div2);color:var(--tx2);font-family:var(--mono);font-size:13px;line-height:1;cursor:pointer;user-select:none;background:var(--bg2);transition:background 120ms ease,color 120ms ease;}
+.tile-toggle:hover{background:var(--bg3);color:var(--tx0);}
+.tile.expandable .tile-desc{max-height:0;opacity:0;overflow:hidden;margin-top:0;transition:max-height 220ms ease,opacity 160ms ease,margin-top 220ms ease;}
+.tile.expandable.expanded .tile-desc{max-height:300px;opacity:1;margin-top:8px;}
+.tile-sm{grid-column:span 1;grid-row:span 1;justify-content:center;}
+.tile-warn{border-left:2px solid var(--orange);}
+.tile-num{font-family:var(--sans);font-weight:700;letter-spacing:-.03em;line-height:1;color:var(--acc);font-variant-numeric:tabular-nums;margin-bottom:10px;}
+.tile-lg .tile-num{font-size:42px;}
+.tile-warn .tile-num{color:var(--orange);}
+.tile-tag{font-family:var(--mono);font-size:8px;letter-spacing:.1em;color:var(--tx3);text-transform:uppercase;margin-bottom:8px;}
+.tile.expandable .tile-tag,.tile.expandable .tile-name{padding-right:30px;}
+.tile-name{font-family:var(--sans);font-weight:600;color:var(--tx0);}
+.tile-lg .tile-name{font-size:18px;letter-spacing:-.01em;margin-bottom:8px;}
+.tile-md .tile-name{font-size:14.5px;margin-bottom:6px;}
+.tile-sm .tile-name{font-size:12.5px;margin-bottom:4px;}
+.tile-desc{font-family:var(--sans);color:var(--tx2);line-height:1.55;}
+.tile-lg .tile-desc{font-size:12.5px;}
+.tile-md .tile-desc{font-size:11.5px;}
+.tile-sm .tile-desc{font-size:10.5px;}
+.tile ic{font-size:10px;}
+.hl-tally{margin-top:24px;padding-top:16px;border-top:1px solid var(--div);font-size:11px;color:var(--tx2);letter-spacing:.02em;}
+.hl-tally b{color:var(--tx0);font-weight:600;}
 
 /* ── Bottom bar ── */
 #btm{background:var(--bg1);border-top:1px solid var(--div);display:flex;align-items:center;padding:0 16px;gap:16px;}
@@ -159,7 +188,7 @@ ic.am{color:var(--amber);}ic.or{color:var(--orange);}
 #shortcut-overlay{display:none;position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:100;align-items:center;justify-content:center;}
 #shortcut-overlay.open{display:flex;}
 .overlay-panel{background:var(--bg1);border:1px solid var(--div2);padding:28px 32px;min-width:320px;}
-.overlay-title{font-size:9.5px;letter-spacing:.2em;color:var(--orange);text-transform:uppercase;margin-bottom:20px;}
+.overlay-title{font-size:9.5px;letter-spacing:.2em;color:var(--acc);text-transform:uppercase;margin-bottom:20px;}
 .sc-row{display:flex;align-items:center;justify-content:space-between;padding:7px 0;border-bottom:1px solid var(--div);}
 .sc-row:last-child{border-bottom:none;}
 .sc-desc{font-family:var(--sans);font-size:12px;color:var(--tx1);}
@@ -170,19 +199,19 @@ ic.am{color:var(--amber);}ic.or{color:var(--orange);}
 /* ── Transitions ── */
 body,#topbar,#nav,#btm,#main,.vi,.badge,.ri,.dot,.next-card,.overlay-panel{transition:background 160ms ease,border-color 160ms ease,color 160ms ease;}
 ::-webkit-scrollbar{width:5px;}::-webkit-scrollbar-track{background:transparent;}::-webkit-scrollbar-thumb{background:var(--div2);}
-@media(prefers-reduced-motion:reduce){.logo-wrap svg line,.logo-wrap svg circle,.sec{animation:none;transition:none;}}
+@media(prefers-reduced-motion:reduce){.logo-wrap svg line,.logo-wrap svg circle,.sec,.tile.expandable .tile-desc{animation:none;transition:none;}}
 </style>
 </head>
 <body>
 
 <header id="topbar">
   <div class="tl">
-    <svg xmlns="http://www.w3.org/2000/svg" width="15" height="15" viewBox="0 0 32 32" fill="none" stroke="var(--orange)" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+    <svg xmlns="http://www.w3.org/2000/svg" width="15" height="15" viewBox="0 0 32 32" fill="none" stroke="var(--acc)" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
       <circle cx="18" cy="7" r="4"/><circle cx="6" cy="22" r="4"/><circle cx="26" cy="26" r="4"/>
       <line x1="15.5" y1="10.1" x2="8.5" y2="18.9"/><line x1="9.9" y1="22.8" x2="22.1" y2="25.2"/><line x1="24.4" y1="22.3" x2="19.6" y2="10.7"/>
     </svg>
     <span class="tw">yamlink</span><span class="ts">/</span><span class="tlab">Release Briefing</span>
-    <span class="tv">0.7.9</span>
+    <span class="tv">0.8.0</span>
   </div>
   <div class="theme-sw">
     <span class="tlb">Theme</span>
@@ -195,7 +224,7 @@ body,#topbar,#nav,#btm,#main,.vi,.badge,.ri,.dot,.next-card,.overlay-panel{trans
   <nav id="nav">
     <div class="sec-group">
       <div class="ni on" data-i="0"><div class="nprog"></div><span class="nn">01</span><span class="nt">Overview</span></div>
-      <div class="ni"    data-i="1"><div class="nprog"></div><span class="nn">02</span><span class="nt">The Fix</span></div>
+      <div class="ni"    data-i="1"><div class="nprog"></div><span class="nn">02</span><span class="nt">Highlights</span></div>
       <div class="ni"    data-i="2"><div class="nprog"></div><span class="nn">03</span><span class="nt">Story</span></div>
       <div class="ni"    data-i="3"><div class="nprog"></div><span class="nn">04</span><span class="nt">Insights</span></div>
       <div class="ndiv" style="margin-top:8px"></div>
@@ -209,10 +238,10 @@ body,#topbar,#nav,#btm,#main,.vi,.badge,.ri,.dot,.next-card,.overlay-panel{trans
       <div class="rel-body" id="rel-body">
         <div class="vi" style="opacity:.45"><span class="vi-ver">0.7.5</span><span class="vi-tag">API</span></div>
         <div class="vi" style="opacity:.45"><span class="vi-ver">0.7.6</span><span class="vi-tag">Hotfix</span></div>
-        <div class="vi"><span class="vi-ver">0.7.7</span><span class="vi-tag">Publishing</span></div>
-        <div class="vi"><span class="vi-ver">0.7.8</span><span class="vi-tag">Hotfix</span></div>
-        <div class="vi on" data-current><span class="vi-ver">0.7.9</span><span class="vi-tag" style="color:var(--orange)">Hotfix</span></div>
-        <div class="vi" style="opacity:.4"><span class="vi-ver">0.8.0</span><span class="vi-tag" style="color:var(--acc)">Soon</span></div>
+        <div class="vi" style="opacity:.45"><span class="vi-ver">0.7.7</span><span class="vi-tag">Publishing</span></div>
+        <div class="vi" style="opacity:.45"><span class="vi-ver">0.7.8</span><span class="vi-tag">Hotfix</span></div>
+        <div class="vi"><span class="vi-ver">0.7.9</span><span class="vi-tag">Hotfix</span></div>
+        <div class="vi on" data-current><span class="vi-ver">0.8.0</span><span class="vi-tag" style="color:var(--acc)">Engine</span></div>
       </div>
     </div>
   </nav>
@@ -226,7 +255,7 @@ body,#topbar,#nav,#btm,#main,.vi,.badge,.ri,.dot,.next-card,.overlay-panel{trans
         <section class="sec on" id="s-overview">
           <div class="ov-logo">
             <div class="logo-wrap">
-              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" fill="none" stroke="#E67D61" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" fill="none" stroke="var(--acc)" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
                 <line class="l1" x1="15.5" y1="10.1" x2="8.5" y2="18.9"/>
                 <line class="l2" x1="9.9" y1="22.8" x2="22.1" y2="25.2"/>
                 <line class="l3" x1="24.4" y1="22.3" x2="19.6" y2="10.7"/>
@@ -236,76 +265,149 @@ body,#topbar,#nav,#btm,#main,.vi,.badge,.ri,.dot,.next-card,.overlay-panel{trans
               </svg>
             </div>
             <div>
-              <div class="eye" style="margin-bottom:8px">0.7.9 · Hotfix</div>
-              <h1>The build cache was always wrong.</h1>
+              <div class="eye" style="margin-bottom:8px">0.8.0 · Engine</div>
+              <h1>One change, everywhere it should apply.</h1>
             </div>
           </div>
-          <p class="prose">After the first build, <ic>yamlink publish</ic> stopped detecting changes. Edits, additions, and deletions were all silently ignored — your published output fell behind your vault with no error or warning.</p>
-          <p class="prose">Fixed. If you ran <ic>yamlink publish</ic> more than once since 0.7.7, run <ic class="am">--force</ic> once after updating to get a clean rebuild.</p>
+          <p class="prose">0.8.0 is the release where "engine, not just an extension" stopped being a slogan and started being true in the code. A field change across many notes now works identically from the CLI, the API, VS Code, and Conduit — one shared module, not four reimplementations. The query language learned to walk the graph and look into the past. Automation survives closing the terminal. And the vault started noticing its own shape and its own habits, not just yours.</p>
+          <p class="prose">Twenty-two real, shipped changes this cycle, every one of them below — no filler, and nothing held back for its own separate showcase.</p>
         </section>
 
-        <!-- 02 The Fix -->
-        <section class="sec" id="s-thefix">
-          <div class="eye">What changed</div>
-          <h2>The cache compared a constant to itself.</h2>
-          <p class="prose mt16"><ic>yamlink publish</ic> runs as a fresh process each time. The vault's generation counter always starts at <ic class="or">0</ic>. The cache check asked: <ic class="or">currentGeneration === lastGeneration</ic> — which was always <ic class="or">0 === 0</ic>. Always true. Every note permanently "unchanged."</p>
+        <!-- 02 Highlights -->
+        <section class="sec" id="s-highlights">
+          <div class="eye">What shipped</div>
+          <h2>All twenty-two, not a curated highlight reel.</h2>
 
-          <div class="fix-cols">
-            <div class="fix-col">
-              <div class="fix-label before">Before 0.7.9</div>
-              <div class="terminal"><code><span class="t-prompt">$</span> <span class="t-cmd">yamlink publish</span> <span class="t-flag">--out ./site</span>
-
-<span class="t-ok">✓ 38 notes built</span>
-
-<span class="t-comment"># You edit three notes, add one, delete one...</span>
-
-<span class="t-prompt">$</span> <span class="t-cmd">yamlink publish</span> <span class="t-flag">--out ./site</span>
-
-<span class="t-bad">✗ 0 changed · 38 cached</span>
-<span class="t-dim">  edits not detected — output is stale</span></code></div>
-              <div class="fix-note">The deleted note stays in your output. The new note never appears. The edited notes serve stale content. No warning, no error.</div>
+          <div class="mosaic">
+            <div class="tile tile-lg expandable">
+              <div class="tile-toggle" role="button" aria-label="Show details" tabindex="0">+</div>
+              <div class="tile-num">5</div>
+              <div class="tile-tag">query &amp; automation</div>
+              <div class="tile-name">VQL v1</div>
+              <div class="tile-desc">Hops deep, cycle-safe: <ic>linked_to</ic>/<ic>linked_from ... within N</ic> real graph traversal inside <ic>!view</ic>. <ic>as of &lt;date&gt;</ic> reconstructs a query's results as they stood on a past date, on the same Time Engine already powering <ic>cat --at</ic>/<ic>graph --at</ic>.</div>
             </div>
-
-            <div class="fix-col">
-              <div class="fix-label after">After 0.7.9</div>
-              <div class="terminal"><code><span class="t-prompt">$</span> <span class="t-cmd">yamlink publish</span> <span class="t-flag">--out ./site</span>
-
-<span class="t-ok">✓ 38 notes built</span>
-
-<span class="t-comment"># You edit three notes, add one, delete one...</span>
-
-<span class="t-prompt">$</span> <span class="t-cmd">yamlink publish</span> <span class="t-flag">--out ./site</span>
-
-<span class="t-ok">✓ 5 changed · 33 cached · 1 removed</span>
-<span class="t-dim">  per-note content hash — correct</span></code></div>
-              <div class="fix-note">The generation check is removed entirely. The cache now compares each note's content hash, which persists between runs. If the hash changed, the note rebuilds. <ic class="am">--force</ic> still rewrites everything unconditionally.</div>
+            <div class="tile tile-lg expandable">
+              <div class="tile-toggle" role="button" aria-label="Show details" tabindex="0">+</div>
+              <div class="tile-num">4</div>
+              <div class="tile-tag">one thing, everywhere at once</div>
+              <div class="tile-name">Multi-note authoring</div>
+              <div class="tile-desc">Surfaces, one module: <ic>yamlink bulk-set</ic>, <ic>PATCH /api/nodes/bulk</ic>'s <ic>{ add }</ic> mode, VS Code's <ic>Bulk Set Field on Selected Notes</ic>, and Conduit's "Add to list field" all call the same <ic>src/core/bulkFieldOperation.js</ic> — one implementation, four doors into it.</div>
+            </div>
+            <div class="tile tile-lg tile-warn expandable">
+              <div class="tile-toggle" role="button" aria-label="Show details" tabindex="0">+</div>
+              <div class="tile-num">1,400</div>
+              <div class="tile-tag">the one that almost got out of hand</div>
+              <div class="tile-name">The bug that spawned 1,400 processes</div>
+              <div class="tile-desc">A real smoke test against a real vault produced over 1,400 live processes in under a minute — a worker silently re-entering supervisor mode and spawning its own worker doing the same, recursively. No unit test caught it, only running the real thing did. Fixed with one line, locked in with a regression test.</div>
+            </div>
+            <div class="tile tile-lg expandable">
+              <div class="tile-toggle" role="button" aria-label="Show details" tabindex="0">+</div>
+              <div class="tile-num">3</div>
+              <div class="tile-tag">where you actually click things</div>
+              <div class="tile-name">Block-ID CodeLens</div>
+              <div class="tile-desc">Three actions above every heading, task, quote, footnote: "Copy reference," "N references" (jumps straight to a backlink), and "Extract to note" (moves a block into its own note in one step).</div>
+            </div>
+            <div class="tile tile-md expandable">
+              <div class="tile-toggle" role="button" aria-label="Show details" tabindex="0">+</div>
+              <div class="tile-tag">the stuff that runs without you</div>
+              <div class="tile-name">Daemon automation</div>
+              <div class="tile-desc"><ic>yamlink on --daemon</ic> survives closing the terminal — a real supervisor respawns a crashed worker with backoff, and the watcher retries a flaky <ic>fs.watch</ic> failure instead of dying silently.</div>
+            </div>
+            <div class="tile tile-md expandable">
+              <div class="tile-toggle" role="button" aria-label="Show details" tabindex="0">+</div>
+              <div class="tile-tag">the nerdy stuff</div>
+              <div class="tile-name">Structural signature</div>
+              <div class="tile-desc"><ic>yamlink signature</ic>: dominant types, field-bundle rigidity, hub concentration, recent growth. Every number ships with a plain sentence, never a forced label.</div>
+            </div>
+            <div class="tile tile-sm">
+              <div class="tile-name">Webhooks</div>
+              <div class="tile-desc"><ic>yamlink hooks</ic> — an HTTP callback on a mutation event, no terminal required.</div>
+            </div>
+            <div class="tile tile-sm">
+              <div class="tile-name">Graph history</div>
+              <div class="tile-desc"><ic>GET /api/graph/history</ic> — a checkpoint series over a time range, up to 50 per request.</div>
+            </div>
+            <div class="tile tile-sm">
+              <div class="tile-name">Workflow memory</div>
+              <div class="tile-desc"><ic>yamlink workflow-memory</ic> — notices which fields <em>you</em> fill in together.</div>
+            </div>
+            <div class="tile tile-sm">
+              <div class="tile-name">LSP type-line suggestions</div>
+              <div class="tile-desc">Vault-pattern code actions on <ic>type:</ic>, not a stripped-down VS Code copy.</div>
+            </div>
+            <div class="tile tile-sm">
+              <div class="tile-name">Dependency preview</div>
+              <div class="tile-desc">The real reference count <em>before</em> you delete or rename, not after.</div>
+            </div>
+            <div class="tile tile-sm">
+              <div class="tile-name">x-graph live drag</div>
+              <div class="tile-desc">Neighbors pull along live. "Hover Focus" stays off by default now.</div>
+            </div>
+            <div class="tile tile-sm">
+              <div class="tile-name">Smart Templates</div>
+              <div class="tile-desc">Fields pre-fill with a real value, multiple templates per type, a follow-up nudge.</div>
+            </div>
+            <div class="tile tile-sm">
+              <div class="tile-name">Unlinked-mention highlighting</div>
+              <div class="tile-desc">Live inline underlines, plus a bulk "link all N mentions" quick fix.</div>
+            </div>
+            <div class="tile tile-sm">
+              <div class="tile-name">Conduit layered navigation</div>
+              <div class="tile-desc"><ic>Esc</ic> peels back a real context trail, not a fixed home screen.</div>
+            </div>
+            <div class="tile tile-sm">
+              <div class="tile-name">Note Outline nesting</div>
+              <div class="tile-desc">Tasks and quotes nest under their heading, not just headings.</div>
+            </div>
+            <div class="tile tile-sm">
+              <div class="tile-name">Importer audit + Trust Layer</div>
+              <div class="tile-desc">All four importers audited; a new layer tells you what an import will keep.</div>
+            </div>
+            <div class="tile tile-sm">
+              <div class="tile-name">Live Note preview</div>
+              <div class="tile-desc">No more noise pills, real done/total ratios, click-to-source tasks.</div>
+            </div>
+            <div class="tile tile-sm">
+              <div class="tile-name">Sample vault polish</div>
+              <div class="tile-desc">The bundled vault demonstrates its own computed fields and glossary now.</div>
             </div>
           </div>
+
+          <div class="hl-tally"><b>22</b> shipped · <b>2</b> killed (RIP timeline scrubber, spatial canvas) · <b>1,400</b> rogue processes stopped · <b>4</b> surfaces, <b>1</b> shared brain</div>
         </section>
 
         <!-- 03 Story -->
         <section class="sec" id="s-story">
-          <div class="eye">How it was found</div>
-          <p class="prose">0.7.9 was caught the same way 0.7.8 was — not in a test, but in real use. Running <ic>yamlink publish</ic> against the actual yamlink.dev source vault, checking the output, noticing that nothing had rebuilt since the first run even though notes had changed.</p>
-          <p class="prose">The bug had been there since 0.7.7 shipped. Every user who ran <ic>yamlink publish</ic> more than once during that window has stale output. The fix is one command: <ic class="am">yamlink publish --force</ic>.</p>
-          <p class="prose" style="margin-top:24px;color:var(--tx2);font-size:12.5px">Two hotfixes in one day is not a pattern we want. Both were caught because we ran the commands for real rather than trusting the tests. The tests will get better. I will be better.</p>
-          <div style="font-size:11px;color:var(--tx3);letter-spacing:.06em;margin-top:28px;">— Javier, August 2026</div>
+          <div class="eye">How this cycle actually went</div>
+          <p class="prose">I'm going to sound dramatic here, but honestly, it felt dramatic, lol.</p>
+          <p class="prose">This one took a long time to get through. And that's on me.</p>
+          <p class="prose">I had a plan — all centered around Conduit. I wanted to build a "timeline scrubber." This, in essence, would let you go through your vault's history and reconstruct any point in time, right from your terminal. I thought it was a really cool idea (still do). But as I started testing it and seeing it live, I just couldn't find a way to make it properly work. My main mistake was spending so much time on this one feature without ever really understanding whether I could achieve it or not. So that first element got killed off.</p>
+          <p class="prose">Then I had the idea to create a "canvas" inside the terminal — a "map" of your notes, with visual representation and navigation of all your work. But taking that vision into the functional reality of a terminal proved too difficult, especially working on a tight schedule. So, both ideas were busts — at least for now.</p>
+          <p class="prose">That's how I saw my 0.8.0 release completely butchered, lol.</p>
+          <p class="prose">Outside of Conduit work, a lot of the planned work was around QOL elements and codebase health — which, of course, isn't enough for a full release. So I decided to look into the roadmap and see what could be moved up and rearranged to make 0.8.0 a solid release. A query language that accomplishes "more," automation that survives closing the terminal — these things were not planned AT ALL for 0.8.0. It took quite some time and planning, it took a lot of tinkering, but I believe that Yamlink, no matter what, is stronger today than it was yesterday.</p>
+          <p class="prose">I insist, Conduit is a very important part of my plans, but my ideas just didn't hit. I will obviously look to improve and polish the experience moving forward. But for 0.8.0, it just wasn't meant to be.</p>
+          <p class="prose">And to be honest, what matters most is input. Input is the best way to grow and improve. If you could provide feedback, in any shape or form, I'd greatly appreciate it! Just go to our GH and you can leave your thoughts and opinions on any of the active threads.</p>
+          <p class="prose">Please, enjoy 0.8.0!</p>
+          <div style="font-size:11px;color:var(--tx3);letter-spacing:.06em;margin-top:28px;">— J<br>August 2026</div>
         </section>
 
         <!-- 04 Insights -->
         <section class="sec" id="s-insights">
           <div class="eye">Insights</div>
-          <p class="prose">Hi! If I'm to be 100% honest, 0.7.7 was a "controlled whim". Publishing has been part of the Yamlink roadmap for quite some time, ever since a user asked a question in a GH thread. It was not part of the "inception", but the user's suggestion made a lot of sense given what Yamlink was at that point, and what I wanted it to be.</p>
-          <p class="prose">A couple of weeks ago I started working on yamlink.dev manually. As you might imagine, using Yamlink in a real experience made it clear: "I should really get on this now". The gaps were real. No native build command. <ic>status:</ic> was a label, not a gate. No way to preview against the actual destination. No ordering primitive. Those were the main issues that the website experience forced into existence.</p>
-          <p class="prose">After that came 0.7.8, and now 0.7.9. A crash in <ic>yamlink --version</ic>. Then the cache bug. I stumbled onto both — not by testing, but by running commands against the site itself.</p>
-          <p class="prose">I put together this "release briefing" because from now on I want to do this for every release. I want it to be a chance to "vent" — for better or worse, in failure or success. And if you enjoy reading, then it's a win-win! I believe in this project. In my heart, I'd want nothing more than for this to be something I can build a career on, and all my free-time work has been pointed toward this. I think I'm onto something here — a platform that only gets smarter the more you use it, completely local, in constant development, adaptable to users' own organic usage trends, and with a lot of plans for a bright future (fingers crossed). The time invested in yamlink.dev is my way of expressing how committed I am to Yamlink as an engine — wherever it goes.</p>
-          <p class="prose">So here's to hoping I get to write a ton more of these!</p>
+          <p class="prose">yamlink.dev is up! It took a while to come up with a concept I thought was worthy of Yamlink. Even though the entire project isn't done, there's now at least a proper version for everyone to get to know and use. There's still a few twists and turns I want to implement, but for now, I think the experience is pretty cool — I hope you like it!</p>
+          <p class="prose">I've also been taking a stab at writing. Right now there are 3 pieces up on dev.to, all related to use cases for your vault using Markdown and Yamlink. I'm not ready to call them "masterpieces," but I had fun writing them — maybe you'll enjoy them too:</p>
+          <ul style="margin:4px 0 16px 20px;padding:0;">
+            <li style="margin-bottom:6px;"><a href="https://dev.to/javier_ramrez_e2b4bb54fb/i-ditched-my-fitness-app-for-a-folder-of-markdown-files-spoiler-its-better-2lad" style="color:var(--acc);text-decoration:underline;">Your MD as a fitness tracker</a></li>
+            <li style="margin-bottom:6px;"><a href="https://dev.to/javier_ramrez_e2b4bb54fb/can-i-have-my-entire-crm-setup-in-crm-4op6" style="color:var(--acc);text-decoration:underline;">Can I have my entire CRM setup in Markdown?</a></li>
+            <li><a href="https://dev.to/javier_ramrez_e2b4bb54fb/turning-markdown-files-into-a-queryable-knowledge-graph-4aho" style="color:var(--acc);text-decoration:underline;">Turning Markdown Files into a Queryable Knowledge Graph</a></li>
+          </ul>
+          <p class="prose">I'm also toying with the idea of a Discord server. Right now there's not really a need for one — only a few people have commented on GitHub — but I feel like a space for real-time chat could make interaction and community-building easier down the line. I'm not 100% sold on it. If you have an opinion either way, let me know.</p>
           <div style="font-family:var(--sans);font-size:13px;color:var(--tx2);margin-top:24px;">Cheers,<br><span style="color:var(--tx3);font-size:12px;">—j</span></div>
         </section>
 
         <!-- Previous release view (outside sec[] navigation system) -->
         <div id="s-prev-release" style="display:none;opacity:0;transition:opacity 190ms ease,transform 190ms ease;transform:translateY(10px);">
-          <div class="pr-back" id="pr-back">← Back to 0.7.9</div>
+          <div class="pr-back" id="pr-back">← Back to 0.8.0</div>
           <div id="pr-content"></div>
         </div>
 
@@ -313,17 +415,18 @@ body,#topbar,#nav,#btm,#main,.vi,.badge,.ri,.dot,.next-card,.overlay-panel{trans
         <section class="sec" id="s-reference">
           <div class="eye">Reference</div>
           <ul class="ref-list">
-            <li class="ri" onclick="goTo(1)" style="cursor:pointer"><span class="ri-n">See the fix</span><span class="ri-a">↓ The Fix</span></li>
+            <li class="ri" onclick="goTo(1)" style="cursor:pointer"><span class="ri-n">See everything that shipped</span><span class="ri-a">↓ Highlights</span></li>
+            <a class="ri" href="https://www.yamlink.dev" style="text-decoration:none"><span class="ri-n">yamlink.dev</span><span class="ri-a">↗</span></a>
             <a class="ri" href="https://github.com/Yamlink-Labs/yamlink" style="text-decoration:none"><span class="ri-n">View on GitHub</span><span class="ri-a">↗</span></a>
             <a class="ri" href="https://marketplace.visualstudio.com/items?itemName=yamlink.yamlink" style="text-decoration:none"><span class="ri-n">VS Code Marketplace</span><span class="ri-a">↗</span></a>
             <a class="ri" href="https://x.com/yamlinklabs" style="text-decoration:none"><span class="ri-n">@yamlinklabs on X</span><span class="ri-a">↗</span></a>
             <a class="ri" href="https://github.com/Yamlink-Labs/yamlink/issues" style="text-decoration:none"><span class="ri-n">Report a Bug</span><span class="ri-a">↗</span></a>
           </ul>
-          <div class="ref-meta">yamlink 0.7.9 · hotfix · august 2026</div>
+          <div class="ref-meta">yamlink 0.8.0 · engine · august 2026</div>
           <div class="next-card">
             <div class="next-eyebrow">Coming next</div>
-            <div class="next-title">0.8.0 — Time Engine · Conduit · Engine</div>
-            <div class="next-desc">Three themes in one release: the Time Engine goes full depth (time-travel API, graph history, Conduit timeline scrubber), Conduit gets a revolutionary interaction model (layered contexts, spatial canvas, advanced traversal), and the Authoring Engine becomes a proper named layer shared across all surfaces.</div>
+            <div class="next-title">0.8.1 — Mathematical Depth I</div>
+            <div class="next-desc">Jaccard-similarity clustering, betweenness centrality and k-core decomposition as new graph-topology signals, graph spring stiffness formalized as a real spring-energy model, calendar depth, and Mind Map View.</div>
             <div class="next-badge">In development</div>
           </div>
         </section>
@@ -349,8 +452,9 @@ body,#topbar,#nav,#btm,#main,.vi,.badge,.ri,.dot,.next-card,.overlay-panel{trans
   <div class="sc"><span class="key">T</span> theme</div>
   <div class="sc"><span class="key">?</span> shortcuts</div>
   <div style="margin-left:auto;display:flex;align-items:center;gap:16px;">
+    <a class="btm-link" href="https://www.yamlink.dev">yamlink.dev</a>
     <a class="btm-link" href="https://x.com/yamlinklabs">@yamlinklabs</a>
-    <span class="btm-link" style="opacity:.3">yamlink 0.7.9</span>
+    <span class="btm-link" style="opacity:.3">yamlink 0.8.0</span>
   </div>
 </footer>
 
@@ -397,6 +501,26 @@ document.getElementById('rel-toggle').addEventListener('click', () => {
 
 // Previous release data
 const releaseData = {
+  '0.7.9': {
+    tag: '0.7.9 · Hotfix',
+    headline: 'The build cache was always wrong.',
+    intro: 'Shipped 2026-08-02. yamlink publish stopped detecting real changes after the first build — a generation-counter check that always compared 0 === 0 across every fresh CLI process.',
+    items: [
+      'The cache now compares each note\'s real, current content hash against what was last written — sound across separate process runs in a way a generation counter never could be.',
+      '<ic class="am">--force</ic> now correctly detects and removes stale output from a previous build too, not just rewrites everything unconditionally.',
+      'If you ran <ic>yamlink publish</ic> more than once since 0.7.7, run <ic class="am">--force</ic> once after updating to get a clean rebuild.',
+    ]
+  },
+  '0.7.8': {
+    tag: '0.7.8 · Hotfix',
+    headline: '<ic>yamlink --version</ic> crashed on every non-interactive terminal.',
+    intro: 'Shipped 2026-08-02, hours after 0.7.7. Found via a live post-ship verification run.',
+    items: [
+      '<ic>yamlink --version</ic> and <ic>yamlink -v</ic> had no handling at all. Both fell through into the Conduit launch path, which reads from stdin — on non-interactive terminals (CI, pipes, scripts) this crashed immediately.',
+      'Fixed: version flags are now intercepted before any other dispatch and print the version string directly.',
+      'No other changes. No breaking changes.',
+    ]
+  },
   '0.7.7': {
     tag: '0.7.7 · Authoring & Publishing',
     headline: 'Your vault becomes a publisher.',
@@ -412,16 +536,6 @@ const releaseData = {
       'Single-note static HTML export: <ic>yamlink export --id &lt;id&gt; --format html</ic>.',
       'Pluggable Live Note preview target via <ic>yamlink.liveNotePreviewUrl</ic> — preview against the destination site\'s real rendering.',
       'Publish webhook — fires after a successful build for downstream automation.',
-    ]
-  },
-  '0.7.8': {
-    tag: '0.7.8 · Hotfix',
-    headline: '<ic>yamlink --version</ic> crashed on every non-interactive terminal.',
-    intro: 'Shipped 2026-08-02, hours after 0.7.7. Found via a live post-ship verification run.',
-    items: [
-      '<ic>yamlink --version</ic> and <ic>yamlink -v</ic> had no handling at all. Both fell through into the Conduit launch path, which reads from stdin — on non-interactive terminals (CI, pipes, scripts) this crashed immediately.',
-      'Fixed: version flags are now intercepted before any other dispatch and print the version string directly.',
-      'No other changes. No breaking changes.',
     ]
   }
 };
@@ -523,6 +637,20 @@ if (vscodeApi) {
     }
   });
 }
+
+// Highlights: expandable tiles
+document.querySelectorAll('.tile-toggle').forEach(btn => {
+  const toggle = () => {
+    const tile = btn.closest('.tile');
+    const isOpen = tile.classList.toggle('expanded');
+    btn.textContent = isOpen ? '–' : '+';
+    btn.setAttribute('aria-label', isOpen ? 'Hide details' : 'Show details');
+  };
+  btn.addEventListener('click', (e) => { e.stopPropagation(); toggle(); });
+  btn.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggle(); }
+  });
+});
 
 applyTheme('night');
 </script>

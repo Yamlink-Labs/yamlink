@@ -121,11 +121,23 @@ const LIVE_NOTE_STYLES = `
   font-size:10px;
   letter-spacing:.09em;
 }
+/* Identity (ID/TYPE) is the note's real header info — kept visually
+   heaviest of the three pill families. Metrics are the quietest: they're
+   supporting trivia, not something to read with the same weight as what
+   this note actually IS. Previously all three shared near-identical
+   styling with only an accent-color swap, so nothing on the page signaled
+   which pills mattered more than others. */
 .yl-live-pill--metric{
-  background:color-mix(in srgb, var(--yl-bg-base) 88%, #1f1628 12%);
-  border-color:rgba(196,155,240,.14);
+  padding:4px 8px;
+  background:color-mix(in srgb, var(--yl-bg-base) 92%, #1f1628 8%);
+  border-color:color-mix(in srgb, rgba(196,155,240,.14) 60%, transparent 40%);
+  color:var(--yl-text-muted);
+  font-size:10px;
 }
-.yl-live-pill--metric strong{ color:var(--yl-link); }
+.yl-live-pill--metric strong{
+  color:color-mix(in srgb, var(--yl-link) 70%, var(--yl-text-muted) 30%);
+  font-size:9px;
+}
 .yl-live-frontmatter-strip{
   display:flex;
   flex-wrap:wrap;
@@ -200,6 +212,40 @@ const LIVE_NOTE_STYLES = `
 }
 .yl-live-heading-jump:hover{
   color:var(--yl-link);
+}
+.yl-live-task{
+  list-style:none;
+  margin-left:-1.4em;
+  padding-left:1.4em;
+  position:relative;
+}
+.yl-live-task::before{
+  content:'☐';
+  position:absolute;
+  left:0;
+  color:var(--yl-text-muted);
+}
+.yl-live-task--done::before{
+  content:'☑';
+  color:var(--yl-teal);
+}
+.yl-live-task--done{
+  color:var(--yl-text-muted);
+  text-decoration:line-through;
+}
+.yl-live-task-jump{
+  appearance:none;
+  padding:0;
+  border:none;
+  background:none;
+  color:inherit;
+  font:inherit;
+  text-align:left;
+  cursor:pointer;
+}
+.yl-live-task-jump:hover{
+  color:var(--yl-link);
+  text-decoration:underline;
 }
 .yl-live-article blockquote{
   margin:1em 0;

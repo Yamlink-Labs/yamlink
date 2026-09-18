@@ -277,6 +277,55 @@ function buildCompactRelationTableSection(title, fieldName, groups, open = true)
     ].join('\n');
 }
 
+function buildDependenciesSection(dependencies) {
+    const data = dependencies || {};
+    const rows = Array.isArray(data.rows) ? data.rows : [];
+    const total = Number(data.total || rows.length || 0);
+    if (!total) {
+        return buildEmptySection(
+            'dependencies',
+            'No inbound dependencies yet.',
+            'Other notes that point to this one through frontmatter relations or body wikilinks will appear here.'
+        );
+    }
+
+    const summary = [
+        `<span class="hub-chip"><span class="hub-chip-label">notes</span><span>${esc(String(data.sourceCount || 0))}</span></span>`,
+        `<span class="hub-chip"><span class="hub-chip-label">frontmatter</span><span>${esc(String(data.frontmatterTotal || 0))}</span></span>`,
+        `<span class="hub-chip"><span class="hub-chip-label">body</span><span>${esc(String(data.bodyTotal || 0))}</span></span>`
+    ].join('');
+
+    const bodyRows = rows.map(function (row) {
+        const label = row.label || row.sourceId;
+        const type = row.type || '';
+        return [
+            '<tr>',
+            `  <td data-sort-value="${esc(String(row.kind || '').toLowerCase())}">${esc(row.kind || '-')}</td>`,
+            `  <td data-sort-value="${esc(String(row.field || '').toLowerCase())}">${esc(row.field || '-')}</td>`,
+            `  <td class="cell-id" data-id="${esc(row.sourceId)}" data-sort-value="${esc(String(label || '').toLowerCase())}">${esc(label)}</td>`,
+            `  <td data-sort-value="${esc(type.toLowerCase())}">${type ? esc(type) : '<span class="cell-empty">-</span>'}</td>`,
+            '</tr>'
+        ].join('');
+    }).join('');
+
+    return [
+        '<div class="hub-section open" data-field="dependencies">',
+        '    <div class="hub-section-header">',
+        '        <span class="hub-chevron">' + _CHEVRON_RIGHT + '</span>',
+        '        <span class="hub-field">dependencies</span>',
+        `        <span class="hub-count">${total}</span>`,
+        '    </div>',
+        '    <div class="hub-section-body">',
+        `        <div class="hub-chips" style="margin-bottom:10px">${summary}</div>`,
+        '        <table>',
+        '            <thead><tr><th data-col="kind">kind <span class="sarr">↕</span></th><th data-col="field">field <span class="sarr">↕</span></th><th data-col="note">note <span class="sarr">↕</span></th><th data-col="type">type <span class="sarr">↕</span></th></tr></thead>',
+        `            <tbody>${bodyRows}</tbody>`,
+        '        </table>',
+        '    </div>',
+        '</div>'
+    ].join('\n');
+}
+
 function buildBlockBacklinkSection(rows) {
     if (!rows || !rows.length) return '';
 
@@ -588,6 +637,7 @@ module.exports = {
     buildActionSection,
     buildRelationSection,
     buildCompactRelationTableSection,
+    buildDependenciesSection,
     buildBlockBacklinkSection,
     buildTaskSection,
     buildTimelineSection,

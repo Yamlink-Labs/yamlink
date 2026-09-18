@@ -49,6 +49,12 @@ const MOCK_INDEX = new Map([
     ['deal-alpha',            '/vault/deal-alpha.md'],
     ['deal-beta',             '/vault/deal-beta.md'],
     ['deal-gamma',            '/vault/deal-gamma.md'],
+    // chain-a -> chain-b -> chain-c -> chain-a: an isolated 3-cycle used only
+    // by the "within N" multi-hop traversal tests below, own type
+    // ('linkchain') so it never perturbs any existing type/wildcard assertion.
+    ['chain-a',               '/vault/chain-a.md'],
+    ['chain-b',               '/vault/chain-b.md'],
+    ['chain-c',               '/vault/chain-c.md'],
 ]);
 
 const MOCK_FIELDS = new Map([
@@ -60,6 +66,9 @@ const MOCK_FIELDS = new Map([
     ['deal-alpha',           { type: 'deal', value: '2', stage: 'open', date: '2026-05-03' }],
     ['deal-beta',            { type: 'deal', value: '10', stage: 'won', date: '2026-05-12' }],
     ['deal-gamma',           { type: 'deal', value: '100', stage: 'open', date: '2026-05-20' }],
+    ['chain-a',              { type: 'linkchain', name: 'Chain A', next: '[[chain-b]]' }],
+    ['chain-b',              { type: 'linkchain', name: 'Chain B', next: '[[chain-c]]' }],
+    ['chain-c',              { type: 'linkchain', name: 'Chain C', next: '[[chain-a]]' }],
 ]);
 
 const MOCK_BACKLINKS = new Map([
@@ -74,6 +83,16 @@ const MOCK_BACKLINKS = new Map([
         { field: 'unit', sourceId: 'mission-klendathu'    },
         { field: 'unit', sourceId: 'mission-klendathu-ii' },
     ]],
+    // chain-a -> chain-b -> chain-c -> chain-a (a 3-cycle; see MOCK_INDEX note above)
+    ['chain-a', [
+        { field: 'next', sourceId: 'chain-c' },
+    ]],
+    ['chain-b', [
+        { field: 'next', sourceId: 'chain-a' },
+    ]],
+    ['chain-c', [
+        { field: 'next', sourceId: 'chain-b' },
+    ]],
 ]);
 
 const MOCK_EDGES = new Map([
@@ -85,6 +104,16 @@ const MOCK_EDGES = new Map([
     ['mission-klendathu-ii', [
         { field: 'intelligence', targetId: 'carl-jenkins' },
         { field: 'unit', targetId: 'roughnecks' },
+    ]],
+    // chain-a -> chain-b -> chain-c -> chain-a (a 3-cycle; see MOCK_INDEX note above)
+    ['chain-a', [
+        { field: 'next', targetId: 'chain-b' },
+    ]],
+    ['chain-b', [
+        { field: 'next', targetId: 'chain-c' },
+    ]],
+    ['chain-c', [
+        { field: 'next', targetId: 'chain-a' },
     ]],
 ]);
 
@@ -112,7 +141,8 @@ require.cache['__stub_index__'] = {
     exports: {
         getIndex:      () => MOCK_INDEX,
         getFieldsCache: () => MOCK_FIELDS,
-        getVaultGeneration: () => 0
+        getVaultGeneration: () => 0,
+        getBodyLinksCache: () => new Map()
     }
 };
 require.cache['__stub_graph__'] = {
@@ -310,6 +340,72 @@ describe('parseSingleViewBlock — via', () => {
     test('no via clause → null', () => {
         const q = parseSingleViewLine('!view incoming mission');
         assert.equal(q.via, null);
+    });
+
+});
+
+describe('parseSingleViewBlock — linked_to / linked_from (VQL v1)', () => {
+
+    test('linked_to clause parsed', () => {
+        const q = parseSingleViewLine('!view * linked_to [[johnny-rico]]');
+        assert.equal(q.linkedTo, 'johnny-rico');
+        assert.equal(q.linkedFrom, null);
+    });
+
+    test('linked_from clause parsed', () => {
+        const q = parseSingleViewLine('!view * linked_from [[mission-klendathu]]');
+        assert.equal(q.linkedFrom, 'mission-klendathu');
+        assert.equal(q.linkedTo, null);
+    });
+
+    test('no linked_to/linked_from clause → both null', () => {
+        const q = parseSingleViewLine('!view *');
+        assert.equal(q.linkedTo, null);
+        assert.equal(q.linkedFrom, null);
+    });
+
+    test('linked_to does not get swallowed by an adjacent where clause', () => {
+        const q = parseSingleViewLine('!view mission where outcome = victory linked_to [[johnny-rico]]');
+        assert.equal(q.linkedTo, 'johnny-rico');
+        assert.equal(q.wheres.length, 1);
+        assert.equal(q.wheres[0].field, 'outcome');
+    });
+
+    test('linked_to/linked_from default depth is 1 when "within" is omitted', () => {
+        const q = parseSingleViewLine('!view * linked_to [[johnny-rico]]');
+        assert.equal(q.linkedToDepth, 1);
+        const q2 = parseSingleViewLine('!view * linked_from [[johnny-rico]]');
+        assert.equal(q2.linkedFromDepth, 1);
+    });
+
+    test('linked_to [[x]] within N parses a real depth', () => {
+        const q = parseSingleViewLine('!view * linked_to [[chain-c]] within 2');
+        assert.equal(q.linkedTo, 'chain-c');
+        assert.equal(q.linkedToDepth, 2);
+    });
+
+    test('linked_from [[x]] within N parses a real depth', () => {
+        const q = parseSingleViewLine('!view * linked_from [[chain-a]] within 3');
+        assert.equal(q.linkedFrom, 'chain-a');
+        assert.equal(q.linkedFromDepth, 3);
+    });
+
+    test('within 0 is out of range — warns, falls back to depth 1, no crash', () => {
+        const q = parseSingleViewLine('!view * linked_from [[chain-a]] within 0');
+        assert.equal(q.linkedFromDepth, 1);
+        assert.ok(q.parseWarnings.some((w) => w.includes('out of range')));
+    });
+
+    test('within 6 (above the cap of 5) is out of range — warns, falls back to depth 1', () => {
+        const q = parseSingleViewLine('!view * linked_from [[chain-a]] within 6');
+        assert.equal(q.linkedFromDepth, 1);
+        assert.ok(q.parseWarnings.some((w) => w.includes('out of range')));
+    });
+
+    test('within 5 (at the cap) is accepted', () => {
+        const q = parseSingleViewLine('!view * linked_from [[chain-a]] within 5');
+        assert.equal(q.linkedFromDepth, 5);
+        assert.equal(q.parseWarnings.length, 0);
     });
 
 });
@@ -1061,6 +1157,26 @@ describe('buildQueryString', () => {
         assert.equal(buildQueryString(q), '!view *\nwhere #combat');
     });
 
+    test('plain linked_to (no within) never emits "within 1"', () => {
+        const q = parseSingleViewLine('!view * linked_to [[johnny-rico]]');
+        assert.equal(buildQueryString(q), '!view * linked_to [[johnny-rico]]');
+    });
+
+    test('linked_to [[x]] within N roundtrips with the real depth', () => {
+        const q = parseSingleViewLine('!view * linked_to [[chain-c]] within 3');
+        assert.equal(buildQueryString(q), '!view * linked_to [[chain-c]] within 3');
+    });
+
+    test('linked_from [[x]] within N roundtrips with the real depth', () => {
+        const q = parseSingleViewLine('!view * linked_from [[chain-a]] within 2');
+        assert.equal(buildQueryString(q), '!view * linked_from [[chain-a]] within 2');
+    });
+
+    test('an out-of-range within falls back to depth 1 and roundtrips without "within"', () => {
+        const q = parseSingleViewLine('!view * linked_from [[chain-a]] within 99');
+        assert.equal(buildQueryString(q), '!view * linked_from [[chain-a]]');
+    });
+
 });
 
 // ─────────────────────────────────────────────────────────────────
@@ -1403,12 +1519,219 @@ describe('runQuery — forward — graph virtual fields', () => {
         assert.equal(r.rows[1].fields._outbound_count, 2);
     });
 
+    test('sort _hub_score desc keeps zero-score notes after scored notes', () => {
+        const r = runQuery(parseSingleViewLine('!view * sort _hub_score desc'));
+        assert.ok(r.rows[0].fields._hub_score > 0);
+        assert.equal(r.rows.at(-1).fields._hub_score, 0);
+    });
+
     test('zero-edge notes report graph virtual fields as 0', () => {
         const r = runQuery(parseSingleViewLine('!view deal select _inbound_count, _outbound_count, _hub_score'));
         const alpha = r.rows.find(row => row.id === 'deal-alpha');
         assert.equal(alpha.fields._inbound_count, 0);
         assert.equal(alpha.fields._outbound_count, 0);
         assert.equal(alpha.fields._hub_score, 0);
+    });
+
+});
+
+describe('runQuery — VQL v1 — linked_to / linked_from', () => {
+
+    test('linked_to [[johnny-rico]] returns notes with an outbound edge to johnny-rico', () => {
+        // johnny-rico's real backlinks (MOCK_BACKLINKS): only mission-klendathu
+        // (commander field) — mission-klendathu-ii has no commander set.
+        const r = runQuery(parseSingleViewLine('!view * linked_to [[johnny-rico]]'));
+        assert.deepEqual(ids(r), ['mission-klendathu']);
+    });
+
+    test('linked_from [[mission-klendathu]] returns every note mission-klendathu points to', () => {
+        // mission-klendathu's real outbound edges (MOCK_EDGES): carl-jenkins
+        // (intelligence), johnny-rico (commander), roughnecks (unit).
+        const r = runQuery(parseSingleViewLine('!view * linked_from [[mission-klendathu]]'));
+        assert.deepEqual(ids(r), ['carl-jenkins', 'johnny-rico', 'roughnecks']);
+    });
+
+    test('linked_from combines with a type filter', () => {
+        const r = runQuery(parseSingleViewLine('!view unit linked_from [[mission-klendathu]]'));
+        assert.deepEqual(ids(r), ['roughnecks']);
+    });
+
+    test('linked_to a note with no backlinks returns no rows, not an error', () => {
+        // deal-alpha is confirmed zero-edge by the "zero-edge notes" test above.
+        const r = runQuery(parseSingleViewLine('!view * linked_to [[deal-alpha]]'));
+        assert.equal(r.success, true);
+        assert.deepEqual(ids(r), []);
+    });
+
+    test('linked_to and linked_from together intersect (AND, not OR)', () => {
+        // Only mission-klendathu links to johnny-rico; of the notes
+        // mission-klendathu itself links to (carl-jenkins/johnny-rico/roughnecks),
+        // none also link to johnny-rico — so the intersection is empty.
+        const r = runQuery(parseSingleViewLine('!view * linked_to [[johnny-rico]] linked_from [[mission-klendathu]]'));
+        assert.equal(r.success, true);
+        assert.deepEqual(ids(r), []);
+    });
+
+});
+
+describe('runQuery — VQL v1 — linked_to / linked_from within N (multi-hop)', () => {
+    // chain-a -> chain-b -> chain-c -> chain-a (a 3-cycle, see MOCK_INDEX note)
+
+    test('within 1 (default) is identical to omitting "within" entirely', () => {
+        const withWithin = runQuery(parseSingleViewLine('!view * linked_from [[chain-a]] within 1'));
+        const noWithin = runQuery(parseSingleViewLine('!view * linked_from [[chain-a]]'));
+        assert.deepEqual(ids(withWithin), ids(noWithin));
+        assert.deepEqual(ids(noWithin), ['chain-b']);
+    });
+
+    test('linked_from within 2 reaches a genuine 2-hop note that within 1 does not', () => {
+        const hop1 = runQuery(parseSingleViewLine('!view * linked_from [[chain-a]] within 1'));
+        assert.deepEqual(ids(hop1), ['chain-b']);
+        const hop2 = runQuery(parseSingleViewLine('!view * linked_from [[chain-a]] within 2'));
+        assert.deepEqual(ids(hop2), ['chain-b', 'chain-c']);
+    });
+
+    test('linked_to within 2 reaches a genuine 2-hop note that within 1 does not', () => {
+        const hop1 = runQuery(parseSingleViewLine('!view * linked_to [[chain-c]] within 1'));
+        assert.deepEqual(ids(hop1), ['chain-b']);
+        const hop2 = runQuery(parseSingleViewLine('!view * linked_to [[chain-c]] within 2'));
+        assert.deepEqual(ids(hop2), ['chain-a', 'chain-b']);
+    });
+
+    test('a cycle does not infinite-loop, duplicate results, or include the start id', () => {
+        const r = runQuery(parseSingleViewLine('!view * linked_from [[chain-a]] within 5'));
+        assert.equal(r.success, true);
+        assert.deepEqual(ids(r), ['chain-b', 'chain-c']);
+        assert.ok(!ids(r).includes('chain-a'));
+    });
+
+    test('within combines with a type filter', () => {
+        const r = runQuery(parseSingleViewLine('!view linkchain linked_from [[chain-a]] within 2'));
+        assert.deepEqual(ids(r), ['chain-b', 'chain-c']);
+    });
+
+    test('an out-of-range within (parse warning) still runs the query at depth 1', () => {
+        const q = parseSingleViewLine('!view * linked_from [[chain-a]] within 99');
+        assert.ok(q.parseWarnings.some((w) => w.includes('out of range')));
+        const r = runQuery(q);
+        assert.equal(r.success, true);
+        assert.deepEqual(ids(r), ['chain-b']);
+    });
+
+});
+
+describe('parseSingleViewBlock — as of (VQL v1 temporal)', () => {
+
+    test('as of with a literal date parses to a resolved ISO-ish date string', () => {
+        const q = parseSingleViewLine('!view mission as of 2297-08-10');
+        assert.equal(q.asOf, '2297-08-10');
+    });
+
+    test('as of with a function call resolves through the same date resolver where clauses use', () => {
+        const q = parseSingleViewLine('!view mission as of days-ago(7)');
+        assert.equal(q.asOf, addDaysIso(getTodayIsoLocal(), -7));
+    });
+
+    test('no as of clause leaves asOf null', () => {
+        const q = parseSingleViewLine('!view mission');
+        assert.equal(q.asOf, null);
+    });
+
+    test('as of does not get swallowed by an adjacent where clause, in either order', () => {
+        const before = parseSingleViewLine('!view mission where outcome = defeat as of 2297-08-10');
+        assert.equal(before.asOf, '2297-08-10');
+        assert.equal(before.wheres.length, 1);
+
+        const after = parseSingleViewLine('!view mission as of 2297-08-10 where outcome = defeat');
+        assert.equal(after.asOf, '2297-08-10');
+        assert.equal(after.wheres.length, 1);
+    });
+
+});
+
+describe('buildQueryString — as of', () => {
+
+    test('plain query (no as of) never emits "as of"', () => {
+        const q = parseSingleViewLine('!view mission');
+        assert.equal(buildQueryString(q), '!view mission');
+    });
+
+    test('as of roundtrips with the real resolved date', () => {
+        const q = parseSingleViewLine('!view mission as of 2297-08-10');
+        assert.equal(buildQueryString(q), '!view mission as of 2297-08-10');
+    });
+
+});
+
+describe('runQuery — VQL v1 — as of (real historical reconstruction)', () => {
+    const { appendMutationEvents, clearMutationEvents, withMutationContext } = require('../src/runtime/mutationEventLog');
+
+    test('as of before a recorded field change shows the old value; live/after shows the new one', () => {
+        clearMutationEvents();
+        try {
+            // Live MOCK_FIELDS has mission-klendathu.outcome = 'defeat'. Seed a
+            // real mutation event recording that it used to be 'ongoing'
+            // before this timestamp.
+            appendMutationEvents(withMutationContext([{
+                type: 'field_changed',
+                noteId: 'mission-klendathu',
+                field: 'outcome',
+                oldValue: 'ongoing',
+                newValue: 'defeat',
+                timestamp: '2297-08-15T00:00:00.000Z'
+            }], { source: 'test', cause: 'seed' }));
+
+            const before = runQuery(parseSingleViewLine('!view mission as of 2297-08-10 select id, outcome'));
+            const beforeRow = before.rows.find((r) => r.id === 'mission-klendathu');
+            assert.ok(beforeRow, 'expected mission-klendathu to exist as of 2297-08-10');
+            assert.equal(beforeRow.fields.outcome, 'ongoing');
+
+            const after = runQuery(parseSingleViewLine('!view mission as of 2297-08-20 select id, outcome'));
+            const afterRow = after.rows.find((r) => r.id === 'mission-klendathu');
+            assert.equal(afterRow.fields.outcome, 'defeat');
+
+            const live = runQuery(parseSingleViewLine('!view mission select id, outcome'));
+            const liveRow = live.rows.find((r) => r.id === 'mission-klendathu');
+            assert.equal(liveRow.fields.outcome, 'defeat');
+        } finally {
+            clearMutationEvents();
+        }
+    });
+
+    test('as of combines with a where clause — filters against the reconstructed value, not the live one', () => {
+        clearMutationEvents();
+        try {
+            appendMutationEvents(withMutationContext([{
+                type: 'field_changed',
+                noteId: 'mission-klendathu',
+                field: 'outcome',
+                oldValue: 'ongoing',
+                newValue: 'defeat',
+                timestamp: '2297-08-15T00:00:00.000Z'
+            }], { source: 'test', cause: 'seed' }));
+
+            const r = runQuery(parseSingleViewLine('!view mission as of 2297-08-10 where outcome = ongoing'));
+            assert.deepEqual(ids(r), ['mission-klendathu']);
+
+            const liveMatch = runQuery(parseSingleViewLine('!view mission where outcome = ongoing'));
+            assert.deepEqual(ids(liveMatch), []);
+        } finally {
+            clearMutationEvents();
+        }
+    });
+
+    test('an invalid as of date produces a warning and falls back to current state, never crashes', () => {
+        const r = runQuery(parseSingleViewLine('!view mission as of not-a-real-date'));
+        assert.equal(r.success, true);
+        assert.ok(r.warnings.some((w) => w.includes('not a valid date')));
+        assert.deepEqual(ids(r), ['mission-klendathu', 'mission-klendathu-ii']);
+    });
+
+    test('as of with no recorded mutation history reconstructs to the same rows as a live query', () => {
+        clearMutationEvents();
+        const withAsOf = runQuery(parseSingleViewLine('!view mission as of 2297-08-10'));
+        const live = runQuery(parseSingleViewLine('!view mission'));
+        assert.deepEqual(ids(withAsOf), ids(live));
     });
 
 });

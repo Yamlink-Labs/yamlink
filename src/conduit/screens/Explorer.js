@@ -53,6 +53,7 @@ function Explorer({
     const [editValue, setEditValue] = React.useState('');
     const [selectedIds, setSelectedIds] = React.useState([]);
     const [bulkActionCursor, setBulkActionCursor] = React.useState(0);
+    const [bulkActionKind, setBulkActionKind] = React.useState('set');
     const [bulkFieldName, setBulkFieldName] = React.useState('');
     const [bulkValue, setBulkValue] = React.useState('');
     const [createForm, setCreateForm] = React.useState({ step: 0, id: '', type: '', name: '' });
@@ -243,6 +244,7 @@ function Explorer({
     const clearBulkState = React.useCallback(() => {
         setSelectedIds([]);
         setBulkActionCursor(0);
+        setBulkActionKind('set');
         setBulkFieldName('');
         setBulkValue('');
     }, []);
@@ -325,7 +327,7 @@ function Explorer({
 
     const explorerState = {
         mode, filterText, filteredNotes, selectedNote, editableFields, editFieldCursor,
-        editField, editValue, bulkActionCursor, bulkFieldName, bulkValue, selectedIds,
+        editField, editValue, bulkActionCursor, bulkActionKind, bulkFieldName, bulkValue, selectedIds,
         createForm, linkFieldName, linkPickFilter, linkPickLoading, filteredPickNotes,
         safePickCursor, contexts, contextCursor, historyLoading, historyError,
         historyEvents, historyCursor, activePane, nodeDetail, traverseStack, notes,
@@ -337,7 +339,7 @@ function Explorer({
         onQuit, setFilterText, setMode, setNoteCursor, onNoteView,
         setEditFieldCursor, setEditField, setEditValue,
         patchNode, showToast, forceDetailRefresh,
-        setBulkActionCursor, setBulkFieldName, setBulkValue,
+        setBulkActionCursor, setBulkActionKind, setBulkFieldName, setBulkValue,
         patchNodesBulk, clearBulkState, deleteNode,
         setCreateForm, postNode, setRefreshKey,
         setLinkFieldName, setLinkPickLoading, setLinkPickFilter, setLinkPickCursor,

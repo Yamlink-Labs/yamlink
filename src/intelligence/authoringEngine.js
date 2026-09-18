@@ -83,6 +83,27 @@ function getSchemaFieldDef(noteType, fieldName) {
     return schema.fields[normalizedField] || schema.fields[normalizedField.replace(/-/g, '_')] || null;
 }
 
+function getSchemaFieldDefFromSchema(schema, fieldName) {
+    const normalizedField = String(fieldName || '').trim().toLowerCase();
+    if (!schema?.fields || !normalizedField) return null;
+    return schema.fields[normalizedField] || schema.fields[normalizedField.replace(/-/g, '_')] || null;
+}
+
+// Shared by getExpectedRelationTypes below and lightbulbUtils.js's
+// getFieldTargetTypesFromSchema — both independently extracted a schema
+// field's relation target types with identical logic (schema.type ===
+// 'relation' -> target/targetTypes) before this was pulled out as one real
+// source. lightbulbUtils.js already has a resolved `schema` object at its
+// call site (not just a noteType), so this takes a schema field def
+// directly rather than re-deriving it from getSchemaFieldDef(noteType, ...).
+function extractRelationTargetTypesFromSchemaField(schemaFieldDef) {
+    if (String(schemaFieldDef?.type || '').trim().toLowerCase() !== 'relation') return [];
+    const types = [];
+    if (schemaFieldDef.target) types.push(schemaFieldDef.target);
+    if (Array.isArray(schemaFieldDef.targetTypes)) types.push(...schemaFieldDef.targetTypes);
+    return normalizeTypeList(types);
+}
+
 function buildAuthoringContext(options = {}) {
     const {
         noteType = '',
@@ -166,12 +187,7 @@ function getExpectedRelationTypes(fieldName, options = {}) {
     } = options;
 
     const schemaFieldDef = getSchemaFieldDef(noteType, normalizedField);
-    const schemaTypes = [];
-    if (String(schemaFieldDef?.type || '').trim().toLowerCase() === 'relation') {
-        if (schemaFieldDef.target) schemaTypes.push(schemaFieldDef.target);
-        if (Array.isArray(schemaFieldDef.targetTypes)) schemaTypes.push(...schemaFieldDef.targetTypes);
-    }
-    const normalizedSchemaTypes = normalizeTypeList(schemaTypes);
+    const normalizedSchemaTypes = extractRelationTargetTypesFromSchemaField(schemaFieldDef);
     if (normalizedSchemaTypes.length) return normalizedSchemaTypes;
 
     if (fieldsCache && fieldsCache.size) {
@@ -311,6 +327,8 @@ module.exports = {
     formatRelationSignal,
     formatWorkflowSignal,
     getSchemaFieldDef,
+    getSchemaFieldDefFromSchema,
+    extractRelationTargetTypesFromSchemaField,
     getExpectedRelationTypes,
     rankWikilinkTargets,
     summarizeAuthoringFieldSignals

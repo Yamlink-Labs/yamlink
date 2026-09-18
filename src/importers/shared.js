@@ -5,6 +5,11 @@ const path = require('path');
 const { serializeFrontmatterDocument } = require('../core/frontmatter');
 const { canonicalizeId } = require('../core/id');
 const { buildImportReportMarkdown } = require('./obsidian');
+const {
+    buildImportTrustProfile,
+    buildImportTrustSection,
+    formatImportTrustSummary
+} = require('./importTrust');
 
 const EXTERNAL_SKIP_DIRS = new Set(['.git', '.obsidian', '.trash', '.vscode', '.cursor', '.zed', '__macosx', 'node_modules']);
 const EXTERNAL_SKIP_FILES = new Set(['.ds_store', 'thumbs.db', 'desktop.ini']);
@@ -163,6 +168,7 @@ function formatExternalInspectionSummary(inspection) {
     if (inspection.platform === 'Notion') {
         const bits = [];
         if (inspection.markdownFiles) bits.push(`${inspection.markdownFiles} markdown`);
+        if (inspection.htmlFiles) bits.push(`${inspection.htmlFiles} html`);
         if (inspection.csvFiles) bits.push(`${inspection.csvFiles} csv`);
         if (inspection.otherFiles) bits.push(`${inspection.otherFiles} asset${inspection.otherFiles === 1 ? '' : 's'}/other`);
         return bits.join(' · ');
@@ -215,6 +221,7 @@ function buildExternalImportReportMarkdown(rootPath, stats, analysis, platformNa
             '## Notion normalization',
             '',
             `- Markdown notes processed: **${stats.markdownNotesProcessed || 0}**`,
+            `- HTML pages converted: **${stats.htmlPagesProcessed || 0}**`,
             `- Frontmatter stamped: **${stats.frontmatterStamped || 0}**`,
             `- Markdown links rewritten: **${stats.rewrittenLinks || 0}**`,
             `- CSV databases processed: **${stats.csvDatabasesProcessed || 0}**`,
@@ -242,6 +249,9 @@ module.exports = {
     stripMarkdownFormatting,
     parseCsvTable,
     formatExternalInspectionSummary,
+    buildImportTrustProfile,
+    buildImportTrustSection,
+    formatImportTrustSummary,
     buildExternalImportReportMarkdown,
     canonicalizeId
 };

@@ -1,6 +1,7 @@
 'use strict';
 
 const path = require('path');
+const { buildImportTrustSection } = require('./importTrust');
 
 function buildImportReportMarkdown(rootPath, stats, analysis, options = {}) {
     const mode = options.mode || 'copy';
@@ -40,6 +41,8 @@ function buildImportReportMarkdown(rootPath, stats, analysis, options = {}) {
         `- Conflicts: **${stats.conflicts.length}**`,
         ''
     ];
+
+    lines.push(buildImportTrustSection(platformName), '');
 
     if (topTypes.length) {
         lines.push('## Top detected types', '');

@@ -13,6 +13,11 @@ const Query = require('../src/conduit/screens/Query');
 const App = require('../src/conduit/App');
 const Peek = require('../src/conduit/components/Peek');
 const {
+    pushContextLayer,
+    popContextLayer,
+    describePaneContext
+} = require('../src/conduit/contextStack');
+const {
     readScopedJson,
     writeScopedJson,
     getBookmarksPath,
@@ -224,6 +229,26 @@ test('context storage round-trips per vault path', () => {
     ];
     writeScopedJson(contextsPath, vaultPath, contexts);
     assert.deepEqual(readScopedJson(contextsPath, vaultPath, []), contexts);
+});
+
+test('layered context stack describes and peels previous pane state', () => {
+    const pane = App.updatePaneRoute(App.createPaneState('briefing', {}), 'explorer', { noteId: 'johnny-rico' });
+    assert.equal(describePaneContext(pane), 'explorer · johnny-rico');
+    const stack = pushContextLayer([], pane);
+    const popped = popContextLayer(stack);
+    assert.equal(popped.stack.length, 0);
+    assert.equal(popped.pane.screen, 'explorer');
+    assert.equal(popped.pane.routeState.explorer.noteId, 'johnny-rico');
+});
+
+test('layered context stack caps old layers so the edge strip stays readable', () => {
+    let stack = [];
+    for (let i = 0; i < 6; i++) {
+        stack = pushContextLayer(stack, App.updatePaneRoute(App.createPaneState('briefing', {}), 'explorer', { noteId: `note-${i}` }), 4);
+    }
+    assert.equal(stack.length, 4);
+    assert.equal(stack[0].pane.routeState.explorer.noteId, 'note-2');
+    assert.equal(stack[3].pane.routeState.explorer.noteId, 'note-5');
 });
 
 test('peek renders without mutating the provided note object', () => {
@@ -713,7 +738,7 @@ function baseExplorerActions() {
         onQuit: spy(), setFilterText: spy(), setMode: spy(), setNoteCursor: spy(), onNoteView: spy(),
         setEditFieldCursor: spy(), setEditField: spy(), setEditValue: spy(),
         patchNode: spy(), showToast: spy(), forceDetailRefresh: spy(),
-        setBulkActionCursor: spy(), setBulkFieldName: spy(), setBulkValue: spy(),
+        setBulkActionCursor: spy(), setBulkActionKind: spy(), setBulkFieldName: spy(), setBulkValue: spy(),
         patchNodesBulk: spy(), clearBulkState: spy(), deleteNode: spy(),
         setCreateForm: spy(), postNode: spy(), setRefreshKey: spy(),
         setLinkFieldName: spy(), setLinkPickLoading: spy(), setLinkPickFilter: spy(), setLinkPickCursor: spy(),
@@ -730,7 +755,7 @@ function baseExplorerState(overrides = {}) {
     return {
         mode: 'browse', filterText: '', filteredNotes: [], selectedNote: null,
         editableFields: [], editFieldCursor: 0, editField: '', editValue: '',
-        bulkActionCursor: 0, bulkFieldName: '', bulkValue: '', selectedIds: [],
+        bulkActionCursor: 0, bulkActionKind: 'set', bulkFieldName: '', bulkValue: '', selectedIds: [],
         createForm: { step: 0, id: '', type: '', name: '' }, linkFieldName: '',
         filteredPickNotes: [], safePickCursor: 0, contexts: [], contextCursor: 0,
         historyEvents: [], activePane: 'notes', nodeDetail: null, traverseStack: [],
@@ -823,6 +848,50 @@ test('handleExplorerKey — Space toggles the selected note for bulk actions', (
     assert.deepEqual(actions._toggleSelectedNote.calls[0], ['johnny-rico']);
 });
 
+test('handleExplorerKey — bulk-menu reaches Add to list field through the shared field flow', () => {
+    const state = baseExplorerState({ mode: 'bulk-menu', bulkActionCursor: 1, selectedIds: ['a', 'b'] });
+    const actions = baseExplorerActions();
+    handleExplorerKey('', { return: true }, state, actions);
+    assert.deepEqual(actions.setBulkActionKind.calls[0], ['add']);
+    assert.deepEqual(actions.setBulkFieldName.calls[0], ['']);
+    assert.deepEqual(actions.setBulkValue.calls[0], ['']);
+    assert.deepEqual(actions.setMode.calls[0], ['bulk-field-name']);
+});
+
+test('handleExplorerKey — bulk-menu cursor can reach the fourth action', () => {
+    const state = baseExplorerState({ mode: 'bulk-menu' });
+    const actions = baseExplorerActions();
+    handleExplorerKey('j', {}, state, actions);
+    const updater = actions.setBulkActionCursor.calls[0][0];
+    assert.equal(updater(2), 3);
+    assert.equal(updater(3), 3, 'clamps at the fourth action');
+});
+
+test('handleExplorerKey — bulk-field-value submits add mode as an API add operation', async () => {
+    const state = baseExplorerState({
+        mode: 'bulk-field-value',
+        bulkActionKind: 'add',
+        bulkFieldName: 'unit',
+        bulkValue: '[[roughnecks]]',
+        selectedIds: ['johnny-rico', 'dizzy-flores']
+    });
+    const actions = baseExplorerActions();
+    actions.patchNodesBulk = (args) => { actions.patchNodesBulk.calls.push([args]); return Promise.resolve(); };
+    actions.patchNodesBulk.calls = [];
+    handleExplorerKey('', { return: true }, state, actions);
+    assert.deepEqual(actions.patchNodesBulk.calls[0][0], {
+        host: '127.0.0.1',
+        port: 3000,
+        updates: [
+            { id: 'johnny-rico', fields: { unit: { add: '[[roughnecks]]' } } },
+            { id: 'dizzy-flores', fields: { unit: { add: '[[roughnecks]]' } } }
+        ]
+    });
+    await Promise.resolve().then(() => {});
+    assert.match(actions.showToast.calls[0][0], /added to 2 notes/);
+    assert.equal(actions.clearBulkState.calls.length, 1);
+});
+
 test('handleExplorerKey — bulk-delete-confirm "y" deletes every selected id then refreshes', async () => {
     const state = baseExplorerState({ mode: 'bulk-delete-confirm', selectedIds: ['a', 'b'] });
     const actions = baseExplorerActions();
@@ -835,9 +904,60 @@ test('handleExplorerKey — bulk-delete-confirm "y" deletes every selected id th
     assert.deepEqual(actions.setMode.calls[actions.setMode.calls.length - 1], ['browse']);
 });
 
+test('handleExplorerKey — delete-confirm "y" blocked by dependencies transitions to delete-force-confirm, not browse', async () => {
+    const state = baseExplorerState({ mode: 'delete-confirm', selectedNote: { id: 'acme-inc' } });
+    const actions = baseExplorerActions();
+    const err = new Error('Delete blocked: Referenced by 2 notes.');
+    err.code = 'DEPENDENCIES_PRESENT';
+    err.dependencies = { total: 2, sourceCount: 2 };
+    actions.deleteNode = () => Promise.reject(err);
+    handleExplorerKey('y', {}, state, actions);
+    await Promise.resolve().then(() => Promise.resolve());
+    assert.deepEqual(actions.setMode.calls[actions.setMode.calls.length - 1], ['delete-force-confirm']);
+    assert.equal(actions.showToast.calls.length, 1);
+    assert.match(actions.showToast.calls[0][0], /2 inbound links? from 2 notes?/);
+});
+
+test('handleExplorerKey — delete-force-confirm "y" retries deleteNode with force: true', async () => {
+    const state = baseExplorerState({ mode: 'delete-force-confirm', selectedNote: { id: 'acme-inc' } });
+    const actions = baseExplorerActions();
+    let call = null;
+    actions.deleteNode = (args) => { call = args; return Promise.resolve(); };
+    handleExplorerKey('y', {}, state, actions);
+    await Promise.resolve().then(() => Promise.resolve());
+    assert.deepEqual(call, { host: '127.0.0.1', port: 3000, id: 'acme-inc', force: true });
+    assert.deepEqual(actions.setMode.calls[actions.setMode.calls.length - 1], ['browse']);
+    assert.match(actions.showToast.calls[0][0], /Force deleted: acme-inc/);
+});
+
+test('handleExplorerKey — bulk-delete-confirm "y" blocked by dependencies transitions to bulk-delete-force-confirm', async () => {
+    const state = baseExplorerState({ mode: 'bulk-delete-confirm', selectedIds: ['a', 'b'] });
+    const actions = baseExplorerActions();
+    const err = new Error('Delete blocked: Referenced by 3 notes.');
+    err.code = 'DEPENDENCIES_PRESENT';
+    err.dependencies = { total: 3, sourceCount: 3 };
+    actions.deleteNode = () => Promise.reject(err);
+    handleExplorerKey('y', {}, state, actions);
+    await Promise.resolve().then(() => Promise.resolve());
+    assert.deepEqual(actions.setMode.calls[actions.setMode.calls.length - 1], ['bulk-delete-force-confirm']);
+    assert.equal(actions.clearBulkState.calls.length, 0);
+});
+
+test('handleExplorerKey — bulk-delete-force-confirm "y" retries every id with force: true', async () => {
+    const state = baseExplorerState({ mode: 'bulk-delete-force-confirm', selectedIds: ['a', 'b'] });
+    const actions = baseExplorerActions();
+    const calls = [];
+    actions.deleteNode = (args) => { calls.push(args); return Promise.resolve(); };
+    handleExplorerKey('y', {}, state, actions);
+    await Promise.resolve().then(() => Promise.resolve());
+    assert.deepEqual(calls.map((c) => [c.id, c.force]).sort(), [['a', true], ['b', true]]);
+    assert.equal(actions.clearBulkState.calls.length, 1);
+    assert.deepEqual(actions.setMode.calls[actions.setMode.calls.length - 1], ['browse']);
+});
+
 function baseDetailState(overrides = {}) {
     return {
-        mode: 'browse', selectedIds: [], bulkActionCursor: 0, bulkFieldName: '', bulkValue: '',
+        mode: 'browse', selectedIds: [], bulkActionCursor: 0, bulkActionKind: 'set', bulkFieldName: '', bulkValue: '',
         editableFields: [], safeEditFieldCursor: 0, editField: '', editValue: '',
         createForm: { step: 0, id: '', type: '', name: '' }, selectedNote: null,
         linkFieldName: '', linkPickFilter: '', linkPickLoading: false, filteredPickNotes: [],
@@ -863,9 +983,10 @@ test('buildExplorerDetail — edit-pick shows every editable field with the curs
 });
 
 test('buildExplorerDetail — bulk-menu title includes the selected count', () => {
-    const state = baseDetailState({ mode: 'bulk-menu', selectedIds: ['a', 'b', 'c'], bulkActionCursor: 2 });
+    const state = baseDetailState({ mode: 'bulk-menu', selectedIds: ['a', 'b', 'c'], bulkActionCursor: 3 });
     const { title, content } = buildExplorerDetail(INK_STUB, state);
     assert.equal(title, 'Bulk Actions — 3 notes');
+    assert.match(flattenText(content), /Add to list field/);
     assert.match(flattenText(content), /Delete all/);
 });
 

@@ -50,7 +50,7 @@ function summarizeGraphTypes(outbound, inbound) {
         .map(([type, count]) => `${type} ${count}`);
 }
 
-function Graph({ ink, host, port, getNode, getTypes, getNodes, initialId, onNavigate, onQuit, disabled, width, splitMode, graphVersion }) {
+function Graph({ ink, host, port, getNode, getTypes, getNodes, initialId, onNavigate, onQuit, disabled, width, splitMode, graphVersion, timeCursor }) {
     const { Box, Text, useInput } = ink;
 
     const [activePane, setActivePane] = React.useState(initialId ? 'graph' : 'types');
@@ -68,17 +68,38 @@ function Graph({ ink, host, port, getNode, getTypes, getNodes, initialId, onNavi
     const [loadError, setLoadError] = React.useState('');
 
     React.useEffect(() => {
-        getTypes({ host, port }).then((raw) => {
-            const all = Array.isArray(raw) ? raw : [];
+        const source = timeCursor
+            ? getNodes({ host, port, at: timeCursor }).then((raw) => {
+                const counts = new Map();
+                for (const node of Array.isArray(raw) ? raw : []) {
+                    const type = String(node?.type || '').trim();
+                    if (!type) continue;
+                    counts.set(type, (counts.get(type) || 0) + 1);
+                }
+                return [...counts.entries()]
+                    .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
+                    .map(([type, count]) => ({ type, count }));
+            })
+            : getTypes({ host, port }).then((raw) => {
+                const all = Array.isArray(raw) ? raw : [];
+                return all.map((t) => ({ type: t.type || String(t), count: t.count || 0 }));
+            });
+        source.then((all) => {
             const total = all.reduce((s, t) => s + (Number(t.count) || 0), 0);
-            setTypes([{ type: 'all', count: total }, ...all.map((t) => ({ type: t.type || String(t), count: t.count || 0 }))]);
+            setTypes([{ type: 'all', count: total }, ...all]);
+            setTypeCursor((cursor) => Math.max(0, Math.min(cursor, all.length)));
+            setSelectedType((current) => {
+                if (!current || current.type === 'all') return { type: 'all', count: total };
+                const found = all.find((entry) => entry.type === current.type);
+                return found || { type: 'all', count: total };
+            });
             setLoadError('');
         }).catch((err) => setLoadError(err.message || String(err)));
-    }, [host, port]);
+    }, [host, port, timeCursor]);
 
     React.useEffect(() => {
         const t = selectedType?.type;
-        getNodes({ host, port, type: t === 'all' ? undefined : t }).then((raw) => {
+        getNodes({ host, port, type: t === 'all' ? undefined : t, at: timeCursor }).then((raw) => {
             const items = (Array.isArray(raw) ? raw : []).map((n) => ({
                 id: n.id, label: n.name || n.title || n.id, type: n.type || ''
             }));
@@ -86,18 +107,28 @@ function Graph({ ink, host, port, getNode, getTypes, getNodes, initialId, onNavi
             setNoteCursor(0);
             setLoadError('');
         }).catch((err) => setLoadError(err.message || String(err)));
-    }, [host, port, selectedType]);
+    }, [host, port, selectedType, timeCursor]);
 
     React.useEffect(() => {
         if (!graphId) return;
         setGraphLoading(true);
         setGraphData(null);
-        getNode({ host, port, id: graphId, include: 'outbound,inbound' }).then((n) => {
+        // Historical reconstruction only knows a note's own fields, so
+        // only outbound relations reconstruct — genuinely knowing who
+        // points *to* this note at a past time would need a full-vault
+        // scan per checkpoint (what /api/graph?at= does), not a single-note
+        // lookup. include=outbound,inbound is meaningless historically
+        // anyway (the API's ?at= path doesn't process `include` at all),
+        // so it's only sent for the live case.
+        const options = timeCursor
+            ? { host, port, id: graphId, at: timeCursor }
+            : { host, port, id: graphId, include: 'outbound,inbound' };
+        getNode(options).then((n) => {
             setGraphData(n);
             setGraphLoading(false);
             setGraphCursor(0);
         }).catch((err) => { setGraphLoading(false); setLoadError(err.message || String(err)); });
-    }, [graphId, host, port, graphVersion]);
+    }, [graphId, host, port, graphVersion, timeCursor]);
 
     const safeNoteCursor = Math.max(0, Math.min(noteCursor, Math.max(0, notes.length - 1)));
     const selectedNote = notes[safeNoteCursor] || null;
@@ -294,7 +325,11 @@ function Graph({ ink, host, port, getNode, getTypes, getNodes, initialId, onNavi
                     }),
                     React.createElement(Text, null, '')
                 )
-                : React.createElement(Text, null, '  ' + p.faint('no inbound links')),
+                : React.createElement(Text, null, '  ' + p.faint(
+                    timeCursor
+                        ? 'inbound links not available while time-traveling — only this note\'s own fields reconstruct'
+                        : 'no inbound links'
+                )),
             allEdges.length === 0
                 ? React.createElement(Text, null, '  ' + p.warn(`${SYM.warn}  isolated note — no connections`))
                 : null

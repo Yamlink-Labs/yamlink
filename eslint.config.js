@@ -74,7 +74,8 @@ module.exports = [
             'src/features/**/*Script.js',
             'src/features/**/*Runtime.js',
             'src/features/**/*Html.js',
-            'src/features/graph2/graph2ClientScript.js'
+            'src/features/graph2/graph2ClientScript.js',
+            'src/features/graph/graphPhysicsEngine.js'
         ],
         languageOptions: {
             ecmaVersion: 'latest',

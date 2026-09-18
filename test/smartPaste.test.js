@@ -10,6 +10,21 @@ const {
     buildNotesFromTable
 } = require('../src/features/smartPasteCore');
 const { parseSingleViewBlock } = require('../src/engine/query');
+const { requireWithVscodeStub, getRegisteredPasteProvider, resetVscodeStubState } = require('./lib/vaultSim');
+
+function makeDataTransfer({ text, fromVscodeEditor }) {
+    return {
+        get(mimeType) {
+            if (mimeType === 'vscode-editor-data') {
+                return fromVscodeEditor ? { asString: async () => JSON.stringify({ languageId: 'markdown' }) } : undefined;
+            }
+            if (mimeType === 'text/plain') {
+                return text === undefined ? undefined : { asString: async () => text };
+            }
+            return undefined;
+        }
+    };
+}
 
 test('Smart Paste detects TSV tables and builds view and note conversions', () => {
     const detected = detectSmartPaste('Name\tRank\tUnit\nJohnny Rico\tLieutenant\tRoughnecks\nDizzy Flores\tPrivate\tRoughnecks');
@@ -77,4 +92,46 @@ test('Smart Paste stays silent on ambiguous plain text', () => {
     assert.strictEqual(detectSmartPaste('Rico met Carmen before deployment.'), null);
     assert.strictEqual(detectSmartPaste('Name\tRank\nOnly one row is not enough'), null);
     assert.strictEqual(detectSmartPaste('- [ ] Already a task\n- [ ] Already structured'), null);
+});
+
+test('Smart Paste never fires on content copied/cut from inside VS Code, even when it looks like a convertible list', async () => {
+    // A plain bullet list is extremely common inside a note's own body (e.g. "The model"
+    // section of this very README) — cutting and pasting one note-to-note inside the editor
+    // must behave as a completely normal paste, not trigger the "convert to task list?" prompt
+    // meant for content copied in from Slack/email/a planning doc.
+    resetVscodeStubState();
+    const { registerSmartPaste } = requireWithVscodeStub('../src/features/smartPaste', require);
+    registerSmartPaste({ subscriptions: { push: () => {} } });
+    const provider = getRegisteredPasteProvider();
+    assert.ok(provider, 'registerSmartPaste must register a paste edit provider against the stubbed vscode.languages API');
+
+    const fakeDocument = { languageId: 'markdown', uri: { fsPath: '/vault/note.md' } };
+    const internalTransfer = makeDataTransfer({
+        text: '- Identity — every note gets a stable id\n- Relations — wikilinks become graph edges',
+        fromVscodeEditor: true
+    });
+
+    const result = await provider.provideDocumentPasteEdits(fakeDocument, [], internalTransfer);
+    assert.strictEqual(result, undefined, 'a paste originating inside VS Code must be left as a plain, unmodified paste');
+});
+
+test('Smart Paste still fires on the same content when it did not come from inside VS Code', async () => {
+    resetVscodeStubState();
+    const { registerSmartPaste } = requireWithVscodeStub('../src/features/smartPaste', require);
+    registerSmartPaste({ subscriptions: { push: () => {} } });
+    const provider = getRegisteredPasteProvider();
+
+    const fakeDocument = { languageId: 'markdown', uri: { fsPath: '/vault/note.md' } };
+    const externalTransfer = makeDataTransfer({
+        text: '- Buy milk\n- Call the vet',
+        fromVscodeEditor: false
+    });
+
+    // vaultSim's stubbed showQuickPick with an empty response queue resolves to undefined,
+    // which registerSmartPaste's provider treats as "user dismissed the picker" and falls
+    // back to a plain-text paste edit — proving detection still ran (unlike the internal-paste
+    // case above, which returns `undefined` itself before ever reaching the picker).
+    const result = await provider.provideDocumentPasteEdits(fakeDocument, [], externalTransfer);
+    assert.ok(Array.isArray(result), 'external clipboard content must still reach Smart Paste detection');
+    assert.strictEqual(result[0].insertText, '- Buy milk\n- Call the vet');
 });

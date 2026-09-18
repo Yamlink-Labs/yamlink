@@ -1,0 +1,93 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="620" viewBox="0 0 1600 620" role="img" aria-labelledby="title desc">
+  <title id="title">Yamlink banner</title>
+  <desc id="desc">Yamlink brand banner using the real logo shape, Rock Salt wordmark styling, and Geist Mono system typography.</desc>
+  <defs>
+    <pattern id="grid" width="48" height="48" patternUnits="userSpaceOnUse">
+      <path d="M48 0H0V48" fill="none" stroke="#222427" stroke-width="1"/>
+    </pattern>
+    <style>
+      text { font-family:"Geist Mono","Roboto Mono","SFMono-Regular",Consolas,monospace; }
+      .wordmark { font-family:"Rock Salt","Segoe Print","Comic Sans MS",cursive; fill:#E6E8EB; font-size:46px; font-weight:400; letter-spacing:1px; }
+      .eyebrow { fill:#E67D61; font-size:15px; font-weight:600; letter-spacing:7px; }
+      .headline { fill:#E6E8EB; font-size:60px; font-weight:600; letter-spacing:-2px; }
+      .sub { fill:#9EA3AA; font-size:24px; font-weight:400; }
+      .small { fill:#9EA3AA; font-size:15px; font-weight:500; letter-spacing:2px; }
+      .label { fill:#666B72; font-size:13px; font-weight:600; letter-spacing:5px; }
+      .trace { fill:#E6E8EB; font-size:22px; font-weight:500; }
+      .dim { fill:#9EA3AA; }
+    </style>
+  </defs>
+
+  <rect width="1600" height="620" rx="36" fill="#151617"/>
+  <rect x="28" y="28" width="1544" height="564" rx="26" fill="#0F1011" stroke="#2B2D31" stroke-width="2"/>
+  <rect x="28" y="28" width="1544" height="564" rx="26" fill="url(#grid)" opacity=".5"/>
+
+  <g transform="translate(82 76)">
+    <rect x="0" y="0" width="74" height="74" rx="18" fill="#151617" stroke="#35383D"/>
+    <g transform="translate(15 13) scale(1.35)" fill="none" stroke="#C5FFBF" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+      <circle cx="18" cy="7" r="4"/>
+      <circle cx="6" cy="22" r="4"/>
+      <circle cx="26" cy="26" r="4"/>
+      <line x1="15.5" y1="10.1" x2="8.5" y2="18.9"/>
+      <line x1="9.9" y1="22.8" x2="22.1" y2="25.2"/>
+      <line x1="24.4" y1="22.3" x2="19.6" y2="10.7"/>
+    </g>
+    <text class="wordmark" x="96" y="53">Yamlink</text>
+  </g>
+
+  <g transform="translate(82 194)">
+    <text class="eyebrow" x="0" y="0">LOCAL KNOWLEDGE ENGINE</text>
+    <text class="headline" x="0" y="88">Plain Markdown.</text>
+    <text class="headline" x="0" y="162">Real structure.</text>
+    <text class="sub" x="2" y="224">Stable IDs, editable views, local graph, CLI, API.</text>
+    <text class="sub" x="2" y="261">No database. No sync account. No lock-in.</text>
+  </g>
+
+  <g transform="translate(82 500)">
+    <rect x="0" y="0" width="176" height="42" rx="21" fill="#151617" stroke="#C5FFBF"/>
+    <text class="small" x="28" y="27" fill="#C5FFBF">LOCAL FIRST</text>
+    <rect x="202" y="0" width="184" height="42" rx="21" fill="#151617" stroke="#5ECFBE"/>
+    <text class="small" x="228" y="27" fill="#5ECFBE">LIVE VIEWS</text>
+    <rect x="412" y="0" width="152" height="42" rx="21" fill="#151617" stroke="#C49BF0"/>
+    <text class="small" x="440" y="27" fill="#C49BF0">STABLE ID</text>
+    <rect x="590" y="0" width="144" height="42" rx="21" fill="#151617" stroke="#E7A85A"/>
+    <text class="small" x="623" y="27" fill="#E7A85A">GIT SAFE</text>
+  </g>
+
+  <g transform="translate(890 82)">
+    <rect x="0" y="0" width="610" height="458" rx="24" fill="#151617" stroke="#35383D" stroke-width="2"/>
+    <path d="M0 74H610" stroke="#2B2D31" stroke-width="2"/>
+    <text class="label" x="34" y="46">VAULT TRACE</text>
+    <text class="small" x="410" y="46">same files, different doors</text>
+
+    <g transform="translate(36 112)">
+      <circle cx="10" cy="10" r="6" fill="#FF429F"/>
+      <text class="label" x="36" y="15">01 / IDENTITY</text>
+      <text class="trace" x="36" y="52"><tspan fill="#FF429F">id:</tspan><tspan dx="18">johnny-rico</tspan></text>
+    </g>
+
+    <g transform="translate(36 198)">
+      <circle cx="10" cy="10" r="6" fill="#C5FFBF"/>
+      <text class="label" x="36" y="15">02 / RELATION</text>
+      <text class="trace" x="36" y="52"><tspan fill="#E7A85A">unit:</tspan><tspan dx="18" fill="#C5FFBF">[[roughnecks]]</tspan></text>
+    </g>
+
+    <g transform="translate(36 284)">
+      <circle cx="10" cy="10" r="6" fill="#5ECFBE"/>
+      <text class="label" x="36" y="15">03 / VIEW</text>
+      <text class="trace" x="36" y="52"><tspan fill="#5ECFBE">!view</tspan><tspan dx="18">character select name, unit</tspan></text>
+    </g>
+
+    <g transform="translate(36 370)">
+      <circle cx="10" cy="10" r="6" fill="#C49BF0"/>
+      <text class="label" x="36" y="15">04 / SURFACES</text>
+      <text class="trace" x="36" y="52">tables <tspan class="dim">/</tspan> graph <tspan class="dim">/</tspan> report <tspan class="dim">/</tspan> terminal <tspan class="dim">/</tspan> web</text>
+    </g>
+
+    <path d="M46 132V390" stroke="#40454C" stroke-width="2"/>
+  </g>
+
+  <path d="M28 444H1572" stroke="#2B2D31" stroke-width="2"/>
+  <text class="small" x="82" y="574">WRITE &gt; LINK &gt; QUERY &gt; INSPECT &gt; REFINE</text>
+  <text class="small" x="1234" y="574">YAMLINK.DEV</text>
+</svg>

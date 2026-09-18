@@ -3,6 +3,7 @@
 const fs = require('fs');
 const vscode = require('vscode');
 const { getBacklinks, getEdges, getGraphStats } = require('../core/graph');
+const { buildDependencyPreview } = require('../core/dependencies');
 const { buildTaskRows } = require('../core/tasks');
 const { getVaultGeneration, getAliasIndex } = require('../core/indexService');
 const { normaliseDateInput } = require('../core/date');
@@ -46,6 +47,7 @@ function buildEntityHubModel(nodeId, idIndex, fieldsCache) {
     const _arcPriors = getCachedPriors(fieldsCache, getVaultGeneration());
     const incomingGroups = buildIncomingGroups(nodeId, idIndex, fieldsCache, _arcPriors.relationshipGravity);
     const outgoingGroups = buildOutgoingGroups(nodeId, nodeFields, idIndex, fieldsCache, _arcPriors.relationshipGravity);
+    const dependencies = buildDependencyPreview(nodeId, idIndex, fieldsCache);
     const summaryRows = buildSummaryRows(nodeFields);
     const taskSections = buildTaskSections(nodeId, idIndex);
     const timelineRows = buildTimelineRows(nodeId, nodeFields, taskSections);
@@ -124,6 +126,7 @@ function buildEntityHubModel(nodeId, idIndex, fieldsCache) {
         documentData,
         blockBacklinks,
         staleConnectedNotes,
+        dependencies,
         isEmpty: incomingGroups.length === 0
             && outgoingGroups.length === 0
             && summaryRows.length === 0

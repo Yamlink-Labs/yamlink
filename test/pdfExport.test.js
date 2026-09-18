@@ -118,6 +118,23 @@ describe('pdf export — resolveImageLine', () => {
 });
 
 describe('pdf export — parseBodySegments with images', () => {
+    test('parses the same callout segments from CRLF-joined content as LF-joined content', () => {
+        const lines = [
+            'Intro text.',
+            '',
+            '> [!NOTE] Field note',
+            '> Callout body.',
+            '',
+            'After text.'
+        ];
+
+        const lf = parseBodySegments(lines.join('\n'));
+        const crlf = parseBodySegments(lines.join('\r\n'));
+
+        assert.deepEqual(crlf, lf);
+        assert.ok(lf.some((segment) => segment.type === 'callout'));
+    });
+
     test('emits an image segment for a standalone (even indented) image line', () => {
         withTempDir((dir) => {
             fs.writeFileSync(path.join(dir, 'photo.png'), MINIMAL_PNG);

@@ -3,6 +3,7 @@
 const fs = require('fs');
 const { getIndex, getPathIndex } = require('../core/indexService');
 const { getBacklinks } = require('../core/graph');
+const { extractMeaningfulBodyBlocks } = require('../core/bodyBlocks');
 const { extractBodyMentionedIds } = require('../intelligence/frontmatterBodyHints');
 
 const ANCHOR_RE = /\[\[(?:[^\]|#\n]+)#([^\]|#\n]+)(?:\|[^\]\n]*)?\]\]/g;
@@ -14,6 +15,8 @@ function buildOutlineModel(text, options = {}) {
     const lines = String(text || '').split('\n');
     const bodyStart = getBodyStartLine(lines);
     const headings = [];
+    const bodyBlocks = extractMeaningfulBodyBlocks(text)
+        .filter(block => block.type === 'task' || block.type === 'quote');
 
     for (let i = bodyStart; i < lines.length; i++) {
         const match = lines[i].match(HEADING_RE);
@@ -30,16 +33,34 @@ function buildOutlineModel(text, options = {}) {
         const sectionLines = lines.slice(heading.line + 1, nextLine);
         const sectionText = sectionLines.join('\n').trim();
         const metrics = buildSectionMetrics(sectionLines, sectionText, anchorCounts.get(slugify(heading.text)) || 0);
+        const blocks = bodyBlocks
+            .filter(block => block.line > heading.line && block.line < nextLine)
+            .map(block => ({
+                id: `${heading.line}:${heading.text}:block:${block.blockId}`,
+                kind: 'block',
+                blockId: block.blockId,
+                type: block.type,
+                label: block.label,
+                line: block.line,
+                parent: null
+            }));
         return {
             id: `${heading.line}:${heading.text}`,
             heading,
             startLine: heading.line,
             endLine: nextLine - 1,
             metrics,
+            blocks,
             children: [],
             parent: null
         };
     });
+
+    for (const node of nodes) {
+        for (const block of node.blocks) {
+            block.parent = node;
+        }
+    }
 
     const roots = [];
     const stack = [];
@@ -119,9 +140,31 @@ function buildSectionTooltip(node, isActive) {
 function pickSectionIcon(node, isActive) {
     if (isActive) return 'target';
     if (node.children.length > 0) return node.heading.level === 1 ? 'book' : 'list-tree';
+    if ((node.blocks || []).length > 0) return node.heading.level === 1 ? 'book' : 'list-tree';
     if (node.metrics.taskCount > 0) return 'checklist';
     if (node.metrics.anchorLinks > 0) return 'link';
     return 'circle-large-outline';
+}
+
+function pickBlockIcon(block) {
+    if (!block) return 'dash';
+    if (block.type === 'task') return 'checklist';
+    if (block.type === 'quote') return 'quote';
+    return 'dash';
+}
+
+function getOutlineEntryLine(entry) {
+    if (!entry) return Number.MAX_SAFE_INTEGER;
+    if (entry.kind === 'block') return entry.line;
+    return entry.startLine;
+}
+
+function getOutlineEntries(node) {
+    if (!node) return [];
+    return [
+        ...(node.children || []),
+        ...(node.blocks || [])
+    ].sort((a, b) => getOutlineEntryLine(a) - getOutlineEntryLine(b));
 }
 
 function isNodeActive(node, activeLine) {
@@ -183,6 +226,16 @@ function nodeMatchesOutlineFilters(node, filters) {
     return true;
 }
 
+function blockMatchesOutlineFilters(block, filters) {
+    if (!block) return false;
+    const query = normalizeSearchQuery(filters && filters.query);
+    if (query && !String(block.label || '').toLowerCase().includes(query)) return false;
+    if (filters && filters.tasksOnly && block.type !== 'task') return false;
+    if (filters && filters.mentionsOnly) return false;
+    if (filters && filters.linkedOnly) return false;
+    return true;
+}
+
 function filterOutlineNode(node, filters) {
     const nextChildren = [];
     for (const child of node.children || []) {
@@ -190,10 +243,19 @@ function filterOutlineNode(node, filters) {
         if (next) nextChildren.push(next);
     }
 
-    if (!nodeMatchesOutlineFilters(node, filters) && nextChildren.length === 0) return null;
+    const nextBlocks = (node.blocks || []).filter(block => blockMatchesOutlineFilters(block, filters));
+    const nodeMatches = nodeMatchesOutlineFilters(node, filters);
+    const hasActiveFilters = Boolean(
+        normalizeSearchQuery(filters && filters.query)
+        || (filters && (filters.tasksOnly || filters.mentionsOnly || filters.linkedOnly))
+    );
+    const visibleBlocks = hasActiveFilters ? nextBlocks : (node.blocks || []);
+
+    if (!nodeMatches && nextChildren.length === 0 && nextBlocks.length === 0) return null;
     return {
         ...node,
-        children: nextChildren
+        children: nextChildren,
+        blocks: visibleBlocks
     };
 }
 
@@ -288,8 +350,25 @@ function registerNoteOutlineView(context) {
         }
 
         getTreeItem(node) {
+            if (node && node.kind === 'block') {
+                const label = String(node.label || '').trim() || (node.type === 'quote' ? 'Quote' : 'Task');
+                const item = new vscode.TreeItem(label, vscode.TreeItemCollapsibleState.None);
+                item.id = node.id;
+                item.description = `${node.type} · L${node.line + 1}`;
+                item.tooltip = `${node.type === 'quote' ? 'Quote' : 'Task'}\n${label}`;
+                item.iconPath = new vscode.ThemeIcon(pickBlockIcon(node));
+                item.contextValue = `yamlinkOutlineBlock-${node.type}`;
+                item.command = {
+                    command: 'yamlink.revealOutlineLine',
+                    title: 'Go to block',
+                    arguments: [node.line]
+                };
+                return item;
+            }
+
             const isActive = node === this._activeNode;
-            const collapsibleState = node.children.length > 0
+            const hasChildren = node.children.length > 0 || (node.blocks || []).length > 0;
+            const collapsibleState = hasChildren
                 ? (isNodeInPath(node, this._activeNode)
                     ? vscode.TreeItemCollapsibleState.Expanded
                     : vscode.TreeItemCollapsibleState.Collapsed)
@@ -313,7 +392,7 @@ function registerNoteOutlineView(context) {
             if (!editor || editor.document.languageId !== 'markdown') return [];
             this._ensureModel(editor.document, editor.selection.active.line);
             const filteredRoots = filterOutlineRoots(this._roots, this._filters);
-            return node ? node.children : filteredRoots;
+            return node ? getOutlineEntries(node) : filteredRoots;
         }
 
         _ensureModel(document, activeLine) {

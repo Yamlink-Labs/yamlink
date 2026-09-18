@@ -108,12 +108,13 @@ extension.js                    ← VS Code entry point, wires everything
 │   ├── id.js                   ← Canonical ID normalization (kebab-case)
 │   ├── rename.js               ← Vault-wide wikilink rename propagation
 │   ├── writeField.js           ← Surgical frontmatter field updates
+│   ├── bulkFieldOperation.js   ← Shared set/add/clear field-operation core (value trim, wikilink-list add with idempotency, scalar-field rejection) — the one implementation `yamlink bulk-set` (CLI), `PATCH /api/nodes/bulk`'s `{ add }` mode, and VS Code's `Yamlink: Bulk Set Field on Selected Notes` all read, not three separate copies
 │   ├── noteDiff.js             ← Pure compareNoteFields(id1, id2, fields1, fields2) — shared by CLI diff + API /api/diff
 │   ├── timeEngine.js           ← Time Engine: reconstructNoteAtTime/reconstructVaultAtTime (backward-undo from current state via the mutation log), buildNoteTimeline/buildFieldTimeline (multi-point checkpoints), buildHistoricalGraph (shared by API `?at=` and CLI `--at`)
 │   ├── vaultService.js         ← Shared headless rebuild coordinator (mutate + notifyFileChange), used by API/CLI/LSP
 │   ├── bodyBlocks.js           ← Block identity extraction (headings/tasks/quotes/footnotes) — see Block Identity System below
 │   ├── imageEmbed.js           ← Shared `![[image.png]]` embed resolution — one source of truth for hover, diagnostics, decorations, and Ctrl+Click
-│   ├── templateRegistry.js     ← Smart Template lookup per type
+│   ├── templateRegistry.js     ← Smart Template lookup per type — `getTemplatesForType()` returns every template for a type (plural; multiple templates per type are supported), `getTemplateForType()` stays for single-match call sites; `saveTemplateFile()` takes an optional `templateName` to save alongside an existing template instead of always overwriting `<type>.md`
 │   ├── healthSnapshot.js       ← Vault Health data model shared by panel + CLI
 │   ├── publish.js              ← 0.7.7 Authoring & Publishing: status-gate (isPublishable), slug/order convention, fence-aware wikilink→relative-URL resolution
 │   ├── buildPipeline.js        ← 0.7.7: `runBuild()` — the `yamlink publish` engine (manifest, per-type JSON, asset pass-through, per-note content-hash caching — 0.7.9 fixed a real bug where a generation-counter check made this a no-op after the first CLI invocation — redirect map, pre-publish safety warnings, sitemap/feed/search-index)
@@ -123,8 +124,8 @@ extension.js                    ← VS Code entry point, wires everything
 │
 ├── src/engine/                 ← Pure query engine. No VS Code imports. Split from a single 766-line query.js.
 │   ├── query.js                ← Thin entry point (parseAllViewQueries, executeQuery)
-│   ├── queryParser.js          ← !view clause parsing
-│   ├── queryExecutor.js        ← Clause execution against fieldsCache
+│   ├── queryParser.js          ← !view clause parsing, incl. VQL v1 graph traversal (`linked_to`/`linked_from`/`within N`, capped at 5 hops) and temporal (`as of <date>`)
+│   ├── queryExecutor.js        ← Clause execution against fieldsCache; `linked_to`/`linked_from` resolved via a cycle-safe BFS (`collectTraversalIds`) over `core/graph.js`; `as of` swaps the row source to a `reconstructVaultAtTime()` snapshot (`core/timeEngine.js`) instead of live fieldsCache — frontmatter fields only, computed/virtual fields stay live
 │   ├── queryConditions.js      ← where-clause condition evaluators
 │   ├── queryCache.js           ← LRU 300-entry query result cache
 │   └── suggestions.js / suggestionsContext.js / suggestionsExplain.js  ← Query-builder suggestion support
@@ -141,6 +142,8 @@ extension.js                    ← VS Code entry point, wires everything
 │   ├── hoverBadge.js           ← Pure hover badge SVG/markdown builder, shared by VS Code hover and LSP hover
 │   ├── clusterEmergence.js     ← Pre-schema field-signature cluster detection, feeds cold-start arc suggestions
 │   ├── relationshipGravity.js  ← Scores (source, field, target) edges by structural corroboration + decayed mutation history
+│   ├── structuralSignature.js  ← Structural signatures: macro-level vault shape (dominant types, field-bundle rigidity, hub concentration, recent growth rate) from data already computed elsewhere — no new vault scan, no hardcoded archetype list, every number ships with a plain honest sentence
+│   ├── workflowMemory.js       ← Workflow memory v1: field-pair co-occurrence across real authoring sessions, grouped by time window (not `sessionId` — unset on every VS Code write path). Feeds `suggestionCascade.js` as a fallback nudge only when the arc-based suggestion has nothing confident
 │   ├── lifecycleState.js       ← draft/growing/consolidated/hub/stale
 │   ├── driftDetector.js        ← on-track/minor-drift/drifting/outlier vs vault bundles
 │   ├── noteRolesCore.js        ← Person/event/artifact/etc role inference
@@ -157,6 +160,7 @@ extension.js                    ← VS Code entry point, wires everything
 │   ├── viewLightbulb.js, lightbulbUtils.js  ← Code action / lightbulb providers, including the adaptive-frontmatter suggestion system (largely VS-Code-only — see LSP handlers note below)
 │   ├── suggestionCascade.js    ← Post-completion-acceptance field-cascade nudge
 │   ├── viewPanel.js            ← Live table webview
+│   ├── viewCodeLens.js, blockAffordances.js  ← CodeLens providers: "Run"/"Close" above `!view` blocks; "Copy reference" + "N references" above addressable blocks (headings/tasks/quotes/footnotes), added 2026-08-20
 │   ├── entityHub.js / entityHubModel.js  ← Note Report sidebar
 │   ├── entity/unlinkedRefs.js  ← Unlinked body-text mention detection
 │   ├── calendarPanel.js        ← Calendar webview
@@ -165,13 +169,13 @@ extension.js                    ← VS Code entry point, wires everything
 │   ├── home/                   ← Home panel HTML, CSS, browser-side JS
 │   ├── preview/liveNotePanelController.js, liveNoteModel.js, liveNoteStyles.js, previewRenderer.js  ← Live Note rendered sidecar (synced preview beside the editor). 0.7.7: `yamlink.liveNotePreviewUrl` setting lets the panel embed a destination site's own dev server (iframe) for the current note instead of the normal rendered HTML, falling back to the normal render for a note with no resolvable `id:`
 │   ├── noteOutline.js          ← Note Outline sidebar (section tree with per-heading metadata)
-│   ├── importExternalVaults.js, importObsidian.js  ← Vault import (Obsidian/Notion/Evernote/Roam), split into src/importers/
+│   ├── importExternalVaults.js, importObsidian.js  ← Vault import (Obsidian/Notion/Evernote/Roam), split into src/importers/; `src/importers/importTrust.js` builds the per-platform trust profile (what preserves well, what to review, what the export format itself can't carry) surfaced in both the confirmation QuickPick and the generated import report
 │   ├── graph/                  ← x-graph workspace panel (Canvas2D)
 │   └── graph2/                 ← x-graph sidebar panel (same renderer)
 │
 ├── src/actions/                ← Code action providers and view builder
 ├── src/diagnostics/            ← Broken links, duplicate IDs, schema violations
-├── src/runtime/                ← RefreshRouter, performance tracker, mutation log
+├── src/runtime/                ← RefreshRouter, performance tracker, mutation log, webhooks.js, daemonRegistry.js (PID-file-backed registry for `yamlink on --daemon` — real liveness checks via `process.kill(pid, 0)`, self-pruning stale records)
 ├── src/export/                 ← PDF export (pdfkit, lazy-loaded)
 │
 ├── src/cli/                    ← Headless CLI + local API launcher (no VS Code imports)
@@ -275,6 +279,8 @@ extension.js                    ← VS Code entry point, wires everything
 | `yamlink stale` | List notes ranked by staleness (lifecycle). `--type`, `--limit`. |
 | `yamlink orphans` | List notes with no inbound or outbound links. `--type`, `--limit`. |
 | `yamlink pressure` | Vault-wide "knowledge pressure" summary (where the vault most needs attention). |
+| `yamlink signature` | Structural signature: dominant types, field-bundle rigidity, hub concentration, recent growth rate (`intelligence/structuralSignature.js`). |
+| `yamlink workflow-memory --type <type>` | Repeated field-pair co-occurrence across real authoring sessions, time-window grouped (`intelligence/workflowMemory.js`). Feeds `suggestionCascade.js`'s nudge as a fallback when arc has nothing confident. |
 | `yamlink lenses` | Saved/derived vault lenses (curated views). |
 | `yamlink session` | Session activity summary from the mutation log. `--id`. |
 | `yamlink env` | Print/generate shell environment integration (`--shell`). |
@@ -288,7 +294,7 @@ extension.js                    ← VS Code entry point, wires everything
 | `yamlink search <query>` | Search notes by id, name, title, or type. `--type`, `--field`, `--json`, `--quiet`. |
 | `yamlink status` | Fast machine-readable vault snapshot for scripts and checks. |
 | `yamlink watch` | Persistent watcher — rebuilds on `.md` saves, prints a timestamped one-liner. |
-| `yamlink on <event> -- <script>` | Automation hooks — watch loop + script exec on matching mutation events. |
+| `yamlink on <event> -- <script>` | Automation hooks — watch loop + script exec on matching mutation events. `--daemon` spawns it as a real detached background process (survives closing the terminal); `--list`/`--stop <id>`/`--stop-all` manage running daemons via `daemonRegistry.js`'s real PID-liveness checks. Watcher itself retries with exponential backoff (up to 5 attempts) on a real `fs.watch` failure instead of dying silently. |
 | `yamlink completions bash\|zsh` | Print shell completion script. |
 | `yamlink health` | Vault health overview: lifecycle, drift, type distribution. |
 | `yamlink schema list\|check <type>` | Schema introspection — list all schema targets or check conformance for a type. |
@@ -296,7 +302,8 @@ extension.js                    ← VS Code entry point, wires everything
 | `yamlink query "<clause>"` | Run a Yamlink query. Accepts bare clauses (`where type = x`) or full `!view` syntax. ASCII table or JSON. |
 | `yamlink report <id>` | Full note report: type, lifecycle, drift, links. `--at <date>` reconstructs a historical report (fields + outbound only — lifecycle/drift/inbound are live-vault inferences with no historical concept). |
 | `yamlink links <id>` | Outbound and inbound links for a note. `--at <date>` reconstructs outbound-only historical links (inbound-at-a-point needs whole-vault reconstruction — use `graph --at` for that). |
-| `yamlink set <id> <field> <value>` | Set or remove a frontmatter field. `--clear` removes; `--dry-run` previews. Emits mutation events with `source: 'cli'`. |
+| `yamlink set <id> <field> <value>` | Set or remove a frontmatter field. `--clear` removes; `--dry-run` previews. Emits mutation events with `source: 'cli'`. Goes through `vaultService.mutate()` (matching `create`/`rename`) — a real fix, this used to write directly via `fs.writeFileSync`, the only write command that didn't. |
+| `yamlink bulk-set --ids <a,b,c> --field <name>` | Apply one `--value`/`--add`/`--clear` field change across many notes in a single command. `--add` treats the field as a wikilink-list relation (idempotent, creates the list if absent, fails clearly on a scalar field). Per-note failure isolation — one bad id doesn't abort the batch. `--dry-run`/`--json` supported. |
 | `yamlink link <id> <field> <target>` | Add a `[[wikilink]]` relation field. Validates target exists in index. `--append` for multi-value fields. |
 | `yamlink mutations` | Show recent mutation events from `.yamlink/mutation-log.ndjson`. `--limit`, `--since`, `--type`. |
 | `yamlink graph` | Export full vault graph as `{ nodes, edges }` JSON. `--only-types` to filter. `--at <date>` reconstructs the whole vault's nodes and edges as they existed at that moment (via `timeEngine.js`'s `reconstructVaultAtTime`/`buildHistoricalGraph`). |
@@ -304,14 +311,21 @@ extension.js                    ← VS Code entry point, wires everything
 | `yamlink conduit` | Launch the Ink-based terminal UI that talks to the local API. |
 | `yamlink publish --out <dir>` | 0.7.7 Authoring & Publishing: build a static, structured content payload for a site generator (Astro/Next/Eleventy). `--mode preview\|production`, `--site-url` (sitemap/feed), `--webhook`, `--force`. |
 | `yamlink export` | Export vault as JSON or CSV. `--id <id> --format html [--output <path>]` (0.7.7): a single note as a standalone, self-contained HTML file — resolved links, resolved `!view` snapshots, callout styling, no VS Code dependency. |
+| `yamlink block-backlinks <note-id>` | List every real `[[note-id#heading]]`/`[[note-id^block-id]]` reference pointing at a specific block in this note. `--block <block-id>` narrows to one block. |
+| `yamlink glossary` | Vault-wide glossary of terms/values with backlink counts. `--type`, `--no-group-by-type`, `--hide-unreferenced`, `--extra-field <name>`, `--sort-by-references`. |
+| `yamlink hooks add\|list\|remove` | Manage webhook registrations (`POST /api/hooks` equivalent) — fires an HTTP callback on a matching mutation event, distinct from `on`'s local script-exec model. `hooks add <event> <url> [--type <noteType>]`, `hooks list`, `hooks remove <id>`. |
+| `yamlink restore <timestamp>` | Reconstruct the whole vault as it existed at a point in time via the Time Engine, printed as real Markdown notes (not JSON) — a dry-run preview of an actual restore, not a mutating operation. `--output <dir>` writes the reconstructed notes to disk instead of stdout; incomplete reconstructions (past the mutation-log/snapshot boundary) are flagged per-note. |
+| `yamlink snapshot` | Force an immediate vault snapshot to `.yamlink/vault-snapshots.ndjson`, independent of the automatic snapshot-before-prune cycle. `--reason <text>` records why. |
+| `yamlink template save <id>` | Save an existing note as a reusable template for its type. `--force` overwrites an existing template of the same name. |
+| `yamlink trends` | Vault Projections from the CLI: Growth/Stale/Structure trend lanes with confidence and evidence, reusing `vaultTrends.js`'s real least-squares regression. `--output <path>` writes JSON instead of printing. |
 
 ### Local HTTP API (`yamlink serve`)
 
 `yamlink serve` exposes the vault as a local REST API on `127.0.0.1`. Full endpoint-by-endpoint reference (method, path, params, response shape, error codes) at [`CONTRACT.md`](CONTRACT.md).
 
-**Read endpoints:** `GET /api/nodes`, `GET /api/nodes/:id` (`?at=` time travel, `?include=` composite reads, `?minGeneration=` read-your-writes), `GET /api/nodes/:id/outbound`, `GET /api/nodes/:id/inbound`, `GET /api/nodes/:id/neighborhood`, `GET /api/nodes/:id/history`, `GET /api/nodes/:id/evolution`, `GET /api/nodes/:id/archaeology`, `GET /api/search`, `GET /api/schema`, `GET /api/diff` (two-note compare or `?since=` vault-wide changes), `GET /api/query`, `GET /api/graph` (`?at=` for a historical reconstruction), `GET /api/tasks`, `GET /api/mutations`, `GET /api/session/summary`, `GET /api/types`, `GET /api/health`, `GET /api/intelligence/note`, `GET /api/intelligence/arc`, `GET /api/intelligence/fieldCategory`, `GET /api/intelligence/clusters`, `GET /api/intelligence/lenses`
+**Read endpoints:** `GET /api/nodes`, `GET /api/nodes/:id` (`?at=` time travel, `?include=` composite reads, `?minGeneration=` read-your-writes), `GET /api/nodes/:id/outbound`, `GET /api/nodes/:id/inbound`, `GET /api/nodes/:id/neighborhood`, `GET /api/nodes/:id/history`, `GET /api/nodes/:id/evolution`, `GET /api/nodes/:id/archaeology`, `GET /api/search`, `GET /api/schema`, `GET /api/diff` (two-note compare or `?since=` vault-wide changes), `GET /api/query`, `GET /api/graph` (`?at=` for a historical reconstruction), `GET /api/graph/history`, `GET /api/tasks`, `GET /api/mutations`, `GET /api/session/summary`, `GET /api/types`, `GET /api/health`, `GET /api/intelligence/note`, `GET /api/intelligence/arc`, `GET /api/intelligence/fieldCategory`, `GET /api/intelligence/clusters`, `GET /api/intelligence/trends`, `GET /api/intelligence/lenses`, `GET /api/glossary`, `GET /api/hooks`
 
-**Write endpoints:** `POST /api/nodes`, `POST /api/nodes/bulk`, `PATCH /api/nodes/:id`, `PATCH /api/nodes/bulk`, `DELETE /api/nodes/:id`
+**Write endpoints:** `POST /api/nodes`, `POST /api/nodes/bulk`, `PATCH /api/nodes/:id`, `PATCH /api/nodes/bulk` (per-field values overwrite by default; `{ add: "value" }` instead of a plain value appends to a wikilink-list relation field, same idempotent/scalar-rejection semantics as `yamlink bulk-set --add` — both read `core/bulkFieldOperation.js`), `DELETE /api/nodes/:id`, `POST /api/hooks`, `PATCH /api/hooks/:id`, `DELETE /api/hooks/:id` (webhook registration CRUD — same underlying registry `yamlink hooks` manages from the CLI)
 
 **Pagination contract:** `/api/nodes`, `/api/search`, and `/api/schema` return wrapper objects with `meta: { total, page, limit, pages }`. Search is capped at `200`, schema at `100`, node listing at `500`.
 
@@ -508,6 +522,9 @@ Six VS Code commands give cursor-aware single-keystroke access to block referenc
 
 The cursor-detection path: `findCurrentAddressableBlock()` calls `findBodyBlockInLineRange(blocks, selection.start.line, selection.end.line)`. If a block is found, it is used directly — no QuickPick appears. If no block is found at the cursor, the QuickPick opens with all addressable blocks in the note.
 
+**In-editor affordances (`src/features/blockAffordances.js`, added 2026-08-20 — Block-ID revision pass, part 1):**
+A `CodeLensProvider` puts a "Copy [section/task/quote/footnote] reference" lens directly above every addressable block, and — only when `entityHubModel.js`'s `buildBlockBacklinks()` reports a real, non-zero reference count for that specific block — a "N references" lens beside it. Clicking the reference-count lens jumps straight to the single referencing note/line, or opens a QuickPick when there's more than one. This is a new surface, not new computation: block extraction and block-backlink resolution are the same primitives `blockReferenceCommands.js` and the Note Report already use. Registered in `extension.js` alongside the pre-existing `viewCodeLens` provider.
+
 **Mutation log:**
 Insert commands write a `block_reference_created` event to `.yamlink/mutation-log.ndjson` with `{ type: 'block_reference_created', noteId, field: 'block_reference' | 'section_reference', newValue: reference, meta: { targetNoteId, blockType, blockId } }`. This event type is not yet surfaced in the activity feed or Note Report History tab — it is logged for future calibration and intelligence use.
 
@@ -575,7 +592,7 @@ This tracks the active optimization program started 2026-05-26.
 - [x] **Hardcoded type completion removed** — `getKnownTypeCandidates()` now returns vault types first; archetypes only fire on zero-history vaults
 - [x] **Test baseline updated** — see `scripts/test-count-baseline.json` for the current number (grows every session; do not hardcode it here)
 - [x] **P3 monolith splits (original 3) — all done**: `src/engine/query.js` (766 → 24 lines; split into `queryParser.js`/`queryExecutor.js`/`queryConditions.js`/`queryCache.js`/`suggestions*.js`), `src/intelligence/suggestionCore.js` (1011 → 64 lines; split into the `frontmatter*`/`suggestion*` family), `src/features/completion.js` (849 → 201 lines; split into `completionCore.js`/`completionItemBuilders.js`/`completionProviders.js`/`completionTracker.js`)
-- [x] **P3 monolith splits (found during the 0.7.4 pass, not on the original list)** — `src/actions/queryBuilderPanel.js` (1830→298 lines), `src/actions/codeActionsNodeCreationCommands.js` (991→87 lines, handlers split into `nodeCreationHandlers.js`), `src/features/graph/graphClientXGraphScript.js` (996→36 lines, fragments in `xgraphClientBody.js`), `src/features/importExternalVaults.js`/`importObsidian.js` split into `src/importers/{notion,evernote,roam,obsidian,shared}.js`. Structural only — no behavior changes, full suite stayed green throughout each split.
+- [x] **P3 monolith splits (found during the 0.7.4 pass, not on the original list)** — `src/actions/queryBuilderPanel.js` (1830→298 lines), `src/actions/codeActionsNodeCreationCommands.js` (991→87 lines, handlers split into `nodeCreationHandlers.js`), `src/features/graph/graphClientXGraphScript.js` (996→36 lines, fragments in `xgraphClientBody.js`), `src/features/importExternalVaults.js`/`importObsidian.js` split into `src/importers/{notion,evernote,roam,obsidian,shared}.js`. Structural only — no behavior changes, full suite stayed green throughout each split. **`nodeCreationHandlers.js` (1058 lines) was itself split further (2026-08-15, verified: all 12 handler functions accounted for)** into `nodeCreationCore.js`/`nodeCreationMaintenance.js`/`nodeCreationSchema.js`/`nodeCreationSelection.js`/`nodeCreationTemplates.js`; `src/importers/obsidian.js` split into `obsidianAnalysis.js`/`obsidianFilesystem.js`/`obsidianLinks.js`/`obsidianMigration.js`/`obsidianReports.js` (all 24 functions accounted for); `src/features/health/healthHtml.js` split into `healthHelp.js`/`healthIntelligenceHtml.js`/`healthSchemaHtml.js` (all 7 accounted for); `src/features/home/homePanelHtml.js` split into `homeChartsHtml.js`/`homeIcons.js`/`homeProjectionHtml.js`/`homeSectionsHtml.js` (all 24 accounted for).
 - [ ] **`src/conduit/screens/Explorer.js`** (1086 lines) — deliberately deferred, not done. Stateful React/Ink component, not a mechanical split; needs custom-hook extraction with real state-ownership decisions and has no test coverage to catch mistakes. Needs its own dedicated pass.
 
 ### Pending — P1: Webview architecture migration

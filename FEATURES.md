@@ -232,6 +232,7 @@ yamlink ls [--type] [--sort] [--json]           # list notes with unix-style fil
 yamlink grep <text> [--type] [--field] [--json] # search frontmatter values for matching text
 yamlink find [--has] [--missing] [--type]       # structural search by present/missing fields
 yamlink set <id> <field> <value> [--clear]      # set or remove a frontmatter field
+yamlink bulk-set --ids <a,b,c> --field <name> (--value <v>|--add <v>|--clear)  # apply one field change across many notes at once
 yamlink link <id> <field> <target> [--append]   # add a wikilink relation field
 yamlink search <query> [--type] [--json]        # search by id, name, title, or type
 yamlink status [--vault <path>] [--json]        # compact vault snapshot (notes, edges, broken links)
@@ -252,6 +253,8 @@ yamlink drift [--type] [--limit] [--json]       # notes structurally drifting fr
 yamlink stale [--type] [--limit] [--json]       # notes in a stale lifecycle state
 yamlink orphans [--type] [--limit] [--json]     # notes with no inbound or outbound links
 yamlink pressure [--json]                       # knowledge pressure: load-bearing drafts, stale hubs, orphans
+yamlink signature [--json]                      # structural signature: dominant types, field rigidity, hub concentration, growth rate
+yamlink workflow-memory --type <type> [--json]  # repeated field pairs you add together on this type, across real authoring sessions
 yamlink lenses [--json]                         # vault change lenses over mutation history
 yamlink session [--id] [--json]                 # summarize recent or explicit mutation sessions
 yamlink mutations [--limit] [--since] [--type]  # recent mutation events from the vault log
@@ -262,13 +265,19 @@ yamlink export [--format json|csv|html] [--id <id>]  # dump vault to JSON/CSV, o
 yamlink publish --out <dir> [--mode preview|production] [--site-url] [--webhook] [--force]  # build a static, structured content payload for a site generator
 yamlink env [--shell bash|zsh|fish]             # export shell variables for the current vault
 yamlink watch [--vault <path>]                  # watch vault, rebuild on .md changes
-yamlink on <event> [--type <type>] -- <script>  # run a script on vault mutation events
+yamlink on <event> [--type <type>] -- <script> [--daemon]  # run a script on vault mutation events (--daemon: survives closing this terminal)
+yamlink on --list | --stop <id> | --stop-all    # manage running "on" daemons
 yamlink conduit                                 # terminal UI — auto-starts server if not already running
 yamlink init [path]                             # scaffold a new Yamlink vault
 yamlink completions bash|zsh                    # print shell completion script
+yamlink template save <id> [--force]            # save an existing note as a reusable template
+yamlink glossary --type <a,b> [--json]          # live alphabetized glossary with definitions and backlinks
+yamlink block-backlinks <id> [--block <id>]     # notes linking to a specific task/quote/heading/footnote
+yamlink trends [--json]                         # Growth/Stale/Structure forecast and retrospective accuracy
+yamlink hooks add|list|remove                   # webhook registrations — HTTP callback on a matching mutation event
 ```
 
-44 commands total. All commands accept `--vault <path>` (defaults to current directory). Most accept `--json` for machine-readable output. `ls`/`grep`/`find` print a real aligned table by default; `--quiet` on those three restores the old plain tab-separated form for shell pipelines.
+49 commands total. All commands accept `--vault <path>` (defaults to current directory). Most accept `--json` for machine-readable output. `ls`/`grep`/`find` print a real aligned table by default; `--quiet` on those three restores the old plain tab-separated form for shell pipelines.
 
 `yamlink serve --lsp` runs the [LSP server](#lsp-server) — a persistent JSON-RPC 2.0 process for Neovim, Zed, Helix, and Emacs. See the LSP section below.
 
@@ -290,6 +299,7 @@ yamlink completions bash|zsh                    # print shell completion script
 | `DELETE /api/nodes/:id` | Remove the note file from disk and index |
 | `GET /api/query?q=<query>` | Run any Yamlink query, returns rows + columns |
 | `GET /api/graph` | All nodes and edges as `{ nodes, edges }`. `?at=<timestamp>` for a historical graph reconstruction |
+| `GET /api/graph/history` | Time series of reconstructed graph snapshots over a date range |
 | `GET /api/diff` | `?from=`+`?to=` compares two notes' fields; `?since=<timestamp>` reports vault-wide field changes |
 | `GET /api/search` \| `/schema` \| `/types` | Vault search, schema introspection, type distribution |
 | `GET /api/health` | Broken link count + schema conformance |
@@ -302,6 +312,7 @@ yamlink completions bash|zsh                    # print shell completion script
 | `GET /api/intelligence/fieldCategory?id=&field=` | Field classification: category, confidence, source, reasons |
 | `GET /api/intelligence/note?id=` \| `/clusters` \| `/lenses` | Combined note intelligence snapshot; detected pre-schema field clusters; vault-wide change lenses |
 | `GET /api/intelligence/trends` | Growth/Stale/Structure forecast and retrospective accuracy — the same data `yamlink trends` and Vault Health's Projections card show |
+| `GET`/`POST /api/hooks`, `PATCH`/`DELETE /api/hooks/:id` | Webhook registration CRUD — the HTTP-callback counterpart to `yamlink on`'s local script-exec model; same registry `yamlink hooks` manages from the CLI |
 
 All responses include `X-Yamlink-Generation` (vault version integer) and `X-Yamlink-Api-Version` headers. CORS is enabled for all origins (`*`) — no authentication by default, since anything reachable at `127.0.0.1` is otherwise trusted; set `YAMLINK_API_TOKEN` before starting `yamlink serve` to require a matching `X-Yamlink-Token` header on every request. Full method/path/params/error-code reference: [`CONTRACT.md`](CONTRACT.md).
 
@@ -442,8 +453,9 @@ Yamlink registers the following commands in the VS Code command palette:
   - **Keybinding**: `Ctrl+Alt+J` (Windows / Linux), `Cmd+Alt+J` (macOS)
   - Journal notes are first-class notes: queryable (`!view journal sort date desc limit 7`), linkable (show as incoming on linked notes), graphable, and visible in the calendar.
 - `Yamlink: New Note from Selection` — selected text in the editor becomes the title of a new linked note; the selection is replaced with `[[new-id]]`
-- `Yamlink: Extract Selection to New Note` (`yamlink.splitNoteBody`) — selected body text becomes the body of a new note; the selection is replaced with `![[new-id]]` (embed); `source: [[original-id]]` is written into the new note's frontmatter. Both commands appear in the editor right-click menu when text is selected in a Markdown file.
+- `Yamlink: Split Note Body` (`yamlink.splitNoteBody`) — selected body text becomes the body of a new note; the selection is replaced with `![[new-id]]` (embed); `source: [[original-id]]` is written into the new note's frontmatter. Both commands appear in the editor right-click menu when text is selected in a Markdown file.
 - `Yamlink: Query in Plain English` (`yamlink.naturalQuery`) — type a plain-English description; Yamlink generates the `!view` syntax using 16 sentence templates and 100% vault vocabulary injection. Works for any domain. The generated query is shown in a preview QuickPick before insertion. Standard `!view` syntax is unchanged — this is a learning and discovery tool.
+- `Yamlink: Bulk Set Field on Selected Notes` (`yamlink.bulkSetFieldOnSelection`) — select multiple Markdown notes in the Explorer, right-click, choose a field and Set/Add/Clear. One note failing doesn't abort the rest. Appears in the Explorer's right-click menu when the selection is Markdown files.
 - `Yamlink: New Note from Template` — pick a specific `_templates/` file directly
 - `Yamlink: New Note from Schema`
 - `Yamlink: Open Note Report`
@@ -476,6 +488,18 @@ A narrow but useful Obsidian bridge:
 - Yamlink then offers to open Vault Health so you can inspect the imported vault right away
 
 This is intentionally not a full migration. It is a quick way to get an existing Obsidian vault under Yamlink so the structural surfaces can start working on it.
+
+### Import from Notion, Roam Research, and Evernote
+
+`Yamlink: Import External Vault Export` covers three more platforms beyond Obsidian, each converting its export format into stamped Yamlink notes:
+
+- **Notion** — Markdown or HTML export folder; stamps `id:`, `title:`, `imported_from: notion`, `parent:`; rewrites local links into `[[wikilinks]]`; expands CSV databases into row notes under `_notion_databases/`
+- **Roam Research** — JSON page export; stamps `id:`, `title:`, `imported_from: roam`, `roam_uid:`; preserves nested bullet structure and block UIDs as `^uid` anchors; converts `{{[[TODO]]}}`/`{{[[DONE]]}}` into task syntax; date-titled pages become journal notes
+- **Evernote** — `.enex` file; converts `<en-todo>` to real task checkboxes, resolves `<en-media>` to real attachment links at their real position, gives `<en-crypt>` an honest placeholder instead of dropping it silently
+
+### Import trust profiles
+
+Every import — Obsidian and the three above — shows a real "what to expect" summary before you commit, not just structural counts. A one-line version appears in the import confirmation screen; a longer "What to expect from this import" section is written into the generated import report. Per platform, states what comes over well, what to double-check, and what the export format itself makes impossible to fully rebuild regardless of importer quality (e.g. Notion's export never carries enough data to reconstruct real relations, rollups, formulas, or views). Built from `src/importers/importTrust.js`, shared across all four platforms.
 
 ---
 
@@ -525,6 +549,8 @@ limit 10
 - `limit`
 - `via`
 - `group by`
+- `linked_to` / `linked_from` (graph traversal — add `within N`, up to 5 hops, for more than one hop)
+- `as of` (temporal reconstruction — runs the query against a past date instead of today)
 
 ### Where operators
 
@@ -580,6 +606,23 @@ limit 10
 via commander
 select date, outcome
 ```
+
+### Graph traversal (`linked_to` / `linked_from` / `within`)
+
+```md
+!view * linked_from [[project-x]] within 2
+```
+
+Reaches everything two links away from `project-x` in one query — the notes it points to directly, and everything those notes point to. Omit `within` for a single hop (the default). `linked_to [[id]]` is the reverse direction — notes with an outbound edge to `id`. Combines with a type filter and `where`, and multiple traversal clauses intersect (AND) rather than union.
+
+### Temporal reconstruction (`as of`)
+
+```md
+!view mission as of 2297-08-10
+where outcome = ongoing
+```
+
+Runs the whole query — type filter, `where`, `select`, `sort` — against each note's frontmatter as it stood on that date, not today. Accepts the same date vocabulary `where` clauses do (`today()`, `days-ago(N)`, a literal date). Computed fields (`_inbound_count`, `file.created`, etc.) still reflect current values, not historical ones; doesn't combine with `linked_to`/`linked_from` or `!view incoming` yet.
 
 ### Shortcut queries
 
@@ -895,6 +938,58 @@ Description line example: `now · 2l · 3t · 4m · ~240w`
 - Sections with no metadata show only the heading name (no clutter on short or untitled sections)
 
 This panel is intentionally richer than VS Code's native Outline: task and anchor data are vault-derived signals, not just syntactic heading positions.
+
+### Block-aware branching
+
+Task and quote blocks nest directly under the heading section they physically fall under, instead of the tree showing headings only — each gets its own icon (checklist for tasks, quote for quotes) and the same click-to-navigate behavior headings already have. Reuses the exact block extraction that also powers block-level backlinks and `[[note-id^block-id]]` references (`core/bodyBlocks.js`), not a second, separate extraction. Filters that match a nested block correctly keep the parent heading visible. Footnotes are deliberately not included — they're inline-referenced, not naturally section-scoped, and where they'd nest in a tree like this isn't answered yet.
+
+---
+
+## Block References
+
+Every meaningful body element gets a stable, addressable ID — not just headings. Yamlink can link to one specific task, quote, or footnote inside a note, not only the note as a whole or a section of it.
+
+### Stable block IDs
+
+Computed on every index rebuild, no configuration required:
+
+- **Headings** — `h-{slug}` (e.g. `h-overview`)
+- **Tasks** — `t{n}-{hash}`, a content hash of the task text — the ID changes if the task's own text changes
+- **Blockquotes/callouts** — `q{n}-{hash}`, same content-hash convention
+- **Footnote definitions** — `fn-{id}`, from the footnote's own `[^id]` marker
+
+### Reference syntax
+
+- `[[note-id#Heading]]` links a specific section
+- `[[note-id^block-id]]` links a specific task, quote, or footnote
+- Go-to-definition, hover preview, and completion (after typing `#` or `^` inside a wikilink) all work at this precision — landing on the exact line, not just the top of the note
+
+### Copy/insert commands
+
+Six VS Code commands give cursor-aware, single-keystroke access:
+
+| Command | Behavior |
+|---|---|
+| `Yamlink: Copy Block Reference` | Copies `note^block-id` — filtered to tasks, quotes, footnotes |
+| `Yamlink: Insert Block Reference` | Same, inserts at cursor instead of copying |
+| `Yamlink: Copy Section Reference` | Copies `note#Heading` — headings only; can be triggered from the Note Outline sidebar with the heading pre-selected |
+| `Yamlink: Insert Section Reference` | Same, inserts at cursor |
+| `Yamlink: Copy Scoped Reference` | Detects the block under the cursor (any type) and copies the right format automatically |
+| `Yamlink: Insert Scoped Reference` | Same, inserts at cursor |
+
+If the cursor is already on an addressable block, these skip the picker entirely and act on that block directly.
+
+### In-editor affordances (added 2026-08-20)
+
+A CodeLens sits directly above every addressable block: "Copy [section/task/quote/footnote] reference," so a block's referenceability is visible without already knowing the feature exists. When another note actually links to that specific block, a second "N references" lens appears — clicking it jumps straight to the single referencing note/line, or opens a picker when there's more than one. Built on the same block-backlinks data the Note Report already surfaces (see below); this is a new editor surface for it, not new computation.
+
+### Extract block to a new note
+
+For tasks, quotes, and footnotes (not headings, which have no bounded content of their own): `Yamlink: Extract Block to New Note`, also reachable as a third CodeLens above the block. Moves the exact block out of the current note into a brand-new one — titled from the block's own content by default, editable before creating — replacing it in place with an `![[embed]]` so it still renders inline, and setting `source: [[original-note]]` on the new note. Same convention as `Yamlink: Split Note Body`, just block-precise instead of manual-selection-based.
+
+### Block-level backlinks
+
+The Note Report's outbound and inbound link lists resolve block references to their target's real label — a link to task `t1-abc` shows as `"Deploy the patch"`, not the raw block ID. Block backlinks — "which notes link to this exact task or quote," not just "which notes link to this note" — are also reachable outside VS Code: `yamlink block-backlinks <id>` and `GET /api/nodes/:id?include=blockBacklinks`.
 
 ---
 
@@ -1344,6 +1439,9 @@ Current template support includes:
 - type-matched template at creation time — `yamlink.createNote` checks `_templates/<type>.md` automatically
 - sample/template-aware note generation
 - **`date:` auto-fill** — if the template has an empty `date:` field, Yamlink fills it with today's date at creation time (same behavior as `created:`)
+- **smart value pre-fill on "Add missing template fields"** — a missing relation field pre-fills with a real value (e.g. `commander: [[johnny-rico]]`) when the vault has strong, consistent evidence for it, via the same adaptive-suggestion engine behind lightbulb suggestions and completion; fields with no vault evidence still insert blank
+- **multiple templates per type** — `_templates/` can hold more than one template for the same `type:` (e.g. `meeting-standup.md` and `meeting-retro.md`). "Save Note as Template" offers to overwrite an existing one or save a new, distinctly-named one; "Add missing template fields" asks which template to use when more than one matches; template-drift detection stays silent for a type with more than one template rather than guessing which applies
+- **insertion cap and follow-up nudge** — "Add missing template fields" caps auto-insertion at 6 fields per run (a template with more tells you how many are left, rather than dumping everything in at once), and separately offers one optional follow-up suggestion beyond the template's own fields when the vault has a genuinely relevant one — an explicit "Insert" choice, never applied automatically
 
 ### Schemas vs. templates
 
@@ -1390,6 +1488,7 @@ npm link
 | `yamlink trends` | Growth/Stale/Structure forecast and retrospective accuracy — the same data Vault Health's Projections card shows |
 | `yamlink create <type>` | Create a note non-interactively; accepts any number of `--field key=value` pairs |
 | `yamlink set <id> <field> <value>` | Write a frontmatter field on a note; `--clear` removes the field; emits mutation events |
+| `yamlink bulk-set --ids <a,b,c> --field <name>` | Apply one `--value`/`--add`/`--clear` field change across many notes in a single command; per-note failure isolation, `--dry-run`/`--json` supported. Same `--add` semantics available over the API (`PATCH /api/nodes/bulk` with `{ add: "value" }`) and in VS Code (`Yamlink: Bulk Set Field on Selected Notes`, Explorer multi-select) — all three share one core module, not three separate implementations |
 | `yamlink link <id> <field> <target>` | Add a `[[target]]` wikilink relation; `--append` adds to an existing multi-value field |
 | `yamlink rename <old> <new>` | Vault-wide ID rename; `--dry-run` previews changes without writing |
 | `yamlink template save <id>` | Save an existing note as a blank-skeleton `_templates/<type>.md` template; `--force` to overwrite an existing one |
@@ -1397,13 +1496,17 @@ npm link
 | `yamlink block-backlinks <id>` | Notes linking to a specific task/quote/heading/footnote inside the given note; `--block <block-id>` filters to one exact block |
 | `yamlink mutations` | Recent mutation events from the vault log |
 | `yamlink session` | Summarize recent or explicit mutation sessions |
-| `yamlink on <event> -- <script>` | Run a shell script when matching mutation events fire |
+| `yamlink on <event> -- <script>` | Run a shell script when matching mutation events fire; `--daemon` runs it detached, surviving this terminal closing; watcher retries with backoff on a real watch failure instead of going silent |
+| `yamlink on --list` / `--stop <id>` / `--stop-all` | List registered `on` daemons with real live PID status; stop one or all |
+| `yamlink hooks add \| list \| remove` | Webhook registrations — the HTTP-callback counterpart to `on`'s local script-exec model. `hooks add <event> <url> [--type]` fires a `POST` to a URL on a matching mutation event; same registry `POST /api/hooks` manages |
 | `yamlink watch` | Watch vault for `.md` changes, rebuild on every save |
 | `yamlink suggest <id>` | Fields likely missing from a note |
 | `yamlink drift` | Notes structurally drifting from their type's usual shape (`--type` narrows) |
 | `yamlink stale` | Notes in a stale lifecycle state |
 | `yamlink orphans` | Notes with no inbound or outbound links |
 | `yamlink pressure` | Knowledge pressure: load-bearing drafts, stale hubs, orphans |
+| `yamlink signature` | Structural signature: dominant types, field-bundle rigidity, hub concentration, recent growth rate — a real, honest digest of the vault's own shape, no hardcoded archetypes |
+| `yamlink workflow-memory --type <type>` | Repeated field pairs you add together on notes of this type, across real authoring sessions (time-windowed, not `sessionId` — VS Code never sets it). Feeds a fallback suggestion-cascade nudge when the vault-wide arc has nothing confident to offer. |
 | `yamlink lenses` | Vault change lenses over mutation history |
 | `yamlink schema list` | All schema notes: type, required fields, note count |
 | `yamlink schema check <type>` | Conformance check for all notes of a type against its schema |

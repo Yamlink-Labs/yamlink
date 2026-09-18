@@ -23,6 +23,7 @@ const { maybeSuggestFieldCascade } = require('./src/features/suggestionCascade')
 const { openHomePanel, refreshHomePanel } = require('./src/features/homePanel');
 const { openViewPanel, refreshViewPanel, closeViewPanel, getOpenViewDocumentPath, setViewPanelStateListener } = require('./src/features/viewPanel');
 const { registerViewCodeLens } = require('./src/features/viewCodeLens');
+const { registerBlockAffordances } = require('./src/features/blockAffordances');
 const { openCalendarPanel, refreshCalendarPanel, registerCalendarView, focusCalendarView } = require('./src/features/calendarPanel');
 const { registerGraphView, refreshGraphSidebarView } = require('./src/features/graphPanel');
 const { createGraphPanelController } = require('./src/features/graph/graphPanelController');
@@ -260,7 +261,7 @@ async function activate(context) {
                     targetId: payload.targetId
                 }
             }]);
-            maybeSuggestFieldCascade(payload.noteId);
+            maybeSuggestFieldCascade(payload.noteId, payload.field);
         }),
         vscode.commands.registerCommand('yamlink._lightbulbApplied', (payload) => {
             if (!payload || !payload.noteId || !payload.field) return;
@@ -421,6 +422,7 @@ async function activate(context) {
     registerGraphView(context);
     const decorationsProvider = registerDecorations(context, getIndex);
     const codeLensProvider = registerViewCodeLens(context, getOpenViewDocumentPath);
+    registerBlockAffordances(context, getPathIndex, getIndex, getFieldsCache);
     const { openPreviewPanel, refreshPreviewPanel } = createPreviewPanelController();
     const { openLiveNotePanel, refreshLiveNotePanel, refreshLiveNotePanelForDocument } = createLiveNotePanelController();
     const graphPanelController = createGraphPanelController();

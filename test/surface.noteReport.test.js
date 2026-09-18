@@ -28,6 +28,30 @@ const CRM = {
 // ── Vault position rows ───────────────────────────────────────────────────────
 
 describe('noteReport — vault position', () => {
+    test('dependency preview separates frontmatter relations from body mentions', () => {
+        const vault = createVault({
+            'target.md': NOTE('target-note', 'topic', 'name: Target\n'),
+            'source-frontmatter.md': NOTE('source-frontmatter', 'project', 'topic: "[[target-note]]"\n'),
+            'source-body.md': [
+                '---',
+                'id: source-body',
+                'type: note',
+                '---',
+                '',
+                'Body mention: [[target-note]].'
+            ].join('\n')
+        });
+        try {
+            const model = vault.noteReport('target-note');
+            assert.equal(model.dependencies.total, 2);
+            assert.equal(model.dependencies.frontmatterTotal, 1);
+            assert.equal(model.dependencies.bodyTotal, 1);
+            assert.deepEqual(model.dependencies.groups.map((group) => group.field), ['topic', 'body']);
+        } finally {
+            vault.destroy();
+        }
+    });
+
     test('vaultPositionRows includes note type row', () => {
         const vault = createVault(CRM);
         const model = vault.noteReport('rico');

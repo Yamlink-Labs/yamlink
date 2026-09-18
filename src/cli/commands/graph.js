@@ -1,13 +1,42 @@
 'use strict';
 
 const { getIndex, getFieldsCache, getAliasIndex, getBodyLinksCache, extractAndResolveRelationTargets } = require('../../core/indexService');
+const { buildGraphHistorySeries } = require('../../core/graphHistory');
 const { getEdges, getBacklinks } = require('../../core/graph');
 const { inferLifecycleState } = require('../../intelligence/lifecycleState');
 const { reconstructVaultAtTime, buildHistoricalGraph } = require('../../core/timeEngine');
-const { getMutationEvents } = require('../../runtime/mutationEventLog');
+const { getMutationEvents, getVaultSnapshots } = require('../../runtime/mutationEventLog');
 const { emitCliError, emitCliSuccess } = require('../io');
 
-function run({ typeFilter, output, at }) {
+function run({ typeFilter, output, at, since, until, points, interval }) {
+    if (since) {
+        try {
+            const idIndex = getIndex();
+            const aliasIndex = getAliasIndex();
+            const result = buildGraphHistorySeries({
+                since,
+                until,
+                points,
+                interval
+            }, {
+                fieldsCache: getFieldsCache(),
+                mutationEvents: getMutationEvents(),
+                snapshots: getVaultSnapshots(),
+                bodyLinksCache: getBodyLinksCache()
+            }, (value) => extractAndResolveRelationTargets(value, idIndex, aliasIndex));
+            emitCliSuccess(result, output);
+        } catch (error) {
+            emitCliError({
+                json: true,
+                outputPath: output,
+                error: error.message,
+                code: error?.code || 'INVALID_PARAM',
+                exitCode: 1
+            });
+        }
+        return;
+    }
+
     if (at) {
         const parsedMs = Date.parse(at);
         if (!Number.isFinite(parsedMs)) {

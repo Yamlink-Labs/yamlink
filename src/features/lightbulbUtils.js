@@ -4,7 +4,11 @@ const vscode = require('vscode');
 const { getVaultGeneration } = require('../core/indexService');
 const { getSurfacePolicy, readConfidence } = require('../intelligence/confidence');
 const { CATEGORY } = require('../intelligence/fieldCategory');
-const { classifyFieldForAuthoring } = require('../intelligence/authoringEngine');
+const {
+    classifyFieldForAuthoring,
+    getSchemaFieldDefFromSchema,
+    extractRelationTargetTypesFromSchemaField
+} = require('../intelligence/authoringEngine');
 
 function parseFieldNameFromLine(line) {
     const match = String(line || '').trim().match(/^([\w-]+)\s*:/);
@@ -72,15 +76,14 @@ function formatLinkPrompt(targetId, prefix = 'Should this note link to') {
     return `${prefix} ${targetId}?`;
 }
 
+// Thin wrapper only — the actual relation-type-extraction logic lives once,
+// in authoringEngine.js, shared with getExpectedRelationTypes there. This
+// used to duplicate that logic inline; both call sites now agree by
+// construction instead of by two people remembering to keep two copies
+// in sync.
 function getFieldTargetTypesFromSchema(schema, fieldName) {
-    if (!schema?.fields || !fieldName) return [];
-    const raw = schema.fields[fieldName] || schema.fields[fieldName.replace(/-/g, '_')] || null;
-    if (!raw || String(raw.type || '').trim().toLowerCase() !== 'relation') return [];
-    if (raw.target) return [String(raw.target).trim().toLowerCase()].filter(Boolean);
-    if (Array.isArray(raw.targetTypes)) {
-        return raw.targetTypes.map((value) => String(value || '').trim().toLowerCase()).filter(Boolean);
-    }
-    return [];
+    const schemaFieldDef = getSchemaFieldDefFromSchema(schema, fieldName);
+    return extractRelationTargetTypesFromSchemaField(schemaFieldDef);
 }
 
 function buildFieldValueRange(document, lineIndex, fieldName) {

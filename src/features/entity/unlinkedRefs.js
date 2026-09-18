@@ -92,6 +92,41 @@ function countUnlinkedOccurrences(body, term) {
 let _cache = null;
 let _cacheNodeId = null;
 let _cacheGen = -1;
+let _termIndexCache = null;
+let _termIndexGen = -1;
+
+/**
+ * Build a generation-keyed lookup from every known linkable plain-text term
+ * to its note id. Ambiguous terms are skipped rather than guessed.
+ *
+ * @param {Map<string, Record<string, any>>} fieldsCache
+ * @param {number} vaultGeneration
+ * @returns {Map<string, string>}
+ */
+function getUnlinkedMentionTermIndex(fieldsCache, vaultGeneration) {
+    if (_termIndexCache !== null && _termIndexGen === vaultGeneration) {
+        return _termIndexCache;
+    }
+
+    const index = new Map();
+    const ambiguous = new Set();
+    for (const [nodeId, fields] of fieldsCache || []) {
+        for (const term of buildSearchTerms(nodeId, fields || {})) {
+            if (ambiguous.has(term)) continue;
+            const existing = index.get(term);
+            if (existing && existing !== nodeId) {
+                index.delete(term);
+                ambiguous.add(term);
+                continue;
+            }
+            index.set(term, nodeId);
+        }
+    }
+
+    _termIndexCache = index;
+    _termIndexGen = vaultGeneration;
+    return _termIndexCache;
+}
 
 /**
  * Find all notes in the vault whose body text mentions `nodeId`'s name or id
@@ -154,6 +189,14 @@ function clearUnlinkedRefsCache() {
     _cache = null;
     _cacheNodeId = null;
     _cacheGen = -1;
+    _termIndexCache = null;
+    _termIndexGen = -1;
 }
 
-module.exports = { findUnlinkedMentions, buildSearchTerms, countUnlinkedOccurrences, clearUnlinkedRefsCache };
+module.exports = {
+    findUnlinkedMentions,
+    buildSearchTerms,
+    countUnlinkedOccurrences,
+    getUnlinkedMentionTermIndex,
+    clearUnlinkedRefsCache
+};

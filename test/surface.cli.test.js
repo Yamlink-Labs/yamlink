@@ -302,6 +302,37 @@ test('CLI health --json has expected shape', () => {
     assert.equal(typeof body.brokenLinks, 'number');
 });
 
+test('CLI hooks add/list/remove manages persistent webhook registrations', () => {
+    const added = cli(['hooks', 'add', 'field_changed', 'https://example.com/yamlink', '--type', 'contact', '--json'], vaultPath);
+    assert.equal(added.status, 0, added.stderr);
+    const addBody = parseJson(added.stdout);
+    assert.equal(addBody.ok, true);
+    assert.equal(addBody.hook.event, 'field_changed');
+    assert.equal(addBody.hook.noteType, 'contact');
+    assert.equal(addBody.hook.enabled, true);
+
+    const listed = cli(['hooks', 'list', '--json'], vaultPath);
+    assert.equal(listed.status, 0, listed.stderr);
+    const listBody = parseJson(listed.stdout);
+    assert.ok(listBody.hooks.some((hook) => hook.id === addBody.hook.id));
+
+    const removed = cli(['hooks', 'remove', addBody.hook.id, '--json'], vaultPath);
+    assert.equal(removed.status, 0, removed.stderr);
+    const removeBody = parseJson(removed.stdout);
+    assert.equal(removeBody.ok, true);
+    assert.equal(removeBody.id, addBody.hook.id);
+});
+
+test('CLI hooks rejects invalid event and URL values', () => {
+    const badEvent = cli(['hooks', 'add', 'made_up_event', 'https://example.com/yamlink', '--json'], vaultPath);
+    assert.equal(badEvent.status, 1);
+    assert.equal(parseJson(badEvent.stdout).code, 'INVALID_PARAM');
+
+    const badUrl = cli(['hooks', 'add', 'field_changed', 'not-a-url', '--json'], vaultPath);
+    assert.equal(badUrl.status, 1);
+    assert.equal(parseJson(badUrl.stdout).code, 'INVALID_PARAM');
+});
+
 test('CLI trends exits 0 with human projection sections', () => {
     const result = cli(['trends'], vaultPath);
     assert.equal(result.status, 0);
@@ -321,6 +352,39 @@ test('CLI trends --json has expected shape', () => {
     assert.equal(typeof body.stale, 'object');
     assert.equal(typeof body.structure, 'object');
     assert.ok(Array.isArray(body.stale.upcoming));
+});
+
+test('CLI workflow-memory reports repeated field pairs from real mutation history', () => {
+    const vault = createVault({
+        'mission-a.md': '---\nid: mission-a\ntype: mission\n---\n',
+        'mission-b.md': '---\nid: mission-b\ntype: mission\n---\n'
+    });
+    try {
+        for (const id of ['mission-a', 'mission-b']) {
+            assert.equal(cli(['set', id, 'commander', 'rico'], vault.dir).status, 0);
+            assert.equal(cli(['set', id, 'unit', 'roughnecks'], vault.dir).status, 0);
+        }
+
+        const human = cli(['workflow-memory', '--type', 'mission'], vault.dir);
+        assert.equal(human.status, 0, human.stderr);
+        assert.match(human.stdout, /Workflow Memory \(mission\)/);
+        assert.match(human.stdout, /commander \+ unit/);
+
+        const json = cli(['workflow-memory', '--json'], vault.dir);
+        assert.equal(json.status, 0, json.stderr);
+        const body = parseJson(json.stdout);
+        const mission = body.types.find((entry) => entry.type === 'mission');
+        assert.ok(mission);
+        assert.deepEqual(mission.pairs[0], {
+            fieldA: 'commander',
+            fieldB: 'unit',
+            coOccurrenceRatio: 1,
+            count: 2,
+            sessionCount: 2
+        });
+    } finally {
+        vault.destroy();
+    }
 });
 
 test('CLI validate exits 0 on schema-free vault', () => {
@@ -649,10 +713,10 @@ test('CLI completions invalid shell --json returns contract error shape', () => 
 test('CLI rename updates the id line in the target file', () => {
     const vault = createVault({
         'rico.md': '---\nid: johnny-rico\ntype: character\n---\n',
-        'mission.md': 'Commander [[johnny-rico]] led the assault.\n'
+        'mission.md': '---\nid: mission-one\ntype: mission\ncommander: "[[johnny-rico]]"\n---\n'
     });
     try {
-        const result = cli(['rename', 'johnny-rico', 'juan-rico'], vault.dir);
+        const result = cli(['rename', 'johnny-rico', 'juan-rico', '--force'], vault.dir);
         assert.equal(result.status, 0);
         const rico = fs.readFileSync(path.join(vault.dir, 'rico.md'), 'utf8');
         assert.match(rico, /id: juan-rico/);
@@ -669,6 +733,89 @@ test('CLI on invalid event --json returns contract error shape', () => {
     assert.equal(body.code, 'USAGE');
 });
 
+describe('CLI on --daemon / --list / --stop', () => {
+
+    test('--list with nothing registered returns an empty array', () => {
+        const vault = createVault({ 'a.md': '---\nid: a\ntype: note\n---\n' });
+        try {
+            const result = cli(['on', '--list', '--json'], vault.dir);
+            assert.equal(result.status, 0);
+            const body = parseJson(result.stdout);
+            assert.deepEqual(body.daemons, []);
+        } finally {
+            vault.destroy();
+        }
+    });
+
+    test('--stop with an unknown id returns NOT_FOUND', () => {
+        const vault = createVault({ 'a.md': '---\nid: a\ntype: note\n---\n' });
+        try {
+            const result = cli(['on', '--stop', 'no-such-daemon', '--json'], vault.dir);
+            assert.equal(result.status, 1);
+            const body = parseJson(result.stdout);
+            assert.equal(body.ok, false);
+            assert.equal(body.code, 'NOT_FOUND');
+        } finally {
+            vault.destroy();
+        }
+    });
+
+    test('--stop-all with nothing running reports nothing stopped or skipped', () => {
+        const vault = createVault({ 'a.md': '---\nid: a\ntype: note\n---\n' });
+        try {
+            const result = cli(['on', '--stop-all', '--json'], vault.dir);
+            assert.equal(result.status, 0);
+            const body = parseJson(result.stdout);
+            assert.deepEqual(body.stopped, []);
+            assert.deepEqual(body.skipped, []);
+        } finally {
+            vault.destroy();
+        }
+    });
+
+    test('--daemon starts a real, detached background process that --list finds and --stop kills', () => {
+        const vault = createVault({ 'a.md': '---\nid: a\ntype: note\n---\n' });
+        try {
+            const started = cli(['on', 'field_changed', '--json', '--daemon', '--', 'echo hi'], vault.dir);
+            assert.equal(started.status, 0, started.stderr);
+            const startedBody = parseJson(started.stdout);
+            assert.equal(startedBody.ok, true);
+            assert.ok(startedBody.id);
+            assert.ok(Number.isInteger(startedBody.pid));
+            assert.ok(fs.existsSync(startedBody.logPath), 'expected a real log file to exist');
+
+            // The daemon parent process exits immediately after spawning — the
+            // real watcher is the detached child. Give it a moment to finish
+            // starting up before checking liveness.
+            const deadline = Date.now() + 5000;
+            let listBody = null;
+            while (Date.now() < deadline) {
+                const listed = cli(['on', '--list', '--json'], vault.dir);
+                listBody = parseJson(listed.stdout);
+                if (listBody.daemons.some((d) => d.id === startedBody.id && d.alive)) break;
+            }
+            assert.ok(listBody, 'expected at least one --list call to succeed');
+            const entry = listBody.daemons.find((d) => d.id === startedBody.id);
+            assert.ok(entry, 'expected the started daemon to appear in --list');
+            assert.equal(entry.alive, true);
+            assert.equal(entry.pid, startedBody.pid);
+            assert.equal(entry.event, 'field_changed');
+
+            const stopped = cli(['on', '--stop', startedBody.id, '--json'], vault.dir);
+            assert.equal(stopped.status, 0, stopped.stderr);
+            const stoppedBody = parseJson(stopped.stdout);
+            assert.deepEqual(stoppedBody.stopped, [startedBody.id]);
+
+            const afterStop = cli(['on', '--list', '--json'], vault.dir);
+            const afterStopBody = parseJson(afterStop.stdout);
+            assert.ok(!afterStopBody.daemons.some((d) => d.id === startedBody.id), 'expected the stopped daemon to no longer be listed');
+        } finally {
+            vault.destroy();
+        }
+    });
+
+});
+
 test('CLI rename rewrites wikilink references in other files', () => {
     const vault = createVault({
         'rico.md': '---\nid: johnny-rico\ntype: character\n---\n',
@@ -676,7 +823,7 @@ test('CLI rename rewrites wikilink references in other files', () => {
         'unit.md': 'Supporting note for [[johnny-rico|Johnny Rico]].\n'
     });
     try {
-        const result = cli(['rename', 'johnny-rico', 'juan-rico'], vault.dir);
+        const result = cli(['rename', 'johnny-rico', 'juan-rico', '--force'], vault.dir);
         assert.equal(result.status, 0);
         const mission = fs.readFileSync(path.join(vault.dir, 'mission.md'), 'utf8');
         const unit = fs.readFileSync(path.join(vault.dir, 'unit.md'), 'utf8');
@@ -690,6 +837,26 @@ test('CLI rename rewrites wikilink references in other files', () => {
 test('CLI rename exits 1 when the old id does not exist', () => {
     const result = cli(['rename', 'ghost-id', 'new-id'], vaultPath);
     assert.equal(result.status, 1);
+});
+
+test('CLI rename proceeds automatically for scripted renames even with linked dependencies', () => {
+    // rename is documented as an unconditional vault-wide operation and this suite spawns
+    // the CLI as a real child process with no TTY, matching a real script/CI caller — it must
+    // not require --force just because the note being renamed happens to be linked from elsewhere.
+    const vault = createVault({
+        'rico.md': '---\nid: johnny-rico\ntype: character\n---\n',
+        'mission.md': 'Commander [[johnny-rico]] led the assault.\n'
+    });
+    try {
+        const result = cli(['rename', 'johnny-rico', 'juan-rico', '--json'], vault.dir);
+        assert.equal(result.status, 0);
+        const body = parseJson(result.stdout);
+        assert.equal(body.ok, true);
+        assert.equal(body.dependencies.total, 1);
+        assert.match(fs.readFileSync(path.join(vault.dir, 'mission.md'), 'utf8'), /\[\[juan-rico\]\]/);
+    } finally {
+        vault.destroy();
+    }
 });
 
 test('CLI rename --json returns contract error shape when the old id is missing', () => {
@@ -723,7 +890,7 @@ test('CLI rename --json outputs the expected payload', () => {
         'mission.md': 'Commander [[johnny-rico]] led the assault.\n'
     });
     try {
-        const result = cli(['rename', 'johnny-rico', 'juan-rico', '--json'], vault.dir);
+        const result = cli(['rename', 'johnny-rico', 'juan-rico', '--json', '--force'], vault.dir);
         assert.equal(result.status, 0);
         const body = parseJson(result.stdout);
         assert.equal(body.ok, true);
@@ -926,6 +1093,42 @@ test('CLI graph --at with an invalid date exits 1 with INVALID_PARAM', () => {
     }
 });
 
+test('CLI graph --since emits historical graph checkpoints', () => {
+    const vault = createVault({
+        'rico.md': '---\nid: johnny-rico\ntype: contact\n---\n',
+        'roughnecks.md': '---\nid: roughnecks\ntype: unit\n---\n'
+    });
+    try {
+        const since = new Date(Date.now() - 1000).toISOString();
+        const createResult = cli(['create', 'contact', '--field', 'name=New Trooper', '--field', 'unit=[[roughnecks]]'], vault.dir);
+        assert.equal(createResult.status, 0);
+
+        const until = new Date(Date.now() + 1000).toISOString();
+        const result = cli(['graph', '--since', since, '--until', until, '--points', '3'], vault.dir);
+        assert.equal(result.status, 0);
+        const body = parseJson(result.stdout);
+        assert.equal(body.ok, true);
+        assert.equal(body.points, 3);
+        assert.equal(body.snapshots.length, 3);
+        assert.ok(body.snapshots.every((snapshot) => Array.isArray(snapshot.nodes) && Array.isArray(snapshot.edges)));
+        assert.ok(body.snapshots[0].stats.nodes <= body.snapshots[2].stats.nodes);
+    } finally {
+        vault.destroy();
+    }
+});
+
+test('CLI graph --since with too many points exits 1 with INVALID_PARAM', () => {
+    const vault = createVault({ 'rico.md': '---\nid: johnny-rico\ntype: contact\n---\n' });
+    try {
+        const result = cli(['graph', '--since', '2024-01-01T00:00:00.000Z', '--points', '51'], vault.dir);
+        assert.equal(result.status, 1);
+        const body = parseJson(result.stdout);
+        assert.equal(body.code, 'INVALID_PARAM');
+    } finally {
+        vault.destroy();
+    }
+});
+
 test('CLI init scaffolds the correct files', () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'yamlink-init-'));
     const target = path.join(dir, 'vault');
@@ -1034,7 +1237,7 @@ test('CLI rename --rename-file renames the markdown file', () => {
         'mission.md': 'Commander [[johnny-rico]] led the assault.\n'
     });
     try {
-        const result = cli(['rename', 'johnny-rico', 'juan-rico', '--rename-file'], vault.dir);
+        const result = cli(['rename', 'johnny-rico', 'juan-rico', '--rename-file', '--force'], vault.dir);
         assert.equal(result.status, 0);
         assert.equal(fs.existsSync(path.join(vault.dir, 'johnny-rico.md')), false);
         assert.equal(fs.existsSync(path.join(vault.dir, 'juan-rico.md')), true);
@@ -1360,7 +1563,7 @@ test('CLI mutations captures relation_changed events written by rename', () => {
         'mission.md': 'Commander [[johnny-rico]] led the assault.\n'
     });
     try {
-        const renameResult = cli(['rename', 'johnny-rico', 'juan-rico'], vault.dir);
+        const renameResult = cli(['rename', 'johnny-rico', 'juan-rico', '--force'], vault.dir);
         assert.equal(renameResult.status, 0);
 
         const result = cli(['mutations', '--type', 'relation_changed', '--json'], vault.dir);
@@ -1494,7 +1697,7 @@ test('CLI diff --since shows changed notes from mutation history', () => {
     });
     try {
         const since = new Date(Date.now() - 1000).toISOString();
-        const renameResult = cli(['rename', 'johnny-rico', 'juan-rico'], vault.dir);
+        const renameResult = cli(['rename', 'johnny-rico', 'juan-rico', '--force'], vault.dir);
         assert.equal(renameResult.status, 0);
 
         const result = cli(['diff', '--since', since], vault.dir);
@@ -1513,7 +1716,7 @@ test('CLI diff --since --json returns time-diff contract shape', () => {
     });
     try {
         const since = new Date(Date.now() - 1000).toISOString();
-        const renameResult = cli(['rename', 'johnny-rico', 'juan-rico'], vault.dir);
+        const renameResult = cli(['rename', 'johnny-rico', 'juan-rico', '--force'], vault.dir);
         assert.equal(renameResult.status, 0);
 
         const result = cli(['diff', '--since', since, '--json'], vault.dir);
@@ -1922,6 +2125,32 @@ test('CLI pressure --json returns expected shape', () => {
     assert.equal(typeof body.totals.loadBearingDrafts, 'number');
     assert.equal(typeof body.totals.staleHubs, 'number');
     assert.equal(typeof body.totals.orphans, 'number');
+});
+
+test('CLI signature exits 0 with real human output, no [object Object]/undefined artifacts', () => {
+    const result = cli(['signature'], vaultPath);
+    assert.equal(result.status, 0, result.stderr);
+    assert.match(result.stdout, /Vault Structural Signature/);
+    assert.match(result.stdout, /Dominant types/);
+    assert.match(result.stdout, /Hub concentration/);
+    assert.match(result.stdout, /Recent growth/);
+    // Regression: fmt.header() already prints internally and returns
+    // undefined — wrapping it in console.log(fmt.header(...)) printed a
+    // stray "undefined" line under every section header.
+    assert.doesNotMatch(result.stdout, /^undefined$/m);
+});
+
+test('CLI signature --json returns the full real signature shape', () => {
+    const result = cli(['signature', '--json'], vaultPath);
+    assert.equal(result.status, 0, result.stderr);
+    const body = parseJson(result.stdout);
+    assert.equal(body.ok, true);
+    assert.ok(Array.isArray(body.typeDistribution));
+    assert.ok(Array.isArray(body.dominantTypes));
+    assert.equal(typeof body.hubs.concentration, 'number');
+    assert.equal(typeof body.growth.ratio, 'number');
+    assert.equal(typeof body.summary, 'string');
+    assert.ok(body.summary.length > 0);
 });
 
 test('CLI env --shell bash emits export lines for Yamlink variables', () => {

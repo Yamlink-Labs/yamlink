@@ -16,11 +16,21 @@
 
 const { openInEditor, truncate } = require('../noteDetail');
 
+function dependencyErrorMessage(err, fallback) {
+    if (err && err.code === 'DEPENDENCIES_PRESENT' && err.dependencies) {
+        const deps = err.dependencies;
+        const total = Number(deps.total || 0);
+        const sources = Number(deps.sourceCount || 0);
+        return `blocked: ${total} inbound link${total === 1 ? '' : 's'} from ${sources} note${sources === 1 ? '' : 's'}`;
+    }
+    return err?.message || fallback;
+}
+
 /** @param {string} input @param {{ctrl: boolean, escape: boolean, return: boolean, backspace: boolean, delete: boolean, tab: boolean, upArrow: boolean, downArrow: boolean}} key */
 function handleExplorerKey(input, key, state, actions) {
     const {
         mode, filterText, filteredNotes, selectedNote, editableFields, editFieldCursor,
-        editField, editValue, bulkActionCursor, bulkFieldName, bulkValue, selectedIds, createForm, linkFieldName,
+        editField, editValue, bulkActionCursor, bulkActionKind, bulkFieldName, bulkValue, selectedIds, createForm, linkFieldName,
         filteredPickNotes, safePickCursor, contexts, contextCursor, historyEvents,
         activePane, nodeDetail, traverseStack, notes, splitMode, types, host, port
     } = state;
@@ -28,7 +38,7 @@ function handleExplorerKey(input, key, state, actions) {
         onQuit, setFilterText, setMode, setNoteCursor, onNoteView,
         setEditFieldCursor, setEditField, setEditValue,
         patchNode, showToast, forceDetailRefresh,
-        setBulkActionCursor, setBulkFieldName, setBulkValue,
+        setBulkActionCursor, setBulkActionKind, setBulkFieldName, setBulkValue,
         patchNodesBulk, clearBulkState, deleteNode,
         setCreateForm, postNode, setRefreshKey,
         setLinkFieldName, setLinkPickLoading, setLinkPickFilter, setLinkPickCursor,
@@ -93,17 +103,25 @@ function handleExplorerKey(input, key, state, actions) {
 
     if (mode === 'bulk-menu') {
         if (key.escape) { setMode('browse'); return; }
-        if (input === 'j' || key.downArrow) { setBulkActionCursor((c) => Math.min(2, c + 1)); return; }
+        if (input === 'j' || key.downArrow) { setBulkActionCursor((c) => Math.min(3, c + 1)); return; }
         if (input === 'k' || key.upArrow) { setBulkActionCursor((c) => Math.max(0, c - 1)); return; }
         if (key.return) {
             if (bulkActionCursor === 0) {
+                if (setBulkActionKind) setBulkActionKind('set');
                 setBulkFieldName('');
                 setBulkValue('');
                 setMode('bulk-field-name');
             } else if (bulkActionCursor === 1) {
+                if (setBulkActionKind) setBulkActionKind('add');
+                setBulkFieldName('');
+                setBulkValue('');
+                setMode('bulk-field-name');
+            } else if (bulkActionCursor === 2) {
+                if (setBulkActionKind) setBulkActionKind('set');
                 setBulkValue('');
                 setMode('bulk-status-value');
             } else {
+                if (setBulkActionKind) setBulkActionKind('set');
                 setMode('bulk-delete-confirm');
             }
         }
@@ -130,10 +148,12 @@ function handleExplorerKey(input, key, state, actions) {
             const field = mode === 'bulk-status-value' ? 'status' : bulkFieldName.trim();
             if (!field) { showToast('field name required', true); return; }
             if (!patchNodesBulk) { showToast('bulk update unavailable', true); setMode('browse'); return; }
-            const updates = selectedIds.map((id) => ({ id, fields: { [field]: bulkValue } }));
+            const isAddMode = mode !== 'bulk-status-value' && bulkActionKind === 'add';
+            const value = isAddMode ? { add: bulkValue } : bulkValue;
+            const updates = selectedIds.map((id) => ({ id, fields: { [field]: value } }));
             patchNodesBulk({ host, port, updates })
                 .then(() => {
-                    showToast(`✓ updated ${selectedIds.length} notes`);
+                    showToast(`✓ ${isAddMode ? 'added to' : 'updated'} ${selectedIds.length} notes`);
                     clearBulkState();
                     setMode('browse');
                     forceDetailRefresh();
@@ -159,7 +179,31 @@ function handleExplorerKey(input, key, state, actions) {
                     forceDetailRefresh();
                 })
                 .catch((err) => {
+                    if (err && err.code === 'DEPENDENCIES_PRESENT') {
+                        showToast(`${dependencyErrorMessage(err, 'bulk delete failed')} — press y to force delete all, n to cancel`, true);
+                        setMode('bulk-delete-force-confirm');
+                    } else {
+                        showToast(dependencyErrorMessage(err, 'bulk delete failed'), true);
+                        setMode('browse');
+                    }
+                });
+        }
+        return;
+    }
+
+    if (mode === 'bulk-delete-force-confirm') {
+        if (key.escape || input === 'n') { clearBulkState(); setMode('browse'); return; }
+        if (input === 'y') {
+            Promise.all(selectedIds.map((id) => deleteNode({ host, port, id, force: true })))
+                .then(() => {
+                    showToast(`✓ force deleted ${selectedIds.length} notes`);
+                    clearBulkState();
+                    setMode('browse');
+                    forceDetailRefresh();
+                })
+                .catch((err) => {
                     showToast(err.message || 'bulk delete failed', true);
+                    clearBulkState();
                     setMode('browse');
                 });
         }
@@ -208,6 +252,25 @@ function handleExplorerKey(input, key, state, actions) {
         if (input === 'y') {
             deleteNode({ host, port, id: selectedNote.id })
                 .then(() => { showToast(`✓ Deleted: ${selectedNote.id}`); setMode('browse'); setRefreshKey((k) => k + 1); })
+                .catch((err) => {
+                    if (err && err.code === 'DEPENDENCIES_PRESENT') {
+                        showToast(`${dependencyErrorMessage(err, 'delete failed')} — press y to force delete, n to cancel`, true);
+                        setMode('delete-force-confirm');
+                    } else {
+                        showToast(dependencyErrorMessage(err, 'delete failed'), true);
+                        setMode('browse');
+                    }
+                });
+            return;
+        }
+        return;
+    }
+
+    if (mode === 'delete-force-confirm') {
+        if (key.escape || input === 'n') { setMode('browse'); return; }
+        if (input === 'y') {
+            deleteNode({ host, port, id: selectedNote.id, force: true })
+                .then(() => { showToast(`✓ Force deleted: ${selectedNote.id}`); setMode('browse'); setRefreshKey((k) => k + 1); })
                 .catch((err) => { showToast(err.message || 'delete failed', true); setMode('browse'); });
             return;
         }

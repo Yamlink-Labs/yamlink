@@ -45,6 +45,16 @@ class Range {
         this.start = start;
         this.end = end;
     }
+    intersection(other) {
+        if (!other) return null;
+        const startOffset = this.start.line * 100000 + this.start.character;
+        const endOffset = this.end.line * 100000 + this.end.character;
+        const otherStart = other.start.line * 100000 + other.start.character;
+        const otherEnd = other.end.line * 100000 + other.end.character;
+        const start = Math.max(startOffset, otherStart);
+        const end = Math.min(endOffset, otherEnd);
+        return start < end ? this : null;
+    }
 }
 
 class Selection extends Range {}
@@ -94,7 +104,12 @@ function createDocument(text, fsPath = 'C:\\vault\\note.md') {
             fsPath,
             __document: null
         },
-        getText() {
+        getText(range) {
+            if (range) {
+                const start = offsetForPosition(this._text, range.start);
+                const end = offsetForPosition(this._text, range.end);
+                return this._text.slice(start, end);
+            }
             return this._text;
         },
         positionAt(offset) {
@@ -121,6 +136,9 @@ function createDocument(text, fsPath = 'C:\\vault\\note.md') {
 
 const mockWindow = {
     activeTextEditor: null,
+    createTextEditorDecorationType() {
+        return { dispose() {} };
+    },
     async showTextDocument(document) {
         shownDocuments.push(document.uri.fsPath);
         return {
@@ -148,6 +166,9 @@ const mockWindow = {
 const mockWorkspace = {
     workspaceFolders: [{ uri: { fsPath: 'C:\\vault' } }],
     textDocuments: [],
+    getConfiguration() {
+        return { get: () => false };
+    },
     async applyEdit(edit) {
         return applyWorkspaceEdit(edit);
     },
@@ -195,7 +216,17 @@ require.cache.__ca_vscode__ = {
                 this.kind = kind;
             }
         },
-        CodeActionKind: { QuickFix: 'QuickFix', RefactorRewrite: 'RefactorRewrite' }
+        CodeActionKind: { QuickFix: 'QuickFix', RefactorRewrite: 'RefactorRewrite' },
+        ThemeColor: class ThemeColor {
+            constructor(id) {
+                this.id = id;
+            }
+        },
+        MarkdownString: class MarkdownString {
+            constructor(value = '') {
+                this.value = value;
+            }
+        }
     }
 };
 
@@ -276,7 +307,10 @@ require.cache.__ca_index__ = {
             buildIndexCalls += 1;
         },
         getFieldsCache() {
-            return new Map([['contact-1', { type: 'contact', name: 'Alice', status: 'active' }]]);
+            return new Map([
+                ['contact-1', { type: 'contact', name: 'Alice', status: 'active' }],
+                ['johnny-rico', { type: 'contact', name: 'Johnny Rico', aliases: ['Rico'] }]
+            ]);
         },
         getPathIndex() {
             return new Map([['C:\\vault\\note.md', 'contact-1']]);
@@ -286,6 +320,12 @@ require.cache.__ca_index__ = {
         },
         updateSingleFile() {
             return updateSingleFileResult;
+        },
+        getAliasIndex() {
+            return new Map();
+        },
+        getVaultGeneration() {
+            return 1;
         }
     }
 };
@@ -320,7 +360,16 @@ require.cache.__ca_id__ = {
     id: '__ca_id__',
     filename: '__ca_id__',
     loaded: true,
-    exports: { canonicalizeId(value) { return String(value || '').trim().toLowerCase(); } }
+    exports: {
+        canonicalizeId(value) { return String(value || '').trim().toLowerCase(); },
+        extractCanonicalIdFromFrontmatter(text) {
+            return String(text || '').match(/^id:\s*(.+)$/m)?.[1]?.trim() || null;
+        },
+        resolveLinkedTarget(raw, idIndex) {
+            const id = String(raw || '').split('|')[0].trim();
+            return idIndex.has(id) ? id : null;
+        }
+    }
 };
 
 require.cache.__ca_workspace__ = {
@@ -395,6 +444,62 @@ afterEach(() => {
 });
 
 describe('code actions integration', () => {
+    test('offers a quick fix that turns an unlinked mention into a wikilink alias', async () => {
+        const context = { subscriptions: [], workspaceState: mockWorkspaceState };
+        registerCodeActions(context, () => new Map([
+            ['contact-1', 'C:\\vault\\note.md'],
+            ['johnny-rico', 'C:\\vault\\johnny-rico.md']
+        ]), null);
+
+        const document = createDocument('We should brief Johnny Rico before launch.');
+        const start = document.getText().indexOf('Johnny Rico');
+        const range = new Range(document.positionAt(start), document.positionAt(start + 'Johnny Rico'.length));
+        const actions = registeredProvider.provideCodeActions(document, range, { diagnostics: [] });
+        const action = actions.find((entry) => entry.command?.command === 'yamlink.linkUnlinkedMention');
+
+        assert.ok(action, 'expected unlinked mention quick fix');
+        await mockCommands.executeCommand(action.command.command, ...action.command.arguments);
+        assert.equal(document.getText(), 'We should brief [[johnny-rico|Johnny Rico]] before launch.');
+    });
+
+    test('offers a bulk quick fix that links every unlinked mention of the same note in one pass', async () => {
+        const context = { subscriptions: [], workspaceState: mockWorkspaceState };
+        registerCodeActions(context, () => new Map([
+            ['contact-1', 'C:\\vault\\note.md'],
+            ['johnny-rico', 'C:\\vault\\johnny-rico.md']
+        ]), null);
+
+        const document = createDocument('Johnny Rico led the briefing. Johnny Rico was right about the drop.');
+        const firstStart = document.getText().indexOf('Johnny Rico');
+        const range = new Range(document.positionAt(firstStart), document.positionAt(firstStart + 'Johnny Rico'.length));
+        const actions = registeredProvider.provideCodeActions(document, range, { diagnostics: [] });
+        const bulkAction = actions.find((entry) => entry.command?.command === 'yamlink.linkAllUnlinkedMentions');
+
+        assert.ok(bulkAction, 'expected a bulk link-all quick fix when the same mention appears more than once');
+        assert.match(bulkAction.title, /2 mentions/);
+        await mockCommands.executeCommand(bulkAction.command.command, ...bulkAction.command.arguments);
+        assert.equal(
+            document.getText(),
+            '[[johnny-rico|Johnny Rico]] led the briefing. [[johnny-rico|Johnny Rico]] was right about the drop.'
+        );
+    });
+
+    test('does not offer the bulk link-all quick fix when a mention appears only once', async () => {
+        const context = { subscriptions: [], workspaceState: mockWorkspaceState };
+        registerCodeActions(context, () => new Map([
+            ['contact-1', 'C:\\vault\\note.md'],
+            ['johnny-rico', 'C:\\vault\\johnny-rico.md']
+        ]), null);
+
+        const document = createDocument('We should brief Johnny Rico before launch.');
+        const start = document.getText().indexOf('Johnny Rico');
+        const range = new Range(document.positionAt(start), document.positionAt(start + 'Johnny Rico'.length));
+        const actions = registeredProvider.provideCodeActions(document, range, { diagnostics: [] });
+        const bulkAction = actions.find((entry) => entry.command?.command === 'yamlink.linkAllUnlinkedMentions');
+
+        assert.equal(bulkAction, undefined, 'a single occurrence should not offer a "link all" action');
+    });
+
     test('registers query commands and inserts a starter view into the active markdown document', async () => {
         const context = { subscriptions: [] };
         registerCodeActions(context, () => new Map(), null);
@@ -686,5 +791,44 @@ describe('code actions integration', () => {
         const ignoreAction = actions.find((action) => action.title === 'Yamlink: Ignore this suggestion here');
         assert.ok(ignoreAction, 'expected an ignore action for a body-text broken-link diagnostic');
         assert.deepEqual(ignoreAction.command.arguments, [document, diagnostic]);
+    });
+
+    // Regression test for the vaultPriors.js unification: the "Create X (N
+    // fields)" label used to compute its field count with an inline rescan of
+    // the whole fieldsCache; it now reads vaultPriors.js's cached
+    // typeFieldBundles/typeBundleTotals instead. This locks in that the
+    // displayed count is unchanged. With the stubbed fieldsCache (contact-1:
+    // name+status, johnny-rico: name+aliases — both type "contact"), all
+    // three fields meet the >=50%-of-notes-of-this-type bar (n=2, threshold
+    // 1), so the real, expected count is 3.
+    test('broken relation quickfix labels "Create <type>" with the real common-field count', () => {
+        const context = { subscriptions: [], workspaceState: mockWorkspaceState };
+        registerCodeActions(context, () => new Map(), null);
+
+        const document = createDocument([
+            '---',
+            'id: mission-1',
+            'type: mission',
+            'contact: [[missing-person]]',
+            '---',
+            ''
+        ].join('\n'));
+
+        const diagnostic = {
+            source: 'yamlink',
+            code: 'yamlink.brokenRelation',
+            message: 'Yamlink: ID "missing-person" does not exist.',
+            range: new Range(new Position(3, 9), new Position(3, 27))
+        };
+
+        const actions = registeredProvider.provideCodeActions(
+            document,
+            { start: new Position(3, 9), end: new Position(3, 9) },
+            { diagnostics: [diagnostic] }
+        );
+
+        const createAction = actions.find((action) => action.title.startsWith('Yamlink: Create contact'));
+        assert.ok(createAction, 'expected a type-resolved Create quickfix');
+        assert.equal(createAction.title, 'Yamlink: Create contact "missing-person" (3 fields)');
     });
 });
