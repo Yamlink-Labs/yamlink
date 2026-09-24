@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.8.1
+
+### Fixed
+
+- Removed a CodeLens that appeared above headings, tasks, quotes, and footnotes. The equivalent commands remain available via right-click.
+- Removed an inline icon on Note Outline items. The command remains available via right-click.
+- Removed inline unlinked-mention highlighting and its quick fixes.
+
 ## 0.8.0
 
 ### Added
@@ -72,4 +80,3 @@
 - **Force-layout engine consolidated to one real source.** `SimpleLayout` — the force-directed graph physics behind the Graph Workspace panel, the sidebar mini-graph, and Conduit's terminal graph — existed as three independently hand-maintained copies that had already drifted apart (the sidebar's copy was missing the containment-clamp fix above, the quality tier tuned for 2200+-node graphs, and part of its cluster-detection return shape). Consolidated into `src/features/graph/graphPhysicsEngine.js`, the one real source: Conduit now `require()`s it directly; the two webview panels embed its exact source via `SimpleLayout.toString()` at script-generation time, so no build step is needed and it's mechanically impossible for a consumer to silently drift out of sync again. Zero behavior change for the Graph Workspace panel itself. Verified: lint/`tsc --noEmit`/`test:count` clean, 2728/2728.
 - **Monolith splits: Query Builder and CLI dispatch.** Pure structural refactors, zero behavior change (verified: lint/`tsc --noEmit`/`test:count` identical before and after, 2708/2708). `src/actions/queryBuilder/queryBuilderHtml.js` (formerly 1,709 lines, mixing webview shell, HTML generation, and event wiring in one file) split into `queryBuilderHtml.js` (webview shell only), `queryBuilderRender.js` (pure HTML/CSS string builders), and `queryBuilderEvents.js` (client-side render/event wiring) — `queryBuilderModel.js` was already a separate model layer and was left untouched. `src/cli/index.js` (formerly 831 lines) reduced to a 70-line thin dispatcher, with argument parsing (`args.js`), help text (`help.js`), mutation/vault-service bootstrap (`runtime.js`), Conduit launch (`conduitLauncher.js`), and command dispatch (`router.js`) split into their own modules. Not part of any themed release scope — ongoing codebase-health maintenance tracked in `ROADMAP.md`'s "Codebase health" section.
 - **Monolith splits: node creation, Obsidian import, Vault Health HTML, Home panel HTML.** Same pure-structural discipline, independently verified: `src/actions/nodeCreationHandlers.js` (1,058 lines) split into `nodeCreationCore.js`/`nodeCreationMaintenance.js`/`nodeCreationSchema.js`/`nodeCreationSelection.js`/`nodeCreationTemplates.js` (all 12 handler functions confirmed present, none dropped); `src/importers/obsidian.js` split into `obsidianAnalysis.js`/`obsidianFilesystem.js`/`obsidianLinks.js`/`obsidianMigration.js`/`obsidianReports.js` (all 24 functions confirmed present); `src/features/health/healthHtml.js` split into `healthHelp.js`/`healthIntelligenceHtml.js`/`healthSchemaHtml.js` (all 7 confirmed present); `src/features/home/homePanelHtml.js` split into `homeChartsHtml.js`/`homeIcons.js`/`homeProjectionHtml.js`/`homeSectionsHtml.js` (all 24 confirmed present). Lint/`tsc --noEmit`/`test:count` clean, 2742/2742, unchanged before and after.
-

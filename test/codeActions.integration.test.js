@@ -444,62 +444,6 @@ afterEach(() => {
 });
 
 describe('code actions integration', () => {
-    test('offers a quick fix that turns an unlinked mention into a wikilink alias', async () => {
-        const context = { subscriptions: [], workspaceState: mockWorkspaceState };
-        registerCodeActions(context, () => new Map([
-            ['contact-1', 'C:\\vault\\note.md'],
-            ['johnny-rico', 'C:\\vault\\johnny-rico.md']
-        ]), null);
-
-        const document = createDocument('We should brief Johnny Rico before launch.');
-        const start = document.getText().indexOf('Johnny Rico');
-        const range = new Range(document.positionAt(start), document.positionAt(start + 'Johnny Rico'.length));
-        const actions = registeredProvider.provideCodeActions(document, range, { diagnostics: [] });
-        const action = actions.find((entry) => entry.command?.command === 'yamlink.linkUnlinkedMention');
-
-        assert.ok(action, 'expected unlinked mention quick fix');
-        await mockCommands.executeCommand(action.command.command, ...action.command.arguments);
-        assert.equal(document.getText(), 'We should brief [[johnny-rico|Johnny Rico]] before launch.');
-    });
-
-    test('offers a bulk quick fix that links every unlinked mention of the same note in one pass', async () => {
-        const context = { subscriptions: [], workspaceState: mockWorkspaceState };
-        registerCodeActions(context, () => new Map([
-            ['contact-1', 'C:\\vault\\note.md'],
-            ['johnny-rico', 'C:\\vault\\johnny-rico.md']
-        ]), null);
-
-        const document = createDocument('Johnny Rico led the briefing. Johnny Rico was right about the drop.');
-        const firstStart = document.getText().indexOf('Johnny Rico');
-        const range = new Range(document.positionAt(firstStart), document.positionAt(firstStart + 'Johnny Rico'.length));
-        const actions = registeredProvider.provideCodeActions(document, range, { diagnostics: [] });
-        const bulkAction = actions.find((entry) => entry.command?.command === 'yamlink.linkAllUnlinkedMentions');
-
-        assert.ok(bulkAction, 'expected a bulk link-all quick fix when the same mention appears more than once');
-        assert.match(bulkAction.title, /2 mentions/);
-        await mockCommands.executeCommand(bulkAction.command.command, ...bulkAction.command.arguments);
-        assert.equal(
-            document.getText(),
-            '[[johnny-rico|Johnny Rico]] led the briefing. [[johnny-rico|Johnny Rico]] was right about the drop.'
-        );
-    });
-
-    test('does not offer the bulk link-all quick fix when a mention appears only once', async () => {
-        const context = { subscriptions: [], workspaceState: mockWorkspaceState };
-        registerCodeActions(context, () => new Map([
-            ['contact-1', 'C:\\vault\\note.md'],
-            ['johnny-rico', 'C:\\vault\\johnny-rico.md']
-        ]), null);
-
-        const document = createDocument('We should brief Johnny Rico before launch.');
-        const start = document.getText().indexOf('Johnny Rico');
-        const range = new Range(document.positionAt(start), document.positionAt(start + 'Johnny Rico'.length));
-        const actions = registeredProvider.provideCodeActions(document, range, { diagnostics: [] });
-        const bulkAction = actions.find((entry) => entry.command?.command === 'yamlink.linkAllUnlinkedMentions');
-
-        assert.equal(bulkAction, undefined, 'a single occurrence should not offer a "link all" action');
-    });
-
     test('registers query commands and inserts a starter view into the active markdown document', async () => {
         const context = { subscriptions: [] };
         registerCodeActions(context, () => new Map(), null);

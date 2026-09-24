@@ -68,7 +68,6 @@ const {
     collectDateShortcutDecorations,
     collectResolvedDateDecorations,
     collectTagDecorations,
-    collectUnlinkedMentionDecorations,
     updateDecorations
 } = require('../src/features/decorations');
 const { initializeIgnoredDiagnostics, ignoreDiagnostic, describeBrokenLink } = require('../src/diagnostics/ignoredDiagnostics');
@@ -271,44 +270,6 @@ describe('date shortcut decorations', () => {
         const byText = Object.fromEntries(ranges.map(({ range, priority }) => [text.slice(range.start.offset, range.end.offset), priority]));
         assert.equal(byText.urgent, 'urgent');
         assert.equal(byText.architecture, null);
-    });
-});
-
-describe('unlinked mention decorations', () => {
-    test('collects plain-text mentions that are not already wikilinks', () => {
-        const text = 'Johnny Rico appears here, but [[johnny-rico]] is already linked.';
-        const termIndex = new Map([['johnny rico', 'johnny-rico']]);
-        const idIndex = new Map([['current-note', 'C:\\vault\\current.md'], ['johnny-rico', 'C:\\vault\\rico.md']]);
-        const ranges = collectUnlinkedMentionDecorations(makeDocument(text), termIndex, idIndex);
-        assert.equal(ranges.length, 1);
-        assert.equal(ranges[0].targetId, 'johnny-rico');
-        assert.equal(text.slice(ranges[0].range.start.offset, ranges[0].range.end.offset), 'Johnny Rico');
-    });
-
-    test('does not collect the current note own terms', () => {
-        const text = 'Johnny Rico writes about Johnny Rico.';
-        const termIndex = new Map([['johnny rico', 'johnny-rico']]);
-        const idIndex = new Map([['johnny-rico', 'C:\\vault\\current.md']]);
-        const ranges = collectUnlinkedMentionDecorations(makeDocument(text), termIndex, idIndex);
-        assert.equal(ranges.length, 0);
-    });
-
-    test('uses the same hyphen-aware boundaries as unlinked refs', () => {
-        const text = 'rico should match, but johnny-rico-adjacent should not.';
-        const termIndex = new Map([['rico', 'johnny-rico']]);
-        const idIndex = new Map([['current-note', 'C:\\vault\\current.md'], ['johnny-rico', 'C:\\vault\\rico.md']]);
-        const ranges = collectUnlinkedMentionDecorations(makeDocument(text), termIndex, idIndex);
-        assert.equal(ranges.length, 1);
-        assert.equal(text.slice(ranges[0].range.start.offset, ranges[0].range.end.offset), 'rico');
-    });
-
-    test('prefers the longest non-overlapping term when an alias sits inside a full name', () => {
-        const text = 'Johnny Rico should review this.';
-        const termIndex = new Map([['rico', 'johnny-rico'], ['johnny rico', 'johnny-rico']]);
-        const idIndex = new Map([['current-note', 'C:\\vault\\current.md'], ['johnny-rico', 'C:\\vault\\rico.md']]);
-        const ranges = collectUnlinkedMentionDecorations(makeDocument(text), termIndex, idIndex);
-        assert.equal(ranges.length, 1);
-        assert.equal(text.slice(ranges[0].range.start.offset, ranges[0].range.end.offset), 'Johnny Rico');
     });
 });
 

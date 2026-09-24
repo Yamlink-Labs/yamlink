@@ -14,16 +14,11 @@
 const vscode = require('vscode');
 const path = require('path');
 const { resolveDateShortcutToken } = require('../core/date');
-const { extractCanonicalIdFromFrontmatter, resolveLinkedTarget } = require('../core/id');
+const { resolveLinkedTarget } = require('../core/id');
 const { resolveImageEmbed } = require('../core/imageEmbed');
-const { getAliasIndex, getFieldsCache, getVaultGeneration } = require('../core/indexService');
+const { getAliasIndex } = require('../core/indexService');
 const { extractPriority } = require('../core/tasks');
 const { isDiagnosticIgnored, describeBrokenLink } = require('../diagnostics/ignoredDiagnostics');
-const { perfTracker } = require('../runtime/performanceTracker');
-const { getUnlinkedMentionTermIndex } = require('./entity/unlinkedRefs');
-
-const UNLINKED_MENTION_BUDGET_MS = 10;
-const WIKILINK_RE = /\[\[[^\]]+\]\]/g;
 
 /** @param {string} text @returns {number} 0 if the note has no closed frontmatter block. */
 function computeFrontmatterEnd(text) {
@@ -127,11 +122,6 @@ const calloutWarningDecoration = vscode.window.createTextEditorDecorationType({
 });
 const calloutDangerDecoration = vscode.window.createTextEditorDecorationType({
     color: '#f87171', fontWeight: '700'
-});
-
-const unlinkedMentionDecoration = vscode.window.createTextEditorDecorationType({
-    textDecoration: 'underline dotted rgba(96, 165, 250, 0.75)',
-    color: new vscode.ThemeColor('textLink.foreground')
 });
 
 const CALLOUT_COLOR_MAP = {
@@ -311,7 +301,6 @@ function updateDecorations(editor, getIndex) {
         editor.setDecorations(calloutInfoDecoration, []);
         editor.setDecorations(calloutWarningDecoration, []);
         editor.setDecorations(calloutDangerDecoration, []);
-        editor.setDecorations(unlinkedMentionDecoration, []);
         if (concealBracketDec) {
             editor.setDecorations(concealBracketDec, []);
             editor.setDecorations(concealPrefixDec,  []);
@@ -343,7 +332,6 @@ function updateDecorations(editor, getIndex) {
     const calloutInfo    = [];
     const calloutWarning = [];
     const calloutDanger  = [];
-    const unlinkedMentions = [];
 
     let match;
     while ((match = regex.exec(text)) !== null) {
@@ -425,20 +413,6 @@ function updateDecorations(editor, getIndex) {
         else if (priority === 'low') lowTags.push({ range });
         else tags.push({ range });
     }
-    const termIndex = getUnlinkedMentionTermIndex(getFieldsCache(), getVaultGeneration());
-    for (const { range, targetId, term } of perfTracker.measureSync(
-        'decorations.unlinkedMentions',
-        { budgetMs: UNLINKED_MENTION_BUDGET_MS, terms: termIndex.size },
-        () => collectUnlinkedMentionDecorations(editor.document, termIndex, idIndex)
-    )) {
-        unlinkedMentions.push({
-            range,
-            hoverMessage: new vscode.MarkdownString(`Yamlink: unlinked mention of \`[[${targetId}]]\``),
-            targetId,
-            term
-        });
-    }
-
     editor.setDecorations(bracketDecoration,       brackets);
     editor.setDecorations(linkDecoration,          links);
     editor.setDecorations(brokenBracketDecoration, brokenBrackets);
@@ -470,85 +444,6 @@ function updateDecorations(editor, getIndex) {
     editor.setDecorations(calloutInfoDecoration, calloutInfo);
     editor.setDecorations(calloutWarningDecoration, calloutWarning);
     editor.setDecorations(calloutDangerDecoration, calloutDanger);
-    editor.setDecorations(unlinkedMentionDecoration, unlinkedMentions);
-}
-
-function getCurrentDocumentId(document, idIndex) {
-    const filePath = document?.uri?.fsPath;
-    if (filePath) {
-        for (const [id, indexedPath] of idIndex || []) {
-            if (indexedPath === filePath) return id;
-        }
-    }
-    return extractCanonicalIdFromFrontmatter(document.getText()) || null;
-}
-
-function rangeOverlapsAny(start, end, spans) {
-    return spans.some((span) => start < span.end && end > span.start);
-}
-
-function collectWikilinkSpans(text) {
-    const spans = [];
-    let match;
-    WIKILINK_RE.lastIndex = 0;
-    while ((match = WIKILINK_RE.exec(text)) !== null) {
-        spans.push({ start: match.index, end: match.index + match[0].length });
-    }
-    return spans;
-}
-
-function collectOwnTerms(currentId, termIndex) {
-    const ownTerms = new Set();
-    if (!currentId) return ownTerms;
-    for (const [term, nodeId] of termIndex || []) {
-        if (nodeId === currentId) ownTerms.add(term);
-    }
-    return ownTerms;
-}
-
-function escapeRegex(value) {
-    return String(value || '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-}
-
-/**
- * @param {import('vscode').TextDocument} document
- * @param {Map<string, string>} termIndex
- * @param {Map<string, string>} idIndex
- * @returns {Array<{ range: import('vscode').Range, targetId: string, term: string }>}
- */
-function collectUnlinkedMentionDecorations(document, termIndex, idIndex) {
-    const ranges = [];
-    if (!document || !termIndex || termIndex.size === 0) return ranges;
-    const text = document.getText();
-    const currentId = getCurrentDocumentId(document, idIndex);
-    const ownTerms = collectOwnTerms(currentId, termIndex);
-    const wikilinkSpans = collectWikilinkSpans(text);
-
-    const terms = [...termIndex.entries()].sort((a, b) => b[0].length - a[0].length || a[0].localeCompare(b[0]));
-    const acceptedSpans = [];
-    for (const [term, targetId] of terms) {
-        if (!term || ownTerms.has(term)) continue;
-        const pattern = new RegExp(`(?<![a-z0-9-])${escapeRegex(term)}(?![a-z0-9-])`, 'gi');
-        let match;
-        while ((match = pattern.exec(text)) !== null) {
-            const start = match.index;
-            const end = start + match[0].length;
-            if (rangeOverlapsAny(start, end, wikilinkSpans)) continue;
-            if (rangeOverlapsAny(start, end, acceptedSpans)) continue;
-            acceptedSpans.push({ start, end });
-            ranges.push({
-                range: new vscode.Range(document.positionAt(start), document.positionAt(end)),
-                targetId,
-                term
-            });
-        }
-    }
-
-    ranges.sort((a, b) => {
-        if (a.range.start.line !== b.range.start.line) return a.range.start.line - b.range.start.line;
-        return a.range.start.character - b.range.start.character;
-    });
-    return ranges;
 }
 
 /** @param {import('vscode').TextDocument} document @returns {import('vscode').Range[]} */
@@ -709,6 +604,5 @@ module.exports = {
     collectDateShortcutDecorations,
     collectResolvedDateDecorations,
     collectTagDecorations,
-    collectCalloutDecorations,
-    collectUnlinkedMentionDecorations
+    collectCalloutDecorations
 };
