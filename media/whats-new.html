@@ -211,7 +211,7 @@ body,#topbar,#nav,#btm,#main,.vi,.badge,.ri,.dot,.next-card,.overlay-panel{trans
       <line x1="15.5" y1="10.1" x2="8.5" y2="18.9"/><line x1="9.9" y1="22.8" x2="22.1" y2="25.2"/><line x1="24.4" y1="22.3" x2="19.6" y2="10.7"/>
     </svg>
     <span class="tw">yamlink</span><span class="ts">/</span><span class="tlab">Release Briefing</span>
-    <span class="tv">0.8.0</span>
+    <span class="tv">0.8.2</span>
   </div>
   <div class="theme-sw">
     <span class="tlb">Theme</span>
@@ -238,10 +238,12 @@ body,#topbar,#nav,#btm,#main,.vi,.badge,.ri,.dot,.next-card,.overlay-panel{trans
       <div class="rel-body" id="rel-body">
         <div class="vi" style="opacity:.45"><span class="vi-ver">0.7.5</span><span class="vi-tag">API</span></div>
         <div class="vi" style="opacity:.45"><span class="vi-ver">0.7.6</span><span class="vi-tag">Hotfix</span></div>
-        <div class="vi" style="opacity:.45"><span class="vi-ver">0.7.7</span><span class="vi-tag">Publishing</span></div>
-        <div class="vi" style="opacity:.45"><span class="vi-ver">0.7.8</span><span class="vi-tag">Hotfix</span></div>
+        <div class="vi"><span class="vi-ver">0.7.7</span><span class="vi-tag">Publishing</span></div>
+        <div class="vi"><span class="vi-ver">0.7.8</span><span class="vi-tag">Hotfix</span></div>
         <div class="vi"><span class="vi-ver">0.7.9</span><span class="vi-tag">Hotfix</span></div>
-        <div class="vi on" data-current><span class="vi-ver">0.8.0</span><span class="vi-tag" style="color:var(--acc)">Engine</span></div>
+        <div class="vi"><span class="vi-ver">0.8.0</span><span class="vi-tag">Engine</span></div>
+        <div class="vi"><span class="vi-ver">0.8.1</span><span class="vi-tag">Hotfix</span></div>
+        <div class="vi on" data-current><span class="vi-ver">0.8.2</span><span class="vi-tag" style="color:var(--acc)">Excel-ification</span></div>
       </div>
     </div>
   </nav>
@@ -265,149 +267,119 @@ body,#topbar,#nav,#btm,#main,.vi,.badge,.ri,.dot,.next-card,.overlay-panel{trans
               </svg>
             </div>
             <div>
-              <div class="eye" style="margin-bottom:8px">0.8.0 · Engine</div>
-              <h1>One change, everywhere it should apply.</h1>
+              <div class="eye" style="margin-bottom:8px">0.8.2 · Excel-ification</div>
+              <h1>Your notes just learned to do math.</h1>
             </div>
           </div>
-          <p class="prose">0.8.0 is the release where "engine, not just an extension" stopped being a slogan and started being true in the code. A field change across many notes now works identically from the CLI, the API, VS Code, and Conduit — one shared module, not four reimplementations. The query language learned to walk the graph and look into the past. Automation survives closing the terminal. And the vault started noticing its own shape and its own habits, not just yours.</p>
-          <p class="prose">Twenty-two real, shipped changes this cycle, every one of them below — no filler, and nothing held back for its own separate showcase.</p>
+          <p class="prose">Type a formula into any note and watch it compute live — no spreadsheet, no separate app, no schema required. Pull a number straight out of another note. Summarize an entire table in one line. Run real finance math — NPV, IRR, compound growth — the same way Excel does it, with the same sign conventions, so nothing you already know has to be relearned. This is the release where Yamlink stopped being just a place you keep notes and became a place you can also work the numbers.</p>
         </section>
 
         <!-- 02 Highlights -->
         <section class="sec" id="s-highlights">
           <div class="eye">What shipped</div>
-          <h2>All twenty-two, not a curated highlight reel.</h2>
+          <h2>All thirty, not a curated highlight reel.</h2>
 
           <div class="mosaic">
             <div class="tile tile-lg expandable">
               <div class="tile-toggle" role="button" aria-label="Show details" tabindex="0">+</div>
-              <div class="tile-num">5</div>
-              <div class="tile-tag">query &amp; automation</div>
-              <div class="tile-name">VQL v1</div>
-              <div class="tile-desc">Hops deep, cycle-safe: <ic>linked_to</ic>/<ic>linked_from ... within N</ic> real graph traversal inside <ic>!view</ic>. <ic>as of &lt;date&gt;</ic> reconstructs a query's results as they stood on a past date, on the same Time Engine already powering <ic>cat --at</ic>/<ic>graph --at</ic>.</div>
+              <div class="tile-num">35</div>
+              <div class="tile-tag">what this release is all about</div>
+              <div class="tile-name">Inline calculations</div>
+              <div class="tile-desc">Stop doing the math in your head, or worse, in a separate spreadsheet you'll lose track of. Type <ic>`=price*qty`</ic> directly in a note and Yamlink computes it live, right there in your text. Every cell gets an automatic label that renumbers itself the instant you insert a new one above it — the same trick a spreadsheet pulls when a row shifts, except you never asked for it and it just works. Hover any formula to see exactly how it got its answer, step by step. And when something's wrong, you get a real reason — <ic class="or">#REF!</ic>, <ic class="or">#DIV/0!</ic>, <ic class="or">#NAME?</ic>, <ic class="or">#VALUE!</ic> — not a silent wrong number you won't catch until it costs you something. Autocomplete opens the moment you type a formula, the same way <ic>[[</ic> already does elsewhere, and now suggests this note's own frontmatter fields and any table's columns right alongside your own cells.</div>
+            </div>
+            <div class="tile tile-lg expandable">
+              <div class="tile-toggle" role="button" aria-label="Show details" tabindex="0">+</div>
+              <div class="tile-num">12</div>
+              <div class="tile-tag">answer harder questions without leaving the note</div>
+              <div class="tile-name">Statistics, finance &amp; growth</div>
+              <div class="tile-desc">Twelve functions that turn a list of numbers into an actual answer: the typical price (<ic>median</ic>), how much it varies (<ic>stdev</ic>), whether a purchase pays for itself (<ic>npv</ic>, <ic>irr</ic>), what a loan costs per month (<ic>pmt</ic>), how fast something is really growing (<ic>cagr</ic>). Same formulas Excel uses, same sign conventions — if you already think in spreadsheet terms, nothing here needs translating. Deadlines get the same treatment: <ic>today()</ic>, <ic>days_between()</ic>, and a real <ic>if()</ic> that only ever evaluates the branch it takes.</div>
             </div>
             <div class="tile tile-lg expandable">
               <div class="tile-toggle" role="button" aria-label="Show details" tabindex="0">+</div>
               <div class="tile-num">4</div>
-              <div class="tile-tag">one thing, everywhere at once</div>
-              <div class="tile-name">Multi-note authoring</div>
-              <div class="tile-desc">Surfaces, one module: <ic>yamlink bulk-set</ic>, <ic>PATCH /api/nodes/bulk</ic>'s <ic>{ add }</ic> mode, VS Code's <ic>Bulk Set Field on Selected Notes</ic>, and Conduit's "Add to list field" all call the same <ic>src/core/bulkFieldOperation.js</ic> — one implementation, four doors into it.</div>
-            </div>
-            <div class="tile tile-lg tile-warn expandable">
-              <div class="tile-toggle" role="button" aria-label="Show details" tabindex="0">+</div>
-              <div class="tile-num">1,400</div>
-              <div class="tile-tag">the one that almost got out of hand</div>
-              <div class="tile-name">The bug that spawned 1,400 processes</div>
-              <div class="tile-desc">A real smoke test against a real vault produced over 1,400 live processes in under a minute — a worker silently re-entering supervisor mode and spawning its own worker doing the same, recursively. No unit test caught it, only running the real thing did. Fixed with one line, locked in with a regression test.</div>
-            </div>
-            <div class="tile tile-lg expandable">
-              <div class="tile-toggle" role="button" aria-label="Show details" tabindex="0">+</div>
-              <div class="tile-num">3</div>
-              <div class="tile-tag">where you actually click things</div>
-              <div class="tile-name">Block-ID CodeLens</div>
-              <div class="tile-desc">Three actions above every heading, task, quote, footnote: "Copy reference," "N references" (jumps straight to a backlink), and "Extract to note" (moves a block into its own note in one step).</div>
+              <div class="tile-tag">no second query needed</div>
+              <div class="tile-name">Table &amp; cross-note ranges</div>
+              <div class="tile-desc">The most common spreadsheet habit — copying a number from one place into another — is gone. <ic>sum([[budget]]^Y1:Y5)</ic> reaches straight into another note's cells. <ic>sum(T1.budget)</ic> reads an entire column out of this note's own table. Name a range once (<ic>prices=Y1:Y8</ic>) and reuse it in <ic>median</ic>, <ic>sumif</ic>, <ic>countif</ic>, anywhere a list belongs. Nothing to retype, nothing to keep in sync by hand.</div>
             </div>
             <div class="tile tile-md expandable">
               <div class="tile-toggle" role="button" aria-label="Show details" tabindex="0">+</div>
-              <div class="tile-tag">the stuff that runs without you</div>
-              <div class="tile-name">Daemon automation</div>
-              <div class="tile-desc"><ic>yamlink on --daemon</ic> survives closing the terminal — a real supervisor respawns a crashed worker with backoff, and the watcher retries a flaky <ic>fs.watch</ic> failure instead of dying silently.</div>
+              <div class="tile-tag">two new ways to see your vault</div>
+              <div class="tile-name">Line &amp; Pie charts</div>
+              <div class="tile-desc">Two more ways to see your data at a glance — and a Value picker so Bar and Pie can chart a real total instead of a plain count, no extra query required.</div>
             </div>
             <div class="tile tile-md expandable">
               <div class="tile-toggle" role="button" aria-label="Show details" tabindex="0">+</div>
-              <div class="tile-tag">the nerdy stuff</div>
-              <div class="tile-name">Structural signature</div>
-              <div class="tile-desc"><ic>yamlink signature</ic>: dominant types, field-bundle rigidity, hub concentration, recent growth. Every number ships with a plain sentence, never a forced label.</div>
+              <div class="tile-tag">one number, many ways to slice it</div>
+              <div class="tile-name">Summarizing across notes</div>
+              <div class="tile-desc">One query, every answer you need. <ic>aggregate sum()/average()/min()/max()/count</ic> totals, averages, and counts across an entire matched set — standalone, or one line per <ic>group by</ic> bucket. Add <ic>when priority = high</ic> and you get the high-priority total right next to the overall one, in the same breath.</div>
+            </div>
+            <div class="tile tile-md expandable">
+              <div class="tile-toggle" role="button" aria-label="Show details" tabindex="0">+</div>
+              <div class="tile-tag">fixes</div>
+              <div class="tile-name">x-graph physics &amp; honesty</div>
+              <div class="tile-desc">Dragging a node no longer sets off a chain reaction across the whole graph. Clusters look like clusters, not a crystal lattice. Every type gets its own real color. And when the view is only showing you part of the vault, it finally says so — "128 of 340 notes" instead of quietly pretending that's everything.</div>
+            </div>
+            <div class="tile tile-md expandable">
+              <div class="tile-toggle" role="button" aria-label="Show details" tabindex="0">+</div>
+              <div class="tile-tag">formatting without touching the real value</div>
+              <div class="tile-name">Display formats</div>
+              <div class="tile-desc"><ic>as currency</ic>, <ic>as percent</ic>, <ic>as comma</ic> — control how a number looks without ever touching the number itself, so the math underneath stays exact.</div>
             </div>
             <div class="tile tile-sm">
-              <div class="tile-name">Webhooks</div>
-              <div class="tile-desc"><ic>yamlink hooks</ic> — an HTTP callback on a mutation event, no terminal required.</div>
+              <div class="tile-name">Group labels, fixed</div>
+              <div class="tile-desc"><ic>group by</ic> on a linked field now shows the note's name, not raw <ic>[[brackets]]</ic>.</div>
             </div>
             <div class="tile tile-sm">
-              <div class="tile-name">Graph history</div>
-              <div class="tile-desc"><ic>GET /api/graph/history</ic> — a checkpoint series over a time range, up to 50 per request.</div>
+              <div class="tile-name">Hover finds what you meant</div>
+              <div class="tile-desc">Accent-insensitive matching, plus a fallback that finds the real paragraph when there's no heading to land on.</div>
             </div>
             <div class="tile tile-sm">
-              <div class="tile-name">Workflow memory</div>
-              <div class="tile-desc"><ic>yamlink workflow-memory</ic> — notices which fields <em>you</em> fill in together.</div>
+              <div class="tile-name">Booleans in parentheses</div>
+              <div class="tile-desc"><ic>(total &gt; 1000) and (count &lt; 5)</ic> — grouping finally works on comparisons, not just arithmetic.</div>
             </div>
             <div class="tile tile-sm">
-              <div class="tile-name">LSP type-line suggestions</div>
-              <div class="tile-desc">Vault-pattern code actions on <ic>type:</ic>, not a stripped-down VS Code copy.</div>
+              <div class="tile-name">No more nagging yourself</div>
+              <div class="tile-desc">Accept a field suggestion and Yamlink won't immediately suggest the same one right back.</div>
             </div>
             <div class="tile tile-sm">
-              <div class="tile-name">Dependency preview</div>
-              <div class="tile-desc">The real reference count <em>before</em> you delete or rename, not after.</div>
+              <div class="tile-name"><ic>sort asc</ic>, actually works</div>
+              <div class="tile-desc">Writing it explicitly used to silently drop the whole clause. Fixed.</div>
             </div>
             <div class="tile tile-sm">
-              <div class="tile-name">x-graph live drag</div>
-              <div class="tile-desc">Neighbors pull along live. "Hover Focus" stays off by default now.</div>
+              <div class="tile-name">Link fix goes to the right field</div>
+              <div class="tile-desc">The quickfix now writes into the field you invoked it from, not a hardcoded one.</div>
             </div>
             <div class="tile tile-sm">
-              <div class="tile-name">Smart Templates</div>
-              <div class="tile-desc">Fields pre-fill with a real value, multiple templates per type, a follow-up nudge.</div>
-            </div>
-            <div class="tile tile-sm">
-              <div class="tile-name">Unlinked-mention highlighting</div>
-              <div class="tile-desc">Live inline underlines, plus a bulk "link all N mentions" quick fix.</div>
-            </div>
-            <div class="tile tile-sm">
-              <div class="tile-name">Conduit layered navigation</div>
-              <div class="tile-desc"><ic>Esc</ic> peels back a real context trail, not a fixed home screen.</div>
-            </div>
-            <div class="tile tile-sm">
-              <div class="tile-name">Note Outline nesting</div>
-              <div class="tile-desc">Tasks and quotes nest under their heading, not just headings.</div>
-            </div>
-            <div class="tile tile-sm">
-              <div class="tile-name">Importer audit + Trust Layer</div>
-              <div class="tile-desc">All four importers audited; a new layer tells you what an import will keep.</div>
-            </div>
-            <div class="tile tile-sm">
-              <div class="tile-name">Live Note preview</div>
-              <div class="tile-desc">No more noise pills, real done/total ratios, click-to-source tasks.</div>
-            </div>
-            <div class="tile tile-sm">
-              <div class="tile-name">Sample vault polish</div>
-              <div class="tile-desc">The bundled vault demonstrates its own computed fields and glossary now.</div>
+              <div class="tile-name">Autocomplete that's learned something</div>
+              <div class="tile-desc">Suggests formula shapes already proven out in other notes of the same type.</div>
             </div>
           </div>
 
-          <div class="hl-tally"><b>22</b> shipped · <b>2</b> killed (RIP timeline scrubber, spatial canvas) · <b>1,400</b> rogue processes stopped · <b>4</b> surfaces, <b>1</b> shared brain</div>
+          <div class="hl-tally"><b>30</b> shipped · <b>2</b> deferred on purpose (<ic>percentile</ic>/<ic>correl</ic> need a shape this evaluator can't express yet) · <b>1</b> formula engine, <b>5</b> surfaces reading from it</div>
         </section>
 
         <!-- 03 Story -->
         <section class="sec" id="s-story">
           <div class="eye">How this cycle actually went</div>
-          <p class="prose">I'm going to sound dramatic here, but honestly, it felt dramatic, lol.</p>
-          <p class="prose">This one took a long time to get through. And that's on me.</p>
-          <p class="prose">I had a plan — all centered around Conduit. I wanted to build a "timeline scrubber." This, in essence, would let you go through your vault's history and reconstruct any point in time, right from your terminal. I thought it was a really cool idea (still do). But as I started testing it and seeing it live, I just couldn't find a way to make it properly work. My main mistake was spending so much time on this one feature without ever really understanding whether I could achieve it or not. So that first element got killed off.</p>
-          <p class="prose">Then I had the idea to create a "canvas" inside the terminal — a "map" of your notes, with visual representation and navigation of all your work. But taking that vision into the functional reality of a terminal proved too difficult, especially working on a tight schedule. So, both ideas were busts — at least for now.</p>
-          <p class="prose">That's how I saw my 0.8.0 release completely butchered, lol.</p>
-          <p class="prose">Outside of Conduit work, a lot of the planned work was around QOL elements and codebase health — which, of course, isn't enough for a full release. So I decided to look into the roadmap and see what could be moved up and rearranged to make 0.8.0 a solid release. A query language that accomplishes "more," automation that survives closing the terminal — these things were not planned AT ALL for 0.8.0. It took quite some time and planning, it took a lot of tinkering, but I believe that Yamlink, no matter what, is stronger today than it was yesterday.</p>
-          <p class="prose">I insist, Conduit is a very important part of my plans, but my ideas just didn't hit. I will obviously look to improve and polish the experience moving forward. But for 0.8.0, it just wasn't meant to be.</p>
-          <p class="prose">And to be honest, what matters most is input. Input is the best way to grow and improve. If you could provide feedback, in any shape or form, I'd greatly appreciate it! Just go to our GH and you can leave your thoughts and opinions on any of the active threads.</p>
-          <p class="prose">Please, enjoy 0.8.0!</p>
-          <div style="font-size:11px;color:var(--tx3);letter-spacing:.06em;margin-top:28px;">— J<br>August 2026</div>
+          <p class="prose">As I've said endlessly since I started working on Yamlink, "I just want something to suit my needs." Well, 0.8.2 is exactly that.</p>
+          <p class="prose">I recently started my MBA, and I am now neck deep into statistics, projections, finances, and long equations calculating long-term variable interest. And I wanted that in my MD. And then I said, well, what if Yamlink and Excel had a wild fling?</p>
+          <p class="prose">Have "cell-like" behavior for your calculations, reference results all over your notes, and better yet, query them and view graphical output of your work. I thought this could give Yamlink a whole new outlook and open the door to a whole new set of applications.</p>
+          <p class="prose">Initially, I just wanted to view formulas and calculations, and it just kept growing and growing. Now, you can literally handle things like your own personal finances.</p>
+          <p class="prose">In essence, Yamlink is now your own local, computation engine living in your MD. Your notes and all your numbers live side by side, and that's a pretty cool thing if you ask me.</p>
+          <div style="font-size:11px;color:var(--tx3);letter-spacing:.06em;margin-top:28px;">— J<br>October 2026</div>
         </section>
 
         <!-- 04 Insights -->
         <section class="sec" id="s-insights">
           <div class="eye">Insights</div>
-          <p class="prose">yamlink.dev is up! It took a while to come up with a concept I thought was worthy of Yamlink. Even though the entire project isn't done, there's now at least a proper version for everyone to get to know and use. There's still a few twists and turns I want to implement, but for now, I think the experience is pretty cool — I hope you like it!</p>
-          <p class="prose">I've also been taking a stab at writing. Right now there are 3 pieces up on dev.to, all related to use cases for your vault using Markdown and Yamlink. I'm not ready to call them "masterpieces," but I had fun writing them — maybe you'll enjoy them too:</p>
-          <ul style="margin:4px 0 16px 20px;padding:0;">
-            <li style="margin-bottom:6px;"><a href="https://dev.to/javier_ramrez_e2b4bb54fb/i-ditched-my-fitness-app-for-a-folder-of-markdown-files-spoiler-its-better-2lad" style="color:var(--acc);text-decoration:underline;">Your MD as a fitness tracker</a></li>
-            <li style="margin-bottom:6px;"><a href="https://dev.to/javier_ramrez_e2b4bb54fb/can-i-have-my-entire-crm-setup-in-crm-4op6" style="color:var(--acc);text-decoration:underline;">Can I have my entire CRM setup in Markdown?</a></li>
-            <li><a href="https://dev.to/javier_ramrez_e2b4bb54fb/turning-markdown-files-into-a-queryable-knowledge-graph-4aho" style="color:var(--acc);text-decoration:underline;">Turning Markdown Files into a Queryable Knowledge Graph</a></li>
-          </ul>
-          <p class="prose">I'm also toying with the idea of a Discord server. Right now there's not really a need for one — only a few people have commented on GitHub — but I feel like a space for real-time chat could make interaction and community-building easier down the line. I'm not 100% sold on it. If you have an opinion either way, let me know.</p>
-          <div style="font-family:var(--sans);font-size:13px;color:var(--tx2);margin-top:24px;">Cheers,<br><span style="color:var(--tx3);font-size:12px;">—j</span></div>
+          <p class="prose">I've wanted a Zed extension for a long time. Being editor-agnostic was the whole point of building Yamlink's LSP server in the first place — hover, completions, rename, diagnostics, all of it already speaks the same protocol Zed would need. Living outside of VS Code, opening the way for a potential app, that was always the goal.</p>
+          <p class="prose">Between starting my MBA and everything else already going on (work, family), there's no resources for a proper Zed extension. As an alternative: if you want to run Yamlink outside VS Code in the meantime, it already works in Cursor — I've tested it directly. There's no packaged install for it yet, since the time's gone into the VS Code extension and the desktop app instead, but if enough of you want a downloadable Cursor package up on the Yamlink GitHub, that's something I can do. You can comment on our GH discussion thread or comment on our Yamlink Labs X page if you want.</p>
+          <div style="font-size:11px;color:var(--tx3);letter-spacing:.06em;margin-top:28px;">— J</div>
         </section>
 
         <!-- Previous release view (outside sec[] navigation system) -->
         <div id="s-prev-release" style="display:none;opacity:0;transition:opacity 190ms ease,transform 190ms ease;transform:translateY(10px);">
-          <div class="pr-back" id="pr-back">← Back to 0.8.0</div>
+          <div class="pr-back" id="pr-back">← Back to 0.8.2</div>
           <div id="pr-content"></div>
         </div>
 
@@ -422,11 +394,11 @@ body,#topbar,#nav,#btm,#main,.vi,.badge,.ri,.dot,.next-card,.overlay-panel{trans
             <a class="ri" href="https://x.com/yamlinklabs" style="text-decoration:none"><span class="ri-n">@yamlinklabs on X</span><span class="ri-a">↗</span></a>
             <a class="ri" href="https://github.com/Yamlink-Labs/yamlink/issues" style="text-decoration:none"><span class="ri-n">Report a Bug</span><span class="ri-a">↗</span></a>
           </ul>
-          <div class="ref-meta">yamlink 0.8.0 · engine · august 2026</div>
+          <div class="ref-meta">yamlink 0.8.2 · excel-ification · october 2026</div>
           <div class="next-card">
             <div class="next-eyebrow">Coming next</div>
-            <div class="next-title">0.8.1 — Mathematical Depth I</div>
-            <div class="next-desc">Jaccard-similarity clustering, betweenness centrality and k-core decomposition as new graph-topology signals, graph spring stiffness formalized as a real spring-energy model, calendar depth, and Mind Map View.</div>
+            <div class="next-title">Mathematical depth (tentatively)</div>
+            <div class="next-desc">Next up, I want the graph and the intelligence layer to get genuinely smarter, not just bigger. That means noticing which notes actually belong together instead of just matching identical fields, spotting the handful of notes that quietly bridge two otherwise separate parts of your vault, and finding the vault's real structural core rather than just its most-linked notes. The graph's layout should also start behaving like a real physical system, so clusters settle into place on their own instead of needing a synthetic nudge. And I want to close the one rough edge from this release — <ic>T&lt;N&gt;</ic> table labels will get the same automatic renumbering <ic>Y&lt;N&gt;</ic> cell labels already have.</div>
             <div class="next-badge">In development</div>
           </div>
         </section>
@@ -454,7 +426,7 @@ body,#topbar,#nav,#btm,#main,.vi,.badge,.ri,.dot,.next-card,.overlay-panel{trans
   <div style="margin-left:auto;display:flex;align-items:center;gap:16px;">
     <a class="btm-link" href="https://www.yamlink.dev">yamlink.dev</a>
     <a class="btm-link" href="https://x.com/yamlinklabs">@yamlinklabs</a>
-    <span class="btm-link" style="opacity:.3">yamlink 0.8.0</span>
+    <span class="btm-link" style="opacity:.3">yamlink 0.8.2</span>
   </div>
 </footer>
 
@@ -501,6 +473,28 @@ document.getElementById('rel-toggle').addEventListener('click', () => {
 
 // Previous release data
 const releaseData = {
+  '0.8.1': {
+    tag: '0.8.1 · Hotfix',
+    headline: 'Two small removals, in favor of right-click.',
+    intro: 'A CodeLens above headings, tasks, quotes, and footnotes, and an inline icon on Note Outline items, both removed. The equivalent commands remain available via right-click.',
+    items: [
+      'Removed the CodeLens that appeared above headings, tasks, quotes, and footnotes.',
+      'Removed the inline icon on Note Outline items.',
+    ]
+  },
+  '0.8.0': {
+    tag: '0.8.0 · Engine',
+    headline: 'One change, everywhere it should apply.',
+    intro: '"Engine, not just an extension" stopped being a slogan and started being true in the code. A field change across many notes now works identically from the CLI, the API, VS Code, and Conduit — one shared module, not four reimplementations.',
+    items: [
+      '<b>VQL v1</b> — real graph traversal inside <ic>!view</ic> (<ic>linked_to</ic>/<ic>linked_from ... within N</ic>), and <ic>as of &lt;date&gt;</ic> reconstructs a query\'s results as they stood on a past date.',
+      '<b>Multi-note authoring</b> — <ic>yamlink bulk-set</ic>, the API\'s bulk <ic>{ add }</ic> mode, VS Code\'s bulk-set command, and Conduit\'s list-field add all call one shared module.',
+      '<b>Daemon automation</b> — <ic>yamlink on --daemon</ic> survives closing the terminal, with a real supervisor and crash backoff.',
+      '<b>Structural signature</b> — <ic>yamlink signature</ic> reports dominant types, field-bundle rigidity, and hub concentration in plain sentences.',
+      'Webhooks, graph history over a time range, workflow memory, LSP type-line suggestions, dependency preview before delete/rename, and x-graph live drag.',
+      'A real bug that spawned over 1,400 processes in under a minute, found only by running the real thing, fixed with one line and a regression test.',
+    ]
+  },
   '0.7.9': {
     tag: '0.7.9 · Hotfix',
     headline: 'The build cache was always wrong.',
