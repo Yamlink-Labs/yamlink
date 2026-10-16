@@ -15,6 +15,7 @@ const { registerCodeActions } = require('./src/actions/codeActions');
 const { registerBlockReferenceCommands } = require('./src/actions/blockReferenceCommands');
 const { registerRename } = require('./src/core/rename');
 const { registerDecorations } = require('./src/features/decorations');
+const { registerInlineCalcCompletion } = require('./src/features/inlineCalcCompletion');
 const { parseFrontmatterDocument } = require('./src/core/frontmatter');
 const { buildNoteExportModel, exportNotePdf } = require('./src/export/pdf');
 const { openHealthPanel, updatePanel } = require('./src/features/healthPanel');
@@ -420,6 +421,7 @@ async function activate(context) {
     registerCalendarView(context);
     registerGraphView(context);
     const decorationsProvider = registerDecorations(context, getIndex);
+    registerInlineCalcCompletion(context);
     const codeLensProvider = registerViewCodeLens(context, getOpenViewDocumentPath);
     const { openPreviewPanel, refreshPreviewPanel } = createPreviewPanelController();
     const { openLiveNotePanel, refreshLiveNotePanel, refreshLiveNotePanelForDocument } = createLiveNotePanelController();

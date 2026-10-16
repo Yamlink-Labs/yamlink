@@ -610,7 +610,7 @@ function provideQueryCompletions(document, position, getIndex) {
             });
         }
 
-        if (/^\s*where\s*$/i.test(before) || /^\s*where\s+[\w-]*$/i.test(before)) {
+        if (/^\s*where\s*$/i.test(before) || /^\s*where\s+[\w.-]*$/i.test(before)) {
             const partial = before.replace(/^\s*where\s*/i, '').trim().toLowerCase();
             return fields.filter(f => f.startsWith(partial)).map(f => {
                 const item = new vscode.CompletionItem(f, vscode.CompletionItemKind.Field);
@@ -619,12 +619,12 @@ function provideQueryCompletions(document, position, getIndex) {
             });
         }
 
-        const whereFieldMatch = before.match(/^\s*where\s+([\w-]+)\s*$/i);
+        const whereFieldMatch = before.match(/^\s*where\s+([\w.-]+)\s*$/i);
         if (whereFieldMatch) {
             return ['=', 'contains'].map(op => new vscode.CompletionItem(op, vscode.CompletionItemKind.Operator));
         }
 
-        const relationMatch = before.match(/^\s*where\s+([\w-]+)\s*=\s*\[\[([^\]]*)$/i);
+        const relationMatch = before.match(/^\s*where\s+([\w.-]+)\s*=\s*\[\[([^\]]*)$/i);
         if (relationMatch) {
             const fieldName = relationMatch[1].toLowerCase();
             const partial = relationMatch[2].toLowerCase();
@@ -654,7 +654,7 @@ function provideQueryCompletions(document, position, getIndex) {
                 });
         }
 
-        const scalarMatch = before.match(/^\s*where\s+([\w-]+)\s*=\s*([^\[]*)$/i);
+        const scalarMatch = before.match(/^\s*where\s+([\w.-]+)\s*=\s*([^\[]*)$/i);
         if (scalarMatch) {
             const fieldName = scalarMatch[1].toLowerCase();
             const partial = scalarMatch[2].trim().toLowerCase();

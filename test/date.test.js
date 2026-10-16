@@ -3,7 +3,7 @@
 const { test, describe } = require('node:test');
 const assert = require('node:assert/strict');
 
-const { normaliseDateInput, extractDateFromText, resolveDateShortcutToken, buildDateShortcutEntries } = require('../src/core/date');
+const { normaliseDateInput, extractDateFromText, resolveDateShortcutToken, buildDateShortcutEntries, daysBetweenIso, addDaysIso } = require('../src/core/date');
 
 describe('date parsing', () => {
     test('supports abbreviated month names and ordinal day suffixes', () => {
@@ -37,5 +37,25 @@ describe('date parsing', () => {
         assert.equal(today.iso, '2026-05-04');
         assert.ok(friday);
         assert.equal(friday.iso, '2026-05-08');
+    });
+
+    test('daysBetweenIso is b minus a, in whole days — used by mathExpr.js\'s days_between() formula function', () => {
+        assert.equal(daysBetweenIso('2026-01-01', '2026-01-15'), 14);
+        assert.equal(daysBetweenIso('2026-01-15', '2026-01-01'), -14);
+        assert.equal(daysBetweenIso('2026-01-01', '2026-01-01'), 0);
+    });
+
+    test('daysBetweenIso crosses a month/year boundary correctly', () => {
+        assert.equal(daysBetweenIso('2025-12-20', '2026-01-05'), 16);
+    });
+
+    test('daysBetweenIso returns null for a malformed input, matching addDaysIso\'s own null-on-malformed convention', () => {
+        assert.equal(daysBetweenIso('not-a-date', '2026-01-01'), null);
+        assert.equal(daysBetweenIso('2026-01-01', ''), null);
+    });
+
+    test('daysBetweenIso and addDaysIso round-trip: adding the difference back gets you to the other date', () => {
+        const diff = daysBetweenIso('2026-01-01', '2026-03-15');
+        assert.equal(addDaysIso('2026-01-01', diff), '2026-03-15');
     });
 });

@@ -8,6 +8,7 @@ const { getIndex, getFieldsCache, getPathIndex, getVaultGeneration } = require('
 const { buildTaskRows } = require('../core/tasks');
 const { getTodayIsoLocal, normaliseDateInput } = require('../core/date');
 const { openNoteTarget } = require('./navigation/openNoteTarget');
+const { getMutationEvents } = require('../runtime/mutationEventLog');
 
 let sidebarView = null;
 let _extUri = null;
@@ -86,11 +87,27 @@ function buildCalendarModel(taskRows, fieldsCache, todayIso, preferredDate = '')
             itemKind: 'task'
         };
     });
+    // Fallback source for a note with neither date: nor created: frontmatter —
+    // the mutation log already records when every note was first indexed
+    // (note_created), vault-wide, independent of frontmatter. Without this, a
+    // note with no explicit date field was invisible to the Calendar no
+    // matter when it was actually written — a real gap, not intended
+    // behavior (the Calendar is meant to track all vault activity).
+    const creationDateByNoteId = new Map();
+    for (const event of getMutationEvents({ type: 'note_created' })) {
+        if (!event.noteId || !event.timestamp) continue;
+        const iso = String(event.timestamp).slice(0, 10);
+        if (!isValidIsoDate(iso)) continue;
+        const existing = creationDateByNoteId.get(event.noteId);
+        if (!existing || iso < existing) creationDateByNoteId.set(event.noteId, iso);
+    }
+
     const createdItems = [];
     for (const [fileId, fields] of fieldsCache.entries()) {
         const primaryDate = normaliseDateInput(fields.date || '') || '';
         const createdDate = normaliseDateInput(fields.created || '') || '';
-        const noteDate = primaryDate || createdDate;
+        const mutationLogDate = creationDateByNoteId.get(fileId) || '';
+        const noteDate = primaryDate || createdDate || mutationLogDate;
         if (!noteDate) continue;
         const noteName = String(fields.name || fields.title || fileId);
         createdItems.push({
@@ -124,21 +141,11 @@ function buildCalendarModel(taskRows, fieldsCache, todayIso, preferredDate = '')
     const monthKeys = Array.from(months.keys()).sort();
     const preferredIso = isValidIsoDate(preferredDate) ? preferredDate : '';
     const preferredMonth = preferredIso ? preferredIso.slice(0, 7) : '';
-    const selectedMonth = preferredMonth
-        || (monthKeys.includes(todayIso.slice(0, 7))
-            ? todayIso.slice(0, 7)
-            : (monthKeys[0] || todayIso.slice(0, 7)));
-
-    // Prefer explicit note context → today → most recent past date → nearest future date
-    let selectedDate;
-    if (preferredIso) {
-        selectedDate = preferredIso;
-    } else if (dated.find(row => row.date === todayIso)) {
-        selectedDate = todayIso;
-    } else {
-        const past = dated.filter(row => row.date < todayIso);
-        selectedDate = past.length > 0 ? past[past.length - 1].date : (dated[0]?.date || todayIso);
-    }
+    // Always default to the current month/day — not wherever the vault's
+    // earliest (or only) dated item happens to fall. A quiet month is a
+    // normal, expected state, not a reason to jump the view somewhere else.
+    const selectedMonth = preferredMonth || todayIso.slice(0, 7);
+    const selectedDate = preferredIso || todayIso;
 
     const stats = {
         total: rows.length,
@@ -235,8 +242,9 @@ function derivePreferredCalendarDate(taskRows, fieldsCache) {
     return noteTaskDates[0] || '';
 }
 
+const DOW_LABELS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
+
 function buildHtml(model, nonce, csp, scriptUri) {
-    const monthOptions = model.monthKeys.map(key => `<option value="${esc(key)}"${key === model.selectedMonth ? ' selected' : ''}>${esc(formatMonthLabel(key))}</option>`).join('');
     const monthGrid = buildMonthGrid(model.selectedMonth, model.months[model.selectedMonth] || [], model.selectedDate, model.todayIso);
 
     return `<!DOCTYPE html><html lang="en"><head>
@@ -256,12 +264,25 @@ function buildHtml(model, nonce, csp, scriptUri) {
         <button type="button" data-mode="week" aria-pressed="false">Week</button>
         <button type="button" data-mode="day" aria-pressed="false">Day</button>
       </div>
-      <label class="sr-only" for="month-select">Selected month</label>
-      <select id="month-select" class="month-select" aria-label="Selected month">${monthOptions}</select>
-      <label class="sr-only" for="date-input">Selected date</label>
-      <input id="date-input" class="date-input" type="date" value="${esc(model.selectedDate)}" aria-label="Selected date">
+      <div class="nav-group" role="group" aria-label="Move through the calendar">
+        <button type="button" class="nav-btn" id="nav-prev" aria-label="Previous">‹</button>
+        <button type="button" class="date-picker-trigger" id="date-picker-trigger" aria-haspopup="dialog" aria-expanded="false">
+          <span id="date-picker-label">${esc(model.selectedDate)}</span>
+        </button>
+        <button type="button" class="nav-btn" id="nav-next" aria-label="Next">›</button>
+      </div>
+      <button type="button" class="today-btn" id="today-btn">Today</button>
     </div>
     <div class="shortcut-hint">Shortcuts: <kbd>M</kbd>/<kbd>W</kbd>/<kbd>D</kbd> mode · <kbd>[</kbd> / <kbd>]</kbd> move · <kbd>T</kbd> today</div>
+  </div>
+  <div class="date-popover" id="date-popover" role="dialog" aria-modal="false" aria-label="Choose a date" hidden>
+    <div class="date-popover-header">
+      <button type="button" class="nav-btn" id="picker-prev-month" aria-label="Previous month">‹</button>
+      <div class="date-popover-title" id="picker-title"></div>
+      <button type="button" class="nav-btn" id="picker-next-month" aria-label="Next month">›</button>
+    </div>
+    <div class="date-popover-dow">${DOW_LABELS.map(label => `<div>${label}</div>`).join('')}</div>
+    <div class="date-popover-grid" id="picker-grid"></div>
   </div>
   <div class="summary" id="summary" role="status" aria-live="polite"></div>
   <div class="body">
@@ -321,11 +342,6 @@ function buildMonthGrid(monthKey, rows, selectedDate, todayIso) {
         );
     }
     return `<div class="month-grid">${labels}${cells.join('')}</div>`;
-}
-
-function formatMonthLabel(key) {
-    const [year, month] = key.split('-').map(Number);
-    return new Date(year, month - 1, 1).toLocaleString('en-US', { month: 'long', year: 'numeric' });
 }
 
 function esc(value) {

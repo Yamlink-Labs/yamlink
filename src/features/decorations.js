@@ -16,9 +16,14 @@ const path = require('path');
 const { resolveDateShortcutToken } = require('../core/date');
 const { resolveLinkedTarget } = require('../core/id');
 const { resolveImageEmbed } = require('../core/imageEmbed');
-const { getAliasIndex } = require('../core/indexService');
+const { getAliasIndex, getIndex, getPathIndex, getFieldsCache } = require('../core/indexService');
 const { extractPriority } = require('../core/tasks');
 const { isDiagnosticIgnored, describeBrokenLink } = require('../diagnostics/ignoredDiagnostics');
+const { scanInlineCalcs, maskCrossNoteReferences, formatCalcValue } = require('../engine/inlineCalc');
+const { createCrossNoteResolver } = require('../engine/crossNoteCalcResolver');
+const { perfTracker } = require('../runtime/performanceTracker');
+
+const INLINE_CALC_BUDGET_MS = 10;
 
 /** @param {string} text @returns {number} 0 if the note has no closed frontmatter block. */
 function computeFrontmatterEnd(text) {
@@ -49,6 +54,18 @@ const resolvedDateDecoration = vscode.window.createTextEditorDecorationType({
     color: '#e2c6ff',
     fontWeight: '500'
 });
+
+// Inline `=expr` calculations (src/engine/mathExpr.js) — the base type
+// carries no fixed style since the result text differs per occurrence;
+// each range supplies its own renderOptions.after at setDecorations time.
+// (A pill/chip around the expression itself was tried and dropped — it
+// didn't render correctly here in practice.)
+const inlineCalcDecoration = vscode.window.createTextEditorDecorationType({});
+const INLINE_CALC_OK_COLOR = '#86efac';
+// Same muted amber already used for broken-link styling elsewhere in this
+// file — an invalid expression is an honest error, not a wrong number, and
+// should read as a warning, not blend in as a normal result.
+const INLINE_CALC_ERROR_COLOR = 'rgba(231, 168, 90, 0.9)';
 
 // Monaco/VS Code inline decorations support backgroundColor, borderRadius, and border
 // (shorthand only) on the main range. borderTop/borderBottom/borderLeft/borderRight are
@@ -183,6 +200,15 @@ function registerDecorations(context, getIndex) {
         })
     );
 
+    // Excel-style Y<N> reference renumbering — deliberately save-triggered,
+    // not live on every keystroke (see reconcileInlineCalcReferences's own
+    // comment for why).
+    context.subscriptions.push(
+        vscode.workspace.onDidSaveTextDocument(document => {
+            reconcileInlineCalcReferences(document, context);
+        })
+    );
+
     // Cursor movement triggers concealment reveal for the link under cursor.
     context.subscriptions.push(
         vscode.window.onDidChangeTextEditorSelection(event => {
@@ -301,6 +327,7 @@ function updateDecorations(editor, getIndex) {
         editor.setDecorations(calloutInfoDecoration, []);
         editor.setDecorations(calloutWarningDecoration, []);
         editor.setDecorations(calloutDangerDecoration, []);
+        editor.setDecorations(inlineCalcDecoration, []);
         if (concealBracketDec) {
             editor.setDecorations(concealBracketDec, []);
             editor.setDecorations(concealPrefixDec,  []);
@@ -413,6 +440,25 @@ function updateDecorations(editor, getIndex) {
         else if (priority === 'low') lowTags.push({ range });
         else tags.push({ range });
     }
+
+    const inlineCalcs = perfTracker.measureSync(
+        'decorations.inlineCalc',
+        { budgetMs: INLINE_CALC_BUDGET_MS },
+        () => collectInlineCalcDecorations(editor.document)
+    ).map(({ range, evalResult, format }) => ({
+        range,
+        // Just the result. The cell label (Y2), name, and dependencies live on
+        // hover (hover.js) — showing the label beside every result was tried
+        // and dropped as noise.
+        renderOptions: {
+            after: {
+                contentText: evalResult.ok ? ` = ${formatCalcValue(evalResult.value, format)}` : ' = ?',
+                color: evalResult.ok ? INLINE_CALC_OK_COLOR : INLINE_CALC_ERROR_COLOR,
+                fontWeight: '700'
+            }
+        }
+    }));
+
     editor.setDecorations(bracketDecoration,       brackets);
     editor.setDecorations(linkDecoration,          links);
     editor.setDecorations(brokenBracketDecoration, brokenBrackets);
@@ -424,6 +470,7 @@ function updateDecorations(editor, getIndex) {
     editor.setDecorations(tagUrgentDecoration, urgentTags);
     editor.setDecorations(tagMediumDecoration, mediumTags);
     editor.setDecorations(tagLowDecoration, lowTags);
+    editor.setDecorations(inlineCalcDecoration, inlineCalcs);
 
     // Concealment layer. Bracket ranges excluded from bracketDecoration above when active,
     // so there is no competing dim decoration fighting the opacity-zero concealment.
@@ -578,6 +625,195 @@ function collectTagDecorations(document) {
     return ranges;
 }
 
+// Real, I/O-backed cross-note resolver (src/engine/crossNoteCalcResolver.js)
+// — lets `` `=[[other-note]]^label` `` pull another note's computed cell
+// value into this one. Built once at module load against the live vault
+// index; collectInlineCalcDecorations accepts an override for tests so they
+// don't need a real vault just to exercise cross-note resolution.
+const defaultCrossNoteCalcResolver = createCrossNoteResolver({ getIndex });
+const { createTableRangeResolver } = require('../engine/tableRangeResolver');
+
+/**
+ * Inline `=expr` calculations — an explicit, opt-in syntax only (a real
+ * inline code span whose content starts with `=`, or is prefixed with a
+ * name — `` `name=expr` ``). Deliberately never auto-detects plain
+ * numbers/expressions in ordinary prose. All scanning/evaluation lives in
+ * the pure engine module (src/engine/inlineCalc.js), shared with hover.js;
+ * this only maps its offsets onto editor ranges. Every block, named or not,
+ * carries an automatic Excel-style cell label (Y1, Y2, ...) in document
+ * order. Keeping `Y<N>` references pointing at the *same* block after an
+ * earlier block is inserted/removed happens on save, in
+ * `reconcileInlineCalcReferences()` below — this function only reads.
+ * @param {import('vscode').TextDocument} document
+ * @param {(noteId: string, label: string) => {ok: true, value: import('../engine/mathExpr').ScalarValue} | {ok: false, reason: string}} [resolveCrossNoteRef]
+ * @returns {Array<{range: import('vscode').Range, evalResult: import('../engine/mathExpr').EvalResult, expr: string, label: string, name: string|null, deps: Array<{ref: string, value: import('../engine/mathExpr').ScalarValue}>}>}
+ */
+/** @param {import('vscode').TextDocument} document @returns {Record<string, unknown>|undefined} */
+function getFrontmatterFieldsForDocument(document) {
+    if (!document.uri) return undefined;
+    const id = getPathIndex().get(document.uri.fsPath);
+    return id ? getFieldsCache().get(id) : undefined;
+}
+
+function collectInlineCalcDecorations(document, resolveCrossNoteRef = defaultCrossNoteCalcResolver) {
+    const frontmatterFields = getFrontmatterFieldsForDocument(document);
+    // Built fresh per call (not a module-level singleton like the cross-note
+    // resolver above) — it's scoped to THIS note's own current `!view`
+    // blocks, which change on every edit. Construction itself only parses
+    // text (parseAllViewQueries), so it's cheap even though this runs on
+    // every keystroke; the query underneath a T<N> reference only actually
+    // runs if some formula on the page references it at all.
+    const resolveTableRange = createTableRangeResolver(document.getText());
+    return scanInlineCalcs(document.getText(), { resolveCrossNoteRef, resolveTableRange, frontmatterFields }).map((block) => ({
+        range: new vscode.Range(document.positionAt(block.start), document.positionAt(block.end)),
+        evalResult: block.evalResult,
+        expr: block.expr,
+        label: block.label,
+        name: block.name,
+        format: block.format,
+        deps: block.deps
+    }));
+}
+
+// Last-known ordered list of calc-block expression texts per document,
+// keyed by URI string — the baseline reconcileInlineCalcReferences() diffs
+// against on the next save. Capped like unlinkedRefs.js's body cache so a
+// long session touching many files doesn't grow this unboundedly.
+const INLINE_CALC_HISTORY_CAP = 100;
+/** @type {Map<string, string[]>} */
+const lastKnownInlineCalcExprs = new Map();
+
+/**
+ * Given the previous and current ordered lists of calc-block expression
+ * texts, figures out which positional numbers actually moved — matched by
+ * exact expression text, in relative order, so ties among identical
+ * duplicate expressions resolve deterministically (first previous
+ * occurrence pairs with first current occurrence, and so on). Only
+ * numbers that actually changed are included.
+ * @param {string[]} previousExprs @param {string[]} currentExprs
+ * @returns {Map<number, number>}
+ */
+function computeInlineCalcRenumberMap(previousExprs, currentExprs) {
+    /** @type {Map<string, number[]>} */
+    const prevByText = new Map();
+    previousExprs.forEach((raw, i) => {
+        const key = raw.trim();
+        if (!prevByText.has(key)) prevByText.set(key, []);
+        prevByText.get(key).push(i + 1);
+    });
+    /** @type {Map<string, number[]>} */
+    const curByText = new Map();
+    currentExprs.forEach((raw, i) => {
+        const key = raw.trim();
+        if (!curByText.has(key)) curByText.set(key, []);
+        curByText.get(key).push(i + 1);
+    });
+
+    const renumber = new Map();
+    for (const [text, oldNumbers] of prevByText) {
+        const newNumbers = curByText.get(text) || [];
+        const pairCount = Math.min(oldNumbers.length, newNumbers.length);
+        for (let i = 0; i < pairCount; i++) {
+            const oldNum = oldNumbers[i];
+            const newNum = newNumbers[i];
+            if (oldNum !== newNum) renumber.set(oldNum, newNum);
+        }
+    }
+    return renumber;
+}
+
+/**
+ * Excel-style live renumbering, triggered on save. If an earlier calc block
+ * was inserted or removed since the last time this document was seen, every
+ * `Y<N>` reference elsewhere in the same document that pointed at a block
+ * whose number changed gets rewritten in place to its new number — the
+ * same thing Excel does silently when a row shifts. All replacement ranges
+ * are computed against one document snapshot and applied in a single
+ * WorkspaceEdit, so a simultaneous swap (Y1<->Y2) can never cascade into
+ * itself. Runs on save, not on every keystroke, specifically so it never
+ * fights the user's cursor mid-edit and so the corrective re-save it
+ * triggers is trivially idempotent (see the second call below).
+ *
+ * When it actually rewrites something, this is the one moment the extension
+ * edits a note's text without the user directly typing it — worth a real,
+ * one-time explanation the very first time it ever happens (tracked in
+ * globalState, so it survives restarts), and a quiet, self-dismissing
+ * status-bar note on every occurrence after that. Never a modal, never
+ * repeated in full — matches this session's own hard lesson about not
+ * surfacing something unconditionally on every occurrence.
+ * @param {import('vscode').TextDocument} document
+ * @param {import('vscode').ExtensionContext} [context]
+ * @returns {Promise<void>}
+ */
+async function reconcileInlineCalcReferences(document, context) {
+    if (!document || (document.languageId !== 'markdown' && !document.languageId.startsWith('markdown'))) return;
+
+    const uriKey = document.uri.toString();
+    const currentBlocks = collectInlineCalcDecorations(document);
+    const currentExprs = currentBlocks.map((block) => block.expr);
+    const previousExprs = lastKnownInlineCalcExprs.get(uriKey);
+
+    if (lastKnownInlineCalcExprs.size >= INLINE_CALC_HISTORY_CAP && !lastKnownInlineCalcExprs.has(uriKey)) {
+        lastKnownInlineCalcExprs.delete(lastKnownInlineCalcExprs.keys().next().value);
+    }
+    lastKnownInlineCalcExprs.set(uriKey, currentExprs);
+
+    if (!previousExprs) return; // first time seeing this document — nothing to reconcile against yet
+    const renumber = computeInlineCalcRenumberMap(previousExprs, currentExprs);
+    if (renumber.size === 0) return;
+
+    const referenceRegex = /\bY(\d+)\b/g;
+    const edit = new vscode.WorkspaceEdit();
+    let editCount = 0;
+    for (const block of scanInlineCalcs(document.getText())) {
+        // Mask cross-note reference spans first — `[[budget]]^Y2`'s `Y2`
+        // belongs to budget's own numbering, not this note's, and must
+        // never be mistaken for a local Y<N> token during this note's own
+        // renumbering. Same-length masking keeps every match offset valid
+        // against the original (unmasked) block.expr below.
+        const maskedExpr = maskCrossNoteReferences(block.expr);
+        referenceRegex.lastIndex = 0;
+        let refMatch;
+        while ((refMatch = referenceRegex.exec(maskedExpr)) !== null) {
+            const newNumber = renumber.get(Number(refMatch[1]));
+            if (newNumber === undefined) continue;
+            const tokenStart = block.exprStart + refMatch.index;
+            const tokenEnd = tokenStart + refMatch[0].length;
+            edit.replace(
+                document.uri,
+                new vscode.Range(document.positionAt(tokenStart), document.positionAt(tokenEnd)),
+                `Y${newNumber}`
+            );
+            editCount += 1;
+        }
+    }
+
+    if (editCount === 0) return;
+    const applied = await vscode.workspace.applyEdit(edit);
+    if (!applied) return;
+    await document.save();
+    notifyInlineCalcReferencesRewritten(editCount, context);
+}
+
+const INLINE_CALC_EXPLAINER_SEEN_KEY = 'yamlink.seenInlineCalcRenumberExplainer';
+
+/** @param {number} count @param {import('vscode').ExtensionContext} [context] */
+function notifyInlineCalcReferencesRewritten(count, context) {
+    const plural = count === 1 ? 'reference' : 'references';
+    const globalState = context && context.globalState;
+    const alreadySeen = globalState ? globalState.get(INLINE_CALC_EXPLAINER_SEEN_KEY, false) : true;
+    if (!alreadySeen) {
+        vscode.window.showInformationMessage(
+            `Yamlink: you moved a calculation, so ${count} formula ${plural} ${count === 1 ? 'was' : 'were'} ` +
+            `automatically fixed to still point at the right one — like a spreadsheet updating itself when you ` +
+            `move a row. This is the only time you'll see this explained; after this it's just a quick note at the bottom of the screen.`
+        );
+        if (globalState) globalState.update(INLINE_CALC_EXPLAINER_SEEN_KEY, true);
+        return;
+    }
+    vscode.window.setStatusBarMessage(`Yamlink: fixed ${count} formula ${plural} after reordering`, 4000);
+}
+
 /** @param {import('vscode').TextDocument} document @returns {Array<{range: import('vscode').Range, family: string}>} */
 function collectCalloutDecorations(document) {
     const results = [];
@@ -604,5 +840,9 @@ module.exports = {
     collectDateShortcutDecorations,
     collectResolvedDateDecorations,
     collectTagDecorations,
-    collectCalloutDecorations
+    collectCalloutDecorations,
+    collectInlineCalcDecorations,
+    computeInlineCalcRenumberMap,
+    reconcileInlineCalcReferences,
+    notifyInlineCalcReferencesRewritten
 };

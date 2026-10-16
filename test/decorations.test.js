@@ -18,6 +18,16 @@ require.cache.__decorations_vscode__ = {
                 // object reference, the same way real vscode decoration types are
                 // distinct singleton handles.
                 return { __decorationType: true };
+            },
+            __infoMessages: [],
+            showInformationMessage(message) {
+                this.__infoMessages.push(message);
+                return Promise.resolve(undefined);
+            },
+            __statusBarMessages: [],
+            setStatusBarMessage(message) {
+                this.__statusBarMessages.push(message);
+                return { dispose() {} };
             }
         },
         MarkdownString: class MarkdownString {
@@ -28,6 +38,22 @@ require.cache.__decorations_vscode__ = {
         workspace: {
             getConfiguration() {
                 return { get: () => false };
+            },
+            async applyEdit(edit) {
+                for (const { uri, range, text } of edit.__replacements) {
+                    const doc = uri.__document;
+                    if (!doc) continue;
+                    doc._text = doc._text.slice(0, range.start.offset) + text + doc._text.slice(range.end.offset);
+                }
+                return true;
+            }
+        },
+        WorkspaceEdit: class WorkspaceEdit {
+            constructor() {
+                this.__replacements = [];
+            }
+            replace(uri, range, text) {
+                this.__replacements.push({ uri, range, text });
             }
         },
         ThemeColor: class ThemeColor {
@@ -68,9 +94,52 @@ const {
     collectDateShortcutDecorations,
     collectResolvedDateDecorations,
     collectTagDecorations,
+    collectInlineCalcDecorations,
+    computeInlineCalcRenumberMap,
+    reconcileInlineCalcReferences,
     updateDecorations
 } = require('../src/features/decorations');
 const { initializeIgnoredDiagnostics, ignoreDiagnostic, describeBrokenLink } = require('../src/diagnostics/ignoredDiagnostics');
+// Captured while the 'vscode' resolver override above is still active — test
+// bodies run later, after Module._resolveFilename has already been restored
+// at the bottom of this file, so a plain require('vscode') inside a test
+// would fail; this reference stays valid for the whole file's lifetime.
+const stubVscode = require('vscode');
+
+/**
+ * A mutable-text document stub for reconcileInlineCalcReferences tests —
+ * unlike the read-only makeDocument below, this one supports the real
+ * write path (applyEdit mutates `_text` in place) and a `save()` that
+ * re-runs reconciliation, the same way a real second save would, so tests
+ * can assert the whole insert -> save -> auto-corrected -> re-save ->
+ * idempotent round trip end to end.
+ *
+ * Each call gets its own URI — reconcileInlineCalcReferences keys its
+ * last-known-state cache by document.uri.toString(), and that cache is
+ * module-level, never reset between tests, exactly like the real one would
+ * persist across saves in a real session. A shared URI across calls would
+ * leak state between tests the same way two different real files never
+ * would.
+ */
+let _mutableDocCounter = 0;
+function makeMutableDocument(initialText, context) {
+    _mutableDocCounter += 1;
+    const path = `C:\\vault\\test-doc-${_mutableDocCounter}.md`;
+    const uri = { fsPath: path, toString: () => `file:///vault/test-doc-${_mutableDocCounter}.md` };
+    const doc = {
+        _text: initialText,
+        languageId: 'markdown',
+        getText() { return doc._text; },
+        uri,
+        positionAt(offset) { return { line: 0, character: offset, offset }; },
+        async save() {
+            await reconcileInlineCalcReferences(doc, context);
+            return true;
+        }
+    };
+    uri.__document = doc;
+    return doc;
+}
 
 function makeDocument(text) {
     return {
@@ -270,6 +339,261 @@ describe('date shortcut decorations', () => {
         const byText = Object.fromEntries(ranges.map(({ range, priority }) => [text.slice(range.start.offset, range.end.offset), priority]));
         assert.equal(byText.urgent, 'urgent');
         assert.equal(byText.architecture, null);
+    });
+});
+
+describe('inline calc decorations', () => {
+    test('evaluates an explicit `=expr` code span', () => {
+        const text = 'The total is `=1 + (5+1/-1)` before tax.';
+        const ranges = collectInlineCalcDecorations(makeDocument(text));
+        assert.equal(ranges.length, 1);
+        assert.equal(ranges[0].evalResult.ok, true);
+        assert.equal(ranges[0].evalResult.value, 5);
+        assert.equal(text.slice(ranges[0].range.start.offset, ranges[0].range.end.offset), '`=1 + (5+1/-1)`');
+    });
+
+    test('reports an honest error for a malformed expression instead of a wrong number', () => {
+        const text = 'Broken: `=1 + `';
+        const ranges = collectInlineCalcDecorations(makeDocument(text));
+        assert.equal(ranges.length, 1);
+        assert.equal(ranges[0].evalResult.ok, false);
+    });
+
+    test('an ordinary code span with no leading = is never touched', () => {
+        const text = 'Run `npm install` first.';
+        const ranges = collectInlineCalcDecorations(makeDocument(text));
+        assert.equal(ranges.length, 0);
+    });
+
+    test('skips a matching span inside a fenced code block', () => {
+        const text = [
+            'Some text.',
+            '```',
+            'example: `=1 + 1`',
+            '```',
+            'Real one: `=2 + 2`'
+        ].join('\n');
+        const ranges = collectInlineCalcDecorations(makeDocument(text));
+        assert.equal(ranges.length, 1);
+        assert.equal(ranges[0].evalResult.value, 4);
+    });
+
+    test('supports exponents for squared/cubed', () => {
+        const text = 'Area: `=5^2`, volume: `=5^3`';
+        const ranges = collectInlineCalcDecorations(makeDocument(text));
+        assert.equal(ranges.length, 2);
+        assert.equal(ranges[0].evalResult.value, 25);
+        assert.equal(ranges[1].evalResult.value, 125);
+    });
+});
+
+describe('inline calc decorations — cross-note references ([[note]]^label)', () => {
+    test('resolves through the real collectInlineCalcDecorations surface via an injected resolver', () => {
+        const resolver = (noteId, label) => (noteId === 'budget' && label === 'total')
+            ? { ok: true, value: 42 }
+            : { ok: false, reason: 'not found' };
+        const text = 'Summary: `=[[budget]]^total + 10`';
+        const ranges = collectInlineCalcDecorations(makeDocument(text), resolver);
+        assert.equal(ranges.length, 1);
+        assert.equal(ranges[0].evalResult.ok, true);
+        assert.equal(ranges[0].evalResult.value, 52);
+    });
+
+    test('without an injected resolver, the real default resolver runs against the live vault index and fails honestly rather than crashing', () => {
+        const text = 'Summary: `=[[some-other-note]]^total`';
+        const ranges = collectInlineCalcDecorations(makeDocument(text));
+        assert.equal(ranges.length, 1);
+        assert.equal(ranges[0].evalResult.ok, false);
+        assert.equal(ranges[0].evalResult.code, 'REF');
+    });
+});
+
+describe('inline calc — named references (same note)', () => {
+    test('a named calc can be referenced by a later expression', () => {
+        const text = 'Apples: `total=1+2`\nDouble: `=total*3`';
+        const ranges = collectInlineCalcDecorations(makeDocument(text));
+        assert.equal(ranges.length, 2);
+        assert.equal(ranges[0].evalResult.value, 3);
+        assert.equal(ranges[1].evalResult.value, 9);
+    });
+
+    test('referencing a name before it is defined fails honestly, never a stale/guessed value', () => {
+        const text = 'Double: `=total*3`\nApples: `total=1+2`';
+        const ranges = collectInlineCalcDecorations(makeDocument(text));
+        assert.equal(ranges.length, 2);
+        assert.equal(ranges[0].evalResult.ok, false);
+        assert.match(ranges[0].evalResult.error, /Not found: no variable named "total"/i);
+        assert.equal(ranges[1].evalResult.value, 3);
+    });
+
+    test('redefining the same name later overwrites it for subsequent expressions', () => {
+        const text = '`total=1+2`\n`total=10`\n`=total*2`';
+        const ranges = collectInlineCalcDecorations(makeDocument(text));
+        assert.equal(ranges.length, 3);
+        assert.equal(ranges[2].evalResult.value, 20);
+    });
+
+    test('a named calc that fails to evaluate never leaks into the environment', () => {
+        const text = '`total=1+`\n`=total*2`';
+        const ranges = collectInlineCalcDecorations(makeDocument(text));
+        assert.equal(ranges.length, 2);
+        assert.equal(ranges[0].evalResult.ok, false);
+        assert.equal(ranges[1].evalResult.ok, false);
+        assert.match(ranges[1].evalResult.error, /Not found: no variable named "total"/i);
+    });
+
+    test('naming a variable the same as a reserved function name is rejected at definition', () => {
+        const text = '`sqrt=5`\n`=sqrt(9)`';
+        const ranges = collectInlineCalcDecorations(makeDocument(text));
+        assert.equal(ranges.length, 2);
+        assert.equal(ranges[0].evalResult.ok, false);
+        assert.match(ranges[0].evalResult.error, /Name reserved: "sqrt" is a built-in function/i);
+        // The second line's `sqrt(` must still call the real function — the
+        // rejected definition above never entered the environment to shadow it.
+        assert.equal(ranges[1].evalResult.value, 3);
+    });
+});
+
+describe('inline calc — positional c<N> aliases', () => {
+    test('every calc block, named or not, also gets a positional alias in document order', () => {
+        const text = '`total=1+2`\n`=5*5`\n`=Y1+Y2`';
+        const ranges = collectInlineCalcDecorations(makeDocument(text));
+        assert.equal(ranges.length, 3);
+        assert.equal(ranges[0].evalResult.value, 3); // Y1 / total
+        assert.equal(ranges[1].evalResult.value, 25); // Y2
+        assert.equal(ranges[2].evalResult.value, 28); // Y1 + Y2
+    });
+});
+
+describe('computeInlineCalcRenumberMap', () => {
+    test('an insertion before existing blocks shifts every later number', () => {
+        const renumber = computeInlineCalcRenumberMap(['1+1', '2+2', 'Y1+Y2'], ['3+3', '1+1', '2+2', 'Y1+Y2']);
+        assert.deepEqual([...renumber.entries()], [[1, 2], [2, 3], [3, 4]]);
+    });
+
+    test('nothing moved is a genuine no-op', () => {
+        const renumber = computeInlineCalcRenumberMap(['1+1', '2+2'], ['1+1', '2+2']);
+        assert.equal(renumber.size, 0);
+    });
+
+    test('a deletion shifts later numbers down', () => {
+        const renumber = computeInlineCalcRenumberMap(['1+1', '2+2', '3+3'], ['2+2', '3+3']);
+        assert.deepEqual([...renumber.entries()], [[2, 1], [3, 2]]);
+    });
+});
+
+describe('reconcileInlineCalcReferences — Excel-style live renumbering on save', () => {
+    test('inserting a new calc block earlier auto-rewrites a later c<N> reference to keep pointing at the same block', async () => {
+        const doc = makeMutableDocument('`=1+1`\n`=2+2`\n`=Y1+Y2`');
+        await doc.save(); // establish the baseline (first save just seeds history, nothing to reconcile yet)
+
+        doc._text = '`=3+3`\n`=1+1`\n`=2+2`\n`=Y1+Y2`'; // insert a new block before the first
+        await doc.save(); // should auto-rewrite the reference and re-save
+
+        assert.equal(doc._text, '`=3+3`\n`=1+1`\n`=2+2`\n`=Y2+Y3`');
+
+        // The whole point: it still evaluates to what it always meant (1+1 + 2+2 = 6),
+        // not whatever now happens to sit at the old Y1/Y2 slots (3+3 + 1+1 = 7).
+        const ranges = collectInlineCalcDecorations(doc);
+        assert.equal(ranges[3].evalResult.value, 6);
+    });
+
+    test('the corrective re-save is idempotent — a third save triggers no further edit', async () => {
+        const doc = makeMutableDocument('`=1+1`\n`=2+2`\n`=Y1+Y2`');
+        await doc.save();
+        doc._text = '`=3+3`\n`=1+1`\n`=2+2`\n`=Y1+Y2`';
+        await doc.save();
+        const settledText = doc._text;
+
+        await doc.save(); // nothing changed since the last save — must be a true no-op
+        assert.equal(doc._text, settledText);
+    });
+
+    test('a deletion shifts a later reference down, not up', async () => {
+        const doc = makeMutableDocument('`=1+1`\n`=2+2`\n`=3+3`\n`=Y3`');
+        await doc.save();
+
+        doc._text = '`=2+2`\n`=3+3`\n`=Y3`'; // the first block was deleted
+        await doc.save();
+
+        assert.equal(doc._text, '`=2+2`\n`=3+3`\n`=Y2`');
+    });
+
+    test('first time seeing a document does nothing — only a change since a previous save triggers reconciliation', async () => {
+        const doc = makeMutableDocument('`=1+1`\n`=Y1`');
+        await doc.save();
+        assert.equal(doc._text, '`=1+1`\n`=Y1`');
+    });
+
+    test('a cross-note reference\'s own label (e.g. [[budget]]^Y2) is never mistaken for a local Y<N> token during renumbering', async () => {
+        // Y1, Y2 defined; Y3 is a real local reference to Y1+Y2 (should
+        // renumber); the note also has a cross-note reference whose target
+        // label happens to numerically collide with a local one being
+        // renumbered ([[budget]]^Y2) — that text must stay byte-identical,
+        // since Y2 there means budget's own second cell, nothing to do with
+        // this note's numbering at all.
+        const doc = makeMutableDocument('`=1+1`\n`=2+2`\n`=Y1+Y2`\n`=[[budget]]^Y2 + 1`');
+        await doc.save();
+
+        doc._text = '`=3+3`\n`=1+1`\n`=2+2`\n`=Y1+Y2`\n`=[[budget]]^Y2 + 1`'; // insert a new block before the first
+        await doc.save();
+
+        assert.equal(
+            doc._text,
+            '`=3+3`\n`=1+1`\n`=2+2`\n`=Y2+Y3`\n`=[[budget]]^Y2 + 1`'
+        );
+    });
+});
+
+describe('reconcileInlineCalcReferences — notification on rewrite', () => {
+    function makeFakeContext(seen) {
+        const store = new Map(seen ? [['yamlink.seenInlineCalcRenumberExplainer', true]] : []);
+        return { globalState: { get: (key, fallback) => (store.has(key) ? store.get(key) : fallback), update: (key, value) => { store.set(key, value); } } };
+    }
+
+    test('the first ever rewrite shows a real one-time explanation, not just a status-bar note', async () => {
+        const vscode = stubVscode;
+        vscode.window.__infoMessages.length = 0;
+        vscode.window.__statusBarMessages.length = 0;
+        const context = makeFakeContext(false);
+        const doc = makeMutableDocument('`=1+1`\n`=2+2`\n`=Y1+Y2`', context);
+        await doc.save();
+        doc._text = '`=3+3`\n`=1+1`\n`=2+2`\n`=Y1+Y2`';
+        await doc.save();
+
+        assert.equal(vscode.window.__infoMessages.length, 1);
+        assert.match(vscode.window.__infoMessages[0], /2 formula references/);
+        assert.equal(vscode.window.__statusBarMessages.length, 0);
+        assert.equal(context.globalState.get('yamlink.seenInlineCalcRenumberExplainer', false), true);
+    });
+
+    test('every rewrite after the first is a quiet status-bar note instead', async () => {
+        const vscode = stubVscode;
+        vscode.window.__infoMessages.length = 0;
+        vscode.window.__statusBarMessages.length = 0;
+        const context = makeFakeContext(true); // already seen the explainer
+        const doc = makeMutableDocument('`=1+1`\n`=2+2`\n`=Y1+Y2`', context);
+        await doc.save();
+        doc._text = '`=3+3`\n`=1+1`\n`=2+2`\n`=Y1+Y2`';
+        await doc.save();
+
+        assert.equal(vscode.window.__infoMessages.length, 0);
+        assert.equal(vscode.window.__statusBarMessages.length, 1);
+        assert.match(vscode.window.__statusBarMessages[0], /fixed 2 formula references/);
+    });
+
+    test('no rewrite happens, no notification of any kind fires', async () => {
+        const vscode = stubVscode;
+        vscode.window.__infoMessages.length = 0;
+        vscode.window.__statusBarMessages.length = 0;
+        const context = makeFakeContext(false);
+        const doc = makeMutableDocument('`=1+1`\n`=2+2`', context);
+        await doc.save();
+        doc._text = '`=1+1`\n`=2+2`\n`=3+3`'; // appended after, nothing shifted
+        await doc.save();
+
+        assert.equal(vscode.window.__infoMessages.length, 0);
+        assert.equal(vscode.window.__statusBarMessages.length, 0);
     });
 });
 

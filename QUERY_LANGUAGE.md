@@ -235,6 +235,28 @@ sort _hub_score desc
 
 These fields support all operators: `=`, `!=`, `>=`, `<=`, `>`, `<`, `contains`, `is empty`, `exists`.
 
+### Calculated cells
+
+Inline calculations in a note body can be queried through `cell.<name-or-label>` fields.
+
+If a note contains a named calculation such as `` `total=50+25` ``, Yamlink exposes it as `cell.total`. Positional labels are also available, so the first calculated cell can be queried as `cell.y1`, the second as `cell.y2`, and so on.
+
+```md
+!view field-report
+select name, cell.total
+sort cell.total desc
+```
+
+```md
+!view field-report
+where cell.total >= 75
+select name, region, cell.total
+```
+
+Calculated cell fields work in `select`, `where`, and `sort`. In `where` clauses, they support the same operators as other fields: `=`, `!=`, `>=`, `<=`, `>`, `<`, `contains`, `is empty`, `exists`. A note with no matching or evaluable cell simply has no value for that field; the query does not fail.
+
+Query field names are matched case-insensitively, so `cell.total` and `cell.TOTAL` refer to the same query field. Formula references inside the note body are still the formula engine's own references, so same-note references such as `Y1` and `y1` should not be treated as interchangeable.
+
 ### `group by`
 
 Collapse results into buckets by a field value. Each bucket shows the field value and a count.
@@ -256,6 +278,47 @@ Notes:
 - `sort <field> asc|desc` sorts by the group key; `sort count desc` sorts by count
 - `limit` applies to the number of groups, not total notes
 - Combine with `where` to narrow which notes are grouped
+- Combine with `aggregate` to compute values per group
+
+### `aggregate`
+
+Compute summary values across the matched notes.
+
+Syntax:
+
+```md
+aggregate <fn>(<field>) as <alias>[, ...]
+```
+
+Supported functions:
+
+- `sum`
+- `average` (`avg` is accepted and normalized to `average`)
+- `min`
+- `max`
+- `count`
+
+`count` can be written without a field or alias, and defaults to the alias `count`. `count(field)` is also accepted, but it still counts matched notes. Every other aggregate needs an alias.
+
+```md
+!view field-report
+aggregate sum(cell.total) as total, average(cell.total) as average_total, count
+```
+
+```md
+!view field-report
+group by region
+aggregate sum(cell.total) as total
+sort total desc
+```
+
+Notes:
+
+- Aggregates work standalone or with `group by`
+- Numeric aggregates ignore non-numeric values
+- `count` still counts every matched note
+- If a numeric aggregate has no numeric values, it returns a blank/null value instead of inventing `0`
+- Aggregates use the full matched set or bucket; `limit` only trims the displayed rows or groups
 
 ### `sort`
 

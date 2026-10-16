@@ -7,7 +7,8 @@ const { HELP_TEXT, helpTip } = require('./healthHelp');
 const {
     buildEmergingPatternsHtml,
     buildIntelligenceHealthHtml,
-    buildTopRelationshipsHtml
+    buildTopRelationshipsHtml,
+    buildCalcHealthHtml
 } = require('./healthIntelligenceHtml');
 const { buildSchemaSectionHtml } = require('./healthSchemaHtml');
 const { buildVaultProjectionsCardHtml, VAULT_PROJECTIONS_CSS } = require('./vaultProjectionsCard');
@@ -357,6 +358,7 @@ function buildHealthHtml(stats, { scriptUri, nonce, csp } = {}) {
         ${buildIntelligenceHealthHtml(stats.intelligenceHealth, esc)}
         ${buildEmergingPatternsHtml(stats, esc)}
         ${buildTopRelationshipsHtml(stats, esc)}
+        ${buildCalcHealthHtml(stats, esc)}
     </div>
 
     ${hasProjections ? `

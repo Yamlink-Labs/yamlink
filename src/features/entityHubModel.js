@@ -31,6 +31,7 @@ const { buildHistoryModel } = require('./entity/historyModel');
 const { findUnlinkedMentions } = require('./entity/unlinkedRefs');
 const { getMutationEvents } = require('../runtime/mutationEventLog');
 const { buildNoteArc } = require('../intelligence/noteArc');
+const { buildNoteCalcHealth } = require('../intelligence/calcHealth');
 const { collectBodySignals, stripFrontmatter } = require('../intelligence/bodySignals');
 const { extractBodyMentionedIds } = require('../intelligence/frontmatterBodyHints');
 const {
@@ -100,7 +101,8 @@ function buildEntityHubModel(nodeId, idIndex, fieldsCache) {
         entityMentions: [...bodyMentionCounts.entries()]
             .map(([id, count]) => ({ id, count }))
             .sort((a, b) => b.count - a.count || a.id.localeCompare(b.id))
-            .slice(0, 20)
+            .slice(0, 20),
+        calcHealth: buildNoteCalcHealth(docText || '')
     };
     const staleConnectedNotes = buildStaleConnectedNotes(nodeId, idIndex, fieldsCache);
 

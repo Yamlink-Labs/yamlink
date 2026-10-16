@@ -39,6 +39,7 @@ const INDEX = new Map([
     ['acme-inc', '/vault/acme-inc.md'],
     ['globex', '/vault/globex.md']
 ]);
+const CALC_FIELDS_BY_PATH = new Map();
 
 require.cache.__completion_vscode_stub__ = {
     id: '__completion_vscode_stub__',
@@ -109,7 +110,12 @@ require.cache.__completion_vscode_stub__ = {
             Event: 1,
             Snippet: 2,
             Reference: 3,
-            Text: 4
+            Text: 4,
+            Field: 5,
+            Operator: 6,
+            Value: 7,
+            Class: 8,
+            Keyword: 9
         },
         CompletionTriggerKind: {
             Invoke: 0,
@@ -166,6 +172,7 @@ require.cache.__completion_index_stub__ = {
     loaded: true,
     exports: {
         getFieldsCache: () => FIELDS,
+        getIndex: () => INDEX,
         getVaultGeneration: () => 0,
         getPathIndex: () => new Map([
             ['/vault/alice-smith.md', 'alice-smith'],
@@ -174,6 +181,16 @@ require.cache.__completion_index_stub__ = {
             ['/vault/carl-jenkins.md', 'carl-jenkins']
         ]),
         getAliasIndex: () => new Map()
+    }
+};
+require.cache.__completion_query_executor_stub__ = {
+    id: '__completion_query_executor_stub__',
+    filename: '__completion_query_executor_stub__',
+    loaded: true,
+    exports: {
+        readInlineCalcVirtualFields(filePath) {
+            return CALC_FIELDS_BY_PATH.get(filePath) || {};
+        }
     }
 };
 require.cache.__completion_date_stub__ = {
@@ -205,6 +222,7 @@ Module._resolveFilename = function (request, parent, ...rest) {
     if (request === '../core/index') return '__completion_index_stub__';
     if (request === '../core/indexService') return '__completion_index_stub__';
     if (request === '../core/date') return '__completion_date_stub__';
+    if (request === '../engine/queryExecutor') return '__completion_query_executor_stub__';
     return originalResolve(request, parent, ...rest);
 };
 
@@ -238,6 +256,11 @@ const {
 const { setMutationEventsProvider, resetVaultPriorsCache } = require('../src/intelligence/vaultPriors');
 const { resetObservedNoteIndexCache } = require('../src/intelligence/suggestionNoteIndex');
 const { clearActivationCache } = require('../src/intelligence/activationCache');
+const {
+    collectFieldsForType,
+    collectInlineCalcFieldsForType
+} = require('../src/intelligence/completionHelpers');
+const { provideQueryCompletions } = require('../src/features/completionProviders');
 
 function makeDocument(text) {
     const lines = text.split('\n');
@@ -249,12 +272,135 @@ function makeDocument(text) {
     };
 }
 
+function provideQueryLineCompletions(line, type = 'character') {
+    const doc = makeDocument(['!view ' + type, line].join('\n'));
+    return provideQueryCompletions(doc, { line: 1, character: line.length }, () => INDEX);
+}
+
 describe('frontmatter relation completion', () => {
     beforeEach(() => {
+        CALC_FIELDS_BY_PATH.clear();
         resetVaultPriorsCache();
         resetObservedNoteIndexCache();
         clearActivationCache();
     });
+
+    test('collectFieldsForType includes inline calc fields for the requested type', () => {
+        CALC_FIELDS_BY_PATH.set('/vault/alice-smith.md', { 'cell.total': 3, 'cell.y1': 9 });
+        CALC_FIELDS_BY_PATH.set('/vault/acme-inc.md', { 'cell.revenue': 12 });
+        const fields = collectFieldsForType('contact');
+        assert.ok(fields.includes('cell.total'));
+        assert.ok(fields.includes('cell.y1'));
+        assert.ok(!fields.includes('cell.revenue'));
+    });
+
+    test('collectInlineCalcFieldsForType excludes different note types for specific type requests', () => {
+        const fieldsCache = new Map([
+            ['contact-1', { type: 'contact' }],
+            ['account-1', { type: 'account' }]
+        ]);
+        const idIndex = new Map([
+            ['contact-1', '/vault/contact-1.md'],
+            ['account-1', '/vault/account-1.md']
+        ]);
+        const fields = collectInlineCalcFieldsForType('contact', fieldsCache, idIndex, (filePath) => {
+            if (filePath.endsWith('contact-1.md')) return { 'cell.total': 3 };
+            if (filePath.endsWith('account-1.md')) return { 'cell.revenue': 12 };
+            return {};
+        });
+        assert.deepEqual([...fields].sort(), ['cell.total']);
+    });
+
+    test('collectInlineCalcFieldsForType includes every type for wildcard requests', () => {
+        const fieldsCache = new Map([
+            ['contact-1', { type: 'contact' }],
+            ['account-1', { type: 'account' }]
+        ]);
+        const idIndex = new Map([
+            ['contact-1', '/vault/contact-1.md'],
+            ['account-1', '/vault/account-1.md']
+        ]);
+        const fields = collectInlineCalcFieldsForType('*', fieldsCache, idIndex, (filePath) => {
+            if (filePath.endsWith('contact-1.md')) return { 'cell.total': 3 };
+            if (filePath.endsWith('account-1.md')) return { 'cell.revenue': 12 };
+            return {};
+        });
+        assert.deepEqual([...fields].sort(), ['cell.revenue', 'cell.total']);
+    });
+
+    test('collectFieldsForType adds no cell-field noise when no inline calcs exist', () => {
+        const fields = collectFieldsForType('character');
+        assert.ok(fields.includes('rank'));
+        assert.equal(fields.some((field) => field.startsWith('cell.')), false);
+    });
+
+    test('query completion keeps offering dotted cell fields while typing after the dot', () => {
+        CALC_FIELDS_BY_PATH.set('/vault/lt-rasczak.md', { 'cell.total': 3 });
+
+        const items = provideQueryLineCompletions('where cell.t');
+
+        assert.ok(Array.isArray(items));
+        assert.ok(items.some((item) => item.label === 'cell.total'));
+    });
+
+    test('query completion offers operators after a dotted field name', () => {
+        const items = provideQueryLineCompletions('where cell.total ');
+
+        assert.ok(Array.isArray(items));
+        assert.ok(items.some((item) => item.label === '='));
+        assert.ok(items.some((item) => item.label === 'contains'));
+    });
+
+    test('query completion offers scalar values after a dotted field name', () => {
+        const rasczakFields = FIELDS.get('lt-rasczak');
+        const ricoFields = FIELDS.get('johnny-rico');
+        rasczakFields['cell.total'] = '3';
+        ricoFields['cell.total'] = '4';
+        try {
+            const items = provideQueryLineCompletions('where cell.total = ');
+
+            assert.ok(Array.isArray(items));
+            assert.ok(items.some((item) => item.label === '3'));
+            assert.ok(items.some((item) => item.label === '4'));
+        } finally {
+            delete rasczakFields['cell.total'];
+            delete ricoFields['cell.total'];
+        }
+    });
+
+    test('query completion offers relation candidates after a dotted relation field name', () => {
+        const aliceFields = FIELDS.get('alice-smith');
+        const bobFields = FIELDS.get('bob-jones');
+        aliceFields['account.link'] = '[[acme-inc]]';
+        bobFields['account.link'] = '[[globex]]';
+        try {
+            const items = provideQueryLineCompletions('where account.link = [[', 'contact');
+
+            assert.ok(Array.isArray(items));
+            assert.ok(items.some((item) => item.insertText === 'acme-inc]]'));
+        } finally {
+            delete aliceFields['account.link'];
+            delete bobFields['account.link'];
+        }
+    });
+
+    test('query completion still offers scalar values after a plain field name', () => {
+        const aliceFields = FIELDS.get('alice-smith');
+        const bobFields = FIELDS.get('bob-jones');
+        aliceFields.status = 'active';
+        bobFields.status = 'prospect';
+        try {
+            const items = provideQueryLineCompletions('where status = ', 'contact');
+
+            assert.ok(Array.isArray(items));
+            assert.ok(items.some((item) => item.label === 'active'));
+            assert.ok(items.some((item) => item.label === 'prospect'));
+        } finally {
+            delete aliceFields.status;
+            delete bobFields.status;
+        }
+    });
+
     test('ranks scalar frontmatter values from vault usage so follow-up suggestions stay consistent', () => {
         const rankedRanks = rankScalarValues('rank', 'character');
         assert.ok(rankedRanks.length >= 1);

@@ -5,7 +5,7 @@ const { parseFrontmatter, getPathIndex, getFieldsCache, getAliasIndex, getVaultG
 const { canonicalizeLinkedTarget, resolveLinkedTarget, parseLinkedTargetParts } = require('../core/id');
 const { resolveImageEmbed } = require('../core/imageEmbed');
 const { normaliseDateInput } = require('../core/date');
-const { extractMeaningfulBodyBlocks, normalizeAnchorText } = require('../core/bodyBlocks');
+const { extractMeaningfulBodyBlocks, normalizeAnchorText, foldDiacritics } = require('../core/bodyBlocks');
 const { getSchema, getSchemaTargets } = require('../registries/schemaRegistry');
 const {
     DEFAULT_STATUS_LIKE_VALUES,
@@ -43,6 +43,9 @@ const {
 const { getCachedContext } = require('../intelligence/activationCache');
 const { perfTracker } = require('../runtime/performanceTracker');
 const { stripFrontmatter } = require('../intelligence/bodySignals');
+const { scanInlineCalcs, ERROR_CODE_LABELS, formatCalcValue } = require('../engine/inlineCalc');
+const { createCrossNoteResolver } = require('../engine/crossNoteCalcResolver');
+const { createTableRangeResolver } = require('../engine/tableRangeResolver');
 
 const PREVIEW_LINES = 1;
 const PREVIEW_MAX_CHARS = 220;
@@ -127,9 +130,101 @@ function registerHover(context, getIndex) {
                     }
                     return new vscode.Hover(hoverContent, hoverRange);
                 }
+
+                const calcHover = _buildInlineCalcHover(document, position, idIndex);
+                if (calcHover) return calcHover;
             }
         })
     );
+}
+
+/**
+ * Hover card for an inline `=expr` calculation: its cell label (Y2), its
+ * name if it has one, the expression and result, and which other cells it
+ * reads. Scans the whole note (not just the hovered line) because a
+ * reference like Y1 or `total` can only be resolved against blocks above it.
+ * Hover only reaches text the user typed — the ghost-text result beside it
+ * can't have its own hover, which is why decorations.js also shows the label
+ * inline.
+ * `idIndex`, when supplied, lets a `` `=[[other-note]]^label` `` reference
+ * resolve to the other note's real computed value instead of failing with
+ * an honest "not available here" — see src/engine/crossNoteCalcResolver.js.
+ * @param {import('vscode').TextDocument} document @param {import('vscode').Position} position @param {Map<string,string>} [idIndex]
+ * @returns {import('vscode').Hover|null}
+ */
+function _buildInlineCalcHover(document, position, idIndex) {
+    const offset = document.offsetAt(position);
+    const resolveCrossNoteRef = idIndex ? createCrossNoteResolver({ getIndex: () => idIndex }) : undefined;
+    const resolveTableRange = createTableRangeResolver(document.getText());
+    const noteId = document.uri ? getPathIndex().get(document.uri.fsPath) : undefined;
+    const frontmatterFields = noteId ? getFieldsCache().get(noteId) : undefined;
+    const block = scanInlineCalcs(document.getText(), { resolveCrossNoteRef, resolveTableRange, frontmatterFields, trace: true }).find((b) => offset >= b.start && offset <= b.end);
+    if (!block) return null;
+
+    const heading = [`**${block.label}**`, block.name].filter(Boolean).join(' · ');
+    const lines = [heading];
+
+    const steps = _buildCalcTraceLines(block);
+    if (steps.length) {
+        lines.push(['_How it resolved:_', ...steps.map((s) => `- ${s}`)].join('\n'));
+    }
+
+    if (block.evalResult.ok) {
+        const formatted = formatCalcValue(block.evalResult.value, block.format);
+        const resultText = block.format && formatted !== String(block.evalResult.value)
+            ? `**${formatted}** (${block.evalResult.value})`
+            : `**${formatted}**`;
+        lines.push(`\`${block.expr.trim()}\` = ${resultText}`);
+    } else {
+        const failure = /** @type {{ok: false, code: string, error: string}} */ (block.evalResult);
+        const badge = ERROR_CODE_LABELS[failure.code] || '#VALUE!';
+        lines.push(`Yamlink: **${badge}** — ${failure.error}`);
+    }
+    if (block.deps.length) {
+        lines.push(`Uses: ${block.deps.map((dep) => `${dep.ref} = ${dep.value}`).join(', ')}`);
+    }
+
+    const hoverRange = new vscode.Range(document.positionAt(block.start), document.positionAt(block.end));
+    return new vscode.Hover(new vscode.MarkdownString(lines.join('\n\n')), hoverRange);
+}
+
+/**
+ * Renders `block.trace` (see mathExpr.js's `collectTrace` option and
+ * inlineCalc.js's `options.trace`) as a flat, execution-ordered list of
+ * human-readable steps — the "how it resolved" breakdown shown above a
+ * calc's final `expr = result` line. Deliberately flat, not a nested tree:
+ * mathExpr.js has no AST, so there is no real tree to render, and a flat
+ * list in true execution order already reads naturally step-by-step — a
+ * range's constituent cells (each its own 'ref' entry) are immediately
+ * followed by the 'call' entry that folds them, without needing explicit
+ * grouping. A cross-note 'ref' whose name is a `__xrefN` placeholder is
+ * rendered using its original `[[note]]^label` text instead (via
+ * `block.syntheticLabels`), so the reader never sees the internal name.
+ * @param {import('../engine/inlineCalc').InlineCalcBlock & {trace?: object[], syntheticLabels?: Record<string,string>}} block
+ * @returns {string[]}
+ */
+function _buildCalcTraceLines(block) {
+    const trace = block.trace;
+    if (!trace || !trace.length) return [];
+    const syntheticLabels = block.syntheticLabels || {};
+    /** @param {string} name @returns {string} */
+    const displayName = (name) => syntheticLabels[name] || name;
+    /** @param {import('../engine/mathExpr').ScalarValue} value @returns {string} */
+    const displayValue = (value) => (typeof value === 'string' ? `"${value}"` : String(value));
+    /** @type {string[]} */
+    const lines = [];
+    for (const entry of trace) {
+        if (entry.kind === 'ref') {
+            lines.push(`${displayName(entry.name)} = ${displayValue(entry.value)}`);
+        } else if (entry.kind === 'call') {
+            lines.push(`${entry.name}(${entry.args.map(displayValue).join(', ')}) → ${displayValue(entry.result)}`);
+        } else if (entry.kind === 'comparison') {
+            lines.push(`${displayValue(entry.left)} ${entry.op} ${displayValue(entry.right)} → ${displayValue(entry.result)}`);
+        } else if (entry.kind === 'if') {
+            lines.push(`if condition is ${entry.condition} → ${entry.branch}-branch = ${displayValue(entry.result)}`);
+        }
+    }
+    return lines;
 }
 
 
@@ -174,6 +269,20 @@ function buildHoverContent(id, content, filePath = '', idIndex = null, anchorRaw
     if (anchorPreview) return anchorPreview;
     const blockPreview = buildBlockHoverContent(content, blockId);
     if (blockPreview) return blockPreview;
+    // The reference named an anchor, but neither a formal heading nor a
+    // block-id matched it (e.g. `[[note#Monopolio]]` where "Monopolio" is
+    // only ever mentioned as plain or bolded prose, never its own `#`
+    // heading). Previously this fell straight through to the generic
+    // whole-note summary below — title, badge, tags, fields — which has
+    // nothing to do with what was actually referenced and was the real
+    // complaint: a user following a specific reference got an unrelated
+    // card. Searching the body for the literal term and showing the
+    // surrounding paragraph is honest (only shown when something was
+    // actually found) and far more useful than a generic fallback.
+    if (anchorRaw) {
+        const textPreview = buildAnchorTextSearchFallback(content, anchorRaw);
+        if (textPreview) return textPreview;
+    }
 
     const md = new vscode.MarkdownString();
     // Trusted so relation-field and body-preview wikilinks can render as real
@@ -252,6 +361,42 @@ function buildAnchorHoverContent(content, anchorRaw) {
         return md;
     }
 
+    return null;
+}
+
+/**
+ * Fallback for an anchor reference (`[[note#Something]]`) that matched
+ * neither a formal `#` heading nor a block-id — searches the note's body for
+ * a literal, accent/case-insensitive occurrence of the anchor text and shows
+ * the surrounding paragraph, instead of the generic whole-note summary
+ * `buildHoverContent` would otherwise fall through to. Returns `null` when
+ * nothing is found (the honest "not available" case — whole-note summary
+ * remains the final fallback, unchanged), never an error or a guess.
+ * @param {string} content @param {string} anchorRaw
+ * @returns {import('vscode').MarkdownString|null}
+ */
+function buildAnchorTextSearchFallback(content, anchorRaw) {
+    const needle = foldDiacritics(String(anchorRaw || '')).toLowerCase().trim();
+    if (!needle) return null;
+    const body = stripFrontmatter(content);
+    // Paragraph-sized chunks (blank-line-separated), not arbitrary line
+    // slices — the shown snippet should read as one coherent unit of prose,
+    // the same way buildAnchorHoverContent's own heading-section preview
+    // does for a real heading match.
+    const paragraphs = body.split(/\n\s*\n/);
+    for (const paragraph of paragraphs) {
+        const folded = foldDiacritics(paragraph).toLowerCase();
+        if (!folded.includes(needle)) continue;
+        const trimmed = paragraph.trim();
+        if (!trimmed) continue;
+        const clipped = trimmed.length > 300 ? `${trimmed.slice(0, 299).trimEnd()}…` : trimmed;
+        const md = new vscode.MarkdownString();
+        md.isTrusted = true;
+        md.supportHtml = false;
+        md.supportThemeIcons = true;
+        md.appendMarkdown(`**${escapeMarkdown(anchorRaw)}** _(mentioned, not a heading)_\n\n${escapeMarkdown(clipped)}`);
+        return md;
+    }
     return null;
 }
 
@@ -782,7 +927,8 @@ module.exports = {
     buildHoverBadgeMarkdown,
     renderInlineWikilinks,
     buildOpenNoteCommandUri,
-    _buildImagePreviewHover
+    _buildImagePreviewHover,
+    _buildInlineCalcHover
 };
 
 function getUsefulHoverRoleLabel(noteContext, nodeType) {

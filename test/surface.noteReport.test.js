@@ -264,6 +264,42 @@ describe('noteReport — document tab data', () => {
 
         vault.destroy();
     });
+
+    test('documentData.calcHealth is an all-zero shape for a note with no calc cells', () => {
+        const files = { 'johnny-rico.md': NOTE('johnny-rico', 'contact') };
+        const vault = createVault(files);
+        const model = vault.noteReport('johnny-rico');
+
+        assert.deepEqual(model.documentData.calcHealth, { total: 0, evaluated: 0, failed: 0, byCode: {} });
+
+        vault.destroy();
+    });
+
+    test('documentData.calcHealth tallies evaluated and failed cells, bucketed by typed error code', () => {
+        const files = {
+            'johnny-rico.md': [
+                '---',
+                'id: johnny-rico',
+                'type: contact',
+                '---',
+                '',
+                'Squad size: `squad=12`',
+                'Effective strength: `=squad-3`',
+                'Broken reference: `=Y9*2`',
+                'Division by zero: `=1/0`'
+            ].join('\n')
+        };
+        const vault = createVault(files);
+        const model = vault.noteReport('johnny-rico');
+
+        assert.equal(model.documentData.calcHealth.total, 4);
+        assert.equal(model.documentData.calcHealth.evaluated, 2);
+        assert.equal(model.documentData.calcHealth.failed, 2);
+        assert.equal(model.documentData.calcHealth.byCode.REF, 1);
+        assert.equal(model.documentData.calcHealth.byCode.DIV0, 1);
+
+        vault.destroy();
+    });
 });
 
 describe('noteReport — block backlinks', () => {

@@ -42,7 +42,11 @@ const {
     formatQueryHeroText,
     buildWarningBanner,
     buildBarChartHtml,
-    buildScatterChartHtml
+    buildScatterChartHtml,
+    buildLineChartHtml,
+    buildPieChartHtml,
+    buildAggregateSummaryHtml,
+    buildCalcSourceCellHtml
 } = require('../src/features/view/viewPanelHtml');
 const { editCell, extractIdFromText, toggleTaskCheckbox } = require('../src/features/viewPanel');
 const { computeNextSortState } = require('../src/features/viewPanelUiRuntime');
@@ -387,6 +391,121 @@ describe('view panel display helpers', () => {
         assert.doesNotMatch(html, /new window\.Chart/);
     });
 
+    test('buildPieChartHtml renders a grouped pie chart with visible legend config', () => {
+        const html = buildPieChartHtml({
+            idx: 4,
+            groupField: 'status',
+            nonce: 'test-nonce',
+            groups: [
+                { key: 'open', count: 4 },
+                { key: 'closed', count: 1 }
+            ]
+        });
+
+        assert.match(html, /canvas id="view-chart-pie-4"/);
+        assert.match(html, /"type":"pie"/);
+        assert.match(html, /"position":"right"/);
+        assert.match(html, /"labels":\["open","closed"\]/);
+        assert.match(html, /"data":\[4,1\]/);
+    });
+
+    test('buildBarChartHtml with no aggregate clause renders no value picker at all — byte-identical to before aggregate charting existed', () => {
+        const html = buildBarChartHtml({
+            idx: 0,
+            groupField: 'company',
+            nonce: 'test-nonce',
+            groups: [{ key: 'MI', count: 3 }],
+            aggregateTerms: null,
+            valueField: ''
+        });
+        assert.doesNotMatch(html, /chart-value-select/);
+        assert.match(html, /"data":\[3\]/);
+    });
+
+    test('buildBarChartHtml offers a Value picker when the query has a non-count aggregate clause, defaulting to Count', () => {
+        const html = buildBarChartHtml({
+            idx: 0,
+            groupField: 'unit',
+            nonce: 'test-nonce',
+            groups: [
+                { key: 'alpha', count: 2, aggregates: { total: 35 } },
+                { key: 'bravo', count: 1, aggregates: { total: 12 } }
+            ],
+            aggregateTerms: [{ fn: 'sum', field: 'cell.total', alias: 'total' }],
+            valueField: ''
+        });
+        assert.match(html, /data-chart-value-select/);
+        assert.match(html, /<option value="" selected>Count<\/option>/);
+        assert.match(html, /<option value="total">total<\/option>/);
+        // Defaults to count when no valueField is selected.
+        assert.match(html, /"data":\[2,1\]/);
+    });
+
+    test('buildBarChartHtml plots the selected aggregate value, not the row count, once a value is picked', () => {
+        const html = buildBarChartHtml({
+            idx: 0,
+            groupField: 'unit',
+            nonce: 'test-nonce',
+            groups: [
+                { key: 'alpha', count: 2, aggregates: { total: 35 } },
+                { key: 'bravo', count: 1, aggregates: { total: 12 } }
+            ],
+            aggregateTerms: [{ fn: 'sum', field: 'cell.total', alias: 'total' }],
+            valueField: 'total'
+        });
+        assert.match(html, /<option value="total" selected>total<\/option>/);
+        assert.match(html, /"data":\[35,12\]/);
+        assert.match(html, /plotting <code>total<\/code>/);
+    });
+
+    test('buildBarChartHtml passes null through for a bucket with no numeric aggregate value, never a fabricated 0', () => {
+        const html = buildBarChartHtml({
+            idx: 0,
+            groupField: 'unit',
+            nonce: 'test-nonce',
+            groups: [
+                { key: 'alpha', count: 2, aggregates: { total: 35 } },
+                { key: 'bravo', count: 1, aggregates: { total: null } }
+            ],
+            aggregateTerms: [{ fn: 'sum', field: 'cell.total', alias: 'total' }],
+            valueField: 'total'
+        });
+        assert.match(html, /"data":\[35,null\]/);
+    });
+
+    test('buildBarChartHtml never offers a redundant "Count" option twice when the aggregate clause itself has a bare count term', () => {
+        const html = buildBarChartHtml({
+            idx: 0,
+            groupField: 'unit',
+            nonce: 'test-nonce',
+            groups: [{ key: 'alpha', count: 2, aggregates: { count: 2, total: 35 } }],
+            aggregateTerms: [
+                { fn: 'count', field: null, alias: 'count' },
+                { fn: 'sum', field: 'cell.total', alias: 'total' }
+            ],
+            valueField: ''
+        });
+        const countOptionMatches = html.match(/>Count</g) || [];
+        assert.equal(countOptionMatches.length, 1);
+        assert.match(html, /<option value="total">total<\/option>/);
+    });
+
+    test('buildPieChartHtml supports the same Value picker as buildBarChartHtml', () => {
+        const html = buildPieChartHtml({
+            idx: 4,
+            groupField: 'status',
+            nonce: 'test-nonce',
+            groups: [
+                { key: 'open', count: 4, aggregates: { avg_days: 3.5 } },
+                { key: 'closed', count: 1, aggregates: { avg_days: 1 } }
+            ],
+            aggregateTerms: [{ fn: 'average', field: 'cell.days', alias: 'avg_days' }],
+            valueField: 'avg_days'
+        });
+        assert.match(html, /data-chart-value-select/);
+        assert.match(html, /"data":\[3\.5,1\]/);
+    });
+
     test('buildScatterChartHtml renders a canvas and dataset with point values', () => {
         const rows = [
             {
@@ -422,6 +541,40 @@ describe('view panel display helpers', () => {
         assert.match(html, /Mission Alpha/);
     });
 
+    test('buildLineChartHtml renders sorted line points by x value', () => {
+        const html = buildLineChartHtml({
+            idx: 5,
+            rows: [
+                {
+                    id: 'mission-late',
+                    nodeType: 'mission',
+                    fields: { name: 'Mission Late', day: '3', score: '30' }
+                },
+                {
+                    id: 'mission-early',
+                    nodeType: 'mission',
+                    fields: { name: 'Mission Early', day: '1', score: '10' }
+                }
+            ],
+            columns: ['id', 'day', 'score'],
+            meta: {
+                id: { kind: 'id' },
+                day: { kind: 'number' },
+                score: { kind: 'number' }
+            },
+            xField: 'day',
+            yField: 'score',
+            types: ['mission'],
+            nonce: 'test-nonce'
+        });
+
+        assert.match(html, /canvas id="view-chart-line-5"/);
+        assert.match(html, /type: 'line'/);
+        assert.match(html, /"showLine":true/);
+        assert.ok(html.indexOf('"x":1') < html.indexOf('"x":3'));
+        assert.ok(html.indexOf('Mission Early') < html.indexOf('Mission Late'));
+    });
+
     test('buildScatterChartHtml auto-selects axes and renders chart when xField/yField are empty', () => {
         const html = buildScatterChartHtml({
             idx: 3,
@@ -450,6 +603,65 @@ describe('view panel display helpers', () => {
         assert.match(html, /new window\.Chart/);
         assert.match(html, /"x":2/);
         assert.match(html, /"y":14/);
+    });
+
+    test('buildAggregateSummaryHtml renders one pill per term, in order, with formatted values', () => {
+        const html = buildAggregateSummaryHtml(
+            { total: 113, avg: 37.666666, lowest: 3 },
+            [
+                { fn: 'sum', field: 'cell.total', alias: 'total' },
+                { fn: 'average', field: 'cell.total', alias: 'avg' },
+                { fn: 'min', field: 'cell.total', alias: 'lowest' }
+            ]
+        );
+        assert.match(html, /class="aggregate-summary"/);
+        assert.match(html, /aggregate-pill-label">total<\/span><span class="aggregate-pill-value">113/);
+        assert.match(html, /aggregate-pill-label">avg<\/span><span class="aggregate-pill-value">37\.67/);
+        assert.match(html, /aggregate-pill-label">lowest<\/span><span class="aggregate-pill-value">3</);
+    });
+
+    test('buildAggregateSummaryHtml renders an em-dash for a null aggregate, never 0 or NaN', () => {
+        const html = buildAggregateSummaryHtml(
+            { total: null },
+            [{ fn: 'sum', field: 'region', alias: 'total' }]
+        );
+        assert.match(html, /aggregate-pill-value">—/);
+        assert.doesNotMatch(html, />0</);
+        assert.doesNotMatch(html, /NaN/);
+    });
+
+    test('buildAggregateSummaryHtml returns empty string when there is no aggregate clause', () => {
+        assert.equal(buildAggregateSummaryHtml(null, null), '');
+        assert.equal(buildAggregateSummaryHtml(undefined, []), '');
+    });
+
+    test('buildCalcSourceCellHtml renders calculated fields as non-editable source buttons', () => {
+        const html = buildCalcSourceCellHtml(
+            {
+                id: 'field-report-alpha',
+                cellMeta: {
+                    'cell.total': { expr: '50+25', label: 'Y1', name: 'total' }
+                }
+            },
+            'cell.total',
+            '75',
+            '',
+            ' data-filter-value="75"',
+            ' data-sort-value="75"'
+        );
+
+        assert.match(html, /class="cell-calc-source"/);
+        assert.match(html, /data-id="field-report-alpha"/);
+        assert.match(html, /title="Y1 · total = 50\+25"/);
+        assert.match(html, /aria-label="Open source note for cell\.total"/);
+        assert.match(html, />75<\/button>/);
+        assert.doesNotMatch(html, /cell-editable/);
+        assert.doesNotMatch(html, /data-edit-mode/);
+    });
+
+    test('buildCalcSourceCellHtml stays quiet for ordinary fields or missing cell metadata', () => {
+        assert.equal(buildCalcSourceCellHtml({ id: 'a', cellMeta: {} }, 'status', 'active'), null);
+        assert.equal(buildCalcSourceCellHtml({ id: 'a', cellMeta: {} }, 'cell.total', '75'), null);
     });
 });
 

@@ -1,9 +1,10 @@
 'use strict';
 
 const { canonicalizeId } = require('./id');
+const { scanInlineCalcs } = require('../engine/inlineCalc');
 
 /**
- * @typedef {'heading'|'task'|'quote'|'footnote'} BodyBlockType
+ * @typedef {'heading'|'task'|'quote'|'footnote'|'calc'} BodyBlockType
  *
  * @typedef {{
  *   blockId: string,
@@ -15,12 +16,24 @@ const { canonicalizeId } = require('./id');
  * }} BodyBlock
  */
 
+// Accent-folded before anything else (NFKD + strip combining diacriticals,
+// the same approach id.js's canonicalizeId() already uses, for consistency)
+// — a real, confirmed gap otherwise: `[[note#Monopólio]]` would never match
+// an actual `## Monopólio` heading if either side's accent happened to
+// render differently, and a Spanish/Portuguese/French-language vault hits
+// this constantly. Folding first means "Monopólio" and "Monopolio" compare
+// equal, same as a user would expect.
 function normalizeAnchorText(value) {
-    return String(value || '')
+    return foldDiacritics(String(value || ''))
         .toLowerCase()
         .replace(/[^a-z0-9]+/g, '-')
         .replace(/-+/g, '-')
         .replace(/^-|-$/g, '');
+}
+
+/** @param {string} value @returns {string} */
+function foldDiacritics(value) {
+    return String(value || '').normalize('NFKD').replace(/[̀-ͯ]/g, '');
 }
 
 function hashString(str) {
@@ -50,6 +63,50 @@ function buildFootnoteBlockId(id) {
     return `fn-${normalized}`;
 }
 
+function buildLineOffsetTable(text) {
+    const offsets = [0];
+    for (let i = 0; i < text.length; i++) {
+        if (text[i] === '\n') offsets.push(i + 1);
+    }
+    return offsets;
+}
+
+function offsetToLine(lineOffsets, offset) {
+    const target = Math.max(0, Number.isFinite(offset) ? offset : 0);
+    let lo = 0;
+    let hi = lineOffsets.length - 1;
+    while (lo <= hi) {
+        const mid = Math.floor((lo + hi) / 2);
+        if (lineOffsets[mid] <= target) lo = mid + 1;
+        else hi = mid - 1;
+    }
+    return Math.max(0, hi);
+}
+
+function isRejectedCalcName(block) {
+    if (!block?.name || block.evalResult?.ok !== false) return false;
+    const error = String(block.evalResult.error || '');
+    return block.evalResult.code === 'VALUE'
+        && (/^Name reserved:/.test(error) || /Cannot use function name/.test(error) || /reserved for automatic cell labels/.test(error));
+}
+
+/**
+ * @param {import('../engine/inlineCalc').InlineCalcBlock} block
+ * @param {string} blockId
+ * @param {number} line
+ * @returns {BodyBlock}
+ */
+function calcBlockToBodyBlock(block, blockId, line) {
+    return {
+        blockId,
+        type: 'calc',
+        line,
+        endLine: line,
+        label: block.name ? `${block.label} · ${block.name}` : block.label,
+        text: block.expr
+    };
+}
+
 function findBodyStartLine(lines) {
     if (!lines[0] || lines[0].trim() !== '---') return 0;
     for (let i = 1; i < lines.length; i++) {
@@ -75,6 +132,7 @@ function extractMeaningfulBodyBlocks(content) {
     // silently produced zero blocks (no heading/task/quote/footnote IDs at
     // all) for any CRLF-saved note, common on Windows.
     const lines = text.split(/\r?\n/);
+    const lineOffsets = buildLineOffsetTable(text);
     /** @type {BodyBlock[]} */
     const blocks = [];
     const bodyStartLine = findBodyStartLine(lines);
@@ -180,6 +238,15 @@ function extractMeaningfulBodyBlocks(content) {
         }
     }
 
+    for (const block of scanInlineCalcs(text)) {
+        const line = offsetToLine(lineOffsets, block.start);
+        if (line < bodyStartLine) continue;
+        blocks.push(calcBlockToBodyBlock(block, block.label, line));
+        if (block.name && !isRejectedCalcName(block)) {
+            blocks.push(calcBlockToBodyBlock(block, block.name, line));
+        }
+    }
+
     return blocks;
 }
 
@@ -233,11 +300,14 @@ function formatBlockReference(noteId, block) {
 
 module.exports = {
     normalizeAnchorText,
+    foldDiacritics,
     hashString,
     buildTaskBlockId,
     buildQuoteBlockId,
     buildHeadingBlockId,
     buildFootnoteBlockId,
+    buildLineOffsetTable,
+    offsetToLine,
     extractMeaningfulBodyBlocks,
     findBlockLine,
     findBodyBlockInLineRange,

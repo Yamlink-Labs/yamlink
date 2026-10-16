@@ -381,7 +381,7 @@ function registerCodeActions(context, getIndex) {
                             action.command = {
                                 command: 'yamlink.linkOrphan',
                                 title: 'Link this node',
-                                arguments: [document, id]
+                                arguments: [document, id, range.start.line]
                             };
                             action.isPreferred = false;
                             actions.push(action);

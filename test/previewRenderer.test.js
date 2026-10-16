@@ -11,7 +11,8 @@ const {
     extractFootnoteDefinitions,
     renderNotePreview,
     preprocessImagesForRender,
-    rewriteImageSrcs
+    rewriteImageSrcs,
+    replaceInlineCalcsWithResults
 } = require('../src/features/preview/previewRenderer');
 
 function withTempDir(fn) {
@@ -183,5 +184,59 @@ describe('preview renderer — rewriteImageSrcs', () => {
         let receivedPath = null;
         rewriteImageSrcs(html, (p) => { receivedPath = p; return 'ok'; });
         assert.equal(receivedPath, samplePath);
+    });
+});
+
+describe('preview renderer — inline calculations', () => {
+    test('replaceInlineCalcsWithResults shows only the computed value as visible text; the formula rides along only as a hover tooltip', () => {
+        const body = 'The total comes to `=1 + 2(3+4)^2` before tax.';
+        const replaced = replaceInlineCalcsWithResults(body);
+        assert.doesNotMatch(replaced, /`/);
+        // The formula is present only inside title="..." (the hover tooltip), never as the span's own visible text.
+        assert.match(replaced, /<span class="yl-calc-result" title="1 \+ 2\(3\+4\)\^2">99<\/span>/);
+    });
+
+    test('a failed expression shows an honest ? instead of a wrong number', () => {
+        const replaced = replaceInlineCalcsWithResults('Broken: `=1 + `');
+        assert.match(replaced, /<span class="yl-calc-result"[^>]*>\?<\/span>/);
+    });
+
+    test('text with no calc syntax is returned unchanged', () => {
+        const body = 'Just a plain sentence with `npm install` in it.';
+        assert.equal(replaceInlineCalcsWithResults(body), body);
+    });
+
+    test('renderNotePreview shows the computed result in the actual rendered HTML, not the raw formula', () => {
+        const text = [
+            '---',
+            'id: test-note',
+            'type: note',
+            '---',
+            '',
+            'Apples: `total=1+2`. Total: `=total*3`.'
+        ].join('\n');
+        const html = renderNotePreview(text, 'test-note');
+        assert.match(html, />3</);
+        assert.match(html, />9</);
+        // "total*3" is fine inside title="..." (hover), just never as visible text between the tags.
+        assert.doesNotMatch(html, />[^<]*total\*3[^<]*</);
+    });
+
+    test('calc numbering stays correct across a !view block sitting between two calculations', () => {
+        const text = [
+            '---',
+            'id: test-note',
+            'type: note',
+            '---',
+            '',
+            '`=5`',
+            '',
+            '!view note',
+            'select name',
+            '',
+            '`=Y1*2`'
+        ].join('\n');
+        const html = renderNotePreview(text, 'test-note');
+        assert.match(html, /yl-calc-result[^>]*>10</);
     });
 });

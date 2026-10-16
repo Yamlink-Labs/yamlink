@@ -61,7 +61,12 @@ sort name
 
 Run the view (`Yamlink: Run Views in Current File`) and a live table opens beside the note. Double-click any cell to edit it directly — the change writes straight back into that note's real frontmatter, no separate save step. Text, relations (with real validation against your vault's ids), booleans, dropdowns, numbers, and dates all edit in place; `Tab`/`Shift+Tab` move between editable cells, and you can paste a whole block of spreadsheet data across multiple cells at once. Every edit is undoable.
 
-The same result set can also be viewed as a **matrix** (pick any type for the columns, ● marks a connected pair), a **bar chart**, or a **scatter plot** — a toolbar toggle in the table itself, not something you write in the query. The layout choice is remembered per query. Bar charts and scatter plots will only work if your notes' connections and structure allows it.
+The same result set can also be viewed as a **matrix** (pick any type for the columns, ● marks a connected pair), a **bar chart**, a **scatter plot**, a **line chart**, or a **pie chart** — a toolbar toggle in the table itself, not something you write in the query. The layout choice is remembered per query.
+
+- **Bar** and **pie** charts group your notes (for example `group by priority`). By default they count notes per group. Add an `aggregate` clause and the chart's **Value** picker can plot that total or average instead, such as total strength per priority.
+- **Scatter** and **line** charts plot two numeric or date fields against each other, such as budget against strength, or strength over time. Line charts sort points by the horizontal axis first, so the line follows the order of dates.
+
+A worked set of these charts is in the sample vault's `calc-charts-gallery` note.
 
 ### Query language reference
 
@@ -255,9 +260,7 @@ Smart Paste also helps when content starts outside Yamlink. Paste a clear spread
 
 **Insert a reference** — same three pickers, but insert directly into the editor at your cursor instead of the clipboard: `Yamlink: Insert Scoped Reference`, `Yamlink: Insert Section Reference`, `Yamlink: Insert Block Reference`.
 
-You don't need to remember any of these commands to notice a block is referenceable in the first place — a "Copy reference" link appears directly above every heading, task, quote, and footnote as you write. If another note already links to that specific block, a second "N references" link shows up next to it — click it to jump straight there.
-
-**Extract a block to its own note** — `Yamlink: Extract Block to New Note` (also a CodeLens above tasks, quotes, and footnotes) moves that exact block out of the current note and into a brand-new one, replacing it in place with an embed so it still renders where it was.
+**Extract a block to its own note** — `Yamlink: Extract Block to New Note` moves that exact block out of the current note and into a brand-new one, replacing it in place with an embed so it still renders where it was.
 
 **Export** — `Yamlink: Export Active Note to PDF` renders the active note (frontmatter, body, callouts, tasks) to a PDF file.
 
@@ -265,7 +268,208 @@ Go-to-definition works on every section/block reference: the editor lands on the
 
 ---
 
-## 7. Learn the core surfaces
+## 7. Do live calculations in a note
+
+Write real arithmetic inline in a note body and Yamlink computes it live — no separate spreadsheet, just prose with an explicit marker.
+
+```
+The total comes to `=1 + 2(3+4)^2` before tax.
+```
+
+That shows `= 99` right after it, updating as you type. Only text inside this exact `` `=...` `` syntax is ever touched — an ordinary code span like `` `npm install` `` is left completely alone.
+
+**Supported math**: `+ - * / ^ %`, implicit multiplication (`2(1+1/14)` needs no `*`), parentheses, and `sqrt`/`abs`/`round`/`floor`/`ceil`/`min`/`max`/`sin`/`cos`/`tan`/`log`/`ln`/`sign`/`exp`, plus the constants `pi`/`e`. A value can be a number, a string (`` `label="in progress"` ``), or a boolean (`` `done=true` ``) — `+` concatenates two strings the same way it adds two numbers.
+
+**Real rules, not just arithmetic**: `> < >= <= == !=`, `and`/`or`/`not`, and `if(condition, then, else)`:
+
+```
+Over budget: `over_budget=spent>budget`
+Status: `status=if(over_budget, "cut spending", "on track")`
+```
+
+`if()` is the one construct that truly skips the side it doesn't take — `` `=if(x != 0, 10/x, 0)` `` never divides by zero when `x` is `0`, because that branch is never evaluated.
+
+`and`, `or`, and `not` also work as function calls, if that reads more naturally to you. Both forms give the same result and can be mixed in one formula:
+
+```
+Ready: `ready=and(strength>=10, not(over_budget))`
+Same check: `ready_too=strength>=10 and not over_budget`
+```
+
+**Reference another calculation from a later one**, two ways that work together:
+
+| Syntax | What it does |
+|---|---|
+| `` `total=1+2` `` then `` `=total*3` `` | name a calculation, use it by name |
+| `` `=Y1+Y2` `` | every calculation also gets an automatic label (`Y1`, `Y2`, ...) in document order — reference it without naming anything |
+
+Insert a new calculation earlier in the note and save: any `Y<N>` reference elsewhere that pointed at a shifted calculation is automatically rewritten to its new number, the same way a spreadsheet updates itself when a row shifts.
+
+**Reference a calculation in another note**: `` `=[[budget]]^total + 25` `` reads another note's calculated cell directly — by name or by its automatic `Y<N>` label. Single-hop by design: that note's own formula can't chain through a third note.
+
+**Ranges**: inside a function call, `Y<N>:Y<M>` expands to every cell in between — `` `=sum(Y1:Y5)` ``, `` `=average(Y1:Y5)` ``.
+
+**Named ranges**: give a run of cells a name, then use the name anywhere a list is expected:
+
+```
+prices=Y1:Y8
+Typical price: `=median(prices)`
+```
+
+**Cross-note ranges**: a range can also come from another note, using the same single-hop rule as single cells: `` `=sum([[budget-2297]]^Y1:Y5)` ``.
+
+**Table ranges**: every `!view` block in a note gets an automatic label — `T1`, `T2`, ... — in the order it appears, the same convention calc cells use for `Y1`, `Y2`. `T1.budget` is the whole `budget` column of the first table, read in the order that table currently displays, so a formula can summarize a table without retyping its data:
+
+```
+!view expense select name, budget
+
+Total budget across the table above: `=sum(T1.budget)`
+Typical budget: `=median(T1.budget)`
+```
+
+For a `group by` table, address the group column by its field name and an aggregate column by its alias: `!view expense group by category aggregate sum(budget) as total` makes `T1.category` and `T1.total` both addressable. Same-note only — a table in another note isn't reachable this way. One current limit: unlike `Y<N>` cell labels, `T<N>` table labels are not yet renumbered automatically if you reorder `!view` blocks in the note — check the formula still points at the table you mean after moving one.
+
+**Conditional totals**: count, add, or average only the cells that match a condition. The criterion is written in quotes:
+
+```
+Prices above 40: `=countif(prices, ">40")`
+Total of those prices: `=sumif(prices, ">40")`
+Average of prices under 40: `=averageif(prices, "<40")`
+```
+
+**Formulas can read a note's own frontmatter fields directly**, not just other calculations — `` `total=price*quantity` `` resolves `price`/`quantity` straight from frontmatter if no same-note calculation already defines them.
+
+**Date functions** — `today()`, `date(year, month, day)`, `days_between(date1, date2)`, `add_days(date, days)`:
+
+```
+Days until due: `days_left=days_between(today(), due)`
+Status: `status=if(due < today(), "overdue", "on track")`
+```
+
+A date is just a `YYYY-MM-DD` string (the same format frontmatter date fields already use), which is also why `due < today()` already compares correctly — no new syntax needed for that. One real gotcha: a bare `2099-01-01` typed directly in a formula is subtraction, not a date — write `date(2099, 1, 1)` or a quoted string instead.
+
+**Statistics, finance, and growth**:
+
+```
+Typical deal size: `typical=median(Y1:Y10)`
+How spread out are deal sizes: `spread=stdev(Y1:Y10)`
+Return over 5 years at 8%: `growth_value=fv(0.08, 5, 0, -10000)`
+Steady yearly growth rate: `rate=cagr(revenue_2021, revenue_2026, 5)`
+```
+
+`median`/`mode`/`stdev`/`variance` (and their population counterparts `stdevp`/`variancep`) work with ranges the same way `sum`/`average` already do. `fv`/`pv`/`pmt`/`npv`/`irr` match Excel's own formulas and sign convention exactly — money going out and the value it becomes are opposite signs. `cagr(beginning, ending, periods)` gives you one steady growth rate across however many periods.
+
+**Display formatting without changing the real value**: a trailing `as <format>` clause controls how a result is *shown*, while the underlying number stays unrounded for further math:
+
+```
+Total cost: `=price*qty as currency`        → $1,234.56
+Growth rate: `=cagr(3000, 4000, 4) as percent`  → 7.46%
+Headcount: `=staff as comma`                 → 1,234
+Precise: `=ratio as 0.00`                    → 0.50
+```
+
+Use `percent` for rates and growth, `currency` for money, `comma` for large counts, and a decimals pattern like `0.00` when you need a fixed number of places.
+
+Hover any formula to see its label, name, result, and exactly which other cells it reads — plus, for a formula built from a range, a function call, a cross-note reference, a comparison, or `if()`, a step-by-step "How it resolved" breakdown in the exact order Yamlink evaluated it. While typing a new formula, autocomplete opens the instant you type `` ` `` or `=` — lists every earlier calculation in the note, this note's own frontmatter fields, `T<N>.<column>` for any `!view` table already in the note, and (once a note's `type:` has at least 2 other notes with a similar pattern) suggestions learned from the rest of the vault too — or run `Yamlink: Insert Cell Reference` for a searchable picker over all of them.
+
+The Live Note preview sidecar shows only the computed result, not the raw formula — hovering it there still shows the original expression.
+
+**Try it on real examples.** The sample vault includes three guide notes that use everything above:
+
+- `start-here-calc-tour` — a short checklist to work through in order.
+- `calc-what-you-can-do` — each formula group explained, with examples you can change.
+- `calc-charts-gallery` — bar, pie, scatter, and line charts over the same data.
+
+To check every formula in the sample vault at once, run `node scripts/check-calc-notes.js` from the Yamlink project folder. It prints one line per formula and reports any that fail.
+
+A `!view` query can also select, filter, and sort by a note's calculated cells — `!view expense where cell.total > 100 select name, cell.total`. It can also summarize *across* every matched note — `!view field-report aggregate sum(cell.effective_strength) as total, average(cell.effective_strength) as avg` shows a total and average over the whole result, and combining that with `group by unit` gives you one total per unit instead. Add `when` to fold only the matching notes: `aggregate sum(cell.effective_strength) when priority = high as high_total` totals strength for high-priority notes only. See [FEATURES.md](./FEATURES.md)'s Inline Calculations section for the full syntax, including current limits.
+
+### Function reference
+
+Every function Yamlink's formulas understand, with its arguments in order. Square brackets mark optional arguments. Results shown are what the example produces.
+
+**Math**
+
+| Function | What it does | Example | Result |
+|---|---|---|---|
+| `sqrt(x)` | Square root | `` `=sqrt(16)` `` | 4 |
+| `abs(x)` | Absolute value | `` `=abs(-3)` `` | 3 |
+| `round(x)` | Round to the nearest whole number | `` `=round(2.6)` `` | 3 |
+| `floor(x)` | Round down | `` `=floor(2.9)` `` | 2 |
+| `ceil(x)` | Round up | `` `=ceil(2.1)` `` | 3 |
+| `exp(x)` | e raised to the power x | `` `=exp(1)` `` | 2.718 |
+| `ln(x)` | Natural logarithm | `` `=ln(e)` `` | 1 |
+| `log(x)` | Base-10 logarithm | `` `=log(1000)` `` | 3 |
+| `sign(x)` | -1, 0, or 1 depending on the sign of x | `` `=sign(-5)` `` | -1 |
+| `sin(x)`, `cos(x)`, `tan(x)` | Trigonometry, in radians | `` `=cos(0)` `` | 1 |
+
+Constants: `pi` (3.14159...) and `e` (2.71828...).
+
+**Totals and statistics**
+
+These take any number of values, or a range such as `Y1:Y8`.
+
+| Function | What it does | Example | Result |
+|---|---|---|---|
+| `sum(a, b, ...)` | Total | `` `=sum(2,3,5)` `` | 10 |
+| `average(a, b, ...)` | Mean | `` `=average(2,3,7)` `` | 4 |
+| `min(a, b, ...)` | Smallest value | `` `=min(4,1,9)` `` | 1 |
+| `max(a, b, ...)` | Largest value | `` `=max(4,1,9)` `` | 9 |
+| `median(a, b, ...)` | Middle value | `` `=median(1,5,3,9)` `` | 4 |
+| `mode(a, b, ...)` | Most common value (fails if nothing repeats) | `` `=mode(2,3,3,7)` `` | 3 |
+| `stdev(a, b, ...)` | Spread of a sample | `` `=stdev(2,4,4,4,5,5,7,9)` `` | 2.138 |
+| `stdevp(a, b, ...)` | Spread of a complete population | `` `=stdevp(2,4,4,4,5,5,7,9)` `` | 2 |
+| `variance(a, b, ...)` | Variance of a sample | `` `=variance(2,4,4,4,5,5,7,9)` `` | 4.571 |
+| `variancep(a, b, ...)` | Variance of a complete population | `` `=variancep(2,4,4,4,5,5,7,9)` `` | 4 |
+
+**Conditional totals**
+
+These take a range (a `Y1:Y8` run, a named range, or a cross-note range) and a criterion in quotes. The criterion can be `">40"`, `"<=10"`, `"<>0"`, or a plain value such as `"high"`.
+
+| Function | What it does | Example | Result |
+|---|---|---|---|
+| `countif(range, criterion)` | How many cells match | `` `=countif(prices, ">40")` `` | 6 |
+| `sumif(range, criterion, [sum_range])` | Total of matching cells. The optional third range is summed in place of the first. | `` `=sumif(prices, ">40")` `` | 263 |
+| `averageif(range, criterion, [average_range])` | Average of matching cells | `` `=averageif(prices, "<40")` `` | 38.5 |
+
+**Finance**
+
+Rates are decimals: 8% is `0.08`. Money you pay out is negative, and money you receive is positive.
+
+| Function | What it does | Example | Result |
+|---|---|---|---|
+| `fv(rate, periods, payment, [present])` | Future value of regular payments | `` `=fv(0.05, 10, -100)` `` | 1257.79 |
+| `pv(rate, periods, payment, [future])` | Present value of regular payments | `` `=pv(0.05, 10, -100)` `` | 772.17 |
+| `pmt(rate, periods, present, [future])` | Regular payment that pays off a loan | `` `=pmt(0.005, 60, 10000)` `` | -193.33 |
+| `npv(rate, cash1, cash2, ...)` | Value today of future cash flows. The first flow is discounted by one period. | `` `=npv(0.08, 6000, 6000, 6000)` `` | 15462.58 |
+| `irr(cash0, cash1, ...)` | Rate of return. The first value is the money paid out now, not discounted. | `` `=irr(-20000, 6000, 6000, 6000, 6000, 6000) as percent` `` | 15.24% |
+| `cagr(beginning, ending, periods)` | Steady yearly growth rate | `` `=cagr(3000, 4000, 4) as percent` `` | 7.46% |
+
+To include a cash flow that happens today, add it outside `npv()`, for example `` `=-20000 + npv(0.08, 6000, 6000, 6000)` ``.
+
+**Dates**
+
+A date is written `YYYY-MM-DD`, or built with `date()`.
+
+| Function | What it does | Example | Result |
+|---|---|---|---|
+| `today()` | Today's date | `` `=today()` `` | the current date |
+| `date(year, month, day)` | Builds a date and checks that it exists | `` `=date(2297, 12, 1)` `` | 2297-12-01 |
+| `days_between(first, second)` | Days from the first date to the second | `` `=days_between("2297-12-01", "2297-12-15")` `` | 14 |
+| `add_days(date, days)` | A date moved forward by some days | `` `=add_days("2297-12-01", 14)` `` | 2297-12-15 |
+
+**Logic**
+
+| Function | What it does | Example | Result |
+|---|---|---|---|
+| `and(a, b)` | True only when both are true | `` `=and(true, false)` `` | false |
+| `or(a, b)` | True when either is true | `` `=or(true, false)` `` | true |
+| `not(a)` | Flips true and false | `` `=not(false)` `` | true |
+| `if(test, yes, no)` | Returns one of two values. Only the chosen branch is worked out. | `` `=if(3>2, "yes", "no")` `` | yes |
+
+---
+
+## 8. Learn the core surfaces
 
 ### Note Report
 
@@ -351,7 +555,7 @@ Open `Yamlink: Open Live Note` for a rendered sidecar beside the active note.
 
 ---
 
-## 8. Get started with the CLI
+## 9. Get started with the CLI
 
 `yamlink` is a full headless vault interface. Install it from the project folder:
 
@@ -427,7 +631,7 @@ yamlink init ~/Documents/MyVault               # scaffold .yamlink/, _templates/
 
 ---
 
-## 9. Get started with Conduit
+## 10. Get started with Conduit
 
 Conduit is Yamlink's full terminal UI. No browser, no VS Code required.
 
@@ -523,7 +727,7 @@ Press `?` inside Conduit at any time for the full in-app key-binding reference.
 
 ---
 
-## 10. Import an existing vault
+## 11. Import an existing vault
 
 Every import — Obsidian, Notion, Roam, Evernote — shows a one-line trust summary in the confirmation screen before you commit (what that export format preserves well, what to double-check, what it can't fully carry over regardless of how good the importer is), and the same detail as a "What to expect from this import" section in the generated import report. Worth reading before a big import, not just after.
 
@@ -595,7 +799,7 @@ What Yamlink does:
 
 ---
 
-## 11. Ignore notes Yamlink should not index
+## 12. Ignore notes Yamlink should not index
 
 Add a `.yamlinkignore` file at the vault root. Changes take effect immediately — no restart needed.
 
@@ -613,7 +817,7 @@ Plain names and folders match exactly; `*`, `**`, and `?` also work as wildcards
 
 ---
 
-## 12. Publish your vault as a website
+## 13. Publish your vault as a website
 
 **0.7.7** `yamlink publish` turns your vault into a static, structured content payload a real site generator (Astro, Next.js, Eleventy — anything that reads JSON) can build a website from. Your notes stay the source of truth; this is a read-only projection of them, not a second content model to maintain.
 
@@ -716,7 +920,7 @@ Only the notes whose actual content changed since the last build get rewritten �
 
 ---
 
-## 13. Where to go next
+## 14. Where to go next
 
 - [README.md](./README.md) — full product surface overview
 - [FEATURES.md](./FEATURES.md) — complete feature reference across every surface

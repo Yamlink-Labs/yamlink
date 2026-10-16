@@ -7,6 +7,7 @@ const { parseFrontmatterDocument } = require('../../core/frontmatter');
 const { getFieldsCache } = require('../../core/index');
 const { parseAllViewQueries, runQuery } = require('../../engine/query');
 const { resolveImageEmbed } = require('../../core/imageEmbed');
+const { scanInlineCalcs, formatCalcValue } = require('../../engine/inlineCalc');
 
 let _md = null;
 function getMd() {
@@ -235,6 +236,31 @@ function wikilinkToSpan(html) {
     }).join('');
 }
 
+/**
+ * Preview is a "read this like a finished document" surface — it shows the
+ * computed value, not the `` `=expr` `` syntax behind it (the raw editor is
+ * where formula and result stay together for editing/auditing). Runs on the
+ * raw body text *before* splitSegments(), so calc numbering/references stay
+ * correct across the whole note even when a `!view` block sits between two
+ * calc blocks — splitSegments never needs to know calc syntax exists.
+ * @param {string} body @param {Record<string, unknown>} [frontmatterFields] @returns {string}
+ */
+function replaceInlineCalcsWithResults(body, frontmatterFields) {
+    const blocks = scanInlineCalcs(body, { frontmatterFields });
+    if (!blocks.length) return body;
+    let result = '';
+    let cursor = 0;
+    for (const block of blocks) {
+        result += body.slice(cursor, block.start);
+        const display = block.evalResult.ok ? formatCalcValue(block.evalResult.value, block.format) : '?';
+        const title = escapeHtml(block.expr.trim());
+        result += `<span class="yl-calc-result" title="${title}">${escapeHtml(display)}</span>`;
+        cursor = block.end;
+    }
+    result += body.slice(cursor);
+    return result;
+}
+
 function cellValue(value) {
     if (value === null || value === undefined || value === '') return '';
     if (Array.isArray(value)) return value.map(v => escapeHtml(String(v))).join(', ');
@@ -340,8 +366,8 @@ function splitSegments(body) {
 }
 
 function renderNotePreview(documentText, contextNodeId, noteDir) {
-    const { body } = parseFrontmatterDocument(documentText);
-    const segments = splitSegments(body);
+    const { body, data } = parseFrontmatterDocument(documentText);
+    const segments = splitSegments(replaceInlineCalcsWithResults(body, data));
     const md = getMd();
     const parts = [];
 
@@ -366,5 +392,6 @@ module.exports = {
     extractFootnoteDefinitions,
     renderMarkdownWithFootnotes,
     preprocessImagesForRender,
-    rewriteImageSrcs
+    rewriteImageSrcs,
+    replaceInlineCalcsWithResults
 };

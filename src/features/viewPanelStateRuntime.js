@@ -161,7 +161,8 @@
                     matrixColType: panel.dataset.matrixColType || '',
                     scatterX: panel.dataset.scatterX || '',
                     scatterY: panel.dataset.scatterY || '',
-                    barGroupBy: panel.dataset.barGroupBy || ''
+                    barGroupBy: panel.dataset.barGroupBy || '',
+                    chartValueField: panel.dataset.chartValueField || ''
                 });
             });
             const activeBtn = document.querySelector('.tab-btn.active');

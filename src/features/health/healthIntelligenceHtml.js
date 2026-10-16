@@ -190,8 +190,37 @@ function buildTopRelationshipsHtml(stats, escapeFn) {
     </div>`;
 }
 
+function buildCalcHealthHtml(stats, escapeFn) {
+    const e = escapeFn;
+    const calcHealth = stats.calcHealth || {};
+    const totalCells = Number(calcHealth.totalCells || 0);
+    if (!totalCells) return '';
+
+    const { ERROR_CODE_LABELS } = require('../../engine/inlineCalc');
+    const byCode = calcHealth.byCode || {};
+    const codeChips = Object.keys(byCode)
+        .map((code) => `<span class="session-chip">${e(ERROR_CODE_LABELS[code] || code)} × ${e(String(byCode[code]))}</span>`)
+        .join('');
+
+    return `
+    <div class="section" id="section-calc-health">
+        <div class="section-header">
+            <span class="section-title-row"><span class="section-title">Calculation Health</span>${helpTip('calcHealth', e)}</span>
+            <span class="section-count">${totalCells} cell${totalCells === 1 ? '' : 's'}</span>
+        </div>
+        <div class="empty-copy" style="margin-bottom:10px;color:var(--mid);font-size:12px">Inline calculations (an <code>=expr</code> code span in a note body) across the whole vault — how many evaluate cleanly, and how many fail, bucketed by the exact reason.</div>
+        <div class="session-row">
+            <div class="session-main">
+                <div class="session-summary">${calcHealth.evaluatedCells} evaluated / ${totalCells} total</div>
+                ${calcHealth.failedCells > 0 ? `<div class="session-meta"><span class="session-chip">${calcHealth.failedCells} failed</span><span class="session-chip">${calcHealth.notesWithFailures} note${calcHealth.notesWithFailures === 1 ? '' : 's'} affected</span>${codeChips}</div>` : ''}
+            </div>
+        </div>
+    </div>`;
+}
+
 module.exports = {
     buildIntelligenceHealthHtml,
     buildEmergingPatternsHtml,
-    buildTopRelationshipsHtml
+    buildTopRelationshipsHtml,
+    buildCalcHealthHtml
 };

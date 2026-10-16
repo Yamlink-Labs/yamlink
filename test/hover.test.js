@@ -43,6 +43,24 @@ require.cache.__hover_vscode__ = {
                     toString() { return `file:///${normalized.replace(/^\//, '')}`; }
                 };
             }
+        },
+        Position: class Position {
+            constructor(line, character) {
+                this.line = line;
+                this.character = character;
+            }
+        },
+        Range: class Range {
+            constructor(start, end) {
+                this.start = start;
+                this.end = end;
+            }
+        },
+        Hover: class Hover {
+            constructor(contents, range) {
+                this.contents = contents;
+                this.range = range;
+            }
         }
     }
 };
@@ -185,7 +203,8 @@ const {
     buildHoverIntelligenceSummary, buildHoverContent, buildQueryPreview, isPositionInsideWikilink,
     buildHoverBadgeSvg, buildHoverBadgeDataUri, buildHoverBadgeMarkdown,
     renderInlineWikilinks,
-    _buildImagePreviewHover
+    _buildImagePreviewHover,
+    _buildInlineCalcHover
 } = require('../src/features/hover');
 const { resolveImageEmbed: _resolveImageEmbed } = require('../src/core/imageEmbed');
 const { createVault } = require('./lib/vaultSim');
@@ -545,6 +564,72 @@ describe('hover anchor previews', () => {
         vault.destroy();
     });
 
+    test('an anchor with different accents than the real heading still matches — a real, reported gap: a Spanish/Portuguese-language vault using accented headings never matched before this', () => {
+        const vault = createVault({
+            'a.md': [
+                '---',
+                'id: a',
+                'type: note',
+                '---',
+                '',
+                '## Monopólio',
+                'Definición y características del monopolio.'
+            ].join('\n')
+        });
+        const content = fs.readFileSync(path.join(vault.dir, 'a.md'), 'utf8');
+        // Reference written WITHOUT the accent — must still match the
+        // accented real heading.
+        const hover = buildHoverContent('a', content, path.join(vault.dir, 'a.md'), null, 'Monopolio');
+        assert.match(hover.value, /Monopólio/);
+        assert.match(hover.value, /Definición y características/);
+        vault.destroy();
+    });
+
+    test('an anchor that matches no heading, but IS mentioned as plain/bolded prose, shows that surrounding paragraph instead of the generic whole-note summary', () => {
+        const vault = createVault({
+            'a.md': [
+                '---',
+                'id: a',
+                'type: note',
+                '---',
+                '',
+                '## Glosario',
+                '',
+                '**Monopolio:** estructura de mercado con un único oferente.',
+                '',
+                '## Otros temas',
+                'Contenido no relacionado.'
+            ].join('\n')
+        });
+        const content = fs.readFileSync(path.join(vault.dir, 'a.md'), 'utf8');
+        const hover = buildHoverContent('a', content, path.join(vault.dir, 'a.md'), null, 'Monopolio');
+        assert.match(hover.value, /mentioned, not a heading/);
+        assert.match(hover.value, /estructura de mercado con un único oferente/);
+        // Must NOT have fallen through to the generic whole-note summary
+        // (which would render a `###` title heading for the note itself).
+        assert.doesNotMatch(hover.value, /^### /m);
+        vault.destroy();
+    });
+
+    test('an anchor matched nowhere at all (not a heading, not mentioned in prose) still falls back to the generic whole-note summary, unchanged', () => {
+        const vault = createVault({
+            'a.md': [
+                '---',
+                'id: a',
+                'type: note',
+                '---',
+                '',
+                '## Something else entirely',
+                'Unrelated content.'
+            ].join('\n')
+        });
+        const content = fs.readFileSync(path.join(vault.dir, 'a.md'), 'utf8');
+        const hover = buildHoverContent('a', content, path.join(vault.dir, 'a.md'), null, 'Monopolio');
+        const plainHover = buildHoverContent('a', content, path.join(vault.dir, 'a.md'));
+        assert.equal(hover.value, plainHover.value);
+        vault.destroy();
+    });
+
     test('pipe-aliased anchor [[a#details|Label]] extracts section not label', () => {
         // buildAnchorHoverContent is called with the extracted anchorRaw.
         // The extraction must strip the pipe alias so "section|Label" doesn't reach the matcher.
@@ -851,6 +936,152 @@ describe('hover image embed preview', () => {
             const hover = _buildImagePreviewHover(resolved);
             assert.doesNotMatch(hover.value, /could not find/i);
             assert.match(hover.value, /!\[photo\\\.png\]/);
+        });
+    });
+});
+
+describe('inline calc hover', () => {
+    // Single-line offset-based stand-in for a TextDocument: position.character
+    // doubles as the absolute offset, matching the stub's positionAt below.
+    function calcDocument(text) {
+        return {
+            getText: () => text,
+            offsetAt: (position) => position.character,
+            positionAt: (offset) => ({ line: 0, character: offset })
+        };
+    }
+    function hoverAt(text, marker, idIndex) {
+        const doc = calcDocument(text);
+        return _buildInlineCalcHover(doc, { line: 0, character: text.indexOf(marker) + 1 }, idIndex);
+    }
+
+    test('shows the full expression and result on hover', () => {
+        const hover = hoverAt('The total is `=1 + (5+1/-1)` before tax.', '`=');
+        assert.ok(hover);
+        assert.match(hover.contents.value, /1 \+ \(5\+1\/-1\)/);
+        assert.match(hover.contents.value, /\*\*5\*\*/);
+    });
+
+    test('shows the cell label, and the name when the block has one', () => {
+        const text = '`=1+1`\n`total=1+2`';
+        assert.match(hoverAt(text, '`=1+1`').contents.value, /\*\*Y1\*\*/);
+        const named = hoverAt(text, '`total').contents.value;
+        assert.match(named, /\*\*Y2\*\* · total/);
+    });
+
+    test('shows which cells a formula reads, with their values', () => {
+        const text = '`total=1+2`\n`=total*3`';
+        const hover = hoverAt(text, '`=total');
+        assert.match(hover.contents.value, /Uses: total = 3/);
+        assert.match(hover.contents.value, /\*\*9\*\*/);
+    });
+
+    test('a reference is resolved against blocks above it, not evaluated in isolation', () => {
+        const hover = hoverAt('`=4`\n`=Y1+1`', '`=Y1');
+        assert.match(hover.contents.value, /\*\*5\*\*/);
+        assert.doesNotMatch(hover.contents.value, /#VALUE!|#REF!|#NAME\?|#DIV\/0!/);
+    });
+
+    test('shows a typed #VALUE! badge for a malformed expression instead of a wrong number', () => {
+        const hover = hoverAt('Broken: `=1 + `', '`=');
+        assert.ok(hover);
+        assert.match(hover.contents.value, /\*\*#VALUE!\*\*/);
+    });
+
+    test('shows a typed #REF! badge for an out-of-range Y<N> reference, worded as a broken reference', () => {
+        const hover = hoverAt('`=1+1`\n`=Y5*2`', '`=Y5');
+        assert.ok(hover);
+        assert.match(hover.contents.value, /\*\*#REF!\*\*/);
+        assert.match(hover.contents.value, /Y5 does not exist/i);
+    });
+
+    test('shows a typed #NAME? badge for an unknown function', () => {
+        const hover = hoverAt('`=foo(1)`', '`=');
+        assert.ok(hover);
+        assert.match(hover.contents.value, /\*\*#NAME\?\*\*/);
+    });
+
+    test('shows a typed #DIV/0! badge for division by zero', () => {
+        const hover = hoverAt('`=1/0`', '`=');
+        assert.ok(hover);
+        assert.match(hover.contents.value, /\*\*#DIV\/0!\*\*/);
+    });
+
+    test('returns null when the cursor is not over a calc span', () => {
+        const doc = calcDocument('Run `npm install` first.');
+        assert.equal(_buildInlineCalcHover(doc, { line: 0, character: 5 }), null);
+    });
+
+    test('with no idIndex (every call site before this feature), a cross-note reference fails honestly as #REF!, not a crash', () => {
+        const hover = hoverAt('`=[[budget]]^total`', '`=');
+        assert.ok(hover);
+        assert.match(hover.contents.value, /\*\*#REF!\*\*/);
+    });
+
+    test('with a real idIndex, resolves a cross-note reference to the other note\'s real computed value', () => {
+        const os = require('os');
+        const fs = require('fs');
+        const path = require('path');
+        const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'yamlink-hover-xref-'));
+        const filePath = path.join(dir, 'budget.md');
+        fs.writeFileSync(filePath, '---\nid: budget\n---\n\n`total=100+50`\n', 'utf8');
+        try {
+            const idIndex = new Map([['budget', filePath]]);
+            const hover = hoverAt('`=[[budget]]^total + 10`', '`=', idIndex);
+            assert.ok(hover);
+            assert.match(hover.contents.value, /\*\*160\*\*/);
+        } finally {
+            fs.rmSync(dir, { recursive: true, force: true });
+        }
+    });
+
+    describe('step-by-step formula inspector ("How it resolved")', () => {
+        test('a range fold shows every constituent cell, including ones not literally written in the source text', () => {
+            const text = '`=10`\n`=20`\n`=5`\n`=sum(Y1:Y3)`';
+            const hover = hoverAt(text, '`=sum');
+            // Y2 never appears as a literal token in "Y1:Y3" — only the
+            // trace (threaded through mathExpr.js's range-argument reader)
+            // can surface it; collectDependencies()'s flat identifier regex
+            // cannot, since there is no "Y2" substring in the source at all.
+            assert.match(hover.contents.value, /Y1 = 10/);
+            assert.match(hover.contents.value, /Y2 = 20/);
+            assert.match(hover.contents.value, /Y3 = 5/);
+            assert.match(hover.contents.value, /sum\(10, 20, 5\) → 35/);
+            assert.match(hover.contents.value, /How it resolved/);
+        });
+
+        test('a cross-note reference step shows the original [[note]]^label text, not the internal __xrefN placeholder', () => {
+            const os = require('os');
+            const fs = require('fs');
+            const path = require('path');
+            const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'yamlink-hover-trace-xref-'));
+            const filePath = path.join(dir, 'budget.md');
+            fs.writeFileSync(filePath, '---\nid: budget\n---\n\n`total=100+20`\n', 'utf8');
+            try {
+                const idIndex = new Map([['budget', filePath]]);
+                const hover = hoverAt('`=[[budget]]^total * 2`', '`=', idIndex);
+                assert.match(hover.contents.value, /\[\[budget\]\]\^total = 120/);
+                assert.doesNotMatch(hover.contents.value, /__xref/);
+            } finally {
+                fs.rmSync(dir, { recursive: true, force: true });
+            }
+        });
+
+        test('a comparison shows its own resolved step', () => {
+            const text = '`requested=4200`\n`budget=5000`\n`=requested>budget`';
+            const hover = hoverAt(text, '`=requested');
+            assert.match(hover.contents.value, /4200 > 5000 → false/);
+        });
+
+        test('if() shows which branch was taken', () => {
+            const text = '`x=10`\n`=if(x>0, "positive", "negative")`';
+            const hover = hoverAt(text, '`=if');
+            assert.match(hover.contents.value, /if condition is true → then-branch = "positive"/);
+        });
+
+        test('a block with no interesting resolution steps (a plain literal expression) shows no "How it resolved" section at all', () => {
+            const hover = hoverAt('`=1 + 2`', '`=');
+            assert.doesNotMatch(hover.contents.value, /How it resolved/);
         });
     });
 });

@@ -17,6 +17,7 @@ Module._resolveFilename = function (request, parent, ...rest) {
 };
 
 const { buildCalendarModel } = require('../src/features/calendarPanel');
+const { appendMutationEvents, clearMutationEvents } = require('../src/runtime/mutationEventLog');
 
 describe('calendar model', () => {
     test('groups dated tasks and keeps undated tasks separate', () => {
@@ -204,6 +205,48 @@ describe('calendar model resilience', () => {
     });
 });
 
+describe('calendar model — mutation-log creation fallback', () => {
+    test('a note with no date/created field still appears, using its note_created mutation event', () => {
+        clearMutationEvents();
+        appendMutationEvents([
+            { timestamp: '2026-05-12T14:03:00.000Z', type: 'note_created', noteId: 'untouched-note', field: null }
+        ]);
+        const model = buildCalendarModel([], new Map([
+            ['untouched-note', { type: 'note', title: 'No frontmatter dates at all' }]
+        ]), '2026-05-01');
+        clearMutationEvents();
+
+        assert.equal(model.stats.total, 1);
+        assert.equal(model.stats.created, 1);
+        assert.ok(model.months['2026-05'].some(
+            row => row.fileId === 'untouched-note' && row.date === '2026-05-12' && row.itemKind === 'created'
+        ));
+    });
+
+    test('an explicit date: or created: field always wins over the mutation-log fallback', () => {
+        clearMutationEvents();
+        appendMutationEvents([
+            { timestamp: '2026-01-01T00:00:00.000Z', type: 'note_created', noteId: 'a', field: null }
+        ]);
+        const model = buildCalendarModel([], new Map([
+            ['a', { type: 'note', created: '2026-05-20' }]
+        ]), '2026-05-01');
+        clearMutationEvents();
+
+        const row = model.months['2026-05'].find(r => r.fileId === 'a');
+        assert.equal(row.date, '2026-05-20', 'explicit created: field must win over the much-earlier mutation-log date');
+    });
+
+    test('a note with no date/created field and no note_created event stays excluded, same as before', () => {
+        clearMutationEvents();
+        const model = buildCalendarModel([], new Map([
+            ['ghost', { type: 'note', title: 'Never logged' }]
+        ]), '2026-05-01');
+
+        assert.equal(model.stats.total, 0);
+    });
+});
+
 describe('calendar model product surface', () => {
     // ── navigation state ─────────────────────────────────────────────
 
@@ -217,13 +260,13 @@ describe('calendar model product surface', () => {
         assert.equal(model.selectedDate, today);
     });
 
-    test('selectedMonth falls back to first available month when today has no activity', () => {
+    test('selectedMonth stays on the current month even when today has no activity (not wherever the earliest dated item is)', () => {
         const model = buildCalendarModel([
             { id: 'a#t1', fileId: 'a', done: false, text: 'Past task', date: '2026-03-05' },
             { id: 'a#t2', fileId: 'a', done: false, text: 'Future task', date: '2026-08-01' }
         ], new Map([['a', { type: 'note' }]]), '2026-06-15');
 
-        assert.equal(model.selectedMonth, '2026-03');
+        assert.equal(model.selectedMonth, '2026-06');
     });
 
     test('selectedDate is today when today has dated items', () => {
@@ -236,13 +279,13 @@ describe('calendar model product surface', () => {
         assert.equal(model.selectedDate, today);
     });
 
-    test('selectedDate falls back to earliest dated item when today has no activity', () => {
+    test('selectedDate stays on today even when today has no activity (not the earliest dated item)', () => {
         const model = buildCalendarModel([
             { id: 'a#t1', fileId: 'a', done: false, text: 'Old task', date: '2026-01-15' },
             { id: 'a#t2', fileId: 'a', done: false, text: 'New task', date: '2026-09-01' }
         ], new Map([['a', { type: 'note' }]]), '2026-06-01');
 
-        assert.equal(model.selectedDate, '2026-01-15');
+        assert.equal(model.selectedDate, '2026-06-01');
     });
 
     test('selectedDate and selectedMonth are today when vault is empty', () => {

@@ -98,6 +98,12 @@
                 return;
             }
 
+            const calcSource = event.target.closest('.cell-calc-source[data-id]');
+            if (calcSource) {
+                vscode.postMessage({ command: 'openNode', id: calcSource.dataset.id });
+                return;
+            }
+
             const idCell = event.target.closest('.cell-id[data-id]');
             if (idCell) {
                 vscode.postMessage({ command: 'openNode', id: idCell.dataset.id });

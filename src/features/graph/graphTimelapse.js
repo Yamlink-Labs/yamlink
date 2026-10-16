@@ -12,7 +12,7 @@
 const { getFieldsCache, getIndex, getAliasIndex, getBodyLinksCache, extractAndResolveRelationTargets } = require('../../core/indexService');
 const { getMutationEvents, getVaultSnapshots } = require('../../runtime/mutationEventLog');
 const { reconstructVaultAtTime, buildHistoricalGraph } = require('../../core/timeEngine');
-const { xgKind } = require('./graphPayload');
+const { xgKind, xgColor } = require('./graphPayload');
 const { buildGitTimelapseSequence } = require('./graphTimelapseGit');
 
 const DEFAULT_FRAME_COUNT = 14;
@@ -76,6 +76,7 @@ function buildTimelapseFrame(timestamp, { fieldsCache, mutationEvents, snapshots
             id: n.id,
             label,
             kind: xgKind(n.type),
+            color: xgColor(n.type),
             group: n.type || 'default',
             type: n.type || null,
             weight: Math.min(1, (degree.get(n.id) || 0) / 12),

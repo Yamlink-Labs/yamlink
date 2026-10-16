@@ -59,16 +59,53 @@ const FIXTURE = {
     ].join('\n'),
 };
 
+const QUERY_FEATURE_FIXTURE = {
+    'field-report-alpha.md': [
+        '---',
+        'id: field-report-alpha',
+        'type: field-report',
+        'name: Alpha Report',
+        'region: north',
+        '---',
+        '',
+        '`total=50+25`',
+    ].join('\n'),
+
+    'field-report-beta.md': [
+        '---',
+        'id: field-report-beta',
+        'type: field-report',
+        'name: Beta Report',
+        'region: north',
+        '---',
+        '',
+        '`total=10+15`',
+    ].join('\n'),
+
+    'field-report-gamma.md': [
+        '---',
+        'id: field-report-gamma',
+        'type: field-report',
+        'name: Gamma Report',
+        'region: south',
+        '---',
+        '',
+        '`total=80+20`',
+    ].join('\n'),
+};
+
 let vault;
 let server;
 let port;
 let handler;
+let mainMutationLogPath;
 
 before(async () => {
     vault = createVault(FIXTURE);
     const vaultPath = vault.dir;
     fs.mkdirSync(path.join(vaultPath, '.yamlink'), { recursive: true });
-    initMutationLog(path.join(vaultPath, '.yamlink', 'mutation-log.ndjson'));
+    mainMutationLogPath = path.join(vaultPath, '.yamlink', 'mutation-log.ndjson');
+    initMutationLog(mainMutationLogPath);
     const workspaceFolders = [{ uri: { fsPath: vaultPath }, name: 'fixture' }];
     handler = createRouter(vaultPath, workspaceFolders, buildIndex);
     server = http.createServer((req, res) => {
@@ -148,6 +185,85 @@ function requestRaw(method, urlPath, payload, headers = {}) {
         req.on('error', reject);
         req.end(body);
     });
+}
+
+async function createApiHarness(fixture) {
+    const localVault = createVault(fixture);
+    const localVaultPath = localVault.dir;
+    fs.mkdirSync(path.join(localVaultPath, '.yamlink'), { recursive: true });
+    initMutationLog(path.join(localVaultPath, '.yamlink', 'mutation-log.ndjson'));
+    const workspaceFolders = [{ uri: { fsPath: localVaultPath }, name: 'query-fixture' }];
+    const localHandler = createRouter(localVaultPath, workspaceFolders, buildIndex);
+    const localServer = http.createServer((req, res) => {
+        Promise.resolve(localHandler(req, res)).catch((error) => {
+            res.writeHead(500, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ error: error.message }));
+        });
+    });
+    await new Promise((resolve) => localServer.listen(0, '127.0.0.1', resolve));
+    const localPort = localServer.address().port;
+
+    function localGet(urlPath) {
+        return new Promise((resolve, reject) => {
+            http.get({ host: '127.0.0.1', port: localPort, path: urlPath, headers: { Accept: 'application/json' } }, (res) => {
+                let raw = '';
+                res.on('data', (chunk) => { raw += chunk; });
+                res.on('end', () => {
+                    let body;
+                    try { body = JSON.parse(raw); } catch (_) { body = raw; }
+                    resolve({ status: res.statusCode, headers: res.headers, body });
+                });
+            }).on('error', reject);
+        });
+    }
+
+    function localRequest(method, urlPath, bodyObj) {
+        return new Promise((resolve, reject) => {
+            const payload = bodyObj ? JSON.stringify(bodyObj) : '';
+            const req = http.request({
+                host: '127.0.0.1',
+                port: localPort,
+                path: urlPath,
+                method,
+                headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(payload) }
+            }, (res) => {
+                let raw = '';
+                res.on('data', (chunk) => { raw += chunk; });
+                res.on('end', () => {
+                    let body;
+                    try { body = JSON.parse(raw); } catch (_) { body = raw; }
+                    resolve({ status: res.statusCode, headers: res.headers, body });
+                });
+            });
+            req.on('error', reject);
+            req.end(payload);
+        });
+    }
+
+    return {
+        get: localGet,
+        request: localRequest,
+        close() {
+            return new Promise((resolve) => {
+                localServer.close(() => {
+                    localVault.destroy();
+                    if (mainMutationLogPath) {
+                        initMutationLog(mainMutationLogPath);
+                    }
+                    resolve();
+                });
+            });
+        }
+    };
+}
+
+async function withQueryFeatureApi(fn) {
+    const api = await createApiHarness(QUERY_FEATURE_FIXTURE);
+    try {
+        return await fn(api);
+    } finally {
+        await api.close();
+    }
 }
 
 function createWebhookReceiver() {
@@ -1039,6 +1155,61 @@ test('GET /api/query?q=where+type+%3D+contact+sort+name — query shape', async 
         assert.equal(typeof row.id, 'string');
         assert.equal(typeof row.fields, 'object');
     }
+});
+
+test('GET /api/query with group by returns grouped query shape', async () => {
+    await withQueryFeatureApi(async ({ get }) => {
+        const response = await get('/api/query?q=' + encodeURIComponent('!view field-report group by region'));
+        assert.equal(response.status, 200);
+        assert.equal(response.body.groupBy, 'region');
+        assert.ok(Array.isArray(response.body.groups));
+        const byRegion = Object.fromEntries(response.body.groups.map((group) => [group.key, group.count]));
+        assert.equal(byRegion.north, 2);
+        assert.equal(byRegion.south, 1);
+    });
+});
+
+test('GET /api/query can select inline calc cell virtual fields', async () => {
+    await withQueryFeatureApi(async ({ get }) => {
+        const response = await get('/api/query?q=' + encodeURIComponent('!view field-report select name, cell.total sort name'));
+        assert.equal(response.status, 200);
+        assert.ok(response.body.columns.includes('cell.total'));
+        const alpha = response.body.rows.find((row) => row.id === 'field-report-alpha');
+        assert.ok(alpha);
+        assert.equal(alpha.fields['cell.total'], 75);
+    });
+});
+
+test('GET /api/query returns standalone aggregates from inline calc fields', async () => {
+    await withQueryFeatureApi(async ({ get }) => {
+        const response = await get('/api/query?q=' + encodeURIComponent('!view field-report aggregate sum(cell.total) as total'));
+        assert.equal(response.status, 200);
+        assert.deepEqual(response.body.aggregates, { total: 200 });
+    });
+});
+
+test('GET /api/query returns per-group aggregates from inline calc fields', async () => {
+    await withQueryFeatureApi(async ({ get }) => {
+        const response = await get('/api/query?q=' + encodeURIComponent('!view field-report group by region aggregate sum(cell.total) as total'));
+        assert.equal(response.status, 200);
+        assert.equal(response.body.groupBy, 'region');
+        const byRegion = Object.fromEntries(response.body.groups.map((group) => [group.key, group.aggregates.total]));
+        assert.equal(byRegion.north, 100);
+        assert.equal(byRegion.south, 100);
+    });
+});
+
+test('POST /api/query with aggregate body matches GET aggregate shape', async () => {
+    await withQueryFeatureApi(async ({ get, request }) => {
+        const q = '!view field-report aggregate sum(cell.total) as total';
+        const posted = await request('POST', '/api/query', { q });
+        const fetched = await get('/api/query?q=' + encodeURIComponent(q));
+        assert.equal(posted.status, 200);
+        assert.equal(fetched.status, 200);
+        assert.deepEqual(posted.body.aggregates, fetched.body.aggregates);
+        assert.deepEqual(posted.body.columns, fetched.body.columns);
+        assert.deepEqual(posted.body.rows.map((row) => row.id), fetched.body.rows.map((row) => row.id));
+    });
 });
 
 test('GET /api/query?q=nonexistent+garbage — bad query', async () => {

@@ -2,7 +2,7 @@ const vscode = require('vscode');
 const { getFieldsCache } = require('../core/indexService');
 const { registerNodeCreationCommands, registerDailyNoteCommand } = require('./codeActionsNodeCreationCommands');
 
-function buildLinkEdit(document, targetId) {
+function buildLinkEdit(document, targetId, lineIndex) {
     const text = document.getText();
     const lines = text.split('\n');
     const edit = new vscode.WorkspaceEdit();
@@ -21,6 +21,28 @@ function buildLinkEdit(document, targetId) {
     }
 
     if (closingLine === -1) return null;
+
+    // Prefer writing directly onto the frontmatter line this quickfix was
+    // actually invoked from, when that line is a blank or empty-placeholder
+    // relation field — without this, every "Link this node to another…"
+    // quickfix silently wrote into a hardcoded `related:` field regardless
+    // of which field the cursor was on, which is confusing when a more
+    // specific blank field (e.g. `ramo:`) is sitting right there instead.
+    if (typeof lineIndex === 'number' && lineIndex > 0 && lineIndex < closingLine) {
+        const lineText = lines[lineIndex];
+        const fieldMatch = /^(\s*[\w-]+\s*:)(\s*)(.*?)\s*$/.exec(lineText || '');
+        if (fieldMatch) {
+            const existingValue = fieldMatch[3] || '';
+            const isEmptyPlaceholder = /^\[\[\s*\]\]$/.test(existingValue);
+            if (existingValue === '' || isEmptyPlaceholder) {
+                const valueStart = fieldMatch[1].length;
+                const start = new vscode.Position(lineIndex, valueStart);
+                const end = new vscode.Position(lineIndex, lineText.length);
+                edit.replace(document.uri, new vscode.Range(start, end), ` [[${targetId}]]`);
+                return edit;
+            }
+        }
+    }
 
     const relatedLineIdx = lines.findIndex((l, i) =>
         i > 0 && i < closingLine && /^\s*related:\s*/.test(l)
@@ -50,7 +72,7 @@ function buildLinkEdit(document, targetId) {
 
 function registerNodeLinkCommands(context) {
     context.subscriptions.push(
-        vscode.commands.registerCommand('yamlink.linkOrphan', async (document, sourceId) => {
+        vscode.commands.registerCommand('yamlink.linkOrphan', async (document, sourceId, lineIndex) => {
             const fCache = getFieldsCache();
             const items = [...fCache.keys()]
                 .filter((id) => id !== sourceId)
@@ -75,7 +97,7 @@ function registerNodeLinkCommands(context) {
             });
             if (!picked) return;
 
-            const edit = buildLinkEdit(document, picked.label);
+            const edit = buildLinkEdit(document, picked.label, lineIndex);
             if (!edit) {
                 vscode.window.showErrorMessage('Yamlink: Could not find frontmatter to insert into.');
                 return;

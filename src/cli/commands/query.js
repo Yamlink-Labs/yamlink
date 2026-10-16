@@ -102,7 +102,12 @@ function run({ query, json, quiet, output }) {
     });
 
     if (json) {
-        emitCliSuccess({ query, count: structuredRows.length, rows: structuredRows }, output);
+        const payload = { query, count: structuredRows.length, rows: structuredRows };
+        if (Array.isArray(result.groups)) payload.groups = result.groups;
+        if (result.groupBy) payload.groupBy = result.groupBy;
+        if (result.aggregates) payload.aggregates = result.aggregates;
+        if (Array.isArray(result.columns)) payload.columns = result.columns;
+        emitCliSuccess(payload, output);
         return;
     }
     if (!flatRows.length) {

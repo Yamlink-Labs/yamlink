@@ -24,7 +24,7 @@ const {
 } = require('../../core/indexService');
 const { extractCanonicalIdFromFrontmatter, canonicalizeId } = require('../../core/id');
 const { getPrimaryWorkspaceRoot } = require('../../core/workspace');
-const { xgKind } = require('./graphPayload');
+const { xgKind, xgColor } = require('./graphPayload');
 
 const DEFAULT_FRAME_COUNT = 14;
 const MAX_COMMITS_PER_FILE = 300;
@@ -164,6 +164,7 @@ function buildGitTimelapseFrame(timestamp, { root, perFileHistories, contentCach
         id: f.id,
         label: String(f.fields.name || f.fields.title || f.id),
         kind: xgKind(f.fields.type),
+        color: xgColor(f.fields.type),
         group: f.fields.type || 'default',
         type: f.fields.type || null,
         weight: 0,

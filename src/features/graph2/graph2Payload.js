@@ -1,12 +1,14 @@
 'use strict';
 
 const { getIndex, getFieldsCache } = require('../../core/indexService');
+const { getGraphStats } = require('../../core/graph');
 const { parseViewQuery, runQuery } = require('../../engine/query');
 const {
     buildGraphModel,
     collectNeighborhood,
     getNodeTags,
-    getNodeType
+    getNodeType,
+    getTopVaultNodes
 } = require('../graph/graphModel');
 const { GRAPH2_SCOPES, GRAPH2_SOURCES } = require('./graph2State');
 const { buildXGraphData } = require('../graph/graphPayload');
@@ -24,6 +26,19 @@ function buildGraph2Payload(state, getActiveNodeId = () => null) {
         : state.selectedNodeId;
     const selectedNodeId = pickSelectedNodeId(preferredSelectedNodeId, model, state.scope);
 
+    // The real, uncapped vault totals — a different number from
+    // `model.summary.nodeCount`/`edgeCount` whenever the vault scope's own
+    // node cap (see resolveScopeNodeIds() below) actually truncates the
+    // selection. A real, reported bug: the count badge previously showed
+    // the capped subset's own count with no indication it wasn't the vault's
+    // true size — confirmed directly, the user's own vault showed exactly
+    // "128 notes," the hardcoded default cap, not a coincidence. `getIndex()`
+    // is every note Yamlink scanned regardless of whether it has any edges;
+    // `getGraphStats().totalEdges` is the true vault-wide edge count from the
+    // in-memory graph, independent of any scope/UI-level pruning — cheap,
+    // already-built structures, no new scan.
+    const vaultTotals = { nodeCount: getIndex().size, edgeCount: getGraphStats().totalEdges };
+
     return {
         version: 2,
         source: state.source,
@@ -40,7 +55,8 @@ function buildGraph2Payload(state, getActiveNodeId = () => null) {
         model,
         graphData: buildXGraphData(model),
         hiddenWorkspaceNeighborCount: model.summary.hiddenWorkspaceNeighborCount || 0,
-        empty: model.summary.nodeCount === 0
+        empty: model.summary.nodeCount === 0,
+        vaultTotals
     };
 }
 
@@ -82,7 +98,17 @@ function shouldFollowActiveNode(state) {
 function resolveScopeNodeIds(state, seedNodeIds) {
     const limit = state.nodeCap;
     if (state.scope === GRAPH2_SCOPES.VAULT) {
-        return uniqueIds(Array.from(getIndex().keys())).slice(0, limit);
+        // Ranked by hub score/connectivity (getTopVaultNodes — the same
+        // ranking the older Graph Workspace panel already uses for its own
+        // vault-scope selection), not Array.from(getIndex().keys())'s
+        // arbitrary Map-insertion order. A real, reported bug: when a vault
+        // has more notes than the cap, an unranked slice silently keeps
+        // whichever notes happen to come first in index-build order — which
+        // could just as easily exclude the vault's most-connected, most
+        // important notes as its least. Ranking first means a truncated
+        // vault graph always keeps the most-connected notes, not an
+        // arbitrary subset.
+        return uniqueIds(getTopVaultNodes(limit)).slice(0, limit);
     }
 
     if (state.scope === GRAPH2_SCOPES.DOMAIN) {

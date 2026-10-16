@@ -15,7 +15,11 @@ function executeQuery(res, q) {
         errorJson(res, 'BAD_REQUEST', result?.error || 'Query failed', { warnings: result?.warnings || [] });
         return;
     }
-    json(res, { query: raw, count: result.rows.length, rows: result.rows, columns: result.columns });
+    const payload = { query: raw, count: result.rows.length, rows: result.rows, columns: result.columns };
+    if (Array.isArray(result.groups)) payload.groups = result.groups;
+    if (result.groupBy) payload.groupBy = result.groupBy;
+    if (result.aggregates) payload.aggregates = result.aggregates;
+    json(res, payload);
 }
 
 async function handleQuery(req, res, url) {

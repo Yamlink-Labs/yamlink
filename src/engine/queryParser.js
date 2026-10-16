@@ -71,15 +71,27 @@ function parseSingleViewBlock(lines) {
     const clauseText = clauseLines.join(' ').trim();
 
     let select = null;
-    const selectMatch = clauseText.match(/\bselect\s+([\w,\s.-]+?)(?=\s+where\b|\s+sort\b|\s+limit\b|\s+via\b|\s+group\b|\s+linked_to\b|\s+linked_from\b|$)/i);
+    const selectMatch = clauseText.match(/\bselect\s+([\w,\s.-]+?)(?=\s+where\b|\s+sort\b|\s+limit\b|\s+via\b|\s+group\b|\s+aggregate\b|\s+linked_to\b|\s+linked_from\b|$)/i);
     if (selectMatch) {
         select = selectMatch[1].split(',').map(s => s.trim().toLowerCase()).filter(Boolean);
         if (select.length === 0) select = null;
     }
 
+    // `asc` is accepted but never changes behavior — ascending is already the
+    // default when no direction keyword is present at all. Both must be
+    // matched explicitly here (not just `desc`): leaving `asc` out of this
+    // alternation doesn't make it an error, it makes the WHOLE clause fail to
+    // match at all — `[\w.-]+` greedily consumes "date", the optional
+    // `(\s+desc)?` group can't match literal " asc" so it matches zero times,
+    // and the lookahead then has " asc" immediately after the field with
+    // nothing left to consume it, so the entire regex fails silently (no
+    // parse warning either, since this is a non-match, not a malformed one) —
+    // `sort date asc` and `sort name asc` previously produced `sort: null`
+    // with zero indication anything was wrong, found via real sample-vault
+    // content, not a bug report.
     let sort = null;
-    const sortMatch = clauseText.match(/\bsort\s+([\w.-]+)(\s+desc)?(?=\s+(?:limit|group)\b|$)/i);
-    if (sortMatch) sort = { field: sortMatch[1].toLowerCase(), desc: !!sortMatch[2] };
+    const sortMatch = clauseText.match(/\bsort\s+([\w.-]+)(\s+(?:asc|desc))?(?=\s+(?:limit|group|aggregate)\b|$)/i);
+    if (sortMatch) sort = { field: sortMatch[1].toLowerCase(), desc: /desc/i.test(sortMatch[2] || '') };
 
     let limit = null;
     const limitMatch = clauseText.match(/\blimit\s+(\d+)/i);
@@ -131,8 +143,68 @@ function parseSingleViewBlock(lines) {
     }
 
     let groupBy = null;
-    const groupByMatch = clauseText.match(/\bgroup\s+by\s+([\w-]+)(?=\s+(?:sort|limit)\b|$)/i);
+    const groupByMatch = clauseText.match(/\bgroup\s+by\s+([\w-]+)(?=\s+(?:sort|limit|aggregate)\b|$)/i);
     if (groupByMatch) groupBy = groupByMatch[1].toLowerCase();
+
+    // VQL v1: `aggregate` clause. Computes fold(s) over the full where-filtered
+    // (and, if present, group-bucketed) row set — sum/average/min/max/count of a
+    // numeric field, or bare row count. Independent of `limit`: aggregates
+    // summarize everything matched, `limit` only trims what's *displayed*
+    // (mirrors how `group by`'s own `limit` already only trims which *groups*
+    // are shown, not the rows counted into each group). Multiple terms are
+    // comma-separated, each named via a required `as <alias>` (except bare
+    // `count`, whose alias defaults to "count"). `avg` is accepted as an alias
+    // for `average` and canonicalised to it here so the rest of the pipeline
+    // only ever sees one spelling.
+    const parseWarnings = [...traversalWarnings];
+    let aggregate = null;
+    const AGGREGATE_TERM_RE = /\b(sum|average|avg|min|max|count)\s*(?:\(\s*([\w.-]+)\s*\))?\s*(?:\bas\s+([\w-]+))?/gi;
+    const aggregateClauseMatch = clauseText.match(/\baggregate\s+([^\n]+?)(?=\s+where\b|\s+sort\b|\s+limit\b|\s+via\b|\s+group\b|\s+linked_to\b|\s+linked_from\b|\s+as\s+of\b|$)/i);
+    if (aggregateClauseMatch) {
+        const termsText = aggregateClauseMatch[1];
+        const terms = [];
+        const termParts = termsText.split(',').map(s => s.trim()).filter(Boolean);
+        for (const rawPart of termParts) {
+            // `sum(cell.cost) when priority = high as high_cost` — only the
+            // rows matching the condition are folded into this term.
+            const whenMatch = /^(.*?)\s+when\s+(.+?)\s+as\s+([\w-]+)$/i.exec(rawPart);
+            let part = rawPart;
+            let whenCond = null;
+            let whenText = null;
+            if (whenMatch) {
+                whenText = whenMatch[2].trim();
+                whenCond = parseCondition(whenText);
+                if (!whenCond) {
+                    parseWarnings.push(`Could not understand the "when" condition in aggregate term "${rawPart}".`);
+                    continue;
+                }
+                part = `${whenMatch[1]} as ${whenMatch[3]}`;
+            }
+            AGGREGATE_TERM_RE.lastIndex = 0;
+            const m = AGGREGATE_TERM_RE.exec(part);
+            if (!m) {
+                parseWarnings.push(`Could not understand aggregate term: "${part}".`);
+                continue;
+            }
+            let fn = m[1].toLowerCase();
+            if (fn === 'avg') fn = 'average';
+            const field = m[2] ? m[2].toLowerCase() : null;
+            if (fn !== 'count' && !field) {
+                parseWarnings.push(`Aggregate function "${fn}" needs a field, e.g. "${fn}(cell.total)".`);
+                continue;
+            }
+            let alias = m[3] ? m[3].toLowerCase() : null;
+            if (!alias) {
+                if (fn === 'count') alias = 'count';
+                else {
+                    parseWarnings.push(`Aggregate term "${part.trim()}" needs an alias, e.g. "${part.trim()} as total".`);
+                    continue;
+                }
+            }
+            terms.push({ fn, field, alias, ...(whenCond ? { when: whenCond, whenText } : {}) });
+        }
+        if (terms.length > 0) aggregate = terms;
+    }
 
     // VQL v1: temporal clause. `as of <date>` reconstructs the vault's
     // frontmatter fields as they stood at that point in time (via the Time
@@ -154,8 +226,7 @@ function parseSingleViewBlock(lines) {
 
     const wheres = [];
     const whereGroups = [];
-    const parseWarnings = [...traversalWarnings];
-    const whereBlocks = clauseText.match(/\bwhere\s+(?:(?!\b(?:where|sort|limit|select|via|group|linked_to|linked_from|as\s+of)\b).)+/gi) || [];
+    const whereBlocks = clauseText.match(/\bwhere\s+(?:(?!\b(?:where|sort|limit|select|via|group|aggregate|linked_to|linked_from|as\s+of)\b).)+/gi) || [];
     for (const block of whereBlocks) {
         const condText = block.replace(/^where\s+/i, '').trim();
         const parts = condText.split(/\s+and\s+(?=(?:[\w*.-]+\s+(?:contains\b|=|!=|>=|<=|>|<|\bis\b|\bexists\b)|#[A-Za-z][\w-]*))/i);
@@ -171,7 +242,7 @@ function parseSingleViewBlock(lines) {
         }
     }
 
-    return { type, incoming, via, linkedTo, linkedToDepth, linkedFrom, linkedFromDepth, asOf, select, wheres, whereGroups, where: wheres[0] ?? null, sort, limit, label, preset, shorthand, groupBy, parseWarnings };
+    return { type, incoming, via, linkedTo, linkedToDepth, linkedFrom, linkedFromDepth, asOf, select, wheres, whereGroups, where: wheres[0] ?? null, sort, limit, label, preset, shorthand, groupBy, aggregate, parseWarnings };
 }
 
 /**
@@ -192,7 +263,7 @@ function parseAllViewQueries(text) {
                 const next = lines[j].trim();
                 if (!next.length) break;
                 if (next.startsWith('!view ')) break;
-                if (/^(?:select|where|sort|limit|via|group)\b/i.test(next)) {
+                if (/^(?:select|where|sort|limit|via|group|aggregate)\b/i.test(next)) {
                     block.push(lines[j]);
                     j++;
                 } else {
@@ -280,6 +351,17 @@ function buildQueryString(query) {
         s += '\nwhere ' + group.map(stringifyWhere).join(' or ');
     }
     if (query.groupBy) s += '\ngroup by ' + query.groupBy;
+    if (query.aggregate && query.aggregate.length > 0) {
+        const stringifyAggTerm = (t) => {
+            const when = t.whenText ? ` when ${t.whenText}` : '';
+            if (t.fn === 'count' && !t.field) {
+                if (!when && t.alias === 'count') return 'count';
+                return `count${when} as ${t.alias}`;
+            }
+            return `${t.fn}(${t.field})${when} as ${t.alias}`;
+        };
+        s += '\naggregate ' + query.aggregate.map(stringifyAggTerm).join(', ');
+    }
     if (query.sort) s += '\nsort ' + query.sort.field + (query.sort.desc ? ' desc' : '');
     if (query.limit) s += '\nlimit ' + query.limit;
     return s;

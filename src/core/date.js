@@ -242,6 +242,26 @@ function addDaysIso(isoDate, days) {
     return toIsoDate(dt.getUTCFullYear(), dt.getUTCMonth() + 1, dt.getUTCDate());
 }
 
+/**
+ * Whole-day difference between two canonical `YYYY-MM-DD` dates — `b` minus
+ * `a`, so a later `b` than `a` is positive (reads naturally as "how many
+ * days from a until b"). Computed via `Date.UTC` on both ends and a plain
+ * ms-to-days division — safe against DST entirely, since there is no local
+ * timezone or time-of-day component anywhere in this calculation, only
+ * whole calendar dates. Returns `null` for a malformed input (same
+ * null-on-malformed-input convention `addDaysIso` above already uses),
+ * never a thrown error or a guessed number.
+ * @param {string|null} isoA @param {string|null} isoB @returns {number|null}
+ */
+function daysBetweenIso(isoA, isoB) {
+    const matchA = String(isoA ?? '').match(/^(\d{4})-(\d{2})-(\d{2})$/);
+    const matchB = String(isoB ?? '').match(/^(\d{4})-(\d{2})-(\d{2})$/);
+    if (!matchA || !matchB) return null;
+    const utcA = Date.UTC(Number(matchA[1]), Number(matchA[2]) - 1, Number(matchA[3]));
+    const utcB = Date.UTC(Number(matchB[1]), Number(matchB[2]) - 1, Number(matchB[3]));
+    return Math.round((utcB - utcA) / 86400000);
+}
+
 /** @param {any} token @param {Date|string|null} [referenceDate] @returns {string|null} */
 function resolveDateShortcutToken(token, referenceDate = null) {
     const normalized = String(token || '').trim().toLowerCase().replace(/^@+/, '');
@@ -306,6 +326,7 @@ module.exports = {
     isDateLike,
     getTodayIsoLocal,
     addDaysIso,
+    daysBetweenIso,
     resolveDateShortcutToken,
     buildDateShortcutEntries
 };

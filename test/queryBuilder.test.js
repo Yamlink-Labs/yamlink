@@ -112,6 +112,7 @@ require.cache.__qb_query__ = {
             let via = null;
             let limit = null;
             let groupBy = null;
+            let aggregate = null;
             for (const line of block.slice(1)) {
                 const trimmed = String(line || '').trim();
                 const viaMatch = trimmed.match(/^via\s+([\w-]+)$/i);
@@ -140,6 +141,17 @@ require.cache.__qb_query__ = {
                 if (groupMatch) {
                     groupBy = groupMatch[1].toLowerCase();
                 }
+                const aggregateMatch = trimmed.match(/^aggregate\s+(.+)$/i);
+                if (aggregateMatch) {
+                    aggregate = aggregateMatch[1].split(',').map((part) => {
+                        const text = part.trim();
+                        const countMatch = text.match(/^count(?:\s+as\s+([\w-]+))?$/i);
+                        if (countMatch) return { fn: 'count', field: null, alias: countMatch[1] || 'count' };
+                        const fnMatch = text.match(/^(sum|average|min|max)\(([\w.-]+)\)\s+as\s+([\w-]+)$/i);
+                        if (!fnMatch) return null;
+                        return { fn: fnMatch[1].toLowerCase(), field: fnMatch[2].toLowerCase(), alias: fnMatch[3].toLowerCase() };
+                    }).filter(Boolean);
+                }
             }
             return {
                 type: resolvedType.toLowerCase(),
@@ -151,7 +163,8 @@ require.cache.__qb_query__ = {
                 sort,
                 limit: limit || null,
                 via,
-                groupBy: groupBy || null
+                groupBy: groupBy || null,
+                aggregate: aggregate || null
             };
         },
         buildQueryString(query) {
@@ -169,6 +182,12 @@ require.cache.__qb_query__ = {
                 }
             }
             if (query.groupBy) text += `\ngroup by ${query.groupBy}`;
+            if (query.aggregate && query.aggregate.length) {
+                text += '\naggregate ' + query.aggregate.map((term) => {
+                    if (term.fn === 'count' && !term.field) return term.alias === 'count' ? 'count' : `count as ${term.alias}`;
+                    return `${term.fn}(${term.field}) as ${term.alias}`;
+                }).join(', ');
+            }
             if (query.sort) text += `\nsort ${query.sort.field}${query.sort.desc ? ' desc' : ''}`;
             if (query.limit) text += `\nlimit ${query.limit}`;
             return text;
@@ -204,6 +223,12 @@ require.cache.__qb_index__ = {
                 ['account-2', { type: 'account', name: 'Globex', created: '2026-04-18' }],
                 ['contact-1', { type: 'contact', name: 'Alice', company: 'Acme', status: 'active', owner: 'account-1', created: '2026-04-20' }],
                 ['contact-2', { type: 'contact', name: 'Bob', company: 'Globex', status: 'active', owner: 'account-2', created: '2026-04-21' }]
+            ]);
+        },
+        getIndex() {
+            return new Map([
+                ['account-1', '/vault/account-1.md'],
+                ['contact-1', '/vault/contact-1.md']
             ]);
         },
         getPathIndex() { return new Map([['/vault/account-1.md', 'account-1']]); },
@@ -319,6 +344,44 @@ describe('query builder helpers', () => {
         );
     });
 
+    test('query builder model emits aggregate rows after group by', () => {
+        const text = buildQueryTextFromState({
+            mode: 'table',
+            type: 'contact',
+            selectMode: 'custom',
+            selectFields: ['name', 'cell.total'],
+            groupBy: 'company',
+            aggregateRows: [
+                { fn: 'sum', field: 'cell.total', alias: 'total' },
+                { fn: 'count', field: '', alias: 'notes' },
+                { fn: 'none', field: 'created', alias: 'ignored' }
+            ],
+            sortField: 'total',
+            sortDirection: 'desc'
+        });
+        assert.equal(
+            text,
+            '!view contact\nselect name, cell.total\ngroup by company\naggregate sum(cell.total) as total, count as notes\nsort total desc'
+        );
+    });
+
+    test('query builder model restores aggregate rows from a parsed query', () => {
+        const state = buildStateFromQuery({
+            type: 'contact',
+            incoming: false,
+            select: ['name'],
+            aggregate: [
+                { fn: 'average', field: 'cell.total', alias: 'avg_total' },
+                { fn: 'count', field: null, alias: 'count' }
+            ]
+        });
+        assert.deepEqual(state.aggregateRows.slice(0, 2), [
+            { fn: 'average', field: 'cell.total', alias: 'avg_total' },
+            { fn: 'count', field: '', alias: 'count' }
+        ]);
+        assert.deepEqual(state.aggregateRows[2], { fn: 'none', field: '', alias: '' });
+    });
+
     test('query builder model can build incoming queries with relation field narrowing', () => {
         const text = buildQueryTextFromState({
             mode: 'incoming',
@@ -349,6 +412,27 @@ describe('query builder helpers', () => {
         assert.equal(preview.summary.title, '2 rows');
         assert.deepEqual(preview.summary.columns, ['id', 'name', 'company']);
         assert.equal(preview.summary.sampleRows[0].id, 'contact-1');
+    });
+
+    test('query builder preview exposes line and pie layout options', () => {
+        const ungrouped = buildPreviewFromState({
+            mode: 'table',
+            type: 'contact',
+            selectMode: 'none'
+        });
+        const grouped = buildPreviewFromState({
+            mode: 'table',
+            type: 'contact',
+            selectMode: 'none',
+            groupBy: 'company'
+        });
+
+        const ungroupedLayouts = Object.fromEntries(ungrouped.summary.layouts.available.map((layout) => [layout.key, layout]));
+        const groupedLayouts = Object.fromEntries(grouped.summary.layouts.available.map((layout) => [layout.key, layout]));
+        assert.ok(ungroupedLayouts.line);
+        assert.ok(ungroupedLayouts.pie);
+        assert.equal(ungroupedLayouts.pie.enabled, false);
+        assert.equal(groupedLayouts.pie.enabled, true);
     });
 
     test('query builder preview explains a sorted query in plain language', () => {
@@ -419,6 +503,71 @@ describe('query builder helpers', () => {
             assert.ok(options.groupableFields.includes(field));
             assert.match(options.fieldDescriptions[field], /Yamlink computed field/);
         }
+    });
+
+    test('query builder options expose inline calc fields for the requested type', () => {
+        const fieldsCache = new Map([
+            ['contact-1', { type: 'contact', name: 'Alice' }],
+            ['account-1', { type: 'account', name: 'Acme' }]
+        ]);
+        const idIndex = new Map([
+            ['contact-1', '/vault/contact-1.md'],
+            ['account-1', '/vault/account-1.md']
+        ]);
+        const options = buildBuilderOptions({ mode: 'table', type: 'contact' }, {
+            fieldsCache,
+            idIndex,
+            knownTypes: ['account', 'contact'],
+            readCellFields(filePath) {
+                if (filePath.endsWith('contact-1.md')) return { 'cell.total': 3, 'cell.y1': 9 };
+                if (filePath.endsWith('account-1.md')) return { 'cell.revenue': 12 };
+                return {};
+            }
+        });
+
+        assert.ok(options.fieldCandidates.includes('cell.total'));
+        assert.ok(options.fieldCandidates.includes('cell.y1'));
+        assert.ok(!options.fieldCandidates.includes('cell.revenue'));
+        assert.match(options.fieldDescriptions['cell.total'], /Yamlink calculated cell/);
+    });
+
+    test('query builder options include inline calc fields from every type for wildcard queries', () => {
+        const fieldsCache = new Map([
+            ['contact-1', { type: 'contact', name: 'Alice' }],
+            ['account-1', { type: 'account', name: 'Acme' }]
+        ]);
+        const idIndex = new Map([
+            ['contact-1', '/vault/contact-1.md'],
+            ['account-1', '/vault/account-1.md']
+        ]);
+        const options = buildBuilderOptions({ mode: 'table', type: '*' }, {
+            fieldsCache,
+            idIndex,
+            knownTypes: ['account', 'contact'],
+            readCellFields(filePath) {
+                if (filePath.endsWith('contact-1.md')) return { 'cell.total': 3 };
+                if (filePath.endsWith('account-1.md')) return { 'cell.revenue': 12 };
+                return {};
+            }
+        });
+
+        assert.ok(options.fieldCandidates.includes('cell.total'));
+        assert.ok(options.fieldCandidates.includes('cell.revenue'));
+    });
+
+    test('query builder options do not add cell-field noise when notes have no inline calcs', () => {
+        const fieldsCache = new Map([
+            ['contact-1', { type: 'contact', name: 'Alice', company: 'Acme' }]
+        ]);
+        const options = buildBuilderOptions({ mode: 'table', type: 'contact' }, {
+            fieldsCache,
+            idIndex: new Map([['contact-1', '/vault/contact-1.md']]),
+            knownTypes: ['contact'],
+            readCellFields() { return {}; }
+        });
+
+        assert.ok(options.fieldCandidates.includes('company'));
+        assert.equal(options.fieldCandidates.some((field) => field.startsWith('cell.')), false);
     });
 
     test('query builder known types merge registry and vault types', () => {

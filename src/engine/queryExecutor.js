@@ -14,11 +14,20 @@ const {
     collectFieldCandidates
 } = require('../intelligence/queryDiagnostics');
 const { classifyScalarValue, compareScalarValues } = require('./queryParser');
+const { scanInlineCalcs } = require('./inlineCalc');
+const { createCrossNoteResolver } = require('./crossNoteCalcResolver');
 
 const BODY_CACHE_MAX = 200;
 const bodyCache = new Map();
 const FILE_STAT_FIELDS = new Set(['file.created', 'file.modified']);
 const GRAPH_VIRTUAL_FIELDS = new Set(['_inbound_count', '_outbound_count', '_hub_score']);
+const INLINE_CALC_FIELD_PREFIX = 'cell.';
+// Separate from bodyCache — that one lowercases everything for body:/any:
+// substring search, which would corrupt calc syntax (Y1 becoming y1 mid-
+// expression breaks the evaluator's own case rules) and named-cell lookups.
+const RAW_BODY_CACHE_MAX = 200;
+const rawBodyCache = new Map();
+const defaultCrossNoteCalcResolver = createCrossNoteResolver({ getIndex });
 
 /**
  * Cycle-safe BFS from `startId`, following `getNeighborIds(id)` up to `depth`
@@ -80,8 +89,13 @@ function isGraphVirtualField(field) {
 }
 
 /** @param {string} field @returns {boolean} */
+function isInlineCalcField(field) {
+    return typeof field === 'string' && field.startsWith(INLINE_CALC_FIELD_PREFIX);
+}
+
+/** @param {string} field @returns {boolean} */
 function isVirtualQueryField(field) {
-    return isFileStatField(field) || isGraphVirtualField(field);
+    return isFileStatField(field) || isGraphVirtualField(field) || isInlineCalcField(field);
 }
 
 /**
@@ -95,6 +109,111 @@ function readGraphVirtualFields(id, fieldCache) {
         _outbound_count: (getEdges(id) || []).length,
         _hub_score: computeNodeExplorerScore(id, fieldCache)
     };
+}
+
+/**
+ * Original-case body text for inline-calc scanning — same shape/eviction as
+ * readBody() below, deliberately not shared with it (see rawBodyCache's own
+ * comment above).
+ * @param {string|null} filePath
+ * @returns {string|null}
+ */
+function readRawBody(filePath) {
+    if (!filePath) return null;
+
+    let mtime = null;
+    try { mtime = fs.statSync(filePath).mtimeMs; } catch (e) { return null; }
+
+    const cached = rawBodyCache.get(filePath);
+    if (cached && cached.mtime === mtime) {
+        rawBodyCache.delete(filePath);
+        rawBodyCache.set(filePath, cached);
+        return cached.body;
+    }
+
+    let content;
+    try { content = fs.readFileSync(filePath, 'utf8'); } catch (e) { return null; }
+    content = normalizeText(content);
+
+    let body;
+    if (/^\s*---/.test(content)) {
+        const firstDash = content.indexOf('---');
+        const closingIdx = content.indexOf('---', firstDash + 3);
+        body = closingIdx !== -1 ? content.slice(closingIdx + 3) : content;
+    } else {
+        body = content;
+    }
+
+    if (rawBodyCache.size >= RAW_BODY_CACHE_MAX) {
+        rawBodyCache.delete(rawBodyCache.keys().next().value);
+    }
+    rawBodyCache.set(filePath, { mtime, body });
+    return body;
+}
+
+/** @returns {void} */
+function clearRawBodyCache() {
+    rawBodyCache.clear();
+}
+
+/**
+ * Exposes a note's inline-calc cells (`` `=expr` `` / `` `name=expr` `` body
+ * syntax — src/engine/inlineCalc.js) to the query engine as `cell.<name>`
+ * fields, the same way `_hub_score` exposes graph structure. Query field
+ * names are lowercased by the parser before they reach here (true for every
+ * field today, not something new introduced by this), so lookups are
+ * case-insensitive against the note's actual (case-sensitive) labels/names
+ * — `cell.y1` in a query matches the cell labeled `Y1` in the note. A cell
+ * that doesn't exist in this note, or failed to evaluate, is simply absent
+ * from the returned object — honest silence, never a guessed value.
+ * `frontmatterFields`, when supplied (the row's own already-parsed frontmatter
+ * — callers already have this in scope during a query sweep, no extra read),
+ * lets a calc cell read the note's real frontmatter values, not just other
+ * calc cells. A purely additive second parameter — every pre-existing caller
+ * (Query Builder, `!view` completion) calls this with only `filePath`, and
+ * omitting it behaves exactly as before.
+ * @param {string|null} filePath @param {Record<string, unknown>} [frontmatterFields]
+ * @returns {Record<string, import('./mathExpr').ScalarValue>}
+ */
+function readInlineCalcVirtualFields(filePath, frontmatterFields) {
+    /** @type {Record<string, import('./mathExpr').ScalarValue>} */
+    const result = {};
+    const body = readRawBody(filePath);
+    if (!body) return result;
+    for (const block of scanInlineCalcs(body, { resolveCrossNoteRef: defaultCrossNoteCalcResolver, frontmatterFields })) {
+        if (!block.evalResult.ok) continue;
+        result[INLINE_CALC_FIELD_PREFIX + block.label.toLowerCase()] = block.evalResult.value;
+        if (block.name) result[INLINE_CALC_FIELD_PREFIX + block.name.toLowerCase()] = block.evalResult.value;
+    }
+    return result;
+}
+
+/**
+ * Provenance for a note's `cell.<name>` query fields — the source expression,
+ * label, and name behind each value `readInlineCalcVirtualFields` already
+ * exposes. A separate function, not a change to that one's return shape:
+ * `readInlineCalcVirtualFields` is already consumed directly by the Query
+ * Builder (`src/actions/queryBuilderModel.js`) and `!view` completion
+ * (`src/intelligence/completionRelationHelpers.js`), both of which expect its
+ * flat `Record<string, ScalarValue>` shape as-is — changing it would silently
+ * break both. This is purely additive, for UI surfaces (the View Panel
+ * table) that want to show where a `cell.*` value actually came from and let
+ * a user jump back to the source note.
+ * @param {string|null} filePath @param {Record<string, unknown>} [frontmatterFields]
+ * @returns {Record<string, {expr: string, label: string, name: string|null}>}
+ */
+function readInlineCalcCellMeta(filePath, frontmatterFields) {
+    /** @type {Record<string, {expr: string, label: string, name: string|null}>} */
+    const result = {};
+    const body = readRawBody(filePath);
+    if (!body) return result;
+    for (const block of scanInlineCalcs(body, { resolveCrossNoteRef: defaultCrossNoteCalcResolver, frontmatterFields })) {
+        if (!block.evalResult.ok) continue;
+        const entry = { expr: block.expr, label: block.label, name: block.name };
+        result[INLINE_CALC_FIELD_PREFIX + block.label.toLowerCase()] = entry;
+        if (block.name) result[INLINE_CALC_FIELD_PREFIX + block.name.toLowerCase()] = entry;
+    }
+    return result;
 }
 
 /**
@@ -259,6 +378,54 @@ function addZeroResultWarnings(query, rows, warnings, index, fieldCache) {
  * @param {string[]} warnings
  * @returns {import('./queryConditions').QueryResult}
  */
+/**
+ * Folds `terms` (parsed aggregate clause, see queryParser) over `rows`.
+ * Non-numeric or missing values for a field are silently excluded from
+ * that field's fold (never coerced to 0, never a crash). If a field
+ * resolves zero numeric values across all rows, its aggregate is `null`
+ * — "honest silence over wrong guesses", matching project convention.
+ * `count` never needs field values — it's always `rows.length`.
+ * @param {{fn:string, field:string|null, alias:string}[]} terms
+ * @param {import('./queryConditions').QueryRow[]} rows
+ * @returns {Record<string, number|null>}
+ */
+const SINGLE_WIKILINK_RE = /^\[\[([^\]|#]+)(?:[|#][^\]]*)?\]\]$/;
+
+function groupKeyFor(rawValue) {
+    const text = String(rawValue ?? '');
+    const link = SINGLE_WIKILINK_RE.exec(text.trim());
+    return link ? link[1].trim() : text;
+}
+
+function computeAggregates(terms, rows) {
+    /** @type {Record<string, number|null>} */
+    const out = {};
+    for (const term of terms) {
+        const scoped = term.when ? rows.filter((row) => matchesCondition(term.when, row.fields, null)) : rows;
+        if (term.fn === 'count') {
+            out[term.alias] = scoped.length;
+            continue;
+        }
+        const nums = [];
+        for (const row of scoped) {
+            const raw = row.fields ? row.fields[term.field] : undefined;
+            if (raw === undefined || raw === null || raw === '') continue;
+            if (classifyScalarValue(raw) !== 'number') continue;
+            const n = Number(raw);
+            if (Number.isFinite(n)) nums.push(n);
+        }
+        if (nums.length === 0) {
+            out[term.alias] = null;
+            continue;
+        }
+        if (term.fn === 'sum') out[term.alias] = nums.reduce((a, b) => a + b, 0);
+        else if (term.fn === 'average') out[term.alias] = nums.reduce((a, b) => a + b, 0) / nums.length;
+        else if (term.fn === 'min') out[term.alias] = Math.min(...nums);
+        else if (term.fn === 'max') out[term.alias] = Math.max(...nums);
+    }
+    return out;
+}
+
 function finaliseRows(query, rows, warnings) {
     if (!query.groupBy) {
         if (query.sort) {
@@ -290,17 +457,33 @@ function finaliseRows(query, rows, warnings) {
         const groupField = query.groupBy;
         const groupMap = new Map();
         for (const row of rows) {
-            const key = groupField === 'id' ? row.id : String(row.fields[groupField] ?? '');
+            const key = groupField === 'id' ? row.id : groupKeyFor(row.fields[groupField]);
             if (!groupMap.has(key)) groupMap.set(key, { key, count: 0, rows: [] });
             const g = groupMap.get(key);
             g.count++;
             g.rows.push(row);
         }
         const groups = [...groupMap.values()];
+        if (query.aggregate) {
+            for (const g of groups) g.aggregates = computeAggregates(query.aggregate, g.rows);
+        }
         const sortField = query.sort?.field;
         if (sortField === groupField) {
             const desc = !!query.sort.desc;
             groups.sort((a, b) => desc ? b.key.localeCompare(a.key) : a.key.localeCompare(b.key));
+        } else if (query.aggregate && query.aggregate.some(t => t.alias === sortField)) {
+            const desc = !!query.sort?.desc;
+            groups.sort((a, b) => {
+                const av = a.aggregates?.[sortField];
+                const bv = b.aggregates?.[sortField];
+                // Nulls always sort last, regardless of asc/desc (matches
+                // SQL's common NULLS LAST default) — a group with no numeric
+                // values never looks like a fake "lowest" score.
+                if (av == null && bv == null) return 0;
+                if (av == null) return 1;
+                if (bv == null) return -1;
+                return desc ? bv - av : av - bv;
+            });
         } else {
             const asc = sortField === 'count' && !query.sort?.desc;
             groups.sort((a, b) => asc ? a.count - b.count : b.count - a.count);
@@ -308,8 +491,14 @@ function finaliseRows(query, rows, warnings) {
         if (query.limit && query.limit > 0) groups.splice(query.limit);
         const allRows = groups.flatMap(g => g.rows);
         const types = [...new Set(allRows.map(r => r.nodeType).filter(Boolean))].sort();
-        return { success: true, rows: allRows, groups, groupBy: groupField, columns: [groupField, 'count'], types, warnings, error: null };
+        const columns = query.aggregate
+            ? [groupField, 'count', ...query.aggregate.filter(t => t.fn !== 'count').map(t => t.alias)]
+            : [groupField, 'count'];
+        return { success: true, rows: allRows, groups, groupBy: groupField, columns, types, warnings, error: null };
     }
+
+    let aggregates = null;
+    if (query.aggregate) aggregates = computeAggregates(query.aggregate, rows);
 
     if (query.limit && query.limit > 0) rows.splice(query.limit);
 
@@ -328,7 +517,7 @@ function finaliseRows(query, rows, warnings) {
         ? [...new Set(rows.map(r => r.nodeType).filter(Boolean))].sort()
         : [];
 
-    return { success: true, rows, columns, types, warnings, error: null };
+    return { success: true, rows, columns, types, warnings, error: null, ...(aggregates ? { aggregates } : {}) };
 }
 
 /**
@@ -383,13 +572,24 @@ function runQuery(query, contextNodeId) {
     const rows = [];
     const fieldCache = getFieldsCache();
     const needsBody = validWheres.some(w => w.field === 'body' || w.field === 'any');
+    // Aggregate terms reference fields too (e.g. `aggregate sum(cell.total) as
+    // total`) — a field mentioned only inside `aggregate` still needs the
+    // same virtual-field resolution as one mentioned in select/where/sort,
+    // or it would silently resolve to undefined on every row.
+    const aggregateFields = Array.isArray(query.aggregate) ? query.aggregate.map(t => t.field).filter(Boolean) : [];
     const needsFileStatWhere = validWheres.some(w => isFileStatField(w.field));
     const needsFileStat = needsFileStatWhere
         || (query.select && query.select.some(isFileStatField))
-        || isFileStatField(query.sort?.field);
+        || isFileStatField(query.sort?.field)
+        || aggregateFields.some(isFileStatField);
     const needsGraphVirtual = validWheres.some(w => isGraphVirtualField(w.field))
         || (query.select && query.select.some(isGraphVirtualField))
-        || isGraphVirtualField(query.sort?.field);
+        || isGraphVirtualField(query.sort?.field)
+        || aggregateFields.some(isGraphVirtualField);
+    const needsInlineCalc = validWheres.some(w => isInlineCalcField(w.field))
+        || (query.select && query.select.some(isInlineCalcField))
+        || isInlineCalcField(query.sort?.field)
+        || aggregateFields.some(isInlineCalcField);
     const index = getIndex();
     const todayIso = getTodayIsoLocal();
 
@@ -463,7 +663,13 @@ function runQuery(query, contextNodeId) {
                 if (linkedToIds && !linkedToIds.has(id)) continue;
                 if (linkedFromIds && !linkedFromIds.has(id)) continue;
                 if (validWhereGroups.length > 0) {
-                    const whereFields = needsGraphVirtual ? { ...fields, ...readGraphVirtualFields(id, fieldCache) } : fields;
+                    const whereFields = needsGraphVirtual || needsInlineCalc
+                        ? {
+                            ...fields,
+                            ...(needsGraphVirtual ? readGraphVirtualFields(id, fieldCache) : null),
+                            ...(needsInlineCalc ? readInlineCalcVirtualFields(filePath, fields) : null)
+                        }
+                        : fields;
                     const passes = validWhereGroups.every((group) =>
                         group.some((cond) => matchesCondition(cond, whereFields, (needsBody || needsFileStatWhere) ? filePath : null))
                     );
@@ -471,7 +677,11 @@ function runQuery(query, contextNodeId) {
                 }
                 const fileStatFields = needsFileStat ? readFileStatDates(filePath) : null;
                 const graphVirtualFields = needsGraphVirtual ? readGraphVirtualFields(id, fieldCache) : null;
-                rows.push({ id, fields: { ...fields, ...(fileStatFields || {}), ...(graphVirtualFields || {}) }, filePath, nodeType });
+                const inlineCalcFields = needsInlineCalc ? readInlineCalcVirtualFields(filePath, fields) : null;
+                const inlineCalcMeta = needsInlineCalc ? readInlineCalcCellMeta(filePath, fields) : null;
+                const row = { id, fields: { ...fields, ...(fileStatFields || {}), ...(graphVirtualFields || {}), ...(inlineCalcFields || {}) }, filePath, nodeType };
+                if (inlineCalcMeta && Object.keys(inlineCalcMeta).length) row.cellMeta = inlineCalcMeta;
+                rows.push(row);
             }
         }
     } catch (e) {
@@ -479,7 +689,8 @@ function runQuery(query, contextNodeId) {
     }
 
     const fieldCandidates = collectFieldCandidates(query.type, fieldCache);
-    if (query.sort?.field && !fieldCandidates.includes(query.sort.field) && !isVirtualQueryField(query.sort.field)) {
+    const sortIsAggregateAlias = Array.isArray(query.aggregate) && query.aggregate.some(t => t.alias === query.sort?.field);
+    if (query.sort?.field && !sortIsAggregateAlias && !fieldCandidates.includes(query.sort.field) && !isVirtualQueryField(query.sort.field)) {
         const sortSuggestion = closestFieldMatch(query.sort.field, query.type, fieldCache);
         if (sortSuggestion) {
             warnings.push(`Sort field "${query.sort.field}" is uncommon here. Try "${sortSuggestion}" instead.`);
@@ -490,4 +701,4 @@ function runQuery(query, contextNodeId) {
     return finaliseRows(query, rows, warnings);
 }
 
-module.exports = { runQuery, clearBodyCache, readFileStatDates };
+module.exports = { runQuery, clearBodyCache, readFileStatDates, clearRawBodyCache, readInlineCalcVirtualFields, readInlineCalcCellMeta };

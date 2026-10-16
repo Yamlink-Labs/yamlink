@@ -22,7 +22,8 @@ const HELP_TEXT = {
     intelligenceHealth: 'A snapshot of how much real vault data Yamlink’s suggestion engine has to work with right now — more notes and accepted suggestions make it sharper over time.',
     emergingPatterns: 'Groups of notes that happen to share the same fields, even though nobody defined a type for them yet — Yamlink noticed the pattern on its own.',
     topRelationships: 'The links in your vault with the strongest evidence behind them — either because more than one field points to the same note, or because you’ve set that relationship more than once over time.',
-    templateDrift: 'Notes created from a template that are missing one or more fields the template defines.'
+    templateDrift: 'Notes created from a template that are missing one or more fields the template defines.',
+    calcHealth: 'How many inline calculations across the vault evaluate cleanly versus fail, and why — a broken cell reference, division by zero, an unknown function or variable, or something else.'
 };
 
 /** @param {string} key @param {function} escapeFn @returns {string} */

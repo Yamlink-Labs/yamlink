@@ -49,6 +49,39 @@ const FIXTURE = {
     ].join('\n'),
 };
 
+const QUERY_FEATURE_FIXTURE = {
+    'field-report-alpha.md': [
+        '---',
+        'id: field-report-alpha',
+        'type: field-report',
+        'name: Alpha Report',
+        'region: north',
+        '---',
+        '',
+        '`total=50+25`',
+    ].join('\n'),
+    'field-report-beta.md': [
+        '---',
+        'id: field-report-beta',
+        'type: field-report',
+        'name: Beta Report',
+        'region: north',
+        '---',
+        '',
+        '`total=10+15`',
+    ].join('\n'),
+    'field-report-gamma.md': [
+        '---',
+        'id: field-report-gamma',
+        'type: field-report',
+        'name: Gamma Report',
+        'region: south',
+        '---',
+        '',
+        '`total=80+20`',
+    ].join('\n'),
+};
+
 let vault;
 let vaultPath;
 
@@ -409,6 +442,56 @@ test('CLI query --json has expected shape', () => {
     body.rows.forEach((row) => {
         assert.equal(typeof row.id, 'string');
         assert.equal(typeof row.fields, 'object');
+    });
+});
+
+describe('CLI query --json contract for grouped and calculated queries', () => {
+    let queryVault;
+
+    before(() => {
+        queryVault = createVault(QUERY_FEATURE_FIXTURE);
+    });
+
+    after(() => {
+        queryVault.destroy();
+    });
+
+    test('returns group by shape', () => {
+        const result = cli(['query', '!view field-report group by region', '--json'], queryVault.dir);
+        assert.equal(result.status, 0, result.stderr);
+        const body = parseJson(result.stdout);
+        assert.equal(body.groupBy, 'region');
+        assert.ok(Array.isArray(body.groups));
+        const byRegion = Object.fromEntries(body.groups.map((group) => [group.key, group.count]));
+        assert.equal(byRegion.north, 2);
+        assert.equal(byRegion.south, 1);
+    });
+
+    test('returns inline calc cell fields in selected rows', () => {
+        const result = cli(['query', '!view field-report select name, cell.total sort name', '--json'], queryVault.dir);
+        assert.equal(result.status, 0, result.stderr);
+        const body = parseJson(result.stdout);
+        assert.ok(body.columns.includes('cell.total'));
+        const alpha = body.rows.find((row) => row.id === 'field-report-alpha');
+        assert.ok(alpha);
+        assert.equal(alpha.fields['cell.total'], 75);
+    });
+
+    test('returns standalone aggregates from inline calc fields', () => {
+        const result = cli(['query', '!view field-report aggregate sum(cell.total) as total', '--json'], queryVault.dir);
+        assert.equal(result.status, 0, result.stderr);
+        const body = parseJson(result.stdout);
+        assert.deepEqual(body.aggregates, { total: 200 });
+    });
+
+    test('returns per-group aggregates from inline calc fields', () => {
+        const result = cli(['query', '!view field-report group by region aggregate sum(cell.total) as total', '--json'], queryVault.dir);
+        assert.equal(result.status, 0, result.stderr);
+        const body = parseJson(result.stdout);
+        assert.equal(body.groupBy, 'region');
+        const byRegion = Object.fromEntries(body.groups.map((group) => [group.key, group.aggregates.total]));
+        assert.equal(byRegion.north, 100);
+        assert.equal(byRegion.south, 100);
     });
 });
 

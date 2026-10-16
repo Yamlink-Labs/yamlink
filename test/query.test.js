@@ -55,6 +55,20 @@ const MOCK_INDEX = new Map([
     ['chain-a',               '/vault/chain-a.md'],
     ['chain-b',               '/vault/chain-b.md'],
     ['chain-c',               '/vault/chain-c.md'],
+    // own type ('calc-note'), same reasoning as chain-a/b/c above — never
+    // perturbs any existing type/wildcard assertion.
+    ['calc-note',             '/vault/calc-note.md'],
+    ['calc-source',           '/vault/calc-source.md'],
+    ['calc-ref',              '/vault/calc-ref.md'],
+    // own type ('calc-agg'), used only by the aggregate-clause tests below —
+    // never perturbs any existing calc-note/deal-scoped assertion (in
+    // particular the exact-array `where cell.total > 2` check on calc-note).
+    ['agg-one',               '/vault/agg-one.md'],
+    ['agg-two',               '/vault/agg-two.md'],
+    ['agg-three',             '/vault/agg-three.md'],
+    // own type ('calc-fm'), used only by the frontmatter-valued-cell tests —
+    // never perturbs any existing calc-note-scoped assertion.
+    ['calc-fm',               '/vault/calc-fm.md'],
 ]);
 
 const MOCK_FIELDS = new Map([
@@ -69,6 +83,18 @@ const MOCK_FIELDS = new Map([
     ['chain-a',              { type: 'linkchain', name: 'Chain A', next: '[[chain-b]]' }],
     ['chain-b',              { type: 'linkchain', name: 'Chain B', next: '[[chain-c]]' }],
     ['chain-c',              { type: 'linkchain', name: 'Chain C', next: '[[chain-a]]' }],
+    ['calc-note',            { type: 'calc-note', name: 'Calc Note' }],
+    ['calc-source',          { type: 'calc-xref', name: 'Calc Source' }],
+    ['calc-ref',             { type: 'calc-xref', name: 'Calc Ref' }],
+    // calc-agg fixtures: budget is a plain frontmatter field (agg-three's
+    // 'n/a' is deliberately non-numeric, for exclusion/null-aggregate tests)
+    // alongside a cell.total inline calc in each note's body (see MOCK_BODIES).
+    ['agg-one',              { type: 'calc-agg', name: 'Agg One', region: 'north', budget: '50' }],
+    ['agg-two',              { type: 'calc-agg', name: 'Agg Two', region: 'north', budget: '150' }],
+    ['agg-three',            { type: 'calc-agg', name: 'Agg Three', region: 'south', budget: 'n/a' }],
+    // calc-fm: real numeric frontmatter fields a calc cell reads by name —
+    // see MOCK_BODIES for the formula itself.
+    ['calc-fm',              { type: 'calc-fm', name: 'Calc FM', price: 10, quantity: 3 }],
 ]);
 
 const MOCK_BACKLINKS = new Map([
@@ -124,6 +150,13 @@ const MOCK_BODIES = new Map([
     ['/vault/carl-jenkins.md',         'psychic ability confirmed during bug war intelligence operations'],
     ['/vault/johnny-rico.md',          'volunteered for mobile infantry'],
     ['/vault/roughnecks.md',           'elite mobile infantry squad'],
+    ['/vault/calc-note.md',            'Apples: `total=1+2`. Double: `=total*3`. Also `=Y1+Y2`.'],
+    ['/vault/calc-source.md',          '`total=40+2`'],
+    ['/vault/calc-ref.md',             '`linked=[[calc-source]]^total + 8`'],
+    ['/vault/agg-one.md',               '`total=1+2`'],
+    ['/vault/agg-two.md',               '`total=4+6`'],
+    ['/vault/agg-three.md',             '`total=90+10`'],
+    ['/vault/calc-fm.md',               '`total=price*quantity`'],
 ]);
 
 // Inject stubs into Node module cache before requiring query.js
@@ -581,6 +614,15 @@ describe('parseSingleViewBlock — select / sort / limit', () => {
     test('sort desc', () => {
         const q = parseSingleViewLine('!view mission sort date desc');
         assert.equal(q.sort.desc, true);
+    });
+
+    test('explicit sort asc parses the same as omitting the keyword, not a trailing-token failure — a real bug found via sample-vault content: previously the whole clause silently failed to match (sort: null, no warning) whenever "asc" was written explicitly, since only "desc" was ever recognized as a direction keyword', () => {
+        const q = parseSingleViewLine('!view mission sort date asc');
+        assert.equal(q.sort.field, 'date');
+        assert.equal(q.sort.desc, false);
+        const qField = parseSingleViewLine('!view mission sort cell.total asc');
+        assert.equal(qField.sort.field, 'cell.total');
+        assert.equal(qField.sort.desc, false);
     });
 
     test('limit parsed as integer', () => {
@@ -1385,6 +1427,71 @@ describe('parseSingleViewBlock — group by', () => {
 
 });
 
+describe('parseSingleViewBlock — aggregate', () => {
+
+    test('aggregate sum(field) as alias parses to a single-term array', () => {
+        const q = parseSingleViewLine('!view * aggregate sum(cell.total) as total');
+        assert.deepEqual(q.aggregate, [{ fn: 'sum', field: 'cell.total', alias: 'total' }]);
+    });
+
+    test('average(field) as alias parses with fn "average"', () => {
+        const q = parseSingleViewLine('!view * aggregate average(cell.total) as avg_total');
+        assert.deepEqual(q.aggregate, [{ fn: 'average', field: 'cell.total', alias: 'avg_total' }]);
+    });
+
+    test('avg(field) as alias is canonicalized to fn "average"', () => {
+        const q = parseSingleViewLine('!view * aggregate avg(cell.total) as avg_total');
+        assert.deepEqual(q.aggregate, [{ fn: 'average', field: 'cell.total', alias: 'avg_total' }]);
+    });
+
+    test('multiple comma-separated terms parse in order', () => {
+        const q = parseSingleViewLine('!view * aggregate min(cell.total) as lowest, max(cell.total) as highest');
+        assert.deepEqual(q.aggregate, [
+            { fn: 'min', field: 'cell.total', alias: 'lowest' },
+            { fn: 'max', field: 'cell.total', alias: 'highest' }
+        ]);
+    });
+
+    test('bare count needs no field and defaults its alias to "count"', () => {
+        const q = parseSingleViewLine('!view * aggregate count');
+        assert.deepEqual(q.aggregate, [{ fn: 'count', field: null, alias: 'count' }]);
+    });
+
+    test('count as <alias> overrides the default alias', () => {
+        const q = parseSingleViewLine('!view * aggregate count as n');
+        assert.deepEqual(q.aggregate, [{ fn: 'count', field: null, alias: 'n' }]);
+    });
+
+    test('group by and aggregate coexist — neither swallows the other', () => {
+        const q = parseSingleViewLine('!view * group by type aggregate sum(cell.total) as total');
+        assert.equal(q.groupBy, 'type');
+        assert.deepEqual(q.aggregate, [{ fn: 'sum', field: 'cell.total', alias: 'total' }]);
+    });
+
+    test('select does not swallow a following aggregate clause', () => {
+        const q = parseSingleViewLine('!view * select name, cell.total aggregate sum(cell.total) as total');
+        assert.deepEqual(q.select, ['name', 'cell.total']);
+        assert.deepEqual(q.aggregate, [{ fn: 'sum', field: 'cell.total', alias: 'total' }]);
+    });
+
+    test('an aggregate term missing "as alias" is rejected with a warning, not a crash', () => {
+        const q = parseSingleViewLine('!view * aggregate sum(cell.total)');
+        assert.equal(q.aggregate, null);
+        assert.ok(q.parseWarnings.some(w => /alias/i.test(w)));
+    });
+
+    test('a malformed aggregate term does not throw', () => {
+        assert.doesNotThrow(() => parseSingleViewLine('!view * aggregate sum(('));
+    });
+
+    test('multi-line continuation keyword recognizes aggregate', () => {
+        const qs = parseAllViewQueries('!view *\nselect name\naggregate sum(cell.total) as total');
+        assert.ok(qs && qs.length === 1);
+        assert.deepEqual(qs[0].select, ['name']);
+        assert.deepEqual(qs[0].aggregate, [{ fn: 'sum', field: 'cell.total', alias: 'total' }]);
+    });
+
+});
 
 describe('runQuery — forward — group by', () => {
 
@@ -1531,6 +1638,186 @@ describe('runQuery — forward — graph virtual fields', () => {
         assert.equal(alpha.fields._inbound_count, 0);
         assert.equal(alpha.fields._outbound_count, 0);
         assert.equal(alpha.fields._hub_score, 0);
+    });
+
+});
+
+describe('runQuery — forward — inline calc virtual fields (cell.<name>)', () => {
+
+    test('select cell.<name> exposes a note\'s named calc cell as a row field', () => {
+        const r = runQuery(parseSingleViewLine('!view calc-note select name, cell.total'));
+        const note = r.rows.find(row => row.id === 'calc-note');
+        assert.equal(r.columns.includes('cell.total'), true);
+        assert.equal(note.fields['cell.total'], 3);
+    });
+
+    test('select cell.<label> exposes a note\'s positional cell (named or not) the same way', () => {
+        const r = runQuery(parseSingleViewLine('!view calc-note select cell.y1, cell.y2, cell.y3'));
+        const note = r.rows[0];
+        assert.equal(note.fields['cell.y1'], 3);  // total = 1+2
+        assert.equal(note.fields['cell.y2'], 9);  // total*3
+        assert.equal(note.fields['cell.y3'], 12); // Y1+Y2
+    });
+
+    test('where cell.<name> filters by the computed value', () => {
+        const r = runQuery(parseSingleViewLine('!view calc-note where cell.total > 2'));
+        assert.deepEqual(ids(r), ['calc-note']);
+        const r2 = runQuery(parseSingleViewLine('!view calc-note where cell.total > 100'));
+        assert.deepEqual(ids(r2), []);
+    });
+
+    test('sort cell.<name> orders numerically like any other virtual field', () => {
+        const r = runQuery(parseSingleViewLine('!view calc-note sort cell.y3 desc'));
+        assert.equal(r.rows[0].fields['cell.y3'], 12);
+    });
+
+    test('a cell that does not exist on the note is simply absent, never an error', () => {
+        const r = runQuery(parseSingleViewLine('!view calc-note select cell.nonexistent'));
+        assert.equal(r.success, true);
+        assert.equal(r.rows[0].fields['cell.nonexistent'], undefined);
+    });
+
+    test('a note with no calc cells at all reports no cell.* fields', () => {
+        const r = runQuery(parseSingleViewLine('!view character select name, cell.total'));
+        const rico = r.rows.find(row => row.id === 'johnny-rico');
+        assert.equal(rico.fields['cell.total'], undefined);
+    });
+
+    test('select cell.<name> resolves a cross-note-derived calc value', () => {
+        const r = runQuery(parseSingleViewLine('!view calc-xref select name, cell.linked'));
+        const ref = r.rows.find(row => row.id === 'calc-ref');
+        assert.ok(ref);
+        assert.equal(ref.fields['cell.linked'], 50);
+    });
+
+    test('where cell.<name> filters against a cross-note-derived calc value', () => {
+        const r = runQuery(parseSingleViewLine('!view calc-xref where cell.linked > 45 select name, cell.linked'));
+        assert.deepEqual(ids(r), ['calc-ref']);
+
+        const empty = runQuery(parseSingleViewLine('!view calc-xref where cell.linked > 100 select name, cell.linked'));
+        assert.deepEqual(ids(empty), []);
+    });
+
+});
+
+describe('runQuery — forward — frontmatter-valued cells (a formula reading the note\'s own frontmatter)', () => {
+    test('cell.<name> resolves correctly when the formula reads real frontmatter fields, not just other calc cells', () => {
+        const r = runQuery(parseSingleViewLine('!view calc-fm select name, cell.total'));
+        const note = r.rows.find(row => row.id === 'calc-fm');
+        assert.equal(note.fields['cell.total'], 30); // price(10) * quantity(3)
+    });
+
+    test('where cell.<name> filters correctly against a frontmatter-derived calc value', () => {
+        const r = runQuery(parseSingleViewLine('!view calc-fm where cell.total > 20'));
+        assert.deepEqual(ids(r), ['calc-fm']);
+        const empty = runQuery(parseSingleViewLine('!view calc-fm where cell.total > 100'));
+        assert.deepEqual(ids(empty), []);
+    });
+});
+
+describe('runQuery — forward — cellMeta (drill-back provenance for cell.<name>)', () => {
+
+    test('a row that references cell.<name> carries a cellMeta entry with the source expression', () => {
+        // calc-note's body (see MOCK_BODIES): 'total=1+2' — name 'total', expr '1+2'.
+        const r = runQuery(parseSingleViewLine('!view calc-note select name, cell.total'));
+        const note = r.rows.find(row => row.id === 'calc-note');
+        assert.ok(note.cellMeta);
+        assert.equal(note.cellMeta['cell.total'].expr, '1+2');
+    });
+
+    test('cellMeta is keyed by both label and name for the same block, matching cell.<name> resolution', () => {
+        const r = runQuery(parseSingleViewLine('!view calc-note select cell.total, cell.y1'));
+        const note = r.rows[0];
+        assert.equal(note.cellMeta['cell.total'].label, 'Y1');
+        assert.equal(note.cellMeta['cell.y1'].label, 'Y1');
+        assert.equal(note.cellMeta['cell.total'].name, 'total');
+        assert.equal(note.cellMeta['cell.y1'].name, 'total');
+    });
+
+    test('an unnamed cell\'s meta has name: null', () => {
+        const r = runQuery(parseSingleViewLine('!view calc-note select cell.y3'));
+        assert.equal(r.rows[0].cellMeta['cell.y3'].name, null);
+        assert.equal(r.rows[0].cellMeta['cell.y3'].label, 'Y3');
+    });
+
+    test('a query that never references cell.* has no cellMeta on any row at all', () => {
+        const r = runQuery(parseSingleViewLine('!view calc-note select name'));
+        assert.equal('cellMeta' in r.rows[0], false);
+    });
+
+    test('a note with no calc cells has no cellMeta, even if the query references cell.*', () => {
+        const r = runQuery(parseSingleViewLine('!view character select name, cell.total'));
+        const rico = r.rows.find(row => row.id === 'johnny-rico');
+        assert.equal('cellMeta' in rico, false);
+    });
+
+});
+
+describe('runQuery — forward — aggregate clause', () => {
+    // Fixture recap (calc-agg type, own dedicated type — see MOCK_INDEX):
+    //   agg-one:   region north, budget 50,  cell.total = 1+2  = 3
+    //   agg-two:   region north, budget 150, cell.total = 4+6  = 10
+    //   agg-three: region south, budget n/a (non-numeric), cell.total = 90+10 = 100
+
+    test('standalone aggregate (no group by) folds sum/average/min/max/count over the whole matched set', () => {
+        const r = runQuery(parseSingleViewLine(
+            '!view calc-agg aggregate sum(cell.total) as total, average(cell.total) as avg, min(cell.total) as lowest, max(cell.total) as highest, count'
+        ));
+        assert.ok(r.success);
+        assert.equal(r.aggregates.total, 113);
+        assert.ok(Math.abs(r.aggregates.avg - (113 / 3)) < 1e-9);
+        assert.equal(r.aggregates.lowest, 3);
+        assert.equal(r.aggregates.highest, 100);
+        assert.equal(r.aggregates.count, 3);
+    });
+
+    test('aggregate + group by folds per-bucket, and columns gain the alias', () => {
+        const r = runQuery(parseSingleViewLine('!view calc-agg group by region aggregate sum(cell.total) as total'));
+        assert.ok(r.success);
+        const byRegion = Object.fromEntries(r.groups.map(g => [g.key, g.aggregates.total]));
+        assert.equal(byRegion.north, 13);
+        assert.equal(byRegion.south, 100);
+        assert.deepEqual(r.columns, ['region', 'count', 'total']);
+    });
+
+    test('a non-numeric value is silently excluded from sum/average/min/max but still counted', () => {
+        const r = runQuery(parseSingleViewLine('!view calc-agg aggregate sum(budget) as total, count'));
+        assert.ok(r.success);
+        assert.equal(r.aggregates.total, 200); // 50 + 150, "n/a" excluded
+        assert.equal(r.aggregates.count, 3);   // all 3 rows still counted
+    });
+
+    test('a field that is non-numeric on every matched row resolves to null, never 0 or NaN', () => {
+        const r = runQuery(parseSingleViewLine('!view calc-agg aggregate sum(region) as total'));
+        assert.ok(r.success);
+        assert.equal(r.aggregates.total, null);
+    });
+
+    test('sort by an aggregate alias orders groups by that value, nulls sorted last regardless of direction', () => {
+        const desc = runQuery(parseSingleViewLine('!view calc-agg group by region aggregate sum(budget) as total sort total desc'));
+        assert.deepEqual(desc.groups.map(g => g.key), ['north', 'south']); // south's total is null (n/a)
+        const asc = runQuery(parseSingleViewLine('!view calc-agg group by region aggregate sum(budget) as total sort total'));
+        assert.deepEqual(asc.groups.map(g => g.key), ['north', 'south']); // still last in ascending order
+    });
+
+    test('aggregates reflect the full matched set regardless of limit (standalone and grouped)', () => {
+        const r = runQuery(parseSingleViewLine('!view calc-agg aggregate sum(cell.total) as total limit 1'));
+        assert.equal(r.rows.length, 1);
+        assert.equal(r.aggregates.total, 113); // unaffected by the row limit
+
+        const grouped = runQuery(parseSingleViewLine('!view calc-agg group by region aggregate sum(cell.total) as total limit 1'));
+        assert.equal(grouped.groups.length, 1); // limit trims which groups are shown...
+        assert.equal(grouped.groups[0].aggregates.total, grouped.groups[0].key === 'north' ? 13 : 100); // ...never rows within a surviving group
+    });
+
+    test('no-aggregate group by keeps the exact pre-existing columns shape (regression guard)', () => {
+        const r = runQuery(parseSingleViewLine('!view * group by type'));
+        assert.deepEqual(r.columns, ['type', 'count']);
+    });
+
+    test('a non-grouped query with no aggregate clause has no "aggregates" key at all', () => {
+        const r = runQuery(parseSingleViewLine('!view calc-agg select name'));
+        assert.equal('aggregates' in r, false);
     });
 
 });
@@ -1736,6 +2023,43 @@ describe('runQuery — VQL v1 — as of (real historical reconstruction)', () =>
 
 });
 
+describe('buildQueryString — aggregate', () => {
+
+    test('aggregate clause round-trips', () => {
+        const q = parseSingleViewLine('!view * aggregate sum(cell.total) as total');
+        assert.match(buildQueryString(q), /aggregate sum\(cell\.total\) as total/);
+    });
+
+    test('avg canonicalizes to average on output, and re-parses to the same structure', () => {
+        // Uses a real type ('calc-agg'), not '*' — buildQueryString's
+        // multi-line output separates clauses with "\n", and
+        // parseSingleViewLine's wildcard-type detection specifically
+        // requires a literal "* " (space); re-parsing a serialized wildcard
+        // query is a separate, pre-existing quirk unrelated to aggregate,
+        // so this test sidesteps it the same way the "combined with group
+        // by" test above already does (using 'deal', not '*').
+        const q = parseSingleViewLine('!view calc-agg aggregate avg(cell.total) as a');
+        const serialized = buildQueryString(q);
+        assert.match(serialized, /aggregate average\(cell\.total\) as a/);
+        assert.doesNotMatch(serialized, /aggregate avg\(/);
+        const reparsed = parseSingleViewLine(serialized);
+        assert.deepEqual(reparsed.aggregate, q.aggregate);
+    });
+
+    test('combined with group by, both clauses appear in the serialized string', () => {
+        const q = parseSingleViewLine('!view deal group by stage aggregate sum(value) as total');
+        const serialized = buildQueryString(q);
+        assert.match(serialized, /group by stage/);
+        assert.match(serialized, /aggregate sum\(value\) as total/);
+    });
+
+    test('bare count round-trips without a redundant default alias', () => {
+        const q = parseSingleViewLine('!view * aggregate count');
+        assert.match(buildQueryString(q), /aggregate count$/m);
+    });
+
+});
+
 describe('buildQueryString — group by', () => {
 
     test('group by serialises to "group by <field>"', () => {
@@ -1753,3 +2077,4 @@ describe('buildQueryString — group by', () => {
 
 
 });
+

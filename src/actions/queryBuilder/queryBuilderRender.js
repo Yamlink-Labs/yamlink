@@ -796,6 +796,15 @@ function getQueryBuilderStyles() {
       font-size: 11px;
       line-height: 1.35;
     }
+    .aggregate-grid {
+      display: grid;
+      grid-template-columns: minmax(88px, .7fr) minmax(130px, 1fr) minmax(110px, .8fr);
+      gap: 8px;
+      margin-bottom: 10px;
+    }
+    .aggregate-row {
+      display: contents;
+    }
     .compact-stack {
       display: flex;
       flex-direction: column;
@@ -1164,6 +1173,32 @@ function getQueryBuilderBodyMarkup() {
               <select id="field-via"></select>
             </div>
           </div>
+
+          <details class="subsection">
+            <summary>
+              <span class="subsection-head"><span class="subsection-title"><span>Aggregates</span><span class="subsection-state">Optional totals</span></span><span class="subsection-copy">Calculate sums, averages, min/max, or counts over the result</span></span>
+              <span class="subsection-badge">3</span>
+            </summary>
+            <div class="subsection-body">
+              <div class="aggregate-grid">
+                ${[0, 1, 2].map((index) => `
+                <div class="aggregate-row" data-aggregate-row="${index}">
+                  <div class="field">
+                    <label for="aggregate-fn-${index}">Function</label>
+                    <select id="aggregate-fn-${index}" data-aggregate-fn></select>
+                  </div>
+                  <div class="field">
+                    <label for="aggregate-field-${index}">Field</label>
+                    <select id="aggregate-field-${index}" data-aggregate-field></select>
+                  </div>
+                  <div class="field">
+                    <label for="aggregate-alias-${index}">Alias</label>
+                    <input id="aggregate-alias-${index}" data-aggregate-alias type="text" placeholder="total" />
+                  </div>
+                </div>`).join('')}
+              </div>
+            </div>
+          </details>
 
           <details class="subsection" id="layout-section">
             <summary>

@@ -48,6 +48,42 @@ Definitions for every term used across Yamlink's surfaces, commands, and documen
 
 ---
 
+## Inline Calculations
+
+**Inline calculation** — a real arithmetic expression written directly in a note body as an explicit inline code span with a leading `=` (e.g. `` `=1 + 2(3+4)^2` ``). Yamlink evaluates it live and shows the result as bold text right after it. Never triggered by ordinary text — only this exact syntax.
+
+**Named calculation** — an inline calculation with a chosen name instead of a leading `=` (e.g. `` `total=1+2` ``), making it referenceable by that name from any later calculation in the same note (`` `=total*3` ``).
+
+**Cell label** — the automatic `Y1`/`Y2`/`Y3`... identifier every calculation gets, named or not, in document order — the same role a coordinate like `A1` plays in a spreadsheet. Uppercase on purpose, so it never collides with a lowercase name a user picks themselves.
+
+**Cross-note calculation reference** — a formula reference to a calculated cell in another note, written as `[[note-id]]^cell` inside the expression (e.g. `` `=[[budget]]^total + 25` ``). The `cell` can be a named calculation or an automatic cell label. These references are single-hop by design; Yamlink reads the target note's cell value directly and does not follow hidden chains through more notes.
+
+**Live renumbering** — when an earlier calculation is inserted or removed, saving the note automatically rewrites every `Y<N>` reference elsewhere that pointed at a shifted calculation to its new number — the same thing a spreadsheet does when a row shifts. The reference keeps meaning what it always meant.
+
+**Typed calc error** — a failed calculation's typed reason, shown on hover as a badge (`#REF!`, `#DIV/0!`, `#NAME?`, `#VALUE!`) with a plain-language explanation. The ghost text in the editor stays a plain `= ?` regardless of which one it is — the typed reason lives on hover only.
+
+**`cell.<name>` (query field)** — a `!view` virtual field that resolves to a note's calculated cell value, by name or by automatic label (e.g. `cell.total`, `cell.y1`). Matched case-insensitively, like every other `!view` field; a missing or failed cell is simply absent from the row rather than an error. If the cell's formula uses a cross-note calculation reference, the resolved value flows through here too.
+
+**Range** — `Y<N>:Y<M>` inside a function call (e.g. `sum(Y1:Y5)`), expanding to every automatic cell label from `Y<N>` through `Y<M>`. Only legal as a function argument, and only with automatic labels — named cells have no guaranteed document order to span.
+
+**Comparisons and boolean logic** — `> < >= <= == !=` for comparing two values, plus the keywords `and`/`or`/`not` (not symbols) for combining boolean results, and `if(condition, then, else)` for branching — the one construct that truly skips the untaken side, unlike `and`/`or`, which evaluate both.
+
+**Number formatting (`as <format>`)** — a trailing display clause on a formula (`` `=price*qty as currency` ``) controlling how the result is *shown* (`currency`, `percent`, `comma`, or a fixed-decimals pattern) without changing the underlying value.
+
+**Date function** — one of `today()`, `date(year, month, day)`, `days_between(date1, date2)`, `add_days(date, days)`. A date is a plain `YYYY-MM-DD` string, the same canonical format every frontmatter date field already uses — not a new value type, which is why `> < >= <= == !=` already compare two dates correctly. There is no date-literal syntax: a bare `2026-01-15` in a formula is subtraction, not a date.
+
+**Vault-learned formula suggestion** — an autocomplete suggestion for a formula pattern (`{name, expression}`) already used in at least 2 other notes of the current note's own type, labeled "common in N other `<type>` notes."
+
+**Resolution trace ("How it resolved")** — the step-by-step breakdown shown on hover for a formula built from a range, a function call, a cross-note reference, a comparison, or `if()` — e.g. `Y1 = 10`, `sum(10, 20, 5) → 35` — in the exact order Yamlink evaluated it. A plain arithmetic formula with nothing to narrate shows no trace section.
+
+**Statistics function** — `median`, `mode`, `stdev`/`variance` (sample), `stdevp`/`variancep` (population). Variadic, same shape as `sum`/`average` — works with a `Y1:Y5`-style range for free.
+
+**Finance function** — `fv`, `pv`, `pmt`, `npv`, `irr`. Matches Excel's own formulas and sign convention exactly (money going out and the value it becomes are opposite signs). `npv()` discounts its first cash flow by one period, same as Excel; a cash flow happening today is added separately, outside the call. `irr()` is found numerically (bounded bisection) and fails honestly, not with a guessed number, when the cash flows never change sign.
+
+**Growth function** — `cagr(beginning, ending, periods)`: compound annual growth rate, the one steady per-period rate that takes a beginning value to an ending value over that many periods.
+
+---
+
 ## Graph
 
 **Graph** — the in-memory directed labeled multigraph Yamlink builds from the vault. Nodes are indexed notes; edges are wikilinks labeled with the source field name (or `body` for body links).
@@ -82,7 +118,9 @@ Definitions for every term used across Yamlink's surfaces, commands, and documen
 
 **`limit` clause** — caps the number of result rows.
 
-**`group by` clause** — groups results by a field value and shows per-group counts.
+**`group by` clause** — groups results by a field value and shows per-group counts. Combine with an `aggregate` clause to add a computed column per group instead of just a count.
+
+**`aggregate` clause** — computes `sum`/`average`/`min`/`max`/`count` over a matched set of notes' numeric fields, standalone or per `group by` bucket. Example: `aggregate sum(cell.total) as total, average(cell.total) as avg`. `avg` is accepted as a synonym for `average`. Reflects every matched note regardless of any `limit` clause — `limit` only trims what's displayed. A field with no numeric values across the set shows as a dash rather than a fabricated `0`; a value that isn't numeric on some rows is simply excluded from that fold while still being counted by `count`. Works over any numeric field, frontmatter or virtual — not specific to `cell.<name>`.
 
 **`via` clause** — filters an incoming-relation query to a specific relation field. Example: `!view incoming via account`.
 
@@ -166,7 +204,7 @@ Definitions for every term used across Yamlink's surfaces, commands, and documen
 
 **Lightbulb (Code Action)** — a VS Code quick-fix icon that appears on fields where Yamlink has a structural suggestion: create a missing linked note, add a missing relation field, backfill frontmatter from a template, or promote a repeated body link to a frontmatter field. "Refine this view" and "Open Query Builder" are lightbulb actions on a `!view` block, not CodeLens.
 
-**CodeLens** — a clickable inline action shown directly above a line, distinct from the lightbulb icon. Yamlink uses it in two places: above every `!view` block ("▶ Run" / "✕ Close view"), and above every addressable block — heading, task, quote, footnote — ("Copy reference," plus "N references" when another note actually links to that specific block; non-heading blocks also get "Extract to note," added 2026-08-20).
+**CodeLens** — a clickable inline action shown directly above a line, distinct from the lightbulb icon. Yamlink uses it above every `!view` block ("▶ Run" / "✕ Close view"). A second CodeLens, showing "Copy reference"/"N references" above every addressable block, shipped in 0.8.0 and was removed in the 0.8.1 hotfix — unconditional, no setting to turn it off, and redundant with the existing right-click block-reference commands. Those commands (`Yamlink: Copy/Insert Block/Section/Scoped Reference`, `Yamlink: Extract Block to New Note`) still work exactly as before, just via right-click or the Command Palette rather than an always-on lens.
 
 **Diagnostic** — a squiggle annotation on a note. Yamlink produces diagnostics for broken wikilinks, duplicate IDs, required schema fields that are missing, and notes that drift from their template.
 

@@ -4,15 +4,20 @@
 const vscode = acquireVsCodeApi();
 const model = window.calendarModel;
 const DOW = ['Mon','Tue','Wed','Thu','Fri','Sat','Sun'];
+const MONTH_NAMES = ['January','February','March','April','May','June','July','August','September','October','November','December'];
 const rangeView = document.getElementById('range-view');
 const agendaList = document.getElementById('agenda-list');
 const agendaTitle = document.getElementById('agenda-title');
 const summary = document.getElementById('summary');
-const monthSelect = document.getElementById('month-select');
-const dateInput = document.getElementById('date-input');
+const datePickerTrigger = document.getElementById('date-picker-trigger');
+const datePickerLabel = document.getElementById('date-picker-label');
+const datePopover = document.getElementById('date-popover');
+const pickerTitle = document.getElementById('picker-title');
+const pickerGrid = document.getElementById('picker-grid');
 let mode = 'month';
 let selectedMonth = model.selectedMonth;
 let selectedDate = model.selectedDate;
+let pickerMonth = model.selectedMonth;
 
 function applyModeButtonState() {
   document.querySelectorAll('[data-mode]').forEach(btn => {
@@ -198,17 +203,33 @@ function weekdayIndex(iso) {
   return (d.getDay() + 6) % 7;
 }
 
+function renderCompactItem(row) {
+  const dotClass = row.itemKind === 'task' ? (row.done ? 'dot dot-task done' : 'dot dot-task') : 'dot dot-' + row.itemKind;
+  return '<div class="week-item" data-open-node="' + escapeHtml(row.fileId) + '" role="button" tabindex="0" aria-label="Open note ' + escapeHtml(row.sourceLabel) + '">' +
+    '<span class="' + dotClass + '"></span>' +
+    '<span class="week-item-text' + (row.itemKind === 'task' && row.done ? ' done' : '') + '">' + escapeHtml(row.text) + '</span>' +
+  '</div>';
+}
+
 function renderWeek() {
   const start = startOfWeek(selectedDate);
   const days = Array.from({ length: 7 }, (_, index) => addDays(start, index));
-  return '<div class="range-stack"><div class="range-strip">' + days.map((iso) => {
+  return '<div class="week-grid">' + days.map((iso) => {
     const rows = model.dated.filter(row => row.date === iso);
-    return '<button class="range-day' + (iso === selectedDate ? ' selected' : '') + '" data-date="' + iso + '">' +
-      '<div class="range-label">' + DOW[weekdayIndex(iso)] + '</div>' +
-      '<div class="range-date">' + escapeHtml(iso.slice(8)) + '</div>' +
-      '<div class="range-meta">' + rows.length + ' item' + (rows.length === 1 ? '' : 's') + '</div>' +
-    '</button>';
-  }).join('') + '</div></div>';
+    const visible = rows.slice(0, 6);
+    const overflow = rows.length - visible.length;
+    return '<div class="week-col' + (iso === selectedDate ? ' selected' : '') + (iso === model.todayIso ? ' today' : '') + '">' +
+      '<button class="week-col-head" data-date="' + iso + '">' +
+        '<span class="week-col-dow">' + DOW[weekdayIndex(iso)] + '</span>' +
+        '<span class="week-col-date">' + escapeHtml(iso.slice(8)) + '</span>' +
+      '</button>' +
+      '<div class="week-col-body">' +
+        (rows.length === 0
+          ? '<div class="week-empty">—</div>'
+          : visible.map(renderCompactItem).join('') + (overflow > 0 ? '<div class="week-overflow">+' + overflow + ' more</div>' : '')) +
+      '</div>' +
+    '</div>';
+  }).join('') + '</div>';
 }
 
 function renderDay() {
@@ -244,10 +265,14 @@ function setMode(nextMode) {
   applySelection();
 }
 
+function formatDateLabel(iso) {
+  const [year, month, day] = iso.split('-').map(Number);
+  return MONTH_NAMES[month - 1] + ' ' + day + ', ' + year;
+}
+
 function syncMonthSelection() {
   selectedMonth = selectedDate.slice(0,7);
-  monthSelect.value = selectedMonth;
-  dateInput.value = selectedDate;
+  datePickerLabel.textContent = formatDateLabel(selectedDate);
 }
 
 function shiftDate(days) {
@@ -260,7 +285,6 @@ function shiftMonth(delta) {
   const [year, month] = selectedMonth.split('-').map(Number);
   const next = new Date(year, month - 1 + delta, 1);
   selectedMonth = next.getFullYear() + '-' + String(next.getMonth() + 1).padStart(2, '0');
-  monthSelect.value = selectedMonth;
   const monthRows = model.months[selectedMonth] || [];
   if (monthRows.length > 0) {
     // Going back: land on the most recent day; going forward: land on the first
@@ -268,7 +292,7 @@ function shiftMonth(delta) {
   } else {
     selectedDate = selectedMonth + '-01';
   }
-  dateInput.value = selectedDate;
+  datePickerLabel.textContent = formatDateLabel(selectedDate);
   applySelection();
 }
 
@@ -293,13 +317,17 @@ document.addEventListener('click', (event) => {
   const day = event.target.closest('[data-date]');
   if (day) {
     selectedDate = day.dataset.date;
-    dateInput.value = selectedDate;
+    syncMonthSelection();
     applySelection();
     return;
   }
   const modeBtn = event.target.closest('[data-mode]');
   if (modeBtn) {
     setMode(modeBtn.dataset.mode);
+    return;
+  }
+  if (!event.target.closest('#date-popover') && !event.target.closest('#date-picker-trigger')) {
+    closeDatePicker();
   }
 });
 
@@ -311,25 +339,77 @@ document.addEventListener('keydown', (event) => {
   }
 });
 
-monthSelect.addEventListener('change', () => {
-  const prevMonth = selectedDate.slice(0, 7);
-  selectedMonth = monthSelect.value;
-  const monthRows = model.months[selectedMonth] || [];
-  if (monthRows.length > 0) {
-    const goingBack = selectedMonth < prevMonth;
-    selectedDate = goingBack ? monthRows[monthRows.length - 1].date : monthRows[0].date;
-  } else {
-    selectedDate = selectedMonth + '-01';
-  }
-  dateInput.value = selectedDate;
+document.getElementById('nav-prev').addEventListener('click', () => moveRange(-1));
+document.getElementById('nav-next').addEventListener('click', () => moveRange(1));
+document.getElementById('today-btn').addEventListener('click', () => {
+  selectedDate = model.todayIso;
+  syncMonthSelection();
   applySelection();
 });
 
-dateInput.addEventListener('change', () => {
-  selectedDate = dateInput.value || selectedDate;
-  selectedMonth = selectedDate.slice(0,7);
-  monthSelect.value = selectedMonth;
-  applySelection();
+// ── Custom date-picker popover — a real month/year calendar grid, not the
+// native <input type="date"> OS widget, per explicit user request.
+function renderPicker() {
+  const [year, month] = pickerMonth.split('-').map(Number);
+  pickerTitle.textContent = MONTH_NAMES[month - 1] + ' ' + year;
+  const first = new Date(year, month - 1, 1);
+  const firstWeekDay = (first.getDay() + 6) % 7;
+  const daysInMonth = new Date(year, month, 0).getDate();
+  const cells = [];
+  for (let i = 0; i < firstWeekDay; i++) cells.push('<div class="picker-day muted"></div>');
+  for (let day = 1; day <= daysInMonth; day++) {
+    const iso = year + '-' + String(month).padStart(2, '0') + '-' + String(day).padStart(2, '0');
+    const cls = 'picker-day' + (iso === selectedDate ? ' selected' : '') + (iso === model.todayIso ? ' today' : '');
+    cells.push('<button type="button" class="' + cls + '" data-pick-date="' + iso + '">' + day + '</button>');
+  }
+  pickerGrid.innerHTML = cells.join('');
+}
+
+function openDatePicker() {
+  pickerMonth = selectedMonth;
+  renderPicker();
+  datePopover.hidden = false;
+  datePickerTrigger.setAttribute('aria-expanded', 'true');
+}
+
+function closeDatePicker() {
+  datePopover.hidden = true;
+  datePickerTrigger.setAttribute('aria-expanded', 'false');
+}
+
+datePickerTrigger.addEventListener('click', (event) => {
+  event.stopPropagation();
+  if (datePopover.hidden) openDatePicker();
+  else closeDatePicker();
+});
+
+datePopover.addEventListener('click', (event) => {
+  event.stopPropagation();
+  const pick = event.target.closest('[data-pick-date]');
+  if (pick) {
+    selectedDate = pick.dataset.pickDate;
+    syncMonthSelection();
+    applySelection();
+    closeDatePicker();
+    return;
+  }
+  if (event.target.closest('#picker-prev-month')) {
+    const [y, m] = pickerMonth.split('-').map(Number);
+    const next = new Date(y, m - 2, 1);
+    pickerMonth = next.getFullYear() + '-' + String(next.getMonth() + 1).padStart(2, '0');
+    renderPicker();
+    return;
+  }
+  if (event.target.closest('#picker-next-month')) {
+    const [y, m] = pickerMonth.split('-').map(Number);
+    const next = new Date(y, m, 1);
+    pickerMonth = next.getFullYear() + '-' + String(next.getMonth() + 1).padStart(2, '0');
+    renderPicker();
+  }
+});
+
+document.addEventListener('keydown', (event) => {
+  if (event.key === 'Escape' && !datePopover.hidden) closeDatePicker();
 });
 
 document.addEventListener('keydown', (event) => {
@@ -376,4 +456,5 @@ function escapeHtml(value) {
   return String(value).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
 }
 
+datePickerLabel.textContent = formatDateLabel(selectedDate);
 applySelection();

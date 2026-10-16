@@ -1,10 +1,10 @@
-# Yamlink Features Reference
+# Yamlink Features List
 
-What Yamlink can do today.
+This document presents what Yamlink can do today.
 
 Use it as the detailed companion to [README.md](./README.md):
 
-- `README.md` explains the product
+- `README.md` explains/presents the product
 - `FEATURES.md` explains the working surface area
 - `GETTING_STARTED.md` explains how to set up and use Yamlink in real vaults
 
@@ -355,55 +355,6 @@ yamlink publish --out ./site-content --site-url https://example.com --webhook ht
 
 ---
 
-## LSP Server
-
-`yamlink serve --lsp --vault <path>` starts a persistent JSON-RPC 2.0 Language Server Protocol server over stdio, enabling any LSP-capable editor — Neovim, Zed, Helix, Emacs — to use Yamlink intelligence without VS Code.
-
-The server is the headless Yamlink engine with a stdio shell around it. No build step. No third-party dependencies beyond the engine itself.
-
-### Capabilities
-
-| Method | What it does |
-|---|---|
-| `textDocument/completion` | `[[` → wikilink completions ranked by vault priors (up to 50); frontmatter keys ranked by type bundle; frontmatter values for `type:` and workflow fields |
-| `textDocument/hover` | Note card for `[[id]]` links: name, type, status, summary, inbound count |
-| `textDocument/definition` | Go-to-definition for `[[id]]` wikilinks |
-| `textDocument/prepareRename` | Validate rename position; returns current ID as placeholder (required by Zed, Helix) |
-| `textDocument/rename` | Vault-wide ID rename as `WorkspaceEdit`; rewrites `id:` and all `[[id]]`, `[[id\|alias]]`, `![[id]]` |
-| `textDocument/references` | All `[[id]]` occurrences vault-wide; optional declaration location |
-| `textDocument/documentSymbols` | Frontmatter fields (kind=8) + headings (kind=15) |
-| `textDocument/codeAction` | Quickfix: create stub note for broken `[[id]]` links |
-| `workspace/symbol` | Vault-wide ID/name/type search (up to 100 results) |
-
-### Server → client
-
-- `textDocument/publishDiagnostics` — broken wikilinks as severity=2 Warnings, pushed after every vault rebuild
-- `client/registerCapability` — registers `**/*.md` file watcher after `initialized`
-- `window/logMessage` — index rebuild notifications (note count, errors)
-
-### Transport
-
-```
-Content-Length: <byte-length>\r\n\r\n{"jsonrpc":"2.0",...}
-```
-
-stdin → editor messages · stdout → server messages · stderr → internal debug logs
-
-### Quick connect (Neovim)
-
-```lua
-configs.yamlink = {
-  default_config = {
-    cmd       = { 'yamlink', 'serve', '--lsp', '--vault', vim.fn.getcwd() },
-    filetypes = { 'markdown' },
-    root_dir  = lspconfig.util.root_pattern('.yamlinkignore', '.git'),
-  },
-}
-lspconfig.yamlink.setup({})
-```
-
----
-
 ## Activity Stream (Home Panel)
 
 `yamlink.openHome` — opens the Home panel. Yamlink's home screen for your vault. Shows:
@@ -745,10 +696,12 @@ The task table `done` column shows five distinct states:
 
 ### Chart views
 
-Any `!view` result or Query Builder query can be rendered as a bar chart or scatter plot — not only as a table. Switch layouts using the toolbar toggle on any live result without changing the underlying query.
+Any `!view` result or Query Builder query can be rendered as a bar chart, pie chart, scatter plot, or line chart — not only as a table. Switch layouts using the toolbar toggle on any live result without changing the underlying query — charts always render off the query's own existing result columns, so a calculated `cell.*` field works as a chart axis for free, the same as any frontmatter field.
 
-- **Bar chart** — set `layout: bar` in the `!view` block, or click **Bar** in the Query Builder layout toggle. A **Group by** picker appears to select which field aggregates the bars. Queries already using `group by` render immediately. Bars are labeled and colored by the Apollo palette. Useful for category distributions: notes per status, missions per outcome, contacts per account, scores by type.
+- **Bar chart** — set `layout: bar` in the `!view` block, or click **Bar** in the Query Builder layout toggle. A **Group by** picker appears to select which field aggregates the bars. Queries already using `group by` render immediately. Bars are labeled and colored by the Apollo palette. Useful for category distributions: notes per status, missions per outcome, contacts per account, scores by type. **When the query also has an `aggregate` clause**, a **Value** picker appears alongside the chart, defaulting to Count — pick `sum(cell.total) as total` instead and the bars plot `total` per group rather than how many notes are in each one. A group with no numeric value for the chosen aggregate simply shows no bar, never a fabricated zero.
+- **Pie chart** — set `layout: pie` or click **Pie**. Same `group by` requirement as Bar chart, rendered as proportional slices with a visible legend instead of bars. Useful for the same category-breakdown queries as Bar, when the "share of the whole" framing fits better than absolute counts. Gets the same **Value** picker as Bar chart when the query has an `aggregate` clause.
 - **Scatter plot** — set `layout: scatter` or click **Scatter**. Yamlink auto-selects the first two numeric or date fields as X/Y axes; axis dropdowns let you change them. The Scatter option is greyed out when the result set has no numeric or date fields.
+- **Line chart** — set `layout: line` or click **Line**. Same numeric/date X/Y axis picker as Scatter, but each series' points are sorted by X value and connected — the natural choice for progress-over-time queries (e.g. a calculated `cell.total` plotted against `date`), where Scatter's unconnected points don't show a trend.
 - **Matrix** — set `layout: matrix` or use the Table | Matrix toolbar toggle. A column type picker selects which vault note type populates the matrix columns; rows = query results, cells show ● for connected pairs. See supported table behaviors above.
 
 ### Table output behavior
@@ -979,10 +932,6 @@ Six VS Code commands give cursor-aware, single-keystroke access:
 
 If the cursor is already on an addressable block, these skip the picker entirely and act on that block directly.
 
-### In-editor affordances (added 2026-08-20)
-
-A CodeLens sits directly above every addressable block: "Copy [section/task/quote/footnote] reference," so a block's referenceability is visible without already knowing the feature exists. When another note actually links to that specific block, a second "N references" lens appears — clicking it jumps straight to the single referencing note/line, or opens a picker when there's more than one. Built on the same block-backlinks data the Note Report already surfaces (see below); this is a new editor surface for it, not new computation.
-
 ### Extract block to a new note
 
 For tasks, quotes, and footnotes (not headings, which have no bounded content of their own): `Yamlink: Extract Block to New Note`, also reachable as a third CodeLens above the block. Moves the exact block out of the current note into a brand-new one — titled from the block's own content by default, editable before creating — replacing it in place with an `![[embed]]` so it still renders inline, and setting `source: [[original-note]]` on the new note. Same convention as `Yamlink: Split Note Body`, just block-precise instead of manual-selection-based.
@@ -990,6 +939,318 @@ For tasks, quotes, and footnotes (not headings, which have no bounded content of
 ### Block-level backlinks
 
 The Note Report's outbound and inbound link lists resolve block references to their target's real label — a link to task `t1-abc` shows as `"Deploy the patch"`, not the raw block ID. Block backlinks — "which notes link to this exact task or quote," not just "which notes link to this note" — are also reachable outside VS Code: `yamlink block-backlinks <id>` and `GET /api/nodes/:id?include=blockBacklinks`.
+
+---
+
+## Inline Calculations
+
+Real arithmetic, computed live inside a note's body, with Excel-style referencing between calculations — no grid, no separate spreadsheet, just prose with an explicit marker.
+
+### Basic syntax
+
+Write an inline code span whose content starts with `=`:
+
+```
+The total comes to `=1 + 2(3+4)^2` before tax.
+```
+
+Yamlink shows the result live as bold text right after it (`= 99`), updating as you type. An invalid or incomplete expression shows an honest `= ?` instead of guessing — nothing outside this exact `` `=...` `` syntax is ever touched, so an ordinary code span like `` `npm install` `` is left completely alone.
+
+### Supported math
+
+`+ - * / ^ %`, implicit multiplication (`2(1+1/14)` needs no `*`), parentheses, unary minus, and:
+
+| Category | Available |
+|---|---|
+| Functions | `sqrt`, `abs`, `round`, `floor`, `ceil`, `min`/`max`/`sum`/`average` (any number of arguments, including a `Y1:Y5`-style range — see Ranges below), `sin`/`cos`/`tan` (radians), `log` (base 10), `ln` (natural log), `sign`, `exp` |
+| Constants | `pi`, `e` — a variable you name yourself always takes priority over a constant of the same name |
+
+### Value types
+
+A calculation isn't only ever a number. A cell can hold:
+
+- **A number** — `` `=1+2` ``, as always.
+- **A string** — `` `label="in progress"` ``, written with `"..."` or `'...'` (use `\"`, `\'`, or `\\` to include that exact character inside one).
+- **A boolean** — `` `done=true` `` or `` `done=false` ``. `true`/`false` are reserved words — a cell can't be named either one.
+
+Reference a string or boolean cell from a later formula exactly like a numeric one: `` `=label + "!"` `` or `` `=done` ``. `+` is the one operator that works on strings too — it concatenates (`"a" + "b"` → `"ab"`). Every other operator (`- * / ^ %`, unary `+`/`-`, and every built-in function) requires a real number and fails with `#VALUE!` otherwise — `"3" + 3` is an error, never a guessed `"33"` or a silent `NaN`.
+
+### Comparisons and boolean logic
+
+Formulas can express real rules, not just arithmetic:
+
+```
+Over budget: `over_budget=spent>budget`
+Status: `status=if(over_budget, "cut spending", "on track")`
+```
+
+- **`> < >= <=`** — ordering. Both sides must be the same type: two numbers, or two strings (compared alphabetically). Booleans can't be ordered (`true > false` is `#VALUE!` — be explicit with a real comparison instead of a guess).
+- **`== !=`** — equality. Works across any types and never errors: different types are simply "not equal," same as asking the same honest question in plain English.
+- **`and` / `or` / `not`** — plain-English keywords, not symbols. `` `=spent > 0 and spent < budget` ``. Both sides are evaluated — there's no short-circuiting here, so put an actual guard in an `if()` (below) rather than relying on `and`/`or` to skip a risky calculation. **Also callable as ordinary functions** — `` `=and(spent > 0, spent < budget)` `` — for anyone who thinks in spreadsheet `AND()`/`OR()`/`NOT()` terms. Both forms are identical and can be mixed freely in the same formula.
+- **`if(condition, then, else)`** — the one construct that truly skips the side it doesn't need: `` `=if(x != 0, 10/x, 0)` `` never divides by zero when `x` is `0`, because the `10/x` branch is never even evaluated when the condition is false. The condition must itself be a real comparison or boolean — `if(1, ...)` is an error, `if(x > 0, ...)` is what's meant.
+
+### Dates in formulas
+
+A date in a formula is a plain `YYYY-MM-DD` string — the same canonical format every frontmatter date field in Yamlink already uses, not a new value type. That's also why dates already compared correctly with `> < >= <= == !=` before any of these functions existed: ISO 8601's text order already matches chronological order, so `due < today()` just works.
+
+```
+Days until due: `days_left=days_between(today(), due)`
+Status: `status=if(due < today(), "overdue", "on track")`
+New deadline: `new_due=add_days(due, 14)`
+```
+
+| Function | What it does |
+|---|---|
+| `today()` | The current date, as `YYYY-MM-DD` |
+| `date(year, month, day)` | Builds a canonical date from three numbers — `date(2026, 1, 5)` → `2026-01-05`. Rejects a calendar-impossible date (`date(2026, 2, 30)`) as a clear `#VALUE!` rather than silently rolling it into March |
+| `days_between(date1, date2)` | Whole days from `date1` to `date2` — positive when `date2` is later, negative when earlier |
+| `add_days(date, days)` | A date shifted forward (or back, with a negative number) by that many whole days |
+
+`days_between`/`add_days` accept any date shape Yamlink already recognizes elsewhere (slashes, textual months, etc.), not just canonical `YYYY-MM-DD` — the same forgiving parser behind daily-note date input.
+
+**One real thing worth knowing**: a bare `2099-01-01` written directly in a formula is ordinary subtraction (`2099 - 1 - 1 = 2097`), not a date — there's no date-literal syntax in this grammar. Write a date as `date(2099, 1, 1)`, a quoted string (`"2099-01-01"`), or read one from frontmatter/another calculation instead.
+
+Deliberately date-only, not date-*time* — no time-of-day, no timezone. Yamlink has no time-of-day convention anywhere else to integrate with, so these functions don't invent one.
+
+### Statistics, finance, and growth
+
+Beyond `sum`/`average`/`min`/`max`, a formula can reach for real statistical and financial math:
+
+**Statistics** — variadic, work with ranges for free (`median(Y1:Y5)` works the same way `sum(Y1:Y5)` does):
+
+| Function | What it does |
+|---|---|
+| `median(...)` | The middle value (or the average of the two middle values, for an even count) |
+| `mode(...)` | The most frequent value — the first one encountered if there's a tie, matching Excel's own `MODE`. Fails honestly (not a guess) if nothing repeats |
+| `stdev(...)` / `variance(...)` | Sample standard deviation / variance (the usual choice when your numbers are a sample of something larger) — needs at least 2 values |
+| `stdevp(...)` / `variancep(...)` | Population standard deviation / variance (when your numbers ARE the whole thing being measured) — works from a single value |
+
+**Finance** — matches Excel's own `FV`/`PV`/`PMT`/`NPV`/`IRR` exactly, same formulas and the same sign convention (money going out and the value it becomes are opposite signs — the standard spreadsheet/financial-calculator convention):
+
+```
+Future value of $100/period for 10 periods at 5%: `=fv(0.05, 10, -100)`
+Payment to pay off $1000 over 10 periods at 5%: `=pmt(0.05, 10, 1000)`
+```
+
+| Function | What it does |
+|---|---|
+| `fv(rate, nper, pmt, [pv])` | Future value of a series of payments plus an optional present sum |
+| `pv(rate, nper, pmt, [fv])` | Present value of a series of payments plus an optional future sum |
+| `pmt(rate, nper, pv, [fv])` | The payment amount that amortizes a present value over `nper` periods |
+| `npv(rate, cf1, cf2, ...)` | Net present value — the **first** cash flow is discounted by one period too, exactly like Excel. A cash flow happening *today* (undiscounted) gets added separately: `` `=-1000 + npv(0.1, 300, 300, 300)` ``, the same well-known idiom Excel itself requires |
+| `irr(cf0, cf1, ...)` | The break-even rate where the cash flows net to zero — found numerically, not a formula. Here `cf0` **is** period 0, undiscounted (the opposite convention from `npv()` above — a real asymmetry, but exactly Excel's own). Fails with a clear message, never a guessed number, if the cash flows never change sign (no real break-even rate exists) |
+
+**Growth**:
+
+| Function | What it does |
+|---|---|
+| `cagr(beginning, ending, periods)` | Compound annual growth rate — the one steady per-period rate that takes `beginning` to `ending` over that many periods |
+
+**Two real gaps, not silently dropped**: `percentile`/`quartile` and `correl`/`covariance` would need a genuinely different argument shape (a named parameter alongside the data, or two parallel series kept distinct) that this evaluator's flat range-expansion — every range becomes individual scalar arguments the moment it's used — has no clean way to express yet. Deferred, not built halfway.
+
+### Referencing another calculation
+
+Two ways, and both work together in the same note:
+
+- **By name** — `` `total=1+2` `` defines `total`; a later `` `=total*3` `` uses it.
+- **By automatic cell label** — every calculation, named or not, also gets `Y1`, `Y2`, `Y3`... in document order. `` `=Y1+Y2` `` adds the first two calculations in the note, whatever they are.
+
+A reference only ever sees calculations defined *above* it — no forward references, no circular references, by construction rather than by error-checking.
+
+### Live renumbering (the "Excel behavior")
+
+Insert a new calculation earlier in the note and save: every `Y<N>` reference elsewhere in the note that pointed at a shifted calculation is automatically rewritten to its new number — the same thing a spreadsheet does when you insert a row above an existing formula. The reference keeps meaning what it always meant, not whatever now happens to sit in that position. The first time this ever happens, Yamlink explains the mechanism once; after that it's a brief status-bar note.
+
+### Ranges
+
+Inside a function call, `Y<N>:Y<M>` expands to every cell from `Y<N>` through `Y<M>`:
+
+```
+Rifles: `=40`
+Grenades: `=15`
+Medkits: `=8`
+Total: `=sum(Y1:Y3)`
+Average per category: `=average(Y1:Y3)`
+```
+
+Ranges work with `sum`, `average`, `min`, `max`, and compose with ordinary arguments (`sum(Y1:Y3, 10)`). Only automatic `Y<N>` labels can be range endpoints — named cells have no inherent order for a range to span, and a range is only ever legal as a function argument, never a standalone value. A reversed range (`Y5:Y1`) is a clear `#VALUE!`; a range reaching past the last cell defined so far fails the same honest `#REF!` a single out-of-range reference would.
+
+### Named ranges
+
+Give a run of cells a name so later formulas don't have to spell out `Y<N>:Y<M>` from memory:
+
+```
+prices=Y1:Y8
+Typical price: `=median(prices)`
+```
+
+`prices` is usable anywhere a `Y<N>:Y<M>` range already is — any function argument. A range definition with no name (a bare `` `=Y1:Y8` `` ) is a clear error asking for one, since an unnamed range has nothing later code could refer to.
+
+### Conditional totals: `countif`, `sumif`, `averageif`
+
+Fold only the cells that match a criterion, over a `Y<N>:Y<M>` range, a named range, or a cross-note range:
+
+```
+prices=Y1:Y8
+Above 40: `=countif(prices, ">40")`
+Total of those: `=sumif(prices, ">40")`
+Average below 40: `=averageif(prices, "<40")`
+```
+
+| Function | What it does |
+|---|---|
+| `countif(range, criterion)` | How many cells match |
+| `sumif(range, criterion, [sum_range])` | Total of the matching cells — or, with a third range of the same size, the matching positions summed from *that* range instead |
+| `averageif(range, criterion, [average_range])` | Average of the matching cells, with the same optional separate range |
+
+The criterion is quoted: `">40"`, `"<=10"`, `"<>0"`, or a plain value like `"high"` for an exact match (numbers compare numerically, everything else compares as text).
+
+### Number formatting
+
+Add `as <format>` after any formula to control how the result *displays*, without touching the real number underneath:
+
+```
+Price: `=19.999 as currency`
+Approval rate: `=0.84 as percent`
+Headcount: `=1234 as comma`
+Precise reading: `=3.14159 as 0.00`
+```
+
+`currency` (`$20.00`), `percent` (multiplies by 100 and adds `%`, so `0.84` displays `84%`), `comma` (thousands separators), or a fixed-decimals pattern (`0`, `0.0`, `0.00`, ...). The underlying value stays the real, unrounded number for any further math, same-note/cross-note reference, or query comparison — formatting only changes what's shown in ghost text, hover, and the Live Note preview. An unrecognized format name is a clear `#VALUE!`; formatting a string or boolean cell is silently ignored rather than an error, since there's nothing to format.
+
+### Hovering a formula
+
+Hover over any `` `=expr` `` span to see its cell label, its name (if it has one), the expression and result, and exactly which other cells it reads — `Uses: total = 3, Y1 = 4.29…`.
+
+**For a formula with something worth explaining — a range, a function call, a cross-note reference, a comparison, or `if()`** — the hover also shows a step-by-step "How it resolved" breakdown, in the exact order Yamlink actually evaluated it:
+
+```
+`=sum(Y1:Y3) + [[budget]]^total * 2`
+
+How it resolved:
+- Y1 = 10
+- Y2 = 20
+- Y3 = 5
+- sum(10, 20, 5) → 35
+- [[budget]]^total = 120
+```
+
+This is why `Y2` shows up even though `Y1:Y3` never spells it out — the trace reflects what the range actually expanded to, not what's literally typed. A cross-note reference always displays as the `[[note]]^label` you wrote, never as an internal placeholder. A comparison (`requested > budget → false`) and `if()` (`if condition is true → then-branch = "positive"`) get their own step too. Plain arithmetic (`+ - * / % ^`) and `and`/`or`/`not` aren't narrated individually — a reader already sees those operators and their two values right there in the source, so a formula with nothing but arithmetic shows no breakdown at all, same as before this existed.
+
+### When a formula fails
+
+The ghost text stays a plain `= ?` either way — but hover it to see exactly why, with a real error code:
+
+| Badge | Means |
+|---|---|
+| `#REF!` | References a cell number that doesn't exist — e.g. `=Y5` when the note only has 3 cells |
+| `#DIV/0!` | Division or modulo by zero |
+| `#NAME?` | An unknown function or variable — usually a typo |
+| `#VALUE!` | Anything else: malformed syntax, an incomplete expression, a result that isn't a real number |
+
+### Live feedback while editing
+
+A failed calculation also shows up in the Problems panel and as an editor squiggle as you type — not only when you hover it. Catching a typo'd variable name or an unmatched paren the moment it happens, not later: when the failure is a syntax or name-resolution problem, the squiggle underlines the exact token at fault, not the whole formula; a type-mismatch or division failure, where there's no single token to blame, underlines the whole calculated cell instead.
+
+### Live Note preview
+
+The Live Note preview sidecar shows just the computed result (`9`), not the raw formula — hovering it there still shows the original expression as a tooltip. The raw editor keeps formula and result together, since that's the surface you edit and audit from.
+
+### Building a formula without recalling a label
+
+- **Autocomplete** — opens the moment you type `` ` `` or `=` inside a formula, the same instant `[[` opens its own suggestions elsewhere, rather than waiting for the formula to be closed with its trailing backtick. Lists every earlier calculation in the note, closest one first, with its current value.
+- **This note's own frontmatter fields** — any scalar frontmatter field the formula could actually read (see "Reading your own frontmatter fields" below) shows up in the same dropdown, so there's no need to re-type a value that's already sitting on the note.
+- **`T<N>.<column>` for a table already in the note** — if the note has a `!view` block, every column of its result is offered too, the same way a frontmatter field is. This is how a formula reaches vault-wide numbers without a second query: the table itself already matched notes across the vault, and the formula just reads its columns.
+- **Cross-note autocomplete** — type `[[` inside a formula to pick another note, then `[[note-id]]^` to pick one of that note's successful calculated cells.
+- **`Yamlink: Insert Cell Reference`** — a searchable picker over every calculation in the note; selecting one inserts its label at the cursor.
+- **Vault-learned suggestions** — autocomplete also offers expressions commonly used in *other* notes of the same type, labeled "common in N other `<type>` notes" — e.g. an `expense` note sees the `total` formula shape already used across other `expense` notes. This fires even for a note's very first calculation, when there's nothing on the page yet to reference. A pattern needs to show up in at least 2 other notes before it's offered — one note's own formula isn't yet a vault-wide pattern. A note with no `type:` just doesn't get this extra help, the same as every other Yamlink intelligence feature that needs a schema to learn from.
+
+### Referencing another note's calculation
+
+Use `[[note-id]]^cell` inside a formula:
+
+```
+`=[[budget]]^total + 25`
+```
+
+The `cell` part can be the target note's automatic label (`Y1`, `Y2`, ...) or a name you gave the calculation (`total`). This works in the editor ghost text, formula hover, diagnostics, autocomplete, and `!view` queries through `cell.<name-or-label>`.
+
+Cross-note calculation references are deliberately single-hop. If `report` reads `budget`, and `budget` itself tries to read a third note, Yamlink does not follow that hidden chain. The target cell either has a direct value or the formula shows an honest `#REF!`.
+
+A range of another note's cells works the same way: `` `=sum([[budget]]^Y1:Y5)` `` reads `Y1` through `Y5` from `budget` as one range, usable anywhere a range is — including `countif`/`sumif`/`averageif`. Same single-hop rule as a single cross-note cell.
+
+### Reading a `!view` table from a formula
+
+Every `!view` block in a note gets an automatic label — `T1`, `T2`, ... — in the order it appears, the same convention calculated cells use for `Y1`, `Y2`. `T1.<field>` is that table's whole `<field>` column, read in the order the table currently displays, usable anywhere a range is:
+
+```
+!view expense select name, budget
+
+Total across the table above: `=sum(T1.budget)`
+Typical budget: `=median(T1.budget)`
+```
+
+For a `group by` table, the group field and any `aggregate` alias are both addressable the same way: `!view expense group by category aggregate sum(budget) as total` makes `T1.category` and `T1.total` columns. Same-note only — a table reference can't reach a `!view` block in another note. One current limit: unlike `Y<N>` cell labels, `T<N>` table labels are not yet renumbered automatically if `!view` blocks in the note are reordered.
+
+### Reading your own frontmatter fields
+
+A formula can read the note's own frontmatter directly, not just other calculations:
+
+```yaml
+---
+price: 19.99
+quantity: 3
+---
+```
+```
+Total: `total=price*quantity`
+```
+
+`price` and `quantity` resolve straight from the frontmatter above — no need to re-type a value that's already a real field on the note. Only plain values (a number, string, or boolean) can be read this way; a list or a `[[wikilink]]` relation field has no single value a formula could use, so referencing one just fails as an ordinary unknown variable, never a crash. A field name with a hyphen (`unit-price`) isn't readable this way either, since it would otherwise be misread as subtraction. If a same-note calculation later defines a cell with the same name, that calculation's value takes over from that point on — the same last-one-wins rule that already applies to redefining any named cell.
+
+### Querying calculated cells
+
+A `!view` query can select, filter, and sort by a note's calculated values using `cell.<name-or-label>`:
+
+```
+!view expense where cell.total > 100 select name, cell.total sort cell.total desc
+```
+
+Works with either a named cell (`cell.total`) or an automatic label (`cell.y1`). A note with no matching cell, or a cell that failed to evaluate, simply has no value there — never an error. One bounded limitation: query field names are matched case-insensitively (true of every `!view` field, not specific to this), so `cell.total` and `cell.TOTAL` both match the same cell — the same-note formula reference (`Y1` vs `y1`) is unaffected and stays case-sensitive.
+
+### Summarizing across notes with `aggregate`
+
+`!view` can also compute over an entire matched set of notes — sums, averages, extremes, and counts — not just read one note's values at a time:
+
+```
+!view field-report aggregate sum(cell.effective_strength) as total, average(cell.effective_strength) as avg, min(cell.effective_strength) as lowest
+```
+
+That renders a summary strip above the table: `total`, `avg`, `lowest`, each labeled. Combine it with `group by` to get one aggregate per bucket instead of one over everything:
+
+```
+!view field-report group by unit aggregate sum(cell.effective_strength) as total
+```
+
+Each group's row gains a `total` column alongside its `count`. Works over any numeric field — frontmatter numbers, `file.created`-style virtuals, or `cell.*` — not just calculated cells. Functions: `sum`, `average` (`avg` also accepted), `min`, `max`, `count`. Every term except bare `count` needs a name: `... as <alias>`. A value that isn't numeric on some rows is simply left out of that fold (still counted by `count`, though); if a field has no numeric values at all across the matched set, its aggregate shows as a dash rather than a fabricated `0`. Aggregates always reflect *every* matched note, regardless of a `limit` clause — `limit` only trims what's displayed, not what's summarized.
+
+Add `when` to a term to fold only the notes matching a condition — the same condition syntax `where` already uses:
+
+```
+!view field-report aggregate sum(cell.effective_strength) when priority = high as high_total, count when priority = high as high_count
+```
+
+`high_total` and `high_count` reflect only the high-priority notes, independent of any other term in the same `aggregate` clause — `sum(cell.effective_strength) as all_total` alongside those two still totals every matched note. The query text round-trips through the Query Builder unchanged.
+
+### Current limits
+
+- Ranges work only inside a function argument and only with automatic `Y<N>` labels — `sum(Y1:Y5)` is valid, but `Y1:Y5` by itself, `total:Y5`, and cross-note ranges are intentionally not part of this pass.
+- Frontmatter fields cannot hold a formula — this syntax works in the note body only (though a body formula can *read* a frontmatter value — see Reading your own frontmatter fields above).
+- Reading another note's frontmatter from a cross-note reference isn't supported yet — `` [[note]]^label `` only reaches the target note's own calculated cells, not its frontmatter fields.
+- `and`/`or` always evaluate both sides — there's no short-circuiting there. Use `if()` when you need to skip a calculation that would otherwise fail (like a division).
+- A live-editing diagnostic squiggle pinpoints the exact token at fault for a syntax or name-resolution failure, but falls back to underlining the whole calculation for a type-mismatch or division-by-zero failure, since no single token is to blame for those.
+- There's no date-literal syntax — a bare `2026-01-15` in a formula is subtraction, not a date. Use `date(2026, 1, 15)`, a quoted string, or a referenced value instead (see Dates in formulas above).
+- Date functions are date-only, not date-*time* — no time-of-day, no timezone, and no month/weekday-name helpers yet (`add_months`, day-of-week, and similar are natural follow-ups, not built).
 
 ---
 

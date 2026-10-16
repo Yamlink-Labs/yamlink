@@ -25,7 +25,8 @@
  *   intelligenceHealth: Record<string, any>,
  *   emergingClusters?: Array<{ fields: string[], noteIds: string[], noteCount: number, dominantType: string|null, confidence: string }>,
  *   topRelationships?: Array<{sourceId:string,field:string,targetId:string,score:number,structuralWeight:number,decayedMutationWeight:number,repetition:number}>,
-  healthTrend?: { brokenTrend: 'up'|'down'|'same'|null, orphanTrend: 'up'|'down'|'same'|null, brokenDelta: number|null, orphanDelta: number|null, snapshotCount: number }
+  healthTrend?: { brokenTrend: 'up'|'down'|'same'|null, orphanTrend: 'up'|'down'|'same'|null, brokenDelta: number|null, orphanDelta: number|null, snapshotCount: number },
+ *   calcHealth?: { totalCells: number, evaluatedCells: number, failedCells: number, byCode: Record<string,number>, notesWithFailures: number }
  * }} HealthStats
  */
 
@@ -48,6 +49,7 @@ const { buildSessionSummary, detectWorkflowBursts } = require('../../intelligenc
 const { getTopGravityEdges } = require('../../intelligence/relationshipGravity');
 const { getTemplateDrift, summarizeTemplateDrift } = require('../../core/templateRegistry');
 const { buildLaneTrajectories, buildLaneRetrospectiveAccuracy, buildStalenessForecast } = require('../../intelligence/vaultTrends');
+const { buildVaultCalcHealth } = require('../../intelligence/calcHealth');
 
 const SYSTEM_TYPES = new Set(['schema', 'dashboard', 'template']);
 // A note is "stale" once this many days pass with no recorded mutation. Named
@@ -266,6 +268,11 @@ function collectHealthStats(options = {}) {
         ? readHealthSnapshotTrend(path.join(workspaceRoot, '.yamlink'))
         : { brokenTrend: null, orphanTrend: null, brokenDelta: null, orphanDelta: null, snapshotCount: 0 };
 
+    // No cache, deliberately — this reads every note's body once per health
+    // panel refresh, not a hot path, matching calcHealth.js's own stated
+    // design choice (see src/intelligence/calcHealth.js).
+    const calcHealth = buildVaultCalcHealth(fieldsCache, idIndex);
+
     return {
         nodes: idIndex.size,
         edges: indexedEdgeCount,
@@ -289,7 +296,8 @@ function collectHealthStats(options = {}) {
         intelligenceHealth,
         emergingClusters,
         topRelationships,
-        healthTrend
+        healthTrend,
+        calcHealth
     };
 }
 

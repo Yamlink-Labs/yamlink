@@ -13,6 +13,8 @@ const { getPrimaryWorkspaceRoot } = require('../core/workspace');
 const { initializeIgnoredDiagnostics, isDiagnosticIgnored, describeBrokenLink } = require('./ignoredDiagnostics');
 const { isSuppressed } = require('../core/suppressions');
 const { findNearDuplicateScalarValue } = require('../intelligence/valueNormalization');
+const { scanInlineCalcs } = require('../engine/inlineCalc');
+const { createCrossNoteResolver } = require('../engine/crossNoteCalcResolver');
 
 
 const MIN_VAULT_SIZE_FOR_TYPE_ADVISORY = 10;
@@ -550,6 +552,52 @@ function validateDocument(document, getIndex) {
                 }
             }
         }
+    }
+
+    // ─────────────────────────────────────────────
+    // Diagnostic 2b: Live calc formula feedback (any failure code)
+    // ─────────────────────────────────────────────
+    // Every failed calc block already fails honestly as a typed badge on
+    // hover (src/features/hover.js) and as a bare `= ?` in the live ghost
+    // text (src/features/decorations.js) — this surfaces the same failure
+    // proactively in the Problems panel/editor squiggle as you type, not
+    // just when you hover. Originally scoped to REF only (a broken
+    // reference — same-note or cross-note); broadened to every code
+    // (DIV0/NAME/VALUE too) once "feedback while actively editing a
+    // formula" became a real, confirmed feature rather than reference
+    // integrity alone — catching a typo'd variable name or an unmatched
+    // paren the moment it's typed is exactly the point.
+    //
+    // Range precision: mathExpr.js attaches a precise `start`/`end` offset
+    // (relative to the expression text) to syntax/name-resolution failures,
+    // where the offending token is still directly at hand when the failure
+    // happens — this is used here when present, giving a tight squiggle
+    // under just the bad token rather than the whole formula. A type-check
+    // failure (e.g. `"3" + true`) or division-by-zero has no such position
+    // by the time it fails (this evaluator computes directly as it parses,
+    // with no separate AST to carry a position through past the point where
+    // sub-values have already collapsed to plain numbers/strings/booleans) —
+    // a documented, bounded scope cut, not an oversight. Those fall back to
+    // the whole block's range, same as before this broadening.
+    const crossNoteResolver = createCrossNoteResolver({ getIndex });
+    for (const block of scanInlineCalcs(text, { resolveCrossNoteRef: crossNoteResolver })) {
+        if (block.evalResult.ok) continue;
+        const failure = /** @type {{ ok: false, code: string, error: string, start?: number, end?: number }} */ (block.evalResult);
+        const hasPreciseRange = typeof failure.start === 'number' && typeof failure.end === 'number';
+        const range = hasPreciseRange
+            ? new vscode.Range(
+                document.positionAt(block.exprStart + failure.start),
+                document.positionAt(block.exprStart + failure.end)
+            )
+            : new vscode.Range(document.positionAt(block.start), document.positionAt(block.end));
+        const diagnostic = new vscode.Diagnostic(
+            range,
+            `Yamlink: ${failure.error}`,
+            vscode.DiagnosticSeverity.Hint
+        );
+        diagnostic.source = 'yamlink';
+        diagnostic.code = 'yamlink.calcFormulaError';
+        diagnostics.push(diagnostic);
     }
 
     diagnosticCollection.set(

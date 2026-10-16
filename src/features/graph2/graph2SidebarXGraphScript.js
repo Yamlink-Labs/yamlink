@@ -251,8 +251,35 @@ function render(payload) {
     const localScope = payload.scope === 'local' || payload.scope === 'neighborhood';
     if (nc === 0 && localScope) {
       badge.textContent = 'Open a note to see its graph';
+      badge.title = '';
     } else {
-      badge.textContent = nc + ' notes · ' + ec + ' links';
+      // A real, reported bug: this badge used to show the capped subset's
+      // own count with nothing indicating it wasn't the vault's true size —
+      // confirmed directly, the exact number shown was the hardcoded
+      // default node cap, not a coincidence. Only vault scope can be
+      // truncated against the WHOLE vault this way (local/neighborhood/
+      // domain/custom all size themselves from a real seed, not a raw
+      // slice of the whole vault) — but local/neighborhood scope has its
+      // OWN, separate truncation: the workspace focus cap can hide some of
+      // the center note's direct neighbors, and hiddenWorkspaceNeighborCount
+      // already carried that exact count in the payload with nothing in
+      // this UI ever reading it — a second, real instance of the same
+      // underlying "capped but not labeled as capped" problem.
+      const totals = payload.vaultTotals;
+      const vaultTruncated = payload.scope === 'vault' && totals && totals.nodeCount > nc;
+      const hiddenNeighbors = payload.hiddenWorkspaceNeighborCount || 0;
+      if (vaultTruncated) {
+        badge.textContent = nc + ' of ' + totals.nodeCount + ' notes shown · ' + ec + ' links';
+      } else if (localScope && hiddenNeighbors > 0) {
+        badge.textContent = nc + ' notes · ' + ec + ' links · ' + hiddenNeighbors + (hiddenNeighbors === 1 ? ' neighbor hidden' : ' neighbors hidden');
+      } else {
+        badge.textContent = nc + ' notes · ' + ec + ' links';
+      }
+      badge.title = vaultTruncated
+        ? 'Showing the ' + nc + ' most-connected notes out of ' + totals.nodeCount + ' total (ranked by connections, not insertion order). Link count excludes weak relations.'
+        : (localScope && hiddenNeighbors > 0)
+          ? 'Some direct neighbors of the active note are hidden by the workspace focus cap. Raise the cap in settings to show more.'
+          : 'Link count excludes weak relations.';
     }
   }
 

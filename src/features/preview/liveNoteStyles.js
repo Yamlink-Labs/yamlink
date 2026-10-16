@@ -292,6 +292,11 @@ const LIVE_NOTE_STYLES = `
   border-radius:4px;
   padding:1px 4px;
 }
+.yl-live-article .yl-calc-result{
+  font-weight:600;
+  color:#86efac;
+  font-variant-numeric:tabular-nums;
+}
 .yl-live-article .view-block{
   position:relative;
   padding-top:14px;

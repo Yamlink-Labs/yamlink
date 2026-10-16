@@ -1,7 +1,8 @@
 'use strict';
 
 const { parseSingleViewBlock, buildQueryString, runQuery } = require('../engine/query');
-const { getFieldsCache } = require('../core/indexService');
+const { getFieldsCache, getIndex } = require('../core/indexService');
+const { readInlineCalcVirtualFields } = require('../engine/queryExecutor');
 const { getTypes: getRegisteredTypes } = require('../registries/typeRegistry');
 const { collectFieldCandidates, collectRelationFieldCandidates } = require('../intelligence/queryDiagnostics');
 const {
@@ -20,7 +21,9 @@ const TASK_PRESETS = [
     'today',
     'upcoming'
 ];
-const RENDER_LAYOUTS = ['table', 'matrix', 'bar', 'scatter'];
+const RENDER_LAYOUTS = ['table', 'matrix', 'bar', 'scatter', 'line', 'pie'];
+const AGGREGATE_FUNCTIONS = ['none', 'sum', 'average', 'min', 'max', 'count'];
+const MAX_AGGREGATE_ROWS = 3;
 const BUILDER_VIRTUAL_FIELD_DESCRIPTIONS = {
     'file.created': 'Yamlink virtual field: when the Markdown file was created.',
     'file.modified': 'Yamlink virtual field: when the Markdown file was last changed.',
@@ -29,6 +32,7 @@ const BUILDER_VIRTUAL_FIELD_DESCRIPTIONS = {
     _hub_score: 'Yamlink computed field: how connected this note is; higher means more central to the vault.'
 };
 const BUILDER_VIRTUAL_FIELDS = Object.keys(BUILDER_VIRTUAL_FIELD_DESCRIPTIONS);
+const INLINE_CALC_FIELD_DESCRIPTION = 'Yamlink calculated cell - a computed value from an inline formula (`=expr`) in this note\'s body.';
 const QUERY_BUILDER_PRESETS = [
     {
         key: 'most-connected',
@@ -155,11 +159,52 @@ function deriveKnownTypes(fieldsCache = getFieldsCache()) {
     return uniqueSorted([...registryTypes, ...vaultTypes]);
 }
 
+function collectInlineCalcFieldCandidates(type, fieldsCache, idIndex, readCellFields = readInlineCalcVirtualFields) {
+    const fieldSet = new Set();
+    const requestedType = String(type || '*').trim().toLowerCase() || '*';
+    const cache = fieldsCache instanceof Map ? fieldsCache : new Map();
+    const index = idIndex instanceof Map ? idIndex : new Map();
+    for (const [id, fields] of cache.entries()) {
+        const nodeType = String(fields?.type || '').trim().toLowerCase();
+        if (requestedType && requestedType !== '*' && nodeType !== requestedType) continue;
+        const filePath = index.get(id);
+        if (!filePath) continue;
+        const cellFields = readCellFields(filePath) || {};
+        for (const key of Object.keys(cellFields)) fieldSet.add(key);
+    }
+    return [...fieldSet].sort();
+}
+
 function normalizeRelationValue(value) {
     const raw = String(value || '').trim();
     if (!raw) return '';
     if (raw.startsWith('[[') && raw.endsWith(']]')) return raw;
     return raw;
+}
+
+function normalizeAggregateRows(inputRows = []) {
+    const source = Array.isArray(inputRows) ? inputRows : [];
+    return Array.from({ length: MAX_AGGREGATE_ROWS }, (_, index) => {
+        const row = source[index] || {};
+        const fn = AGGREGATE_FUNCTIONS.includes(row.fn) ? row.fn : 'none';
+        const field = String(row.field || '').trim().toLowerCase();
+        const alias = String(row.alias || '').trim().toLowerCase();
+        if (fn === 'none') return { fn: 'none', field: '', alias: '' };
+        if (fn === 'count') return { fn, field, alias: alias || 'count' };
+        return { fn, field, alias };
+    });
+}
+
+function activeAggregateTerms(aggregateRows = []) {
+    return normalizeAggregateRows(aggregateRows)
+        .filter((row) => row.fn !== 'none')
+        .filter((row) => row.fn === 'count' || row.field)
+        .filter((row) => row.alias)
+        .map((row) => ({
+            fn: row.fn,
+            field: row.fn === 'count' && !row.field ? null : row.field,
+            alias: row.alias
+        }));
 }
 
 function normalizeBuilderState(input = {}, options = {}) {
@@ -183,7 +228,8 @@ function normalizeBuilderState(input = {}, options = {}) {
         matrixColType: String(input.matrixColType || '').trim().toLowerCase(),
         scatterX: String(input.scatterX || '').trim().toLowerCase(),
         scatterY: String(input.scatterY || '').trim().toLowerCase(),
-        barGroupBy: String(input.barGroupBy || '').trim().toLowerCase()
+        barGroupBy: String(input.barGroupBy || '').trim().toLowerCase(),
+        aggregateRows: normalizeAggregateRows(input.aggregateRows)
     };
     if (normalized.type !== '*' && !knownTypes.includes(normalized.type) && normalized.mode !== 'tasks') {
         normalized.type = knownTypes[0] || '*';
@@ -241,6 +287,13 @@ function buildStateFromQuery(query, options = {}) {
         limit: query.limit || 0,
         viaField: query.via || '*',
         groupBy: query.groupBy || '',
+        aggregateRows: Array.isArray(query.aggregate)
+            ? query.aggregate.slice(0, MAX_AGGREGATE_ROWS).map((term) => ({
+                fn: AGGREGATE_FUNCTIONS.includes(term.fn) ? term.fn : 'none',
+                field: term.field || '',
+                alias: term.alias || ''
+            }))
+            : [],
         renderLayout: 'table'
     }, { fieldsCache, knownTypes });
 }
@@ -273,7 +326,9 @@ function buildRenderLayoutSummary(parsed, result, options = {}) {
             { key: 'table', label: 'Table', enabled: true, detail: 'Default editable rows and columns.' },
             { key: 'matrix', label: 'Matrix', enabled: rowType !== 'tasks', detail: rowType === 'tasks' ? 'Matrix is best for note-to-note relation grids.' : 'Compare one note type against another.' },
             { key: 'bar', label: 'Bar', enabled: columns.some((field) => field !== 'id'), detail: 'Bucket records by a selected field.' },
-            { key: 'scatter', label: 'Scatter', enabled: hasNumericOrDate, detail: hasNumericOrDate ? 'Plot numeric or date fields against each other.' : 'Needs numeric or date fields in the result.' }
+            { key: 'scatter', label: 'Scatter', enabled: hasNumericOrDate, detail: hasNumericOrDate ? 'Plot numeric or date fields against each other.' : 'Needs numeric or date fields in the result.' },
+            { key: 'line', label: 'Line', enabled: hasNumericOrDate, detail: hasNumericOrDate ? 'Plot numeric or date fields as a connected trend.' : 'Needs numeric or date fields in the result.' },
+            { key: 'pie', label: 'Pie', enabled: Boolean(parsed?.groupBy), detail: parsed?.groupBy ? 'Show grouped results as category slices.' : 'Needs a group by field.' }
         ],
         matrixColumnTypes,
         scatterFields: columns.filter((field) => field !== 'id'),
@@ -328,6 +383,8 @@ function buildQueryTextFromState(input, options = {}) {
             parsed.select = parseSingleViewBlock(buildTypeViewQuery(state.type, 'smart').split('\n'))?.select || null;
         }
         parsed.groupBy = state.groupBy || null;
+        parsed.aggregate = activeAggregateTerms(state.aggregateRows);
+        if (!parsed.aggregate.length) parsed.aggregate = null;
         if (state.whereField && state.whereValue) {
             const relationValue = normalizeRelationValue(state.whereValue);
             const isRelation = relationValue.startsWith('[[') && relationValue.endsWith(']]');
@@ -398,13 +455,19 @@ function buildPreviewFromState(state, options = {}) {
 
 function buildBuilderOptions(state, options = {}) {
     const fieldsCache = options.fieldsCache || getFieldsCache();
+    const idIndex = options.idIndex || getIndex();
     const knownTypes = options.knownTypes || deriveKnownTypes(fieldsCache);
     const normalized = normalizeBuilderState(state, { fieldsCache, knownTypes });
     const type = normalized.type || '*';
+    const inlineCalcFieldCandidates = collectInlineCalcFieldCandidates(type, fieldsCache, idIndex, options.readCellFields);
     const fieldCandidates = uniqueInOrder([
         ...collectFieldCandidates(type, fieldsCache),
+        ...inlineCalcFieldCandidates,
         ...BUILDER_VIRTUAL_FIELDS
     ]);
+    const inlineCalcFieldDescriptions = Object.fromEntries(
+        inlineCalcFieldCandidates.map((field) => [field, INLINE_CALC_FIELD_DESCRIPTION])
+    );
     const relationFieldCandidates = collectRelationFieldCandidates(type, fieldsCache);
     const smartFields = type === '*'
         ? []
@@ -417,7 +480,7 @@ function buildBuilderOptions(state, options = {}) {
         smartFields,
         groupableFields,
         defaultSelectClause: defaultSelectClauseForType(type),
-        fieldDescriptions: { ...BUILDER_VIRTUAL_FIELD_DESCRIPTIONS },
+        fieldDescriptions: { ...BUILDER_VIRTUAL_FIELD_DESCRIPTIONS, ...inlineCalcFieldDescriptions },
         presets: QUERY_BUILDER_PRESETS.map((preset) => ({
             key: preset.key,
             label: preset.label,
@@ -430,8 +493,13 @@ function buildBuilderOptions(state, options = {}) {
 module.exports = {
     TASK_PRESETS,
     RENDER_LAYOUTS,
+    AGGREGATE_FUNCTIONS,
+    MAX_AGGREGATE_ROWS,
     BUILDER_VIRTUAL_FIELD_DESCRIPTIONS,
     QUERY_BUILDER_PRESETS,
+    collectInlineCalcFieldCandidates,
+    normalizeAggregateRows,
+    activeAggregateTerms,
     deriveKnownTypes,
     normalizeBuilderState,
     buildStateFromQuery,

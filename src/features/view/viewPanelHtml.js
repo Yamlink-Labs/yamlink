@@ -244,19 +244,66 @@ function buildLayoutToggleButtons(activeLayout, opts = {}) {
         ['table', 'Table', false],
         ['matrix', 'Matrix', false],
         ['bar', 'Bar', false],
-        ['scatter', 'Scatter', !!opts.scatterDisabled]
+        ['scatter', 'Scatter', !!opts.scatterDisabled],
+        ['line', 'Line', !!opts.lineDisabled],
+        ['pie', 'Pie', !!opts.pieDisabled]
     ];
     return `<div class="layout-toggle" role="group" aria-label="Layout mode">${layouts.map(([layout, label, disabled]) =>
-        `<button class="layout-btn${activeLayout === layout ? ' active' : ''}"${disabled ? ' disabled title="No numeric or date fields in this result"' : ''} data-layout-btn="${layout}" aria-pressed="${activeLayout === layout}">${label}</button>`
+        `<button class="layout-btn${activeLayout === layout ? ' active' : ''}"${disabled ? ` disabled title="${layout === 'pie' ? 'Pie chart requires grouped results' : 'No numeric or date fields in this result'}"` : ''} data-layout-btn="${layout}" aria-pressed="${activeLayout === layout}">${label}</button>`
     ).join('')}</div>`;
 }
 
-function buildBarChartHtml({ idx, groups, groupField, nonce }) {
+/**
+ * Builds the optional "Value" picker shown above a grouped bar/pie chart
+ * when the query's own `aggregate` clause computed something per bucket
+ * beyond the default row count (`sum`/`average`/`min`/`max`, or a
+ * non-default-named `count`) — e.g. `group by unit aggregate
+ * sum(cell.total) as total` lets the chart plot `total` per unit instead of
+ * just how many notes are in each unit. Bare `count` is never offered here
+ * as a second, redundant "Value" option: it's already the picker's own
+ * default (the empty `""` option, labeled "Count"), exactly matching what
+ * every bar/pie chart already plotted before aggregates existed, so a
+ * query without `aggregate` renders byte-identical charts to before this
+ * existed.
+ * @param {{fn:string, field:string|null, alias:string}[]} aggregateTerms @param {string} valueField
+ * @returns {{picker: string, selectedValue: string}}
+ */
+function buildChartValuePicker(aggregateTerms, valueField) {
+    const aliasOptions = Array.isArray(aggregateTerms)
+        ? aggregateTerms.filter((t) => t.fn !== 'count' || t.alias !== 'count').map((t) => t.alias)
+        : [];
+    if (!aliasOptions.length) return { picker: '', selectedValue: '' };
+    const selectedValue = aliasOptions.includes(valueField) ? valueField : '';
+    const options = [`<option value=""${selectedValue === '' ? ' selected' : ''}>Count</option>`]
+        .concat(aliasOptions.map((alias) => `<option value="${esc(alias)}"${alias === selectedValue ? ' selected' : ''}>${esc(alias)}</option>`))
+        .join('');
+    const picker = `<div class="chart-value-picker"><label class="chart-value-label">Value <select data-chart-value-select class="chart-value-select">${options}</select></label></div>`;
+    return { picker, selectedValue };
+}
+
+/**
+ * A group's plotted value: its `aggregate`-computed value when the picker
+ * selected one, otherwise the plain row count every chart plotted before
+ * aggregates existed. A bucket with no numeric values for the chosen
+ * aggregate (`g.aggregates[selectedValue]` is `null`) is passed through as
+ * `null`, not coerced to `0` — Chart.js skips a `null` data point instead of
+ * drawing a fabricated empty bar/slice, the same "honest silence over wrong
+ * guesses" choice the table/summary-strip rendering already makes.
+ * @param {object} group @param {string} selectedValue @returns {number|null}
+ */
+function resolveChartValue(group, selectedValue) {
+    if (!selectedValue) return group.count;
+    return group.aggregates ? (group.aggregates[selectedValue] ?? null) : null;
+}
+
+function buildBarChartHtml({ idx, groups, groupField, nonce, aggregateTerms, valueField }) {
     if (!groupField || !Array.isArray(groups)) {
         return buildInfoCardHtml('Bar chart unavailable', 'Bar chart requires a <code>group by</code> clause.');
     }
+    const { picker, selectedValue } = buildChartValuePicker(aggregateTerms, valueField);
+    const valueLabel = selectedValue || 'count';
     const labels = groups.map((group) => group.key === '' ? '(empty)' : group.key);
-    const counts = groups.map((group) => group.count);
+    const values = groups.map((group) => resolveChartValue(group, selectedValue));
     const colors = groups.map((_, index) => getChartColor(index));
     const canvasId = `view-chart-bar-${idx}`;
     const config = {
@@ -264,8 +311,8 @@ function buildBarChartHtml({ idx, groups, groupField, nonce }) {
         data: {
             labels,
             datasets: [{
-                label: groupField,
-                data: counts,
+                label: valueLabel,
+                data: values,
                 backgroundColor: colors,
                 borderColor: colors,
                 borderWidth: 1.2,
@@ -303,7 +350,56 @@ function buildBarChartHtml({ idx, groups, groupField, nonce }) {
             }
         }
     };
-    return `<div class="chart-surface"><div class="chart-surface-head"><div><div class="chart-surface-title">Bar chart</div><div class="chart-surface-copy">Grouped by <code>${esc(groupField)}</code> across ${groups.length} bucket${groups.length === 1 ? '' : 's'}.</div></div></div><div class="chart-canvas-wrap"><canvas id="${canvasId}" class="chart-canvas" aria-label="Bar chart for ${esc(groupField)}" role="img"></canvas></div></div><script nonce="${nonce}">(() => { const canvas = document.getElementById(${serialiseForInlineScript(canvasId)}); if (!canvas || !window.Chart) return; const ctx = canvas.getContext('2d'); new window.Chart(ctx, ${serialiseForInlineScript(config)}); })();</script>`;
+    return `<div class="chart-surface"><div class="chart-surface-head"><div><div class="chart-surface-title">Bar chart</div><div class="chart-surface-copy">Grouped by <code>${esc(groupField)}</code> across ${groups.length} bucket${groups.length === 1 ? '' : 's'}, plotting <code>${esc(valueLabel)}</code>.</div></div>${picker}</div><div class="chart-canvas-wrap"><canvas id="${canvasId}" class="chart-canvas" aria-label="Bar chart for ${esc(groupField)}" role="img"></canvas></div></div><script nonce="${nonce}">(() => { const canvas = document.getElementById(${serialiseForInlineScript(canvasId)}); if (!canvas || !window.Chart) return; const ctx = canvas.getContext('2d'); new window.Chart(ctx, ${serialiseForInlineScript(config)}); })();</script>`;
+}
+
+function buildPieChartHtml({ idx, groups, groupField, nonce, aggregateTerms, valueField }) {
+    if (!groupField || !Array.isArray(groups)) {
+        return buildInfoCardHtml('Pie chart unavailable', 'Pie chart requires a <code>group by</code> clause.');
+    }
+    const { picker, selectedValue } = buildChartValuePicker(aggregateTerms, valueField);
+    const valueLabel = selectedValue || 'count';
+    const labels = groups.map((group) => group.key === '' ? '(empty)' : group.key);
+    const values = groups.map((group) => resolveChartValue(group, selectedValue));
+    const colors = groups.map((_, index) => getChartColor(index));
+    const canvasId = `view-chart-pie-${idx}`;
+    const config = {
+        type: 'pie',
+        data: {
+            labels,
+            datasets: [{
+                label: valueLabel,
+                data: values,
+                backgroundColor: colors,
+                borderColor: '#111318',
+                borderWidth: 2
+            }]
+        },
+        options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            plugins: {
+                legend: {
+                    display: true,
+                    position: 'right',
+                    labels: {
+                        color: '#c8c8c8',
+                        usePointStyle: true,
+                        boxWidth: 10,
+                        boxHeight: 10
+                    }
+                },
+                tooltip: {
+                    backgroundColor: '#111318',
+                    borderColor: 'rgba(94,207,190,0.22)',
+                    borderWidth: 1,
+                    titleColor: '#e6edf3',
+                    bodyColor: '#c8c8c8'
+                }
+            }
+        }
+    };
+    return `<div class="chart-surface"><div class="chart-surface-head"><div><div class="chart-surface-title">Pie chart</div><div class="chart-surface-copy">Grouped by <code>${esc(groupField)}</code> across ${groups.length} slice${groups.length === 1 ? '' : 's'}, plotting <code>${esc(valueLabel)}</code>.</div></div>${picker}</div><div class="chart-canvas-wrap"><canvas id="${canvasId}" class="chart-canvas" aria-label="Pie chart for ${esc(groupField)}" role="img"></canvas></div></div><script nonce="${nonce}">(() => { const canvas = document.getElementById(${serialiseForInlineScript(canvasId)}); if (!canvas || !window.Chart) return; const ctx = canvas.getContext('2d'); new window.Chart(ctx, ${serialiseForInlineScript(config)}); })();</script>`;
 }
 
 function buildScatterChartHtml({ idx, rows, columns, meta, xField, yField, types, nonce }) {
@@ -358,6 +454,84 @@ function buildScatterChartHtml({ idx, rows, columns, meta, xField, yField, types
     return `<div class="chart-surface"><div class="chart-surface-head"><div><div class="chart-surface-title">Scatter chart</div><div class="chart-surface-copy">Plotting <code>${esc(selectedX)}</code> against <code>${esc(selectedY)}</code> across ${rows.length} row${rows.length === 1 ? '' : 's'}.</div></div>${picker}</div><div class="chart-canvas-wrap"><canvas id="${canvasId}" class="chart-canvas" aria-label="Scatter chart for ${esc(selectedX)} and ${esc(selectedY)}" role="img"></canvas></div></div><script nonce="${nonce}">(() => { const canvas = document.getElementById(${serialiseForInlineScript(canvasId)}); if (!canvas || !window.Chart) return; const ctx = canvas.getContext('2d'); new window.Chart(ctx, { type: 'scatter', data: ${serialiseForInlineScript(dataConfig)}, options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { labels: { color: '#c8c8c8', usePointStyle: true, boxWidth: 10, boxHeight: 10 } }, tooltip: { backgroundColor: '#111318', borderColor: 'rgba(94,207,190,0.22)', borderWidth: 1, titleColor: '#e6edf3', bodyColor: '#c8c8c8', callbacks: { title(items) { return items[0]?.raw?.label || items[0]?.raw?.id || ''; }, label(context) { const raw = context.raw || {}; const xv = ${xIsDate} ? new Date(raw.x).toISOString().slice(0, 10) : raw.x; const yv = ${yIsDate} ? new Date(raw.y).toISOString().slice(0, 10) : raw.y; return ${serialiseForInlineScript(selectedX)} + ': ' + xv + ' · ' + ${serialiseForInlineScript(selectedY)} + ': ' + yv; } } } }, scales: { x: { ticks: { color: '#8b949e', callback(value) { return ${xIsDate} ? new Date(value).toISOString().slice(0, 10) : value; } }, grid: { color: 'rgba(136,153,170,0.14)' }, border: { color: 'rgba(136,153,170,0.22)' }, title: { display: true, text: ${serialiseForInlineScript(selectedX)}, color: '#8b949e' } }, y: { ticks: { color: '#8b949e', callback(value) { return ${yIsDate} ? new Date(value).toISOString().slice(0, 10) : value; } }, grid: { color: 'rgba(136,153,170,0.10)' }, border: { color: 'rgba(136,153,170,0.22)' }, title: { display: true, text: ${serialiseForInlineScript(selectedY)}, color: '#8b949e' } } } } }); })();</script>`;
 }
 
+function buildLineChartHtml({ idx, rows, columns, meta, xField, yField, types, nonce }) {
+    const axisFields = buildScatterAxisCandidates(columns, meta);
+    if (!axisFields.length) {
+        return buildInfoCardHtml('Line chart unavailable', 'Line chart needs numeric or date fields in the result.');
+    }
+    const selectedX = xField || axisFields[0] || '';
+    const selectedY = yField || axisFields[1] || axisFields[0] || '';
+    const picker = `<div class="scatter-axis-picker"><label class="scatter-axis-label">X axis <select data-scatter-axis="x" class="scatter-axis-select"><option value="">Choose field…</option>${axisFields.map((field) => `<option value="${esc(field)}"${field === selectedX ? ' selected' : ''}>${esc(field)}</option>`).join('')}</select></label><label class="scatter-axis-label">Y axis <select data-scatter-axis="y" class="scatter-axis-select"><option value="">Choose field…</option>${axisFields.map((field) => `<option value="${esc(field)}"${field === selectedY ? ' selected' : ''}>${esc(field)}</option>`).join('')}</select></label></div>`;
+    const xKind = meta[selectedX]?.kind || 'text';
+    const yKind = meta[selectedY]?.kind || 'text';
+    if (!['number', 'date'].includes(xKind) || !['number', 'date'].includes(yKind)) {
+        return `<div class="chart-surface"><div class="chart-surface-head"><div><div class="chart-surface-title">Line chart</div><div class="chart-surface-copy"><code>${esc(selectedX)}</code> and <code>${esc(selectedY)}</code> must be numeric or date fields.</div></div></div>${picker}</div>`;
+    }
+
+    const typeColors = getTypeColorMap(types.length ? types : [...new Set(rows.map((row) => row.nodeType || 'unknown'))]);
+    const datasetsByType = new Map();
+    for (const row of rows) {
+        const xValue = coerceScatterValue(selectedX === 'id' ? row.id : row.fields[selectedX], xKind);
+        const yValue = coerceScatterValue(selectedY === 'id' ? row.id : row.fields[selectedY], yKind);
+        if (xValue == null || yValue == null) continue;
+        const type = row.nodeType || 'unknown';
+        if (!datasetsByType.has(type)) {
+            const color = typeColors.get(type) || getChartColor(datasetsByType.size);
+            datasetsByType.set(type, {
+                label: type,
+                data: [],
+                fill: false,
+                showLine: true,
+                tension: 0.24,
+                backgroundColor: color,
+                borderColor: color,
+                pointRadius: 3,
+                pointHoverRadius: 5,
+                borderWidth: 2
+            });
+        }
+        datasetsByType.get(type).data.push({
+            x: xValue,
+            y: yValue,
+            label: row.fields.name || row.fields.title || row.id,
+            id: row.id
+        });
+    }
+    const datasets = [...datasetsByType.values()]
+        .map((dataset) => ({ ...dataset, data: dataset.data.sort((a, b) => a.x - b.x) }))
+        .filter((dataset) => dataset.data.length);
+    if (!datasets.length) {
+        return `<div class="chart-surface"><div class="chart-surface-head"><div><div class="chart-surface-title">Line chart</div><div class="chart-surface-copy">No rows have values for both <code>${esc(selectedX)}</code> and <code>${esc(selectedY)}</code>.</div></div></div>${picker}</div>`;
+    }
+    const canvasId = `view-chart-line-${idx}`;
+    const dataConfig = { datasets };
+    const xIsDate = xKind === 'date';
+    const yIsDate = yKind === 'date';
+    return `<div class="chart-surface"><div class="chart-surface-head"><div><div class="chart-surface-title">Line chart</div><div class="chart-surface-copy">Plotting <code>${esc(selectedX)}</code> against <code>${esc(selectedY)}</code> across ${rows.length} row${rows.length === 1 ? '' : 's'}.</div></div>${picker}</div><div class="chart-canvas-wrap"><canvas id="${canvasId}" class="chart-canvas" aria-label="Line chart for ${esc(selectedX)} and ${esc(selectedY)}" role="img"></canvas></div></div><script nonce="${nonce}">(() => { const canvas = document.getElementById(${serialiseForInlineScript(canvasId)}); if (!canvas || !window.Chart) return; const ctx = canvas.getContext('2d'); new window.Chart(ctx, { type: 'line', data: ${serialiseForInlineScript(dataConfig)}, options: { responsive: true, maintainAspectRatio: false, showLine: true, plugins: { legend: { labels: { color: '#c8c8c8', usePointStyle: true, boxWidth: 10, boxHeight: 10 } }, tooltip: { backgroundColor: '#111318', borderColor: 'rgba(94,207,190,0.22)', borderWidth: 1, titleColor: '#e6edf3', bodyColor: '#c8c8c8', callbacks: { title(items) { return items[0]?.raw?.label || items[0]?.raw?.id || ''; }, label(context) { const raw = context.raw || {}; const xv = ${xIsDate} ? new Date(raw.x).toISOString().slice(0, 10) : raw.x; const yv = ${yIsDate} ? new Date(raw.y).toISOString().slice(0, 10) : raw.y; return ${serialiseForInlineScript(selectedX)} + ': ' + xv + ' · ' + ${serialiseForInlineScript(selectedY)} + ': ' + yv; } } } }, scales: { x: { ticks: { color: '#8b949e', callback(value) { return ${xIsDate} ? new Date(value).toISOString().slice(0, 10) : value; } }, grid: { color: 'rgba(136,153,170,0.14)' }, border: { color: 'rgba(136,153,170,0.22)' }, title: { display: true, text: ${serialiseForInlineScript(selectedX)}, color: '#8b949e' } }, y: { ticks: { color: '#8b949e', callback(value) { return ${yIsDate} ? new Date(value).toISOString().slice(0, 10) : value; } }, grid: { color: 'rgba(136,153,170,0.10)' }, border: { color: 'rgba(136,153,170,0.22)' }, title: { display: true, text: ${serialiseForInlineScript(selectedY)}, color: '#8b949e' } } } } }); })();</script>`;
+}
+
+// Whole-result summary for an `aggregate` clause with no `group by` — one
+// pill per term, in query order. Returns '' when there's no aggregate
+// clause (or it produced nothing), so every existing (non-aggregate) query
+// renders identically to before this feature existed.
+function buildAggregateSummaryHtml(aggregates, terms) {
+    if (!aggregates || !Array.isArray(terms) || !terms.length) return '';
+    const pills = terms.map(t => {
+        const v = aggregates[t.alias];
+        const display = v == null ? '—' : (Number.isInteger(v) ? String(v) : v.toFixed(2));
+        return `<span class="aggregate-pill"><span class="aggregate-pill-label">${esc(t.alias)}</span><span class="aggregate-pill-value">${esc(display)}</span></span>`;
+    }).join('');
+    return `<div class="aggregate-summary">${pills}</div>`;
+}
+
+function buildCalcSourceCellHtml(row, col, display, hiddenClass = '', filterAttr = '', sortAttr = '') {
+    if (!String(col || '').startsWith('cell.')) return null;
+    const source = row?.cellMeta?.[col];
+    if (!source) return null;
+    const title = `${source.label}${source.name ? ' · ' + source.name : ''} = ${source.expr}`;
+    return `<td class="${hiddenClass}"${filterAttr}${sortAttr}><button type="button" class="cell-calc-source" data-id="${esc(row.id)}" title="${esc(title)}" aria-label="Open source note for ${esc(col)}">${esc(display)}</button></td>`;
+}
+
 function buildPanel(query, idx, activeTab, tabState, contextNodeId, nonce) {
     const queryText = buildQueryString(query);
     const vaultGeneration = getVaultGeneration();
@@ -373,15 +547,17 @@ function buildPanel(query, idx, activeTab, tabState, contextNodeId, nonce) {
     }
 
     const { rows, types, warnings } = result;
-    const activeLayout = ['table', 'matrix', 'bar', 'scatter'].includes(tabState.layout) ? tabState.layout : 'table';
-    let layoutToggleBtns = buildLayoutToggleButtons(activeLayout, { scatterDisabled: !!result.groupBy });
+    const activeLayout = ['table', 'matrix', 'bar', 'scatter', 'line', 'pie'].includes(tabState.layout) ? tabState.layout : 'table';
+    let layoutToggleBtns = buildLayoutToggleButtons(activeLayout, { scatterDisabled: !!result.groupBy, lineDisabled: !!result.groupBy, pieDisabled: !result.groupBy });
     const scopeLabel = query.incoming ? 'Incoming' : (query.type === '*' ? 'Vault' : query.type);
     const viewLabel = query.label || (query.type === '*' ? 'All notes' : query.type);
     const heroTitle = {
         table: 'Table View',
         matrix: 'Matrix View',
         bar: 'Bar Chart',
-        scatter: 'Scatter Plot'
+        scatter: 'Scatter Plot',
+        line: 'Line Chart',
+        pie: 'Pie Chart'
     }[activeLayout] || 'Table View';
     const heroMetaCount = result.groupBy
         ? `${(result.groups || []).length} group${(result.groups || []).length === 1 ? '' : 's'}`
@@ -391,26 +567,49 @@ function buildPanel(query, idx, activeTab, tabState, contextNodeId, nonce) {
         const groupField = result.groupBy;
         const groups = result.groups || [];
         const warningBanner = warnings.length ? buildWarningBanner(query, warnings) : '';
+        // Additive: an `aggregate` clause adds one column per alias (skipping
+        // a bare `count` term since 'count' is already the second hardcoded
+        // column). With no aggregate clause, extraCols is [] and every one of
+        // these reduces to today's exact 2-column markup, byte-for-byte.
+        const extraCols = Array.isArray(query.aggregate)
+            ? query.aggregate.filter(t => t.fn !== 'count').map(t => t.alias)
+            : [];
+        const formatAggregateValue = (v) => v == null
+            ? '<span class="cell-empty">-</span>'
+            : (Number.isInteger(v) ? String(v) : v.toFixed(2));
+        const headerCells = `<th>${esc(groupField)}</th><th>count</th>` + extraCols.map(a => `<th>${esc(a)}</th>`).join('');
+        const colGroupCells = '<col><col style="width:80px">' + extraCols.map(() => '<col>').join('');
         const groupBodyRows = groups.length
-            ? groups.map(g => `<tr><td>${g.key === '' ? '<span class="cell-empty">-</span>' : esc(g.key)}</td><td>${g.count}</td></tr>`).join('')
-            : `<tr><td colspan="2" class="empty-state">${buildTableEmptyState(query, warnings)}</td></tr>`;
+            ? groups.map(g => {
+                const extraCells = extraCols.map(a => `<td>${formatAggregateValue(g.aggregates ? g.aggregates[a] : null)}</td>`).join('');
+                return `<tr><td>${g.key === '' ? '<span class="cell-empty">-</span>' : esc(g.key)}</td><td>${g.count}</td>${extraCells}</tr>`;
+            }).join('')
+            : `<tr><td colspan="${2 + extraCols.length}" class="empty-state">${buildTableEmptyState(query, warnings)}</td></tr>`;
+        const aggregateTerms = Array.isArray(query.aggregate) ? query.aggregate : null;
+        const chartValueField = tabState.chartValueField || '';
         const groupedLayoutHtml = activeLayout === 'bar'
-            ? buildBarChartHtml({ idx, groups, groupField, nonce })
+            ? buildBarChartHtml({ idx, groups, groupField, nonce, aggregateTerms, valueField: chartValueField })
+            : activeLayout === 'pie'
+                ? buildPieChartHtml({ idx, groups, groupField, nonce, aggregateTerms, valueField: chartValueField })
             : activeLayout === 'table'
-                ? `<div class="table-wrap"><table><colgroup><col><col style="width:80px"></colgroup><thead><tr><th>${esc(groupField)}</th><th>count</th></tr></thead><tbody>${groupBodyRows}</tbody></table></div>`
+                ? `<div class="table-wrap"><table><colgroup>${colGroupCells}</colgroup><thead><tr>${headerCells}</tr></thead><tbody>${groupBodyRows}</tbody></table></div>`
                 : buildInfoCardHtml(
-                    activeLayout === 'scatter' ? 'Scatter chart unavailable' : 'Matrix view unavailable',
                     activeLayout === 'scatter'
-                        ? 'Scatter chart works with row results. Use a standard <code>!view</code> result with numeric or date fields.'
+                        ? 'Scatter chart unavailable'
+                        : activeLayout === 'line'
+                            ? 'Line chart unavailable'
+                            : 'Matrix view unavailable',
+                    activeLayout === 'scatter' || activeLayout === 'line'
+                        ? `${activeLayout === 'line' ? 'Line chart' : 'Scatter chart'} works with row results. Use a standard <code>!view</code> result with numeric or date fields.`
                         : 'Matrix view works on row results, not grouped summaries.'
                 );
-        return `<div class="tab-panel${isActive ? ' active' : ''}" id="tab-panel-${idx}" role="tabpanel" aria-labelledby="tab-btn-${idx}" data-tab="${idx}" data-layout="${esc(activeLayout)}" data-matrix-col-type="" data-scatter-x="${esc(tabState.scatterX || '')}" data-scatter-y="${esc(tabState.scatterY || '')}" data-column-filters="${esc(JSON.stringify(tabState.columnFilters || {}))}" data-current-page="1" data-page-size="50" style="display:${isActive ? 'flex' : 'none'}"${isActive ? '' : ' hidden'}><div class="view-shell">${warningBanner}<div class="query-hero"><div class="query-hero-top"><div class="query-hero-title">${heroTitle}</div><div class="query-hero-subtle">${esc(viewLabel)}</div></div><div class="query-hero-query"><span class="query-hero-query-label">${iconGlyph('query')}Query</span><code>${formatQueryHeroText(queryText)}</code></div><div class="query-hero-meta"><span class="query-hero-badge">${esc(scopeLabel)}</span><span class="query-hero-badge">${heroMetaCount}</span></div></div><div class="query-toolbar"><div class="toolbar-group group-view"><div class="toolbar-group-label">${iconGlyph('view')}View</div><div class="toolbar-group-row"><button class="btn report-btn">Open report</button><button class="btn reset-btn">Reset view</button></div></div><div class="toolbar-group group-filters"><div class="toolbar-group-label">${iconGlyph('filters')}Filters</div><div class="toolbar-group-row"><button class="btn refine-btn" data-query-index="${idx}">Refine view</button></div></div><div class="toolbar-group group-layout"><div class="toolbar-group-label">${iconGlyph('layout')}Layout</div><div class="toolbar-group-row">${layoutToggleBtns}</div></div><div class="toolbar-group group-export"><div class="toolbar-group-label">${iconGlyph('export')}Export</div><div class="toolbar-group-row"><button class="btn export-btn" data-format="csv">CSV</button><button class="btn export-btn" data-format="json">JSON</button></div></div></div>${groupedLayoutHtml}</div></div>`;
+        return `<div class="tab-panel${isActive ? ' active' : ''}" id="tab-panel-${idx}" role="tabpanel" aria-labelledby="tab-btn-${idx}" data-tab="${idx}" data-layout="${esc(activeLayout)}" data-matrix-col-type="" data-scatter-x="${esc(tabState.scatterX || '')}" data-scatter-y="${esc(tabState.scatterY || '')}" data-chart-value-field="${esc(chartValueField)}" data-column-filters="${esc(JSON.stringify(tabState.columnFilters || {}))}" data-current-page="1" data-page-size="50" style="display:${isActive ? 'flex' : 'none'}"${isActive ? '' : ' hidden'}><div class="view-shell">${warningBanner}<div class="query-hero"><div class="query-hero-top"><div class="query-hero-title">${heroTitle}</div><div class="query-hero-subtle">${esc(viewLabel)}</div></div><div class="query-hero-query"><span class="query-hero-query-label">${iconGlyph('query')}Query</span><code>${formatQueryHeroText(queryText)}</code></div><div class="query-hero-meta"><span class="query-hero-badge">${esc(scopeLabel)}</span><span class="query-hero-badge">${heroMetaCount}</span></div></div><div class="query-toolbar"><div class="toolbar-group group-view"><div class="toolbar-group-label">${iconGlyph('view')}View</div><div class="toolbar-group-row"><button class="btn report-btn">Open report</button><button class="btn reset-btn">Reset view</button></div></div><div class="toolbar-group group-filters"><div class="toolbar-group-label">${iconGlyph('filters')}Filters</div><div class="toolbar-group-row"><button class="btn refine-btn" data-query-index="${idx}">Refine view</button></div></div><div class="toolbar-group group-layout"><div class="toolbar-group-label">${iconGlyph('layout')}Layout</div><div class="toolbar-group-row">${layoutToggleBtns}</div></div><div class="toolbar-group group-export"><div class="toolbar-group-label">${iconGlyph('export')}Export</div><div class="toolbar-group-row"><button class="btn export-btn" data-format="csv">CSV</button><button class="btn export-btn" data-format="json">JSON</button></div></div></div>${groupedLayoutHtml}</div></div>`;
     }
 
     const columns = applySavedColumnOrder(result.columns, tabState.columnOrder);
     const meta = analyseColumns(rows, columns, query);
     const hasNumericOrDate = Object.values(meta).some(m => m.kind === 'number' || m.kind === 'date');
-    layoutToggleBtns = buildLayoutToggleButtons(activeLayout, { scatterDisabled: !hasNumericOrDate });
+    layoutToggleBtns = buildLayoutToggleButtons(activeLayout, { scatterDisabled: !hasNumericOrDate, lineDisabled: !hasNumericOrDate, pieDisabled: true });
     const savedSearch = tabState.search || '';
     const savedSort = normalizeSavedSort(tabState.sort);
     const savedFilter = tabState.filter || 'all';
@@ -506,6 +705,8 @@ function buildPanel(query, idx, activeTab, tabState, contextNodeId, nonce) {
                 if (!raw) {
                     return `<td class="cell-empty cell-editable${hiddenClass}" data-edit-mode="text" data-filepath="${esc(row.filePath)}" data-field="${esc(col)}" data-value="">-</td>`;
                 }
+                const calcSourceCell = buildCalcSourceCellHtml(row, col, display, hiddenClass, filterAttr, sortAttr);
+                if (calcSourceCell) return calcSourceCell;
                 if (cellMeta.kind === 'relation') {
                     const rels = [...raw.matchAll(/\[\[([^\]]+)\]\]/g)].map(m => m[1]);
                     if (rels.length === 1) {
@@ -588,7 +789,14 @@ ${matrixContent}</div></div>`;
                 groupMap.get(key).count++;
             }
             const groups = [...groupMap.values()].sort((a, b) => b.count - a.count);
-            chartHtml = buildBarChartHtml({ idx, groups, groupField: barGroupBy, nonce });
+            // This ad-hoc, client-grouped bar chart (no query-level `group by`
+            // — the user picked a grouping field from the toolbar instead) has
+            // no server-computed `aggregates` per bucket, only `count` — so no
+            // value picker; `aggregateTerms`/`valueField` are omitted, and
+            // buildBarChartHtml's own picker helper already treats that as
+            // "nothing to pick," rendering exactly as it did before aggregate
+            // charting existed.
+            chartHtml = buildBarChartHtml({ idx, groups, groupField: barGroupBy, nonce, aggregateTerms: null, valueField: '' });
         } else {
             chartHtml = buildInfoCardHtml('Pick a field to group by', 'Use the <strong>Group&nbsp;by</strong> picker in the toolbar above to choose how to bucket this result into bars.');
         }
@@ -609,6 +817,25 @@ ${matrixContent}</div></div>`;
         return `<div class="tab-panel${isActive ? ' active' : ''}" id="tab-panel-${idx}" role="tabpanel" aria-labelledby="tab-btn-${idx}" data-tab="${idx}" data-layout="scatter" data-matrix-col-type="" data-scatter-x="${esc(scatterX)}" data-scatter-y="${esc(scatterY)}" data-bar-group-by="${esc(barGroupBy)}" data-column-filters="${esc(JSON.stringify(tabState.columnFilters || {}))}" data-current-page="1" data-page-size="50" style="display:${isActive ? 'flex' : 'none'}"${isActive ? '' : ' hidden'}><div class="view-shell">${warningBanner}<div class="query-hero"><div class="query-hero-top"><div class="query-hero-title">${heroTitle}</div><div class="query-hero-subtle">${esc(viewLabel)}</div></div><div class="query-hero-query"><span class="query-hero-query-label">${iconGlyph('query')}Query</span><code>${formatQueryHeroText(queryText)}</code></div><div class="query-hero-meta"><span class="query-hero-badge">${esc(scopeLabel)}</span><span class="query-hero-badge">${heroMetaCount}</span></div></div><div class="query-toolbar"><div class="toolbar-group group-view"><div class="toolbar-group-label">${iconGlyph('view')}View</div><div class="toolbar-group-row"><button class="btn report-btn">Open report</button><button class="btn reset-btn">Reset view</button></div></div><div class="toolbar-group group-filters"><div class="toolbar-group-label">${iconGlyph('filters')}Filters</div><div class="toolbar-group-row"><button class="btn refine-btn" data-query-index="${idx}">Refine view</button></div></div>${layoutGroupHtml}<div class="toolbar-group group-export"><div class="toolbar-group-label">${iconGlyph('export')}Export</div><div class="toolbar-group-row"><button class="btn export-btn" data-format="csv">CSV</button><button class="btn export-btn" data-format="json">JSON</button><button class="btn export-btn" data-format="pdf">PDF</button></div></div></div><div class="metrics-strip"><div class="metrics-card">${metricsCardHtml}</div></div>${chartHtml}</div></div>`;
     }
 
+    if (activeLayout === 'line') {
+        const chartHtml = buildLineChartHtml({
+            idx,
+            rows: sortedRows,
+            columns,
+            meta,
+            xField: scatterX,
+            yField: scatterY,
+            types,
+            nonce
+        });
+        return `<div class="tab-panel${isActive ? ' active' : ''}" id="tab-panel-${idx}" role="tabpanel" aria-labelledby="tab-btn-${idx}" data-tab="${idx}" data-layout="line" data-matrix-col-type="" data-scatter-x="${esc(scatterX)}" data-scatter-y="${esc(scatterY)}" data-bar-group-by="${esc(barGroupBy)}" data-column-filters="${esc(JSON.stringify(tabState.columnFilters || {}))}" data-current-page="1" data-page-size="50" style="display:${isActive ? 'flex' : 'none'}"${isActive ? '' : ' hidden'}><div class="view-shell">${warningBanner}<div class="query-hero"><div class="query-hero-top"><div class="query-hero-title">${heroTitle}</div><div class="query-hero-subtle">${esc(viewLabel)}</div></div><div class="query-hero-query"><span class="query-hero-query-label">${iconGlyph('query')}Query</span><code>${formatQueryHeroText(queryText)}</code></div><div class="query-hero-meta"><span class="query-hero-badge">${esc(scopeLabel)}</span><span class="query-hero-badge">${heroMetaCount}</span></div></div><div class="query-toolbar"><div class="toolbar-group group-view"><div class="toolbar-group-label">${iconGlyph('view')}View</div><div class="toolbar-group-row"><button class="btn report-btn">Open report</button><button class="btn reset-btn">Reset view</button></div></div><div class="toolbar-group group-filters"><div class="toolbar-group-label">${iconGlyph('filters')}Filters</div><div class="toolbar-group-row"><button class="btn refine-btn" data-query-index="${idx}">Refine view</button></div></div>${layoutGroupHtml}<div class="toolbar-group group-export"><div class="toolbar-group-label">${iconGlyph('export')}Export</div><div class="toolbar-group-row"><button class="btn export-btn" data-format="csv">CSV</button><button class="btn export-btn" data-format="json">JSON</button><button class="btn export-btn" data-format="pdf">PDF</button></div></div></div><div class="metrics-strip"><div class="metrics-card">${metricsCardHtml}</div></div>${chartHtml}</div></div>`;
+    }
+
+    if (activeLayout === 'pie') {
+        const chartHtml = buildInfoCardHtml('Pie chart unavailable', 'Pie chart requires a <code>group by</code> query result.');
+        return `<div class="tab-panel${isActive ? ' active' : ''}" id="tab-panel-${idx}" role="tabpanel" aria-labelledby="tab-btn-${idx}" data-tab="${idx}" data-layout="pie" data-matrix-col-type="" data-scatter-x="${esc(scatterX)}" data-scatter-y="${esc(scatterY)}" data-bar-group-by="${esc(barGroupBy)}" data-column-filters="${esc(JSON.stringify(tabState.columnFilters || {}))}" data-current-page="1" data-page-size="50" style="display:${isActive ? 'flex' : 'none'}"${isActive ? '' : ' hidden'}><div class="view-shell">${warningBanner}<div class="query-hero"><div class="query-hero-top"><div class="query-hero-title">${heroTitle}</div><div class="query-hero-subtle">${esc(viewLabel)}</div></div><div class="query-hero-query"><span class="query-hero-query-label">${iconGlyph('query')}Query</span><code>${formatQueryHeroText(queryText)}</code></div><div class="query-hero-meta"><span class="query-hero-badge">${esc(scopeLabel)}</span><span class="query-hero-badge">${heroMetaCount}</span></div></div><div class="query-toolbar"><div class="toolbar-group group-view"><div class="toolbar-group-label">${iconGlyph('view')}View</div><div class="toolbar-group-row"><button class="btn report-btn">Open report</button><button class="btn reset-btn">Reset view</button></div></div><div class="toolbar-group group-filters"><div class="toolbar-group-label">${iconGlyph('filters')}Filters</div><div class="toolbar-group-row"><button class="btn refine-btn" data-query-index="${idx}">Refine view</button></div></div>${layoutGroupHtml}<div class="toolbar-group group-export"><div class="toolbar-group-label">${iconGlyph('export')}Export</div><div class="toolbar-group-row"><button class="btn export-btn" data-format="csv">CSV</button><button class="btn export-btn" data-format="json">JSON</button><button class="btn export-btn" data-format="pdf">PDF</button></div></div></div>${chartHtml}</div></div>`;
+    }
+
     return `<div class="tab-panel${isActive ? ' active' : ''}" id="tab-panel-${idx}" role="tabpanel" aria-labelledby="tab-btn-${idx}" data-tab="${idx}" data-layout="table" data-matrix-col-type="" data-scatter-x="${esc(scatterX)}" data-scatter-y="${esc(scatterY)}" data-bar-group-by="${esc(barGroupBy)}" data-column-filters="${esc(JSON.stringify(tabState.columnFilters || {}))}" data-current-page="${savedPage}" data-page-size="${savedPageSize}"${isLargeResult ? ` data-large-result="true" data-total-filtered-rows="${totalFilteredRows}"` : ''} style="display:${isActive ? 'flex' : 'none'}"${isActive ? '' : ' hidden'}><div class="view-shell">${warningBanner}
 <div class="query-hero"><div class="query-hero-top"><div class="query-hero-title">${heroTitle}</div><div class="query-hero-subtle">${esc(viewLabel)}</div></div><div class="query-hero-query"><span class="query-hero-query-label">${iconGlyph('query')}Query</span><code>${formatQueryHeroText(queryText)}</code></div><div class="query-hero-meta"><span class="query-hero-badge">${esc(scopeLabel)}</span><span class="query-hero-badge">${heroMetaCount}</span></div></div>
 <div class="query-toolbar">
@@ -619,6 +846,7 @@ ${layoutGroupHtml}
 <div class="toolbar-group group-export"><div class="toolbar-group-label">${iconGlyph('export')}Export</div><div class="toolbar-group-row"><button class="btn export-btn" data-format="csv">CSV</button><button class="btn export-btn" data-format="json">JSON</button><button class="btn export-btn" data-format="pdf">PDF</button></div></div>
 </div>
 <div class="metrics-strip"><div class="metrics-card">${metricsCardHtml}</div><div class="quick-fields-card"><div class="quick-fields-row">${quickFieldHtml}</div><div class="quick-fields-search">${iconGlyph('search')}<input class="fsearch" type="text" placeholder="Search records..." value="${esc(savedSearch)}" aria-label="Search table records"></div></div></div>
+${buildAggregateSummaryHtml(result.aggregates, query.aggregate)}
 <div class="table-summary"></div>
 <div class="table-filters"></div>
 <div class="table-pagination" hidden><div class="table-pagination-group"><button class="table-pagination-btn" data-page-nav="prev">Previous</button><span class="table-pagination-status">Page 1 of 1</span><button class="table-pagination-btn" data-page-nav="next">Next</button></div><div class="table-pagination-group"><span class="table-pagination-label">Rows per page</span><select class="table-pagination-select" data-page-size><option value="50"${savedPageSize === 50 ? ' selected' : ''}>50</option><option value="100"${savedPageSize === 100 ? ' selected' : ''}>100</option><option value="200"${savedPageSize === 200 ? ' selected' : ''}>200</option><option value="0"${savedPageSize === 0 ? ' selected' : ''}>All</option></select></div></div>
@@ -632,5 +860,9 @@ module.exports = {
     buildWarningBanner,
     buildMatrixGrid,
     buildBarChartHtml,
-    buildScatterChartHtml
+    buildScatterChartHtml,
+    buildLineChartHtml,
+    buildPieChartHtml,
+    buildAggregateSummaryHtml,
+    buildCalcSourceCellHtml
 };

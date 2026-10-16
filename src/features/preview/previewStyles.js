@@ -93,6 +93,7 @@ th {
 td { padding: 7px 12px; border: 1px solid #d0d4d9; color: #111111; background: #ffffff; }
 tbody tr:nth-child(even) td { background: #f8f9fa; }
 .wikilink { color: #C49BF0; background: rgba(196,155,240,.08); border-radius: 3px; padding: 1px 4px; }
+.yl-calc-result { font-weight: 600; color: #1a7f37; font-variant-numeric: tabular-nums; }
 .yl-footnote-ref { font-size: .78em; vertical-align: super; }
 .yl-footnote-link, .yl-footnote-backref { color: #C49BF0; text-decoration: none; }
 .yl-footnotes {

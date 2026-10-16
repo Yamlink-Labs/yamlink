@@ -358,6 +358,90 @@ describe('validateDocument', () => {
     });
 });
 
+describe('validateDocument — live calc formula feedback (yamlink.calcFormulaError)', () => {
+    test('a same-note out-of-range Y<N> reference produces a Problems-panel diagnostic, not just a hover', () => {
+        resetState();
+        const doc = makeDoc('---\nid: alpha\n---\n\n`=1+1`\n`=Y9*2`\n');
+        const diags = runValidate(doc);
+        const diag = diags.find(d => d.code === 'yamlink.calcFormulaError');
+        assert.ok(diag);
+        assert.match(diag.message, /Y9 does not exist/i);
+    });
+
+    test('a cross-note reference to a note that does not exist produces the diagnostic too', () => {
+        resetState();
+        const doc = makeDoc('---\nid: alpha\n---\n\n`=[[missing-note]]^total`\n');
+        const diags = runValidate(doc);
+        const diag = diags.find(d => d.code === 'yamlink.calcFormulaError');
+        assert.ok(diag);
+        assert.match(diag.message, /Reference broken: note "missing-note" not found/i);
+    });
+
+    test('a successfully-resolving cross-note reference produces no diagnostic at all', () => {
+        resetState();
+        const os = require('os');
+        const fs = require('fs');
+        const path = require('path');
+        const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'yamlink-diag-xref-'));
+        const filePath = path.join(dir, 'budget.md');
+        fs.writeFileSync(filePath, '---\nid: budget\n---\n\n`total=100+50`\n', 'utf8');
+        try {
+            const idIndex = new Map([['budget', filePath]]);
+            const doc = makeDoc('---\nid: alpha\n---\n\n`=[[budget]]^total + 10`\n');
+            const diags = runValidate(doc, idIndex);
+            assert.equal(diags.some(d => d.code === 'yamlink.calcFormulaError'), false);
+        } finally {
+            fs.rmSync(dir, { recursive: true, force: true });
+        }
+    });
+
+    test('an unknown function (#NAME?) now also produces the diagnostic — broadened beyond reference integrity to live editing feedback', () => {
+        resetState();
+        const doc = makeDoc('---\nid: alpha\n---\n\n`=foo(1)`\n');
+        const diags = runValidate(doc);
+        const diag = diags.find(d => d.code === 'yamlink.calcFormulaError');
+        assert.ok(diag);
+        assert.match(diag.message, /Not found: no function named "foo"/i);
+    });
+
+    test('division by zero (#DIV/0!) also produces the diagnostic', () => {
+        resetState();
+        const doc = makeDoc('---\nid: alpha\n---\n\n`=1/0`\n');
+        const diags = runValidate(doc);
+        assert.ok(diags.find(d => d.code === 'yamlink.calcFormulaError' && /Math error: division by zero/.test(d.message)));
+    });
+
+    test('an unknown-variable (#NAME?) diagnostic\'s range is precise — just the identifier, not the whole formula', () => {
+        resetState();
+        const doc = makeDoc('---\nid: alpha\n---\n\n`=1 + total`\n');
+        const diags = runValidate(doc);
+        const diag = diags.find(d => d.code === 'yamlink.calcFormulaError');
+        assert.ok(diag);
+        // The line is `` `=1 + total` `` — "total" starts right after "`=1 + ".
+        const lineText = doc.lineAt(diag.range.start.line).text;
+        const pointedAt = lineText.slice(diag.range.start.character, diag.range.end.character);
+        assert.equal(pointedAt, 'total');
+    });
+
+    test('a type-check failure (e.g. arithmetic on a string) has no precise position available, so it falls back to the whole formula\'s range', () => {
+        resetState();
+        const doc = makeDoc('---\nid: alpha\n---\n\n`="x" * 2`\n');
+        const diags = runValidate(doc);
+        const diag = diags.find(d => d.code === 'yamlink.calcFormulaError');
+        assert.ok(diag);
+        const lineText = doc.lineAt(diag.range.start.line).text;
+        const pointedAt = lineText.slice(diag.range.start.character, diag.range.end.character);
+        assert.equal(pointedAt, '`="x" * 2`');
+    });
+
+    test('an ordinary note with no calc cells at all produces no false positives', () => {
+        resetState();
+        const doc = makeDoc('---\nid: alpha\n---\n\nJust prose, no formulas here.\n');
+        const diags = runValidate(doc);
+        assert.equal(diags.some(d => d.code === 'yamlink.calcFormulaError'), false);
+    });
+});
+
 describe('getBrokenCount', () => {
     test('counts broken links and relations across documents', () => {
         resetState();

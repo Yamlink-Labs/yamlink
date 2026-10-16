@@ -35,8 +35,18 @@ function resetSuggestionCascade() {
  */
 async function maybeSuggestFieldCascade(noteId, acceptedField = null) {
     const fieldsCache = getFieldsCache();
-    const nodeFields = fieldsCache.get(noteId);
-    if (!nodeFields) return;
+    const cachedFields = fieldsCache.get(noteId);
+    if (!cachedFields) return;
+    // `fieldsCache` only rebuilds on file save (onDidSaveTextDocument) — but
+    // this is called from the completion item's own `command`, which VS Code
+    // fires synchronously the instant the text is inserted, well before any
+    // save. That means `cachedFields` here NEVER reflects the field the user
+    // just accepted — a real, reproduced bug: without this merge, the arc/
+    // co-occurrence lookups below would treat `acceptedField` as still
+    // missing and could nudge the user to add the exact field they just
+    // added. A truthy placeholder is enough — both lookups below only ever
+    // check "is this field non-empty," never the real value.
+    const nodeFields = acceptedField ? { ...cachedFields, [acceptedField]: cachedFields[acceptedField] || true } : cachedFields;
     const noteType = String(nodeFields.type || '').trim().toLowerCase();
 
     const priors = getCachedPriors(fieldsCache, getVaultGeneration());

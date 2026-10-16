@@ -156,6 +156,21 @@ function cycleLabelMode() {
 function loadGraph(graphData) {
   const r = ensureRenderer();
   if (!r) return;
+  // A real, user-reported bug: every node ever dragged in this panel stayed
+  // permanently pinned (forces skip it, velocity forced to zero — see
+  // graphPhysicsEngine.js's dragEnd(), which deliberately never unpins a
+  // dropped node so it stays exactly where placed) with NOTHING to ever
+  // release that pin, since this panel never called clearPins() anywhere —
+  // unlike the sidebar's equivalent load path (graph2SidebarXGraphScript.js),
+  // which already clears pins here. After enough drags, a growing fraction
+  // of nearby nodes were frozen solid, so a cluster visibly "stopped
+  // responding" even though each individual new drag still worked — the
+  // surrounding nodes just no longer glided along with it. Clearing pins on
+  // a real graph-data rebuild (not on every drag, and not on an unrelated
+  // refresh) keeps the intentional "dropped node stays put" behavior within
+  // one session while still releasing pins once the underlying vault data
+  // actually changes, exactly mirroring the sidebar's existing behavior.
+  if (typeof S.layout.clearPins === 'function') S.layout.clearPins();
   const pos = S.layout.settleSync(graphData.nodes, graphData.edges);
   r.load(graphData);
   r.updatePositions(pos);
@@ -205,9 +220,20 @@ function updateStatus() {
   if (!S.payload) return;
   const s = S.payload.model.summary;
   const sr = s.strongestRelation ? (' · strongest: ' + s.strongestRelation) : '';
+  // Same real fix as the graph sidebar's own count badge: vault mode caps
+  // node selection (Math.min(state.maxNodes, 50) in graphPayload.js), so
+  // the raw capped count here previously looked like the vault's true size
+  // with nothing indicating otherwise. vaultTotals carries the real,
+  // uncapped counts; only say "of N" when the cap is actually truncating.
+  const totals = S.payload.vaultTotals;
+  const truncated = S.payload.mode === 'vault' && totals && totals.nodeCount > s.nodeCount;
+  const nodesText = truncated ? (s.nodeCount + ' of ' + totals.nodeCount + ' nodes') : (s.nodeCount + ' nodes');
   E.statusbar.textContent = (S.payload.mode === 'vault' ? 'Explorer' : 'Local') +
-    ' · ' + s.nodeCount + ' nodes · ' + s.edgeCount + ' edges · ' + s.typeCount + ' types' + sr +
+    ' · ' + nodesText + ' · ' + s.edgeCount + ' edges · ' + s.typeCount + ' types' + sr +
     '  ·  ' + BUILD;
+  E.statusbar.title = truncated
+    ? ('Showing the ' + s.nodeCount + ' most-connected notes out of ' + totals.nodeCount + ' total (ranked by connections).')
+    : '';
 }
 
 // ── Tooltip ───────────────────────────────────────────────────────────────────

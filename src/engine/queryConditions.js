@@ -47,6 +47,7 @@ const { normaliseDateInput, getTodayIsoLocal, addDaysIso } = require('../core/da
  *   preset: string|null,
  *   shorthand: string|null,
  *   groupBy: string|null,
+ *   aggregate: {fn: string, field: string|null, alias: string}[]|null,
  *   parseWarnings: string[]
  * }} ParsedQuery
  */
@@ -59,12 +60,13 @@ const { normaliseDateInput, getTodayIsoLocal, addDaysIso } = require('../core/da
  *   nodeType: string,
  *   viaField?: string,
  *   done?: boolean,
- *   date?: string
+ *   date?: string,
+ *   cellMeta?: Record<string, {expr: string, label: string, name: string|null}>
  * }} QueryRow
  */
 
 /**
- * @typedef {{ key: string, count: number, rows: QueryRow[] }} GroupResult
+ * @typedef {{ key: string, count: number, rows: QueryRow[], aggregates?: Record<string, number|null> }} GroupResult
  */
 
 /**
@@ -76,7 +78,8 @@ const { normaliseDateInput, getTodayIsoLocal, addDaysIso } = require('../core/da
  *   warnings: string[],
  *   error: string|null,
  *   groups?: GroupResult[],
- *   groupBy?: string
+ *   groupBy?: string,
+ *   aggregates?: Record<string, number|null>
  * }} QueryResult
  */
 

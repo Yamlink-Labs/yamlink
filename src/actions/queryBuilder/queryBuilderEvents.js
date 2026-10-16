@@ -14,6 +14,12 @@ function getQueryBuilderClientScript(payload) {
       selectModeButtons: Array.from(document.querySelectorAll('[data-select-mode]')),
       columnsHelp: document.getElementById('columns-help'),
       groupBy: document.getElementById('field-group-by'),
+      aggregateRows: Array.from(document.querySelectorAll('[data-aggregate-row]')).map((row) => ({
+        row,
+        fn: row.querySelector('[data-aggregate-fn]'),
+        field: row.querySelector('[data-aggregate-field]'),
+        alias: row.querySelector('[data-aggregate-alias]')
+      })),
       via: document.getElementById('field-via'),
       whereField: document.getElementById('field-where-field'),
       whereOperator: document.getElementById('field-where-operator'),
@@ -105,6 +111,8 @@ function getQueryBuilderClientScript(payload) {
         matrix: '<svg viewBox="0 0 16 16" aria-hidden="true"><rect x="2.5" y="3" width="11" height="10" rx="1.8"/><path d="M2.5 6.5h11"/><path d="M2.5 10h11"/><path d="M6 3v10"/><path d="M10 3v10"/></svg>',
         bar: '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M3 13V8"/><path d="M8 13V5"/><path d="M13 13V3"/><path d="M2.5 13.5h11"/></svg>',
         scatter: '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M2.5 13.5h11"/><path d="M2.5 13.5v-11"/><circle cx="5" cy="9.5" r="1"/><circle cx="8.25" cy="6.25" r="1"/><circle cx="11.5" cy="4.5" r="1"/></svg>',
+        line: '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M2.5 13.5h11"/><path d="M2.5 13.5v-11"/><path d="M4 10.5 7 7.5 9.5 8.75 12.5 4.25"/><circle cx="4" cy="10.5" r=".75"/><circle cx="7" cy="7.5" r=".75"/><circle cx="9.5" cy="8.75" r=".75"/><circle cx="12.5" cy="4.25" r=".75"/></svg>',
+        pie: '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 2.75v5.4l4.7 2.65"/><path d="M8 2.75a5.25 5.25 0 1 0 4.7 8.05"/><path d="M8 2.75a5.25 5.25 0 0 1 4.7 8.05"/><path d="M8 8.15h5.25"/></svg>',
         ready: '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M3.5 8.5 6.5 11.5 12.5 4.5"/></svg>',
         note: '<svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="5.25"/><path d="M8 5.5v3.25"/><circle cx="8" cy="11.3" r=".55" fill="currentColor" stroke="none"/></svg>'
       };
@@ -128,6 +136,11 @@ function getQueryBuilderClientScript(payload) {
         selectMode,
         selectFields: selectedFields,
         groupBy: els.groupBy.value,
+        aggregateRows: els.aggregateRows.map((entry) => ({
+          fn: entry.fn.value,
+          field: entry.field.value,
+          alias: entry.alias.value
+        })),
         viaField: els.via.value,
         whereField: els.whereField.value,
         whereOperator: els.whereOperator.value,
@@ -183,6 +196,15 @@ function getQueryBuilderClientScript(payload) {
       els.selectModeButtons.forEach((btn) => btn.classList.toggle('active', btn.dataset.selectMode === (state.selectMode || 'smart')));
       const fieldDescriptions = options.fieldDescriptions || {};
       els.groupBy.innerHTML = fieldOptionsHtml(options.groupableFields || [], state.groupBy, 'No grouping', fieldDescriptions);
+      const aggregateFunctions = ['none','sum','average','min','max','count'];
+      els.aggregateRows.forEach((entry, index) => {
+        const row = (state.aggregateRows || [])[index] || { fn: 'none', field: '', alias: '' };
+        entry.fn.innerHTML = optionsHtml(aggregateFunctions, row.fn || 'none');
+        entry.field.innerHTML = fieldOptionsHtml(options.fieldCandidates || [], row.field || '', 'Pick a field', fieldDescriptions);
+        entry.alias.value = row.alias || '';
+        entry.field.disabled = (row.fn || 'none') === 'none' || row.fn === 'count';
+        entry.alias.disabled = (row.fn || 'none') === 'none';
+      });
       els.via.innerHTML = optionsHtml(options.relationFieldCandidates || [], state.viaField || '*', 'Any relation field');
       els.whereField.innerHTML = fieldOptionsHtml(options.fieldCandidates || [], state.whereField, 'No filter', fieldDescriptions);
       els.whereOperator.value = state.whereOperator || '=';
@@ -257,8 +279,8 @@ function getQueryBuilderClientScript(payload) {
       els.layoutScatterY.innerHTML = optionsHtml(layoutSummary.scatterFields || [], state.scatterY, 'Pick a field…');
       els.layoutMatrixWrap.classList.toggle('hidden', activeLayout !== 'matrix');
       els.layoutBarWrap.classList.toggle('hidden', activeLayout !== 'bar');
-      els.layoutScatterXWrap.classList.toggle('hidden', activeLayout !== 'scatter');
-      els.layoutScatterYWrap.classList.toggle('hidden', activeLayout !== 'scatter');
+      els.layoutScatterXWrap.classList.toggle('hidden', activeLayout !== 'scatter' && activeLayout !== 'line');
+      els.layoutScatterYWrap.classList.toggle('hidden', activeLayout !== 'scatter' && activeLayout !== 'line');
       const warnings = Array.isArray(preview.summary?.warnings) ? preview.summary.warnings : [];
       els.warningList.innerHTML = warnings.length
         ? warnings.map((warning) => '<li>' + escapeHtml(warning) + '</li>').join('')
@@ -313,6 +335,12 @@ function getQueryBuilderClientScript(payload) {
         el.addEventListener('change', postState);
         el.addEventListener('input', postState);
       });
+    els.aggregateRows.forEach((entry) => {
+      [entry.fn, entry.field, entry.alias].forEach((el) => {
+        el.addEventListener('change', postState);
+        el.addEventListener('input', postState);
+      });
+    });
     [els.layoutMatrixCol, els.layoutBarGroup, els.layoutScatterX, els.layoutScatterY].forEach((el) => {
       el.addEventListener('change', postState);
       el.addEventListener('input', postState);

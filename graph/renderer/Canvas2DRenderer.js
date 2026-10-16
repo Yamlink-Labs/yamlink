@@ -21,6 +21,17 @@ const KIND_COLORS = {
   default:   '#8899aa',
 };
 
+// A node's real color, when the payload supplied one (graphPayload.js's
+// `_xgColor` — a real, non-curated `type:` value hashed to a distinct, stable
+// color instead of collapsing to the same gray every other unrecognized type
+// also got). Falls back to the original `KIND_COLORS[kind]` lookup when no
+// `color` was supplied (an untyped node, or any payload built before this
+// field existed) — purely additive, so nothing that doesn't supply `color`
+// renders any differently than before.
+function _resolveFillColor(n) {
+  return (n && n.color) || KIND_COLORS[n && n.kind] || KIND_COLORS.default;
+}
+
 // Semantic layer — relation field name → colour
 const FIELD_CATEGORY_COLORS = {
   person:     '#5ecfbe', mentor:    '#5ecfbe', author:    '#5ecfbe',
@@ -420,7 +431,7 @@ export class Canvas2DRenderer {
         const nodeFade = fadeOverride == null ? 1 : fadeOverride;
         if (nodeFade <= 0.001) continue;
         const dimmed = this._isDimmed(id, focusId, hasFocus, hasSearch);
-        const ck = dimmed ? '__dim' : (KIND_COLORS[node.kind] ?? KIND_COLORS.default);
+        const ck = dimmed ? '__dim' : _resolveFillColor(node);
         if (!dotBuckets.has(ck)) dotBuckets.set(ck, []);
         dotBuckets.get(ck).push({ pos, fade: nodeFade });
       }
@@ -448,7 +459,7 @@ export class Canvas2DRenderer {
         ctx.stroke();
         ctx.beginPath();
         ctx.arc(pos.x, pos.y, r, 0, Math.PI * 2);
-        ctx.fillStyle   = KIND_COLORS[node.kind] ?? KIND_COLORS.default;
+        ctx.fillStyle   = _resolveFillColor(node);
         ctx.globalAlpha = 1;
         ctx.fill();
       }
@@ -463,7 +474,7 @@ export class Canvas2DRenderer {
       const isSelected = id === this._selectedId;
       const isActive   = isHovered || isSelected;
       const dimmed     = this._isDimmed(id, focusId, hasFocus, hasSearch);
-      const color      = KIND_COLORS[node.kind] ?? KIND_COLORS.default;
+      const color      = _resolveFillColor(node);
       const fadeOverride = this._nodeAlphaOverrides.size ? this._nodeAlphaOverrides.get(id) : undefined;
       const nodeFade = fadeOverride == null ? 1 : fadeOverride;
       if (nodeFade <= 0.001) continue;
@@ -736,7 +747,7 @@ export class Canvas2DRenderer {
       const y2 = tp.y - uy * (rTgt + arrowLen);
 
       const fieldColor   = this._fieldColor(edge.field);
-      const srcKindColor = srcNode ? (KIND_COLORS[srcNode.kind] ?? KIND_COLORS.default) : null;
+      const srcKindColor = srcNode ? _resolveFillColor(srcNode) : null;
       const baseColor    = fieldColor
         ?? (edge.strength === 'strong' ? '#5ecfbe' : (srcKindColor ?? '#8899aa'));
       let lw           = (edge.strength === 'strong' ? 1.5 : 0.9) / zoom;
@@ -1339,18 +1350,18 @@ export class Canvas2DRenderer {
 
   _drawClusterSuperNodes(ctx, zoom, focusId) {
     // Group visible nodes by clusterId, compute centroids
-    const clusters = new Map(); // clusterId → { pts, kind, label, ids }
+    const clusters = new Map(); // clusterId → { pts, kind, color, label, ids }
     for (const [id, node] of this._nodeMap) {
       const pos = this._positions[id];
       if (!pos || !this._isVisible(id)) continue;
       const cid = node.clusterId || id;
       if (!clusters.has(cid)) {
-        clusters.set(cid, { pts: [], kind: null, label: null, ids: [] });
+        clusters.set(cid, { pts: [], kind: null, color: null, label: null, ids: [] });
       }
       const c = clusters.get(cid);
       c.pts.push(pos);
       c.ids.push(id);
-      if (id === cid) { c.kind = node.kind || 'default'; c.label = node.label || id; }
+      if (id === cid) { c.kind = node.kind || 'default'; c.color = node.color || null; c.label = node.label || id; }
     }
 
     // Build inter-cluster edge counts
@@ -1379,7 +1390,7 @@ export class Canvas2DRenderer {
       const count = c.ids.length;
       const r = Math.max(26, Math.min(56, 16 + Math.sqrt(count) * 2.6));
       const isFocusCluster = focusId ? c.ids.includes(focusId) : false;
-      superNodes.push({ cid, cx, cy, r, count, kind: c.kind || 'default', label: c.label || cid, isFocusCluster });
+      superNodes.push({ cid, cx, cy, r, count, kind: c.kind || 'default', color: c.color || null, label: c.label || cid, isFocusCluster });
       this._superNodeCache.push({ cx, cy, r, cid });
       superNodeMap.set(cid, { cx, cy, r });
     }
@@ -1406,7 +1417,7 @@ export class Canvas2DRenderer {
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
     for (const sn of superNodes) {
-      const color = KIND_COLORS[sn.kind] ?? KIND_COLORS.default;
+      const color = _resolveFillColor(sn);
 
       // Focus ring
       if (sn.isFocusCluster) {
@@ -1470,21 +1481,21 @@ export class Canvas2DRenderer {
       const pos = this._positions[id];
       if (!pos || !this._isVisible(id)) continue;
       if (!clusters.has(node.clusterId)) {
-        clusters.set(node.clusterId, { pts: [], hubKind: null });
+        clusters.set(node.clusterId, { pts: [], hubKind: null, hubColor: null });
       }
       const entry = clusters.get(node.clusterId);
       entry.pts.push(pos);
-      if (id === node.clusterId) entry.hubKind = node.kind;
+      if (id === node.clusterId) { entry.hubKind = node.kind; entry.hubColor = node.color || null; }
     }
 
     const focusClusterId = focusId ? (this._nodeMap.get(focusId) || {}).clusterId : null;
 
-    for (const [clusterId, { pts, hubKind }] of clusters) {
+    for (const [clusterId, { pts, hubKind, hubColor }] of clusters) {
       if (pts.length < 3) continue;
 
       const isFocused = hasFocus && clusterId === focusClusterId;
       const isDimmed  = hasFocus && !isFocused;
-      const color     = KIND_COLORS[hubKind] ?? KIND_COLORS.default;
+      const color     = _resolveFillColor({ kind: hubKind, color: hubColor });
       const hull      = this._convexHull(pts);
       if (hull.length < 3) continue;
 

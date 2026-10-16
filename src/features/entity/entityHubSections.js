@@ -17,6 +17,7 @@ const {
     buildHistorySection,
     describeHistoryEvent
 } = require('./entityHubSectionHistory');
+const { ERROR_CODE_LABELS } = require('../../engine/inlineCalc');
 
 function getRelationRowDisplayName(row) {
     return String(row?.fields?.name || row?.fields?.title || row?.sourceId || '').trim();
@@ -536,12 +537,30 @@ function buildNoteArcSection(noteArc) {
     ].join('\n');
 }
 
+/**
+ * @param {{ total: number, evaluated: number, failed: number, byCode: Record<string, number> }} data
+ * @returns {string}
+ */
+function buildCalcHealthSection(data) {
+    if (!data || !Number(data.total || 0)) return '';
+    const rows = [{ key: 'Evaluated', value: `${data.evaluated} / ${data.total}` }];
+    const byCode = data.byCode || {};
+    for (const code of Object.keys(byCode)) {
+        rows.push({ key: ERROR_CODE_LABELS[code] || code, value: String(byCode[code]) });
+    }
+    return buildKeyValueSection('calculations', 'document-calculations', rows, true);
+}
+
 function buildDocumentSection(documentData) {
     const data = documentData || {};
     const blocks = [];
 
     if (Number(data.wordCount || 0) > 0) {
         blocks.push(buildKeyValueSection('word count', 'document-words', [{ key: 'Words', value: String(data.wordCount) }], true));
+    }
+
+    if (data.calcHealth && Number(data.calcHealth.total || 0) > 0) {
+        blocks.push(buildCalcHealthSection(data.calcHealth));
     }
 
     if (Array.isArray(data.entityMentions) && data.entityMentions.length) {

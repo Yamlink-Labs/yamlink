@@ -90,7 +90,17 @@ require.cache.__graph2_graph_stub__ = {
         classifyGraphEdgeStrength,
         computeHubScore,
         computeNodeWeightedDegree,
-        computeNodeExplorerScore
+        computeNodeExplorerScore,
+        // Mirrors the real core/graph.js's getGraphStats() shape (see its
+        // own JSDoc) over this fixture's own edgeMap/backlinkMap, so
+        // buildGraph2Payload's new vaultTotals computation (true,
+        // uncapped vault-wide node/edge counts — see its own comment) has
+        // something real to call in this stubbed test environment.
+        getGraphStats: () => {
+            let totalEdges = 0;
+            for (const edges of edgeMap.values()) totalEdges += edges.length;
+            return { nodes: edgeMap.size, totalEdges, totalBacklinks: backlinkMap.size };
+        }
     }
 };
 
@@ -210,7 +220,7 @@ describe('graph 2.0 foundation', () => {
         assert.ok(edges.every((edge) => edge.strength !== 'weak'));
     });
 
-    test('vault scope uses the vault node set instead of a ranked subset helper', () => {
+    test('vault scope includes every real note when they all comfortably fit under the cap (ranking only matters once truncation actually happens — see the dedicated "vault scope — honest totals..." describe block below for that case)', () => {
         seedGraph2Fixture();
         const state = normalizeGraph2State({
             scope: 'vault',
@@ -448,6 +458,99 @@ describe('workspace focus cap (pruneWorkspaceScope)', () => {
             .filter(d => d && d.id && !d.source)
             .map(d => d.id);
         assert.ok(nodeIds.length <= 4, 'at most center + 3 direct neighbors visible');
+    });
+});
+
+describe('vault scope — honest totals and ranked (not arbitrary) node selection', () => {
+    // A real, user-reported bug: the sidebar's vault-scope count badge showed
+    // a capped subset's own count with nothing indicating it wasn't the
+    // vault's true size (confirmed directly — the number shown matched the
+    // hardcoded default cap exactly, not a coincidence), AND the capped
+    // subset itself was selected by Array.from(getIndex().keys())'s
+    // arbitrary Map-insertion order, not ranked by importance — meaning a
+    // vault's most-connected notes could just as easily be excluded as its
+    // least. Both are fixed: vault-scope selection now ranks by hub score
+    // (getTopVaultNodes, the same ranking the older Graph Workspace panel
+    // already used), and the payload exposes the real, uncapped
+    // vaultTotals alongside the (possibly capped) model.summary counts.
+    const TOTAL_NOTE_COUNT = 25; // deliberately > MIN_GRAPH2_NODE_CAP (20) — normalizeGraph2State clamps any requested cap up to that floor, so a fixture of 20 or fewer can never actually be truncated no matter what nodeCap is requested.
+
+    function seedRankedVaultFixture() {
+        edgeMap.clear();
+        backlinkMap.clear();
+        idIndex.clear();
+        fieldsCache.clear();
+
+        // Inserted FIRST into the index — low connectivity. Under the old
+        // arbitrary-slice behavior, these would always survive a cap at the
+        // 20-note floor (they come first), displacing anything inserted
+        // later regardless of actual importance.
+        for (let i = 0; i < TOTAL_NOTE_COUNT - 1; i++) {
+            const id = `leaf-${i}`;
+            idIndex.set(id, `c:\\notes\\${id}.md`);
+            fieldsCache.set(id, { name: id, type: 'note' });
+        }
+
+        // Inserted LAST — but genuinely the most-connected note in the
+        // vault. Under the old behavior, a cap at the 20-note floor would
+        // exclude this entirely just because of insertion order (it's the
+        // 25th note in, past any arbitrary first-20 slice); ranked
+        // selection must keep it regardless of where it was inserted.
+        idIndex.set('hub-note', 'c:\\notes\\hub-note.md');
+        fieldsCache.set('hub-note', { name: 'Hub Note', type: 'note' });
+        const hubEdges = [];
+        for (let i = 0; i < 6; i++) {
+            hubEdges.push({ field: 'related', targetId: `leaf-${i}` });
+        }
+        edgeMap.set('hub-note', hubEdges);
+        for (let i = 0; i < 6; i++) {
+            backlinkMap.set(`leaf-${i}`, [{ field: 'related', sourceId: 'hub-note' }]);
+        }
+    }
+
+    test('the node cap keeps the most-connected note, not whichever notes happen to come first in the index', () => {
+        seedRankedVaultFixture();
+        // nodeCap: 1 gets clamped up to the real 20-note floor — still far
+        // fewer than this fixture's 25 real notes, so this only proves
+        // something if ranking is actually in effect, not just "everything
+        // fits anyway."
+        const state = normalizeGraph2State({ scope: 'vault', nodeCap: 1 }, null);
+        assert.equal(state.nodeCap, 20, 'sanity check: the real minimum floor this test relies on');
+        const payload = buildGraph2Payload(state, () => null);
+
+        const visibleIds = payload.model.elements
+            .map((element) => element.data)
+            .filter((data) => data && data.id && !data.source)
+            .map((data) => data.id);
+
+        assert.ok(visibleIds.includes('hub-note'), `expected the most-connected note to survive the cap, got: ${visibleIds.join(', ')}`);
+    });
+
+    test('vaultTotals reports the true, uncapped vault size — not the capped subset\'s own count', () => {
+        seedRankedVaultFixture();
+        const state = normalizeGraph2State({ scope: 'vault', nodeCap: 1 }, null);
+        const payload = buildGraph2Payload(state, () => null);
+
+        assert.equal(payload.vaultTotals.nodeCount, TOTAL_NOTE_COUNT, 'the real vault has 25 notes total, regardless of the cap');
+        assert.ok(payload.model.summary.nodeCount < payload.vaultTotals.nodeCount, 'the rendered model should be the smaller, capped count');
+        assert.equal(payload.model.summary.nodeCount, 20, 'capped to the real minimum floor');
+    });
+
+    test('vaultTotals matches the shown count exactly when the cap is not actually reached — no truncation to report', () => {
+        seedRankedVaultFixture();
+        const state = normalizeGraph2State({ scope: 'vault', nodeCap: 128 }, null);
+        const payload = buildGraph2Payload(state, () => null);
+
+        assert.equal(payload.vaultTotals.nodeCount, TOTAL_NOTE_COUNT);
+        assert.equal(payload.model.summary.nodeCount, TOTAL_NOTE_COUNT, 'all 25 real notes fit comfortably under this cap');
+    });
+
+    test('vaultTotals.edgeCount reflects the true vault-wide edge count from the graph core, independent of any scope-level pruning', () => {
+        seedRankedVaultFixture();
+        const state = normalizeGraph2State({ scope: 'vault', nodeCap: 1 }, null);
+        const payload = buildGraph2Payload(state, () => null);
+        // 6 real edges exist in this fixture (hub-note -> leaf-0..5).
+        assert.equal(payload.vaultTotals.edgeCount, 6);
     });
 });
 

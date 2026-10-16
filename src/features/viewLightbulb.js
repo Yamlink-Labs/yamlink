@@ -261,7 +261,16 @@ function buildTypedEmptyFieldFallbackActions(document, lineIndex, fieldName, nod
     if (!isExpectedField) return [];
 
     const lineText = document.lineAt(lineIndex).text;
-    const cursorPos = new vscode.Position(lineIndex, lineText.length);
+    // resolveFrontmatterRelationCandidates only recognizes "no brackets yet"
+    // or "still inside an unclosed [[" — an already-closed empty placeholder
+    // (`field: [[ ]]`) with the probe cursor at line-end matches neither, so
+    // it silently returned null and this field was never recognized as
+    // relational. Probing from just inside the brackets instead puts it back
+    // in the "still inside an open [[" shape the regex already handles.
+    const bracketIndex = lineText.indexOf('[[');
+    const cursorPos = bracketIndex !== -1
+        ? new vscode.Position(lineIndex, bracketIndex + 2)
+        : new vscode.Position(lineIndex, lineText.length);
     const idIndex = getIndex();
     const relationState = resolveFrontmatterRelationCandidates(document, cursorPos, idIndex);
     // A formal schema declaration is sufficient but never required — most

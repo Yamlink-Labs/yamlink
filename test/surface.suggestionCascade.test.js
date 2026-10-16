@@ -131,6 +131,28 @@ describe('suggestion cascade', () => {
         }
     });
 
+    it('never re-suggests the exact field the user just accepted via completion — a real, reproduced bug: fieldsCache only rebuilds on save, so without this fix the cascade would nudge the user to add the field they just added', async () => {
+        const vault = createVault(bundleFixture());
+        try {
+            queueInformationMessageResponses('Add Field');
+
+            // Simulates the real call site exactly: VS Code's completion
+            // `command` fires `maybeSuggestFieldCascade('erin', 'company')`
+            // the instant the completion is inserted — well before the file
+            // is saved, so fieldsCache('erin') still has no `company` at all.
+            // `company` is also the note's one real missing field (arc's own
+            // top candidate), which is exactly what makes this reproducible:
+            // without the fix, the cascade's stale read can't tell the two
+            // apart from "still genuinely missing."
+            await maybeSuggestFieldCascade('erin', 'company');
+
+            const erinText = readVaultFile(vault, 'erin.md');
+            assert.ok(!erinText.includes('company:\n'), 'must not insert a stub for the field the user just accepted');
+        } finally {
+            vault.destroy();
+        }
+    });
+
     it('keeps the arc candidate as the only nudge when arc and workflow memory both have candidates', async () => {
         const vault = createVault(bundleFixture());
         try {

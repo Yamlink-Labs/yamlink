@@ -1,7 +1,8 @@
 'use strict';
 
 const { getRegistry } = require('../registries/typeRegistry');
-const { getFieldsCache, getVaultGeneration } = require('../core/indexService');
+const { getFieldsCache, getVaultGeneration, getIndex } = require('../core/indexService');
+const { readInlineCalcVirtualFields } = require('../engine/queryExecutor');
 const { getBacklinks, getEdges } = require('../core/graph');
 const { resolveYamlFieldNameForLine } = require('../core/frontmatter');
 const { inferFieldRole } = require('../intelligence/fieldRoles');
@@ -505,7 +506,21 @@ function collectFieldsForType(type) {
         }
     }
     if (type === 'tasks') ['text', 'done', 'date', 'file', 'line'].forEach(f => fields.add(f));
+    for (const cellField of collectInlineCalcFieldsForType(type, fieldsCache)) fields.add(cellField);
     return Array.from(fields).sort();
+}
+
+function collectInlineCalcFieldsForType(type, fieldsCache, idIndex = getIndex(), readCellFields = readInlineCalcVirtualFields) {
+    const fieldSet = new Set();
+    const requestedType = String(type || '*').trim().toLowerCase() || '*';
+    for (const [id, fields] of fieldsCache.entries()) {
+        const nodeType = String(fields?.type || '').trim().toLowerCase();
+        if (requestedType !== '*' && requestedType !== 'tasks' && nodeType !== requestedType) continue;
+        const filePath = idIndex.get(id);
+        if (!filePath) continue;
+        for (const key of Object.keys(readCellFields(filePath) || {})) fieldSet.add(key);
+    }
+    return fieldSet;
 }
 
 function inferRelationField(fieldName, queryType) {
@@ -659,6 +674,7 @@ module.exports = {
     resolveQueryRelationCandidates,
     getViewBlockContext,
     collectFieldsForType,
+    collectInlineCalcFieldsForType,
     inferRelationField,
     collectScalarValues,
     rankScalarValues,

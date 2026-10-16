@@ -32,6 +32,17 @@ class SimpleLayout {
     this._clusterAnchors = new Map();
     this._clusterMeta = new Map();
     this._pinned = new Set();
+    // Which nodes a live drag is allowed to actually move — the dragged node
+    // itself plus its direct (1-hop) neighbors — or `null` when no drag is
+    // active (every other call path — init()'s own settle, run()'s initial
+    // settle, time-lapse's settleSync() — is a full, unrestricted solve and
+    // must never be scoped). See dragStart()'s own comment for why this
+    // exists: reheating alpha alone is NOT enough to keep a drag's visible
+    // effect local, since every force loop in _step() iterates every node
+    // unconditionally whenever alpha > 0 — a real, reported bug, confirmed
+    // directly: dragging one node moved 150 completely unrelated, untouched
+    // nodes in a disconnected part of a test graph on the very first tick.
+    this._dragAffected = null;
     this._raf = null;
     this._alpha = 0;
     this._iter = 0;
@@ -43,6 +54,7 @@ class SimpleLayout {
     if (this._raf) { cancelAnimationFrame(this._raf); this._raf = null; }
     this._alpha = 1;
     this._iter  = 0;
+    this._dragAffected = null; // a fresh full-graph solve is never drag-scoped
     this._quality = this._qualityProfile(nodeData.length);
     // Minor-change fast path: if < 8% of nodes are new, previous positions are a
     // good starting point — the graph barely needs to re-settle.
@@ -76,6 +88,21 @@ class SimpleLayout {
       const seededX = anchor.x + Math.cos(angle) * radius;
       const seededY = anchor.y + Math.sin(angle) * radius;
       const usePrev = !!prev && Number.isFinite(prev.x) && Number.isFinite(prev.y);
+      // `anchorAngle`/`orbitRadius` only ever seed a reasonable STARTING
+      // position (above, and only when there's no remembered previous
+      // position to reuse) — a one-time hash-based spread so the very first
+      // frame isn't every node stacked at the origin. A real, user-reported
+      // issue previously had _step() ALSO pull every node back toward this
+      // exact fixed point every single tick (a rigid "orbit snap" force),
+      // which — combined with charge repulsion settling into equilibrium —
+      // made the layout visibly crystallize into a grid/lattice rather than
+      // read as organic, the same way many similarly-repelled particles in
+      // a bounded 2D space naturally pack into a regular lattice once
+      // nothing else perturbs them. Removed: cluster shape/formation now
+      // comes only from _step()'s anchorPull/memberPull (pull toward the
+      // cluster's center point, no fixed angle) plus real charge repulsion
+      // and edge springs — closer to how Obsidian's own graph view works
+      // (repel + link + center, no synthetic per-node target position).
       return {
         id: n.id,
         group: n.group || n.kind || 'default',
@@ -176,10 +203,15 @@ class SimpleLayout {
       if (this._pinned.has(nd.id)) continue;
       const anchor = this._clusterAnchors.get(nd.clusterId) || { x: 0, y: 0 };
       const meta = this._clusterMeta.get(nd.clusterId) || { size: 1 };
-      const orbitX = anchor.x + Math.cos(nd.anchorAngle) * nd.orbitRadius;
-      const orbitY = anchor.y + Math.sin(nd.anchorAngle) * nd.orbitRadius;
-      nd.vx += (orbitX - nd.x) * a * this._quality.orbitSnap;
-      nd.vy += (orbitY - nd.y) * a * this._quality.orbitSnap;
+      // No per-node "orbit snap" force here on purpose — see the comment on
+      // `anchorAngle`/`orbitRadius` in init() for the full reasoning. Cluster
+      // shape/formation still comes entirely from this same loop's
+      // anchorPull/memberPull (pull toward the cluster's own center point,
+      // no fixed angle) and the orbitTightness cohesion term just below,
+      // plus real charge repulsion and edge springs from the rest of
+      // _step() — the same forces Obsidian's own graph view relies on
+      // (repel + link + a center pull), with nothing pinning any node to
+      // one exact pre-computed point on a circle.
       nd.vx += (anchor.x - nd.x) * a * (nd.id === nd.clusterId ? this._quality.anchorPull : this._quality.memberPull);
       nd.vy += (anchor.y - nd.y) * a * (nd.id === nd.clusterId ? this._quality.anchorPull : this._quality.memberPull);
       const orbitTightness = Math.min(1.6, 0.75 + meta.size / 18);
@@ -193,8 +225,16 @@ class SimpleLayout {
     let maxDeltaSq = 0;
     const maxR = this._maxRadius;
     const maxR2 = maxR * maxR;
+    const dragAffected = this._dragAffected;
     for (const nd of nodes) {
       if (this._pinned.has(nd.id)) { nd.vx = 0; nd.vy = 0; continue; }
+      // While a drag is active, only the dragged node and its direct
+      // neighbors are allowed to actually move — see dragStart()'s own
+      // comment for the full reasoning. Every force loop above this one
+      // still computed something into every node's vx/vy regardless; this
+      // is the one place that computed value is discarded for anything
+      // outside the affected set, the same way a pinned node's already is.
+      if (dragAffected && !dragAffected.has(nd.id)) { nd.vx = 0; nd.vy = 0; continue; }
       nd.vx *= this._quality.damping; nd.vy *= this._quality.damping;
       nd.x  += nd.vx; nd.y  += nd.vy;
       // Containment clamp — see the comment where this._maxRadius is set in
@@ -386,15 +426,15 @@ class SimpleLayout {
 
   _qualityProfile(count) {
     if (count >= 2200) {
-      return { clusterCount: 10, prewarmTicks: 55, prewarmAlpha: 0.16, maxTicks: 180, minAlpha: 0.016, alphaDecay: 0.964, cellSize: 220, charge: 820, idealDistance: 76, springStrength: 0.17, centerPull: 0.0026, damping: 0.84, ringRadiusMin: 420, ringRadiusScale: 26, orbitBase: 116, orbitClusterScale: 14, orbitRankStep: 18, orbitWeightStep: 24, orbitSnap: 0.022, anchorPull: 0.07, memberPull: 0.0065 };
+      return { clusterCount: 10, prewarmTicks: 55, prewarmAlpha: 0.16, maxTicks: 180, minAlpha: 0.016, alphaDecay: 0.964, cellSize: 220, charge: 820, idealDistance: 76, springStrength: 0.17, centerPull: 0.0026, damping: 0.84, ringRadiusMin: 420, ringRadiusScale: 26, orbitBase: 116, orbitClusterScale: 14, orbitRankStep: 18, orbitWeightStep: 24, anchorPull: 0.07, memberPull: 0.0065 };
     }
     if (count >= 1200) {
-      return { clusterCount: 9, prewarmTicks: 75, prewarmAlpha: 0.14, maxTicks: 240, minAlpha: 0.012, alphaDecay: 0.972, cellSize: 200, charge: 900, idealDistance: 86, springStrength: 0.19, centerPull: 0.0034, damping: 0.82, ringRadiusMin: 360, ringRadiusScale: 23, orbitBase: 104, orbitClusterScale: 13, orbitRankStep: 17, orbitWeightStep: 22, orbitSnap: 0.023, anchorPull: 0.074, memberPull: 0.007 };
+      return { clusterCount: 9, prewarmTicks: 75, prewarmAlpha: 0.14, maxTicks: 240, minAlpha: 0.012, alphaDecay: 0.972, cellSize: 200, charge: 900, idealDistance: 86, springStrength: 0.19, centerPull: 0.0034, damping: 0.82, ringRadiusMin: 360, ringRadiusScale: 23, orbitBase: 104, orbitClusterScale: 13, orbitRankStep: 17, orbitWeightStep: 22, anchorPull: 0.074, memberPull: 0.007 };
     }
     if (count >= 500) {
-      return { clusterCount: 8, prewarmTicks: 40, prewarmAlpha: 0.12, maxTicks: 300, minAlpha: 0.009, alphaDecay: 0.978, cellSize: 180, charge: 980, idealDistance: 102, springStrength: 0.21, centerPull: 0.0042, damping: 0.8, ringRadiusMin: 300, ringRadiusScale: 21, orbitBase: 92, orbitClusterScale: 12, orbitRankStep: 16, orbitWeightStep: 20, orbitSnap: 0.024, anchorPull: 0.076, memberPull: 0.0075 };
+      return { clusterCount: 8, prewarmTicks: 40, prewarmAlpha: 0.12, maxTicks: 300, minAlpha: 0.009, alphaDecay: 0.978, cellSize: 180, charge: 980, idealDistance: 102, springStrength: 0.21, centerPull: 0.0042, damping: 0.8, ringRadiusMin: 300, ringRadiusScale: 21, orbitBase: 92, orbitClusterScale: 12, orbitRankStep: 16, orbitWeightStep: 20, anchorPull: 0.076, memberPull: 0.0075 };
     }
-    return { clusterCount: Math.max(1, Math.min(8, Math.round(Math.sqrt(Math.max(1, count)) / 4))), prewarmTicks: 150, prewarmAlpha: 0.10, maxTicks: 400, minAlpha: 0.005, alphaDecay: 0.985, cellSize: 170, charge: 1100, idealDistance: count > 300 ? 108 : 126, springStrength: 0.22, centerPull: 0.006, damping: 0.78, ringRadiusMin: 260, ringRadiusScale: 18, orbitBase: 80, orbitClusterScale: 10, orbitRankStep: 14, orbitWeightStep: 18, orbitSnap: 0.025, anchorPull: 0.08, memberPull: 0.008 };
+    return { clusterCount: Math.max(1, Math.min(8, Math.round(Math.sqrt(Math.max(1, count)) / 4))), prewarmTicks: 150, prewarmAlpha: 0.10, maxTicks: 400, minAlpha: 0.005, alphaDecay: 0.985, cellSize: 170, charge: 1100, idealDistance: count > 300 ? 108 : 126, springStrength: 0.22, centerPull: 0.006, damping: 0.78, ringRadiusMin: 260, ringRadiusScale: 18, orbitBase: 80, orbitClusterScale: 10, orbitRankStep: 14, orbitWeightStep: 18, anchorPull: 0.08, memberPull: 0.008 };
   }
 
   _rememberPositions(pos) {
@@ -444,9 +484,45 @@ class SimpleLayout {
   // nothing left running to react to it. run() naturally stops itself again
   // once alpha decays back below threshold, so this doesn't leave a
   // permanent animation loop running after the drag settles.
+  //
+  // Reheat is capped at `prewarmAlpha`, not a flat 0.3 (a real, reported
+  // bug: every node receives charge-repulsion/center-pull/orbit forces
+  // whenever alpha > 0 — not just the dragged node's direct neighbors — so
+  // reheating the WHOLE graph to 0.3, well above even the "big bang"
+  // prewarm threshold every quality tier already treats as its own ceiling
+  // for "visible but not jarring" motion, made a single drag visibly jolt
+  // every node on screen, not just the ones connected to the drag, for the
+  // ~250+ ticks (several seconds) it then took to decay back down.
+  // `prewarmAlpha` is the same value run()'s own prewarm loop already uses
+  // as "stable-ish enough to render the first frame" — reusing it here
+  // keeps a drag's reheat consistent with that existing, tier-aware
+  // definition of gentle, rather than inventing a second, much hotter one.
+  //
+  // Lowering the reheat ceiling (above) still wasn't enough on its own — a
+  // real, confirmed follow-up report: capping *how strong* alpha gets
+  // doesn't change *who* it's applied to. Every force loop in _step()
+  // iterates every node unconditionally whenever alpha > 0, so even a
+  // gentle reheat still visibly nudges completely unrelated, disconnected
+  // nodes elsewhere in the vault (measured directly: 150 of 150 untouched
+  // nodes in a test graph moved on the very first tick of one drag). Real
+  // graphs are much bigger than one drag's area of relevance, so this read
+  // as a persistent whole-canvas "vibration." `_dragAffected` is the fix:
+  // while set, _step()'s final position-update loop treats any node NOT in
+  // it exactly like a pinned one (force computation still happens into its
+  // vx/vy — harmless, since it's never used — but position never updates),
+  // so only the dragged node and its direct (1-hop) neighbors can actually
+  // move. This is also exactly the set of nodes reheating was ever meant to
+  // visibly affect ("dragging a node visibly pulls its connected
+  // neighbors") — nothing further out was ever the intent.
   dragStart(id) {
     this._pinned.add(id);
-    this._alpha = Math.max(this._alpha, 0.3);
+    const affected = new Set([id]);
+    for (const e of this._edges) {
+      if (e.source === id) affected.add(e.target);
+      else if (e.target === id) affected.add(e.source);
+    }
+    this._dragAffected = affected;
+    this._alpha = Math.max(this._alpha, this._quality.prewarmAlpha);
     this._iter = 0;
     if (!this._raf) this.run();
   }
@@ -468,7 +544,21 @@ class SimpleLayout {
   // (e.g. a dedicated key/context-menu item) can still explicitly call
   // dragStart→dragEnd's sibling unpin path if ever wanted — this method
   // just no longer does it implicitly on every drop.
-  dragEnd(_id) {}
+  //
+  // Also where the second half of the reheat bug lived: previously a
+  // complete no-op, so releasing the mouse never shortened the already-
+  // reheated decay — the whole tail (dozens to hundreds of ticks, several
+  // seconds) always ran to completion regardless of how brief the drag
+  // was, since this file has no concept of "stop reheating, we're done
+  // interacting" — alpha decays at a fixed rate with nothing to tell it the
+  // drag ended. Clamping alpha down here on release keeps a short, visible
+  // settle (so the dropped node's neighbors still glide into their new
+  // positions over a few frames) without the long, unbounded tail that made
+  // even a single quick drag look like the whole graph kept moving on its
+  // own for seconds afterward.
+  dragEnd(_id) {
+    this._alpha = Math.min(this._alpha, this._quality.minAlpha * 3);
+  }
   destroy() { if (this._raf) cancelAnimationFrame(this._raf); }
 }
 

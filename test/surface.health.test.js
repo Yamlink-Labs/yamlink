@@ -806,6 +806,40 @@ describe('healthStats — top relationships', () => {
     });
 });
 
+describe('healthStats — calc health', () => {
+    test('a vault with no inline calculations has calcHealth.totalCells === 0 and renders no card', () => {
+        const vault = createVault(CRM);
+        const stats = vault.healthStats();
+        assert.equal(stats.calcHealth.totalCells, 0);
+
+        const html = buildHealthHtml(stats, { scriptUri: 'test.js', nonce: 'nonce', csp: "'unsafe-inline'" });
+        assert.doesNotMatch(html, /Calculation Health/);
+
+        vault.destroy();
+    });
+
+    test('tallies evaluated and failed cells across the whole vault, bucketed by typed error code', () => {
+        const vault = createVault({
+            'alpha.md': NOTE('alpha', 'field-report', 'name: Alpha\n') + '\nTotal: `total=1+2`\nBroken: `=Y9`\n',
+            'beta.md': NOTE('beta', 'field-report', 'name: Beta\n') + '\nDouble: `=2*3`\n'
+        });
+
+        const stats = vault.healthStats();
+        assert.equal(stats.calcHealth.totalCells, 3);
+        assert.equal(stats.calcHealth.evaluatedCells, 2);
+        assert.equal(stats.calcHealth.failedCells, 1);
+        assert.equal(stats.calcHealth.byCode.REF, 1);
+        assert.equal(stats.calcHealth.notesWithFailures, 1);
+
+        const html = buildHealthHtml(stats, { scriptUri: 'test.js', nonce: 'nonce', csp: "'unsafe-inline'" });
+        assert.match(html, /Calculation Health/);
+        assert.match(html, /2 evaluated \/ 3 total/);
+        assert.match(html, /#REF!/);
+
+        vault.destroy();
+    });
+});
+
 // ── Today at a glance (sessionSummary.js wired into the Activity tab) ──────
 
 describe('healthStats — today at a glance', () => {

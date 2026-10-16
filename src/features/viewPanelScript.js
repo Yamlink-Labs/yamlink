@@ -212,6 +212,14 @@
             if (!panel) return;
             panel.dataset.barGroupBy = barGroupSel.value;
             vscode.postMessage({ command: 'requestRerender', state: viewRuntime.getState() });
+            return;
+        }
+        const chartValueSel = e.target.closest('[data-chart-value-select]');
+        if (chartValueSel) {
+            const panel = chartValueSel.closest('.tab-panel');
+            if (!panel) return;
+            panel.dataset.chartValueField = chartValueSel.value;
+            vscode.postMessage({ command: 'requestRerender', state: viewRuntime.getState() });
         }
     });
 }());

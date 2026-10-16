@@ -100,7 +100,17 @@ require.cache.__graphpanel_graph_stub__ = {
         classifyGraphEdgeStrength,
         computeHubScore,
         computeNodeWeightedDegree,
-        computeNodeExplorerScore
+        computeNodeExplorerScore,
+        // Mirrors the real core/graph.js's getGraphStats() shape over this
+        // fixture's own edgeMap/backlinkMap, so buildPanelPayload's new
+        // vaultTotals computation (true, uncapped vault-wide node/edge
+        // counts — see its own comment in graphPayload.js) has something
+        // real to call in this stubbed test environment.
+        getGraphStats: () => {
+            let totalEdges = 0;
+            for (const edges of edgeMap.values()) totalEdges += edges.length;
+            return { nodes: edgeMap.size, totalEdges, totalBacklinks: backlinkMap.size };
+        }
     }
 };
 
@@ -206,6 +216,27 @@ describe('graph panel helpers', () => {
         assert.equal(payload.noCenter, false);
         assert.equal(payload.forceLayout, true);
         assert.ok(payload.model.summary.nodeCount >= 2);
+    });
+
+    test('buildPanelPayload exposes vaultTotals — the true, uncapped vault-wide note/edge counts, same fix as the graph sidebar\'s own vaultTotals', () => {
+        seedGraphFixture();
+
+        const payload = buildPanelPayload({
+            mode: 'vault',
+            centerNodeId: null,
+            selectedNodeId: null,
+            depth: 1,
+            maxNodes: 40,
+            expandedNodeIds: new Set(),
+            forceLayout: false
+        }, () => null);
+
+        // seedGraphFixture() populates exactly 3 notes — well under any
+        // cap, so vaultTotals.nodeCount should equal the real index size,
+        // same as model.summary.nodeCount (no truncation at this size).
+        assert.equal(payload.vaultTotals.nodeCount, 3);
+        assert.equal(payload.vaultTotals.nodeCount, payload.model.summary.nodeCount);
+        assert.ok(Number.isFinite(payload.vaultTotals.edgeCount));
     });
 });
 
