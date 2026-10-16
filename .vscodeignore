@@ -52,6 +52,7 @@ eslint.config.js
 scripts/**
 media/legacy/**
 media/docs-home/**
+media/readme/**
 media/yamlink-labs*.png
 media/yamlink-labs*.jpg
 media/icon-1.png
