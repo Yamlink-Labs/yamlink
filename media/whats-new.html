@@ -211,7 +211,7 @@ body,#topbar,#nav,#btm,#main,.vi,.badge,.ri,.dot,.next-card,.overlay-panel{trans
       <line x1="15.5" y1="10.1" x2="8.5" y2="18.9"/><line x1="9.9" y1="22.8" x2="22.1" y2="25.2"/><line x1="24.4" y1="22.3" x2="19.6" y2="10.7"/>
     </svg>
     <span class="tw">yamlink</span><span class="ts">/</span><span class="tlab">Release Briefing</span>
-    <span class="tv">0.8.2</span>
+    <span class="tv">0.8.3</span>
   </div>
   <div class="theme-sw">
     <span class="tlb">Theme</span>
@@ -243,7 +243,8 @@ body,#topbar,#nav,#btm,#main,.vi,.badge,.ri,.dot,.next-card,.overlay-panel{trans
         <div class="vi"><span class="vi-ver">0.7.9</span><span class="vi-tag">Hotfix</span></div>
         <div class="vi"><span class="vi-ver">0.8.0</span><span class="vi-tag">Engine</span></div>
         <div class="vi"><span class="vi-ver">0.8.1</span><span class="vi-tag">Hotfix</span></div>
-        <div class="vi on" data-current><span class="vi-ver">0.8.2</span><span class="vi-tag" style="color:var(--acc)">Excel-ification</span></div>
+        <div class="vi"><span class="vi-ver">0.8.2</span><span class="vi-tag">Excel-ification</span></div>
+        <div class="vi on" data-current><span class="vi-ver">0.8.3</span><span class="vi-tag" style="color:var(--acc)">Hotfix</span></div>
       </div>
     </div>
   </nav>
@@ -267,119 +268,48 @@ body,#topbar,#nav,#btm,#main,.vi,.badge,.ri,.dot,.next-card,.overlay-panel{trans
               </svg>
             </div>
             <div>
-              <div class="eye" style="margin-bottom:8px">0.8.2 · Excel-ification</div>
-              <h1>Your notes just learned to do math.</h1>
+              <div class="eye" style="margin-bottom:8px">0.8.3 · Hotfix</div>
+              <h1>Fixed: the update notes themselves.</h1>
             </div>
           </div>
-          <p class="prose">Type a formula into any note and watch it compute live — no spreadsheet, no separate app, no schema required. Pull a number straight out of another note. Summarize an entire table in one line. Run real finance math — NPV, IRR, compound growth — the same way Excel does it, with the same sign conventions, so nothing you already know has to be relearned. This is the release where Yamlink stopped being just a place you keep notes and became a place you can also work the numbers.</p>
+          <p class="prose">A quick one. The release notes you'd have seen after updating to 0.8.2 were stale — still describing 0.8.0, not the real calc-engine release that actually shipped. The real 0.8.2 content existed, it just never made it into the file this panel reads from. Fixed here; the real 0.8.2 story is one click away in the Releases list on the left. Nothing else changed in this version.</p>
         </section>
 
         <!-- 02 Highlights -->
         <section class="sec" id="s-highlights">
           <div class="eye">What shipped</div>
-          <h2>All thirty, not a curated highlight reel.</h2>
+          <h2>One fix, nothing else.</h2>
 
           <div class="mosaic">
             <div class="tile tile-lg expandable">
               <div class="tile-toggle" role="button" aria-label="Show details" tabindex="0">+</div>
-              <div class="tile-num">35</div>
-              <div class="tile-tag">what this release is all about</div>
-              <div class="tile-name">Inline calculations</div>
-              <div class="tile-desc">Stop doing the math in your head, or worse, in a separate spreadsheet you'll lose track of. Type <ic>`=price*qty`</ic> directly in a note and Yamlink computes it live, right there in your text. Every cell gets an automatic label that renumbers itself the instant you insert a new one above it — the same trick a spreadsheet pulls when a row shifts, except you never asked for it and it just works. Hover any formula to see exactly how it got its answer, step by step. And when something's wrong, you get a real reason — <ic class="or">#REF!</ic>, <ic class="or">#DIV/0!</ic>, <ic class="or">#NAME?</ic>, <ic class="or">#VALUE!</ic> — not a silent wrong number you won't catch until it costs you something. Autocomplete opens the moment you type a formula, the same way <ic>[[</ic> already does elsewhere, and now suggests this note's own frontmatter fields and any table's columns right alongside your own cells.</div>
-            </div>
-            <div class="tile tile-lg expandable">
-              <div class="tile-toggle" role="button" aria-label="Show details" tabindex="0">+</div>
-              <div class="tile-num">12</div>
-              <div class="tile-tag">answer harder questions without leaving the note</div>
-              <div class="tile-name">Statistics, finance &amp; growth</div>
-              <div class="tile-desc">Twelve functions that turn a list of numbers into an actual answer: the typical price (<ic>median</ic>), how much it varies (<ic>stdev</ic>), whether a purchase pays for itself (<ic>npv</ic>, <ic>irr</ic>), what a loan costs per month (<ic>pmt</ic>), how fast something is really growing (<ic>cagr</ic>). Same formulas Excel uses, same sign conventions — if you already think in spreadsheet terms, nothing here needs translating. Deadlines get the same treatment: <ic>today()</ic>, <ic>days_between()</ic>, and a real <ic>if()</ic> that only ever evaluates the branch it takes.</div>
-            </div>
-            <div class="tile tile-lg expandable">
-              <div class="tile-toggle" role="button" aria-label="Show details" tabindex="0">+</div>
-              <div class="tile-num">4</div>
-              <div class="tile-tag">no second query needed</div>
-              <div class="tile-name">Table &amp; cross-note ranges</div>
-              <div class="tile-desc">The most common spreadsheet habit — copying a number from one place into another — is gone. <ic>sum([[budget]]^Y1:Y5)</ic> reaches straight into another note's cells. <ic>sum(T1.budget)</ic> reads an entire column out of this note's own table. Name a range once (<ic>prices=Y1:Y8</ic>) and reuse it in <ic>median</ic>, <ic>sumif</ic>, <ic>countif</ic>, anywhere a list belongs. Nothing to retype, nothing to keep in sync by hand.</div>
-            </div>
-            <div class="tile tile-md expandable">
-              <div class="tile-toggle" role="button" aria-label="Show details" tabindex="0">+</div>
-              <div class="tile-tag">two new ways to see your vault</div>
-              <div class="tile-name">Line &amp; Pie charts</div>
-              <div class="tile-desc">Two more ways to see your data at a glance — and a Value picker so Bar and Pie can chart a real total instead of a plain count, no extra query required.</div>
-            </div>
-            <div class="tile tile-md expandable">
-              <div class="tile-toggle" role="button" aria-label="Show details" tabindex="0">+</div>
-              <div class="tile-tag">one number, many ways to slice it</div>
-              <div class="tile-name">Summarizing across notes</div>
-              <div class="tile-desc">One query, every answer you need. <ic>aggregate sum()/average()/min()/max()/count</ic> totals, averages, and counts across an entire matched set — standalone, or one line per <ic>group by</ic> bucket. Add <ic>when priority = high</ic> and you get the high-priority total right next to the overall one, in the same breath.</div>
-            </div>
-            <div class="tile tile-md expandable">
-              <div class="tile-toggle" role="button" aria-label="Show details" tabindex="0">+</div>
-              <div class="tile-tag">fixes</div>
-              <div class="tile-name">x-graph physics &amp; honesty</div>
-              <div class="tile-desc">Dragging a node no longer sets off a chain reaction across the whole graph. Clusters look like clusters, not a crystal lattice. Every type gets its own real color. And when the view is only showing you part of the vault, it finally says so — "128 of 340 notes" instead of quietly pretending that's everything.</div>
-            </div>
-            <div class="tile tile-md expandable">
-              <div class="tile-toggle" role="button" aria-label="Show details" tabindex="0">+</div>
-              <div class="tile-tag">formatting without touching the real value</div>
-              <div class="tile-name">Display formats</div>
-              <div class="tile-desc"><ic>as currency</ic>, <ic>as percent</ic>, <ic>as comma</ic> — control how a number looks without ever touching the number itself, so the math underneath stays exact.</div>
-            </div>
-            <div class="tile tile-sm">
-              <div class="tile-name">Group labels, fixed</div>
-              <div class="tile-desc"><ic>group by</ic> on a linked field now shows the note's name, not raw <ic>[[brackets]]</ic>.</div>
-            </div>
-            <div class="tile tile-sm">
-              <div class="tile-name">Hover finds what you meant</div>
-              <div class="tile-desc">Accent-insensitive matching, plus a fallback that finds the real paragraph when there's no heading to land on.</div>
-            </div>
-            <div class="tile tile-sm">
-              <div class="tile-name">Booleans in parentheses</div>
-              <div class="tile-desc"><ic>(total &gt; 1000) and (count &lt; 5)</ic> — grouping finally works on comparisons, not just arithmetic.</div>
-            </div>
-            <div class="tile tile-sm">
-              <div class="tile-name">No more nagging yourself</div>
-              <div class="tile-desc">Accept a field suggestion and Yamlink won't immediately suggest the same one right back.</div>
-            </div>
-            <div class="tile tile-sm">
-              <div class="tile-name"><ic>sort asc</ic>, actually works</div>
-              <div class="tile-desc">Writing it explicitly used to silently drop the whole clause. Fixed.</div>
-            </div>
-            <div class="tile tile-sm">
-              <div class="tile-name">Link fix goes to the right field</div>
-              <div class="tile-desc">The quickfix now writes into the field you invoked it from, not a hardcoded one.</div>
-            </div>
-            <div class="tile tile-sm">
-              <div class="tile-name">Autocomplete that's learned something</div>
-              <div class="tile-desc">Suggests formula shapes already proven out in other notes of the same type.</div>
+              <div class="tile-num">1</div>
+              <div class="tile-tag">the only thing in this release</div>
+              <div class="tile-name">Correct release notes</div>
+              <div class="tile-desc">This panel was still showing the 0.8.0 briefing to anyone who updated to 0.8.2 — the real 0.8.2 content existed, drafted and approved, it just never got copied into the file this webview actually reads. Fixed: this version ships the real file, and 0.8.2's full content is preserved and reachable from the Releases list.</div>
             </div>
           </div>
 
-          <div class="hl-tally"><b>30</b> shipped · <b>2</b> deferred on purpose (<ic>percentile</ic>/<ic>correl</ic> need a shape this evaluator can't express yet) · <b>1</b> formula engine, <b>5</b> surfaces reading from it</div>
+          <div class="hl-tally"><b>1</b> shipped · <b>0</b> new features · <b>0</b> behavior changes</div>
         </section>
 
         <!-- 03 Story -->
         <section class="sec" id="s-story">
-          <div class="eye">How this cycle actually went</div>
-          <p class="prose">As I've said endlessly since I started working on Yamlink, "I just want something to suit my needs." Well, 0.8.2 is exactly that.</p>
-          <p class="prose">I recently started my MBA, and I am now neck deep into statistics, projections, finances, and long equations calculating long-term variable interest. And I wanted that in my MD. And then I said, well, what if Yamlink and Excel had a wild fling?</p>
-          <p class="prose">Have "cell-like" behavior for your calculations, reference results all over your notes, and better yet, query them and view graphical output of your work. I thought this could give Yamlink a whole new outlook and open the door to a whole new set of applications.</p>
-          <p class="prose">Initially, I just wanted to view formulas and calculations, and it just kept growing and growing. Now, you can literally handle things like your own personal finances.</p>
-          <p class="prose">In essence, Yamlink is now your own local, computation engine living in your MD. Your notes and all your numbers live side by side, and that's a pretty cool thing if you ask me.</p>
+          <div class="eye">How this one happened</div>
+          <p class="prose">Short version: I drafted and signed off on the real 0.8.2 release notes separately from the file that actually ships inside the extension, and the hand-off between the two never happened. Caught it, fixed it, and I'd rather ship a one-line hotfix for this than let it sit wrong until the next real release.</p>
           <div style="font-size:11px;color:var(--tx3);letter-spacing:.06em;margin-top:28px;">— J<br>October 2026</div>
         </section>
 
         <!-- 04 Insights -->
         <section class="sec" id="s-insights">
           <div class="eye">Insights</div>
-          <p class="prose">I've wanted a Zed extension for a long time. Being editor-agnostic was the whole point of building Yamlink's LSP server in the first place — hover, completions, rename, diagnostics, all of it already speaks the same protocol Zed would need. Living outside of VS Code, opening the way for a potential app, that was always the goal.</p>
-          <p class="prose">Between starting my MBA and everything else already going on (work, family), there's no resources for a proper Zed extension. As an alternative: if you want to run Yamlink outside VS Code in the meantime, it already works in Cursor — I've tested it directly. There's no packaged install for it yet, since the time's gone into the VS Code extension and the desktop app instead, but if enough of you want a downloadable Cursor package up on the Yamlink GitHub, that's something I can do. You can comment on our GH discussion thread or comment on our Yamlink Labs X page if you want.</p>
+          <p class="prose">Nothing new to add this time — see 0.8.2's own Insights (in the Releases list) for the Zed/Cursor note, still current.</p>
           <div style="font-size:11px;color:var(--tx3);letter-spacing:.06em;margin-top:28px;">— J</div>
         </section>
 
         <!-- Previous release view (outside sec[] navigation system) -->
         <div id="s-prev-release" style="display:none;opacity:0;transition:opacity 190ms ease,transform 190ms ease;transform:translateY(10px);">
-          <div class="pr-back" id="pr-back">← Back to 0.8.2</div>
+          <div class="pr-back" id="pr-back">← Back to 0.8.3</div>
           <div id="pr-content"></div>
         </div>
 
@@ -394,11 +324,11 @@ body,#topbar,#nav,#btm,#main,.vi,.badge,.ri,.dot,.next-card,.overlay-panel{trans
             <a class="ri" href="https://x.com/yamlinklabs" style="text-decoration:none"><span class="ri-n">@yamlinklabs on X</span><span class="ri-a">↗</span></a>
             <a class="ri" href="https://github.com/Yamlink-Labs/yamlink/issues" style="text-decoration:none"><span class="ri-n">Report a Bug</span><span class="ri-a">↗</span></a>
           </ul>
-          <div class="ref-meta">yamlink 0.8.2 · excel-ification · october 2026</div>
+          <div class="ref-meta">yamlink 0.8.3 · hotfix · october 2026</div>
           <div class="next-card">
             <div class="next-eyebrow">Coming next</div>
-            <div class="next-title">Mathematical depth (tentatively)</div>
-            <div class="next-desc">Next up, I want the graph and the intelligence layer to get genuinely smarter, not just bigger. That means noticing which notes actually belong together instead of just matching identical fields, spotting the handful of notes that quietly bridge two otherwise separate parts of your vault, and finding the vault's real structural core rather than just its most-linked notes. The graph's layout should also start behaving like a real physical system, so clusters settle into place on their own instead of needing a synthetic nudge. And I want to close the one rough edge from this release — <ic>T&lt;N&gt;</ic> table labels will get the same automatic renumbering <ic>Y&lt;N&gt;</ic> cell labels already have.</div>
+            <div class="next-title">View Panel &amp; Calendar redesign</div>
+            <div class="next-desc">A real visual and interaction pass on the live table — a collapsed toolbar, a smaller control radius throughout, column pinning, row grouping, bulk edit, saved views, and conditional formatting — then the same treatment for Calendar and Note Report.</div>
             <div class="next-badge">In development</div>
           </div>
         </section>
@@ -426,7 +356,7 @@ body,#topbar,#nav,#btm,#main,.vi,.badge,.ri,.dot,.next-card,.overlay-panel{trans
   <div style="margin-left:auto;display:flex;align-items:center;gap:16px;">
     <a class="btm-link" href="https://www.yamlink.dev">yamlink.dev</a>
     <a class="btm-link" href="https://x.com/yamlinklabs">@yamlinklabs</a>
-    <span class="btm-link" style="opacity:.3">yamlink 0.8.2</span>
+    <span class="btm-link" style="opacity:.3">yamlink 0.8.3</span>
   </div>
 </footer>
 
@@ -473,6 +403,21 @@ document.getElementById('rel-toggle').addEventListener('click', () => {
 
 // Previous release data
 const releaseData = {
+  '0.8.2': {
+    tag: '0.8.2 · Excel-ification',
+    headline: 'Your notes just learned to do math.',
+    intro: 'Type a formula into any note and watch it compute live — no spreadsheet, no separate app, no schema required. Real finance math (NPV, IRR, compound growth) the same way Excel does it, same sign conventions.',
+    items: [
+      '<b>Inline calculations</b> — type <ic>`=price*qty`</ic> directly in a note, computed live. Auto-renumbering cell labels, step-by-step hover trace, real typed errors (<ic class="or">#REF!</ic>, <ic class="or">#DIV/0!</ic>, <ic class="or">#NAME?</ic>, <ic class="or">#VALUE!</ic>) instead of a silent wrong number.',
+      '<b>Statistics, finance &amp; growth</b> — 12 functions: <ic>median</ic>, <ic>stdev</ic>, <ic>npv</ic>, <ic>irr</ic>, <ic>pmt</ic>, <ic>cagr</ic>, and date functions (<ic>today()</ic>, <ic>days_between()</ic>), all matching Excel\'s own formulas and sign conventions.',
+      '<b>Table &amp; cross-note ranges</b> — <ic>sum([[budget]]^Y1:Y5)</ic> reaches into another note\'s cells; <ic>sum(T1.budget)</ic> reads a whole table column; named ranges (<ic>prices=Y1:Y8</ic>) reusable anywhere a list belongs.',
+      '<b>Line &amp; Pie charts</b> join Table/Matrix/Bar/Scatter, plus a Value picker so Bar/Pie can chart a real total instead of a plain count.',
+      '<b>Summarizing across notes</b> — <ic>aggregate sum()/average()/min()/max()/count</ic>, standalone or per <ic>group by</ic> bucket, with a <ic>when</ic> condition for a filtered sub-total alongside the overall one.',
+      '<b>Display formats</b> — <ic>as currency</ic>/<ic>as percent</ic>/<ic>as comma</ic> control how a number looks without touching the underlying value.',
+      'x-graph physics and honesty fixes — dragging no longer shakes the whole graph, clusters look organic, every type gets a real color, truncated views say so ("128 of 340 notes").',
+      'Plus: fixed <ic>group by</ic> wikilink labels, accent-insensitive hover with a body-text fallback, boolean parentheses grouping, no more self-nagging completions, <ic>sort asc</ic> actually working, the link quickfix writing to the right field, and formula autocomplete that\'s learned from other notes of the same type.',
+    ]
+  },
   '0.8.1': {
     tag: '0.8.1 · Hotfix',
     headline: 'Two small removals, in favor of right-click.',

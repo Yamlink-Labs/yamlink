@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.8.3
+
+### Fixes
+
+- The "What's New" webview shown on update (`media/whats-new.html`) still wrongly showed the 0.8.0 release briefing to users updating to 0.8.2 — the real 0.8.2 content existed but was never copied into the shipped file. Now updated.
+
 ## 0.8.2
 
 ### New
