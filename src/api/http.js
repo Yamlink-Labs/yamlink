@@ -20,8 +20,16 @@ const ERROR_CODES = {
     NOT_FOUND:          404,
     METHOD_NOT_ALLOWED: 405,
     CONFLICT:           409,
+    PAYLOAD_TOO_LARGE:  413,
     INTERNAL_ERROR:     500,
 };
+
+// Unbounded before this fix: readBody concatenated every chunk with no cap at
+// all, so a single request with an arbitrarily large body would be buffered
+// in full before JSON.parse ever ran, letting one request exhaust process
+// memory. 25 MiB is generous for the largest realistic legitimate body (a
+// big POST /api/nodes/bulk batch) while still being a finite, enforced limit.
+const MAX_REQUEST_BODY_BYTES = 25 * 1024 * 1024;
 
 function json(res, data, status = 200) {
     const body = JSON.stringify(data);
@@ -60,23 +68,66 @@ function methodNotAllowed(res) {
 
 function readBody(req) {
     return new Promise((resolve, reject) => {
-        let data = '';
-        req.on('data', (chunk) => { data += chunk; });
+        const chunks = [];
+        let totalBytes = 0;
+        let settled = false;
+
+        req.on('data', (chunk) => {
+            if (settled) return;
+            totalBytes += chunk.length;
+            if (totalBytes > MAX_REQUEST_BODY_BYTES) {
+                settled = true;
+                // Deliberately NOT req.destroy() here: that tears down the
+                // whole duplex socket immediately, including the write side
+                // this same connection needs to actually deliver the 413
+                // response — confirmed by direct testing, where destroying
+                // the request mid-upload raced the client's still-in-flight
+                // write and surfaced as a raw ECONNRESET instead of a clean
+                // error response. Dropping subsequent chunks (the `settled`
+                // guard at the top of this handler) already stops the
+                // unbounded memory growth; the remaining bytes simply drain
+                // off the socket normally while the caller sends back a
+                // proper 413.
+                /** @type {Error & { code?: string }} */
+                const err = new Error('Request body too large');
+                err.code = 'PAYLOAD_TOO_LARGE';
+                reject(err);
+                return;
+            }
+            // Buffer chunks, not string concatenation: `data += chunk`
+            // coerces each Buffer via its own default toString('utf8'),
+            // which corrupts a multi-byte UTF-8 character that happens to
+            // be split across a TCP chunk boundary. Buffer.concat first,
+            // decode once at the end, is correct regardless of where chunk
+            // boundaries land.
+            chunks.push(chunk);
+        });
         req.on('end', () => {
+            if (settled) return;
+            settled = true;
             try {
+                const data = Buffer.concat(chunks).toString('utf8');
                 resolve(data ? JSON.parse(data) : {});
             } catch (_) {
                 reject(new Error('Invalid JSON body'));
             }
         });
-        req.on('error', reject);
+        req.on('error', (err) => {
+            if (settled) return;
+            settled = true;
+            reject(err);
+        });
     });
 }
 
 async function parseJsonBody(req, res) {
     try {
         return await readBody(req);
-    } catch (_) {
+    } catch (err) {
+        if (err && err.code === 'PAYLOAD_TOO_LARGE') {
+            errorJson(res, 'PAYLOAD_TOO_LARGE', 'Request body too large');
+            return null;
+        }
         badRequest(res, 'Invalid JSON body', 'INVALID_JSON');
         return null;
     }

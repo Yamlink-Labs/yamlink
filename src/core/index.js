@@ -232,7 +232,13 @@ function buildIndex(workspaceFolders) {
 
     for (const root of roots) {
         const ignoreRules = loadIgnoreRules(root);
-        scanDirectory(root, root, ignoreRules, pendingGraphBuild);
+        // Resolved once per root, not per recursive call — scanDirectory's
+        // own containment check compares every directory it visits against
+        // this, and a fresh realpathSync() per directory on a large vault
+        // would be a real, avoidable hot-path cost.
+        let resolvedRoot;
+        try { resolvedRoot = fs.realpathSync(root); } catch (_) { resolvedRoot = root; }
+        scanDirectory(root, root, ignoreRules, pendingGraphBuild, resolvedRoot, new Set());
     }
 
     for (const pending of pendingGraphBuild) {
@@ -250,7 +256,33 @@ function buildIndex(workspaceFolders) {
     );
 }
 
-function scanDirectory(dir, workspaceRoot, ignoreRules = [], pendingGraphBuild = []) {
+/**
+ * @param {string} dir
+ * @param {string} workspaceRoot
+ * @param {Array<any>} [ignoreRules]
+ * @param {Array<any>} [pendingGraphBuild]
+ * @param {string|null} [resolvedWorkspaceRoot] - real (symlink-resolved) path
+ *   of the scan root, computed once by the caller. A directory whose own
+ *   real path falls outside this is never recursed into — without this, a
+ *   symlink anywhere inside the vault pointing elsewhere on disk would have
+ *   its full contents scanned and indexed as if they were real vault notes
+ *   (a real, confirmed information-disclosure path, not theoretical: any
+ *   `.md` file the symlink's target happens to contain becomes part of the
+ *   vault's searchable index — exposed through Live Note, the API,
+ *   published output, anywhere that index gets displayed).
+ * @param {Set<string>} [visitedRealDirs] - real paths already scanned in
+ *   this run. A circular symlink (a directory symlink pointing back at one
+ *   of its own ancestors) would otherwise recurse forever until the process
+ *   crashes with a stack overflow — confirmed by direct reasoning about the
+ *   unguarded recursion, not merely asserted.
+ */
+function scanDirectory(dir, workspaceRoot, ignoreRules = [], pendingGraphBuild = [], resolvedWorkspaceRoot = null, visitedRealDirs = new Set()) {
+    let realDir;
+    try { realDir = fs.realpathSync(dir); } catch (e) { return; }
+    if (visitedRealDirs.has(realDir)) return;
+    visitedRealDirs.add(realDir);
+    if (resolvedWorkspaceRoot && realDir !== resolvedWorkspaceRoot && !realDir.startsWith(resolvedWorkspaceRoot + path.sep)) return;
+
     let files;
     try {
         files = fs.readdirSync(dir);
@@ -268,12 +300,37 @@ function scanDirectory(dir, workspaceRoot, ignoreRules = [], pendingGraphBuild =
             fullPath.endsWith(`${path.sep}_templates`)) continue;
         if (isIgnoredPath(fullPath, workspaceRoot, ignoreRules)) continue;
 
-        let stat;
-        try { stat = fs.statSync(fullPath); } catch (e) { continue; }
+        // lstat (not stat) first: it never follows a symlink, so it both
+        // tells us whether this entry IS one and, when it isn't, gives the
+        // real entry type directly — the common case (an ordinary file or
+        // directory) costs exactly one stat-family syscall, same as before
+        // this fix. Only a symlink entry pays the extra realpath cost below.
+        let lstat;
+        try { lstat = fs.lstatSync(fullPath); } catch (e) { continue; }
 
-        if (stat.isDirectory()) {
-            scanDirectory(fullPath, workspaceRoot, ignoreRules, pendingGraphBuild);
+        if (lstat.isSymbolicLink()) {
+            if (resolvedWorkspaceRoot) {
+                let realTarget;
+                try { realTarget = fs.realpathSync(fullPath); } catch (e) { continue; }
+                if (realTarget !== resolvedWorkspaceRoot && !realTarget.startsWith(resolvedWorkspaceRoot + path.sep)) continue;
+            }
+            let targetStat;
+            try { targetStat = fs.statSync(fullPath); } catch (e) { continue; }
+            if (targetStat.isDirectory()) {
+                scanDirectory(fullPath, workspaceRoot, ignoreRules, pendingGraphBuild, resolvedWorkspaceRoot, visitedRealDirs);
+            } else if (file.endsWith('.md')) {
+                mtimeCache.set(fullPath, targetStat.mtimeMs);
+                indexFile(fullPath, pendingGraphBuild);
+            }
+        } else if (lstat.isDirectory()) {
+            scanDirectory(fullPath, workspaceRoot, ignoreRules, pendingGraphBuild, resolvedWorkspaceRoot, visitedRealDirs);
         } else if (file.endsWith('.md')) {
+            // lstat is already a full stat for a non-symlink entry, so this
+            // populates the same cache updateSingleFile() uses, at zero extra
+            // syscall cost — a full rebuild previously left it empty until
+            // files were touched one at a time, forcing every vault-wide
+            // consumer (e.g. healthStats.js's lifecycle scan) to re-stat.
+            mtimeCache.set(fullPath, lstat.mtimeMs);
             indexFile(fullPath, pendingGraphBuild);
         }
     }
@@ -328,7 +385,7 @@ function indexFile(fullPath, pendingGraphBuild = null) {
 
             if (fields.type.trim().toLowerCase() === 'schema') {
                 const firstDash    = content.indexOf('---');
-                const closingIndex = content.indexOf('---', firstDash + 3);
+                const closingIndex = findClosingFrontmatterFence(content, firstDash);
                 if (closingIndex !== -1) {
                     const frontmatterText = content.slice(firstDash + 3, closingIndex);
                     registerSchemaNode(id, frontmatterText);
@@ -377,7 +434,7 @@ function extractEdgesFromFrontmatterRaw(content) {
     if (!/^\s*---/.test(content)) return edges;
 
     const firstDash    = content.indexOf('---');
-    const closingIndex = content.indexOf('---', firstDash + 3);
+    const closingIndex = findClosingFrontmatterFence(content, firstDash);
     if (closingIndex === -1) return edges;
 
     const frontmatter = content.slice(firstDash + 3, closingIndex);
@@ -435,7 +492,7 @@ function extractBodyLinksRaw(content) {
     let bodyStart = 0;
     if (/^\s*---/.test(content)) {
         const firstDash    = content.indexOf('---');
-        const closingIndex = content.indexOf('---', firstDash + 3);
+        const closingIndex = findClosingFrontmatterFence(content, firstDash);
         if (closingIndex !== -1) bodyStart = closingIndex + 3;
     }
 
@@ -537,6 +594,11 @@ function registerResolvedEdges(sourceId, rawEdges) {
 //   - null/undefined values become empty string
 //   - numbers and booleans converted to string
 // ─────────────────────────────────────────────────────────────────
+function findClosingFrontmatterFence(content, firstDash) {
+    const match = /^---[ \t\r]*$/m.exec(content.slice(firstDash + 3));
+    return match ? firstDash + 3 + match.index : -1;
+}
+
 /** @param {string} content @param {string} [filePath] @returns {Record<string,any>|null} */
 function parseFrontmatter(content, filePath) {
     if (content.charCodeAt(0) === 0xFEFF) content = content.slice(1); // strip BOM
@@ -544,7 +606,7 @@ function parseFrontmatter(content, filePath) {
     if (!/^\s*---/.test(content)) return null;
 
     const firstDash    = content.indexOf('---');
-    const closingIndex = content.indexOf('---', firstDash + 3);
+    const closingIndex = findClosingFrontmatterFence(content, firstDash);
     if (closingIndex === -1) return null;
 
     const fmText = content.slice(firstDash + 3, closingIndex);
@@ -854,11 +916,17 @@ function invalidateFileCache(filePath) {
     if (!filePath) return;
     mtimeCache.delete(filePath);
 }
+/** @param {string|null} [filePath] @returns {number|undefined} Already-known mtime (ms) for a file, populated during both full and incremental scans — lets a vault-wide consumer skip a redundant per-file fs.statSync(). */
+function getCachedMtime(filePath) {
+    if (!filePath) return undefined;
+    return mtimeCache.get(filePath);
+}
 
 module.exports = {
     buildIndex,
     updateSingleFile,
     invalidateFileCache,
+    getCachedMtime,
     removeFileFromIndex,
     getIndex,
     getPathIndex,

@@ -10,8 +10,13 @@ const {
     buildImportTrustSection,
     formatImportTrustSummary
 } = require('./importTrust');
+const { isSymlinkEntry, isHardlinkEntry } = require('./fsSafety');
 
-const EXTERNAL_SKIP_DIRS = new Set(['.git', '.obsidian', '.trash', '.vscode', '.cursor', '.zed', '__macosx', 'node_modules']);
+// See obsidianFilesystem.js's identical SKIP_DIRS comment: `.yamlink` must
+// never be imported from an external export — a pre-seeded api-token or
+// webhooks.json inside it would be trusted by the imported vault as if the
+// user had generated/configured it themselves.
+const EXTERNAL_SKIP_DIRS = new Set(['.git', '.obsidian', '.trash', '.vscode', '.cursor', '.zed', '.yamlink', '__macosx', 'node_modules']);
 const EXTERNAL_SKIP_FILES = new Set(['.ds_store', 'thumbs.db', 'desktop.ini']);
 
 function sanitizeFileStem(value, fallback = 'note') {
@@ -82,11 +87,16 @@ function walkExternalFiles(rootPath, onFile, relativeBase = '') {
     for (const entry of fs.readdirSync(rootPath, { withFileTypes: true })) {
         if (shouldSkipExternalEntry(entry.name, entry.isDirectory())) continue;
         const fullPath = path.join(rootPath, entry.name);
+        if (isSymlinkEntry(fullPath)) continue;
         const relativePath = relativeBase ? path.join(relativeBase, entry.name) : entry.name;
         if (entry.isDirectory()) {
             walkExternalFiles(fullPath, onFile, relativePath);
             continue;
         }
+        // Hardlink check only applies to files — see obsidianFilesystem.js's
+        // identical comment for why directory nlink counts aren't a safe
+        // signal across platforms.
+        if (isHardlinkEntry(fullPath)) continue;
         onFile(fullPath, relativePath);
     }
 }
@@ -244,6 +254,8 @@ module.exports = {
     stripHtmlToMarkdownish,
     buildFrontmatterMarkdown,
     shouldSkipExternalEntry,
+    isSymlinkEntry,
+    isHardlinkEntry,
     walkExternalFiles,
     extractFirstMarkdownHeading,
     stripMarkdownFormatting,

@@ -5,15 +5,22 @@ const { URL } = require('url');
 const { CORS_HEADERS, notFound, errorJson } = require('./http');
 
 /**
- * Opt-in shared-secret auth: set YAMLINK_API_TOKEN before running
- * `yamlink serve` to require every request to carry a matching
- * `X-Yamlink-Token` header. Off by default — the API has no auth at all
- * otherwise, same as before this existed. This exists because CORS is
- * intentionally wide open (`Access-Control-Allow-Origin: *`, needed so
- * browser-based local tools on a different origin/port can talk to the
- * server) — without a token, any webpage open in the same browser could
- * read or write the vault through it. Checked here, not per-handler, so it
- * can never be forgotten on a new route.
+ * Shared-secret auth: a request is authorized only if it carries a
+ * `X-Yamlink-Token` header matching `process.env.YAMLINK_API_TOKEN`. When
+ * that env var is unset, every request is allowed through unchecked — this
+ * function alone cannot tell the difference between "the operator
+ * deliberately disabled auth" and "nobody ever set the token." For every
+ * normal `yamlink serve` / `yamlink conduit` entry point, this is not a gap:
+ * `src/api/apiToken.js`'s `getOrCreateApiToken()` always runs first and sets
+ * `YAMLINK_API_TOKEN` itself if it wasn't already set, closing the real risk
+ * (CORS here is intentionally wide open — `Access-Control-Allow-Origin: *`,
+ * needed so browser-based local tools on a different origin/port can talk to
+ * the server — so without a token, any webpage open in the same browser
+ * could read or write the vault through it). It IS a real gap for anyone
+ * calling `createRouter()` directly without going through `serve.js` first
+ * (embedding this router in their own process/server): see `createRouter`'s
+ * own doc comment below. Checked here, not per-handler, so it can never be
+ * forgotten on a new route.
  * @param {import('http').IncomingMessage} req
  * @returns {boolean}
  */
@@ -127,6 +134,28 @@ function compilePath(path) {
 
 const compiledRoutes = routeDefs.map((route) => ({ ...route, ...compilePath(route.path) }));
 
+/**
+ * Builds the request handler this module exposes. **Security note, flagged
+ * by external review and confirmed real**: this function does not itself
+ * generate or require an API token — `isAuthorized()` above only checks
+ * whatever `process.env.YAMLINK_API_TOKEN` happens to already be when a
+ * request arrives. Every normal entry point (`yamlink serve`, the server
+ * Conduit auto-starts for itself) calls `getOrCreateApiToken()`
+ * (`src/api/apiToken.js`) before ever calling this function, so the token is
+ * always set by the time a real request is handled. **If you call
+ * `createRouter()` directly from your own code to host this API yourself —
+ * skipping `src/cli/commands/serve.js`'s `run()`/`startServer()` — you must
+ * call `getOrCreateApiToken(vaultPath)` (or set `YAMLINK_API_TOKEN`
+ * yourself) first, or every request will be served completely
+ * unauthenticated.** This is deliberately not enforced inside `createRouter`
+ * itself: some legitimate direct callers (this project's own test suite,
+ * notably) construct a router without a token on purpose to exercise routes
+ * directly without that ceremony.
+ * @param {string} vaultPath
+ * @param {string[]} [workspaceFolders]
+ * @param {typeof buildIndex} [_buildIndex]
+ * @param {import('../core/vaultService').VaultService} [existingVaultService]
+ */
 function createRouter(vaultPath, workspaceFolders, _buildIndex = buildIndex, existingVaultService) {
     const vaultService = existingVaultService || new VaultService({
         buildIndex: _buildIndex,

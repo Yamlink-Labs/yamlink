@@ -26,11 +26,9 @@ A machine-scannable reference for every route the local HTTP API (`yamlink serve
 | `CONFLICT` | 409 |
 | `INTERNAL_ERROR` | 500 |
 
-### Authentication (opt-in)
+### Authentication (required by default)
 
-CORS is intentionally wide open (`Access-Control-Allow-Origin: *`) so browser-based local tools running on a different origin/port can call the API. By default there is **no authentication at all** — anything that can reach `127.0.0.1:<port>` can read or write the vault, including a webpage open in the same browser.
-
-Set the `YAMLINK_API_TOKEN` environment variable before starting `yamlink serve` to require every request (except the `OPTIONS` CORS preflight) to carry a matching `X-Yamlink-Token` header. Missing or mismatched tokens get `401 UNAUTHORIZED`. Unset (the default), behavior is unchanged from before this existed. `yamlink serve`'s human-readable startup output prints a loud warning whenever it starts without a token set.
+CORS is intentionally wide open (`Access-Control-Allow-Origin: *`) so browser-based local tools running on a different origin/port can call the API — which is exactly why a token is required: without one, any webpage open in the same browser could reach it too. `yamlink serve` auto-generates a random per-vault token on first run, persists it at `.yamlink/api-token`, and prints it on startup; every request (except the `OPTIONS` CORS preflight) must carry a matching `X-Yamlink-Token` header. Missing or mismatched tokens get `401 UNAUTHORIZED`. An explicit `YAMLINK_API_TOKEN` environment variable always wins over the generated/persisted value.
 
 ## Routes
 
@@ -82,8 +80,8 @@ Set the `YAMLINK_API_TOKEN` environment variable before starting `yamlink serve`
 | Method | Path | Query params | Success | Errors |
 |---|---|---|---|---|
 | `GET` | `/api/mutations` | `type`, `id`, `since`, `page`, `limit` (max 200) | `200 { events, meta }` | — |
-| `GET` | `/api/hooks` | — | `200 { hooks: [{ id, url, event, noteType?, createdAt, enabled }] }` | — |
-| `POST` | `/api/hooks` | — | `{ url, event, noteType? }` | `201 { ok, hook }` | `400 INVALID_PARAM` (bad URL or unknown event), `400 INVALID_JSON` |
+| `GET` | `/api/hooks` | — | `200 { hooks: [{ id, url, event, noteType?, createdAt, enabled, allowLocal }] }` | — |
+| `POST` | `/api/hooks` | — | `{ url, event, noteType?, allowLocal? }` | `201 { ok, hook }` | `400 INVALID_PARAM` (bad URL, unknown event, or URL blocked by the SSRF guard — see README-API.md), `400 INVALID_JSON` |
 | `PATCH` | `/api/hooks/:id` | — | `{ enabled }` | `200 { ok, hook }` | `404 NOT_FOUND`, `400 INVALID_JSON` |
 | `DELETE` | `/api/hooks/:id` | — | — | `200 { ok, id }` | `404 NOT_FOUND` |
 | `GET` | `/api/diff` | `from` + `to` (compare two notes) **or** `since` (ISO timestamp — all field changes after it) | `200` — see below | `400 MISSING_PARAM` (neither mode satisfied), `404 NOT_FOUND` (unknown `from`/`to`) |

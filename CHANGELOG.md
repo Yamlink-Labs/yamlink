@@ -1,51 +1,37 @@
 # Changelog
 
-## 0.8.3
+## 0.8.4 — Security & Stability
+
+**First wave of a staggered rollout.** Everything below is security hardening or a stability/performance fix to existing, already-shipped behavior.
 
 ### Fixes
 
-- The "What's New" webview shown on update (`media/whats-new.html`) still wrongly showed the 0.8.0 release briefing to users updating to 0.8.2 — the real 0.8.2 content existed but was never copied into the shipped file. Now updated.
-
-## 0.8.2
-
-### New
-
-- **Inline calculations in note bodies, with Excel-style references.** See [FEATURES.md — Inline Calculations](./FEATURES.md#inline-calculations) for full syntax and examples.
-  - Real arithmetic inline with `` `=...` ``, computed live as you type — operators, functions, `pi`/`e`, and string/boolean values alongside numbers.
-  - Reference an earlier calculation by name or automatic `Y1`/`Y2` label; references renumber automatically when a block shifts, the same way Excel rewrites formulas when rows move.
-  - Ranges (`Y1:Y5`), named ranges (`prices=Y1:Y8`), and conditional totals (`countif`/`sumif`/`averageif`) with a quoted criterion.
-  - Cross-note references (`` `=[[note]]^total` ``) and cross-note ranges, both single-hop by design.
-  - Table ranges — `` `=sum(T1.budget)` `` reads a whole `!view` table's column, including `group by` tables, without a second query.
-  - Comparisons and boolean logic (`> < >= <= == !=`, `and`/`or`/`not` as keywords or functions, `if()`), with real short-circuiting in `if()`.
-  - Date functions: `today()`, `date()`, `days_between()`, `add_days()`.
-  - Statistics, finance, and growth functions (`median`, `stdev`, `fv`/`pv`/`pmt`/`npv`/`irr`, `cagr`), matching Excel's own formulas and sign conventions.
-  - Reads this note's own frontmatter fields directly — no re-typing a value that's already on the note.
-  - Display formatting (`as currency`/`as percent`/`as comma`/fixed-decimals) without changing the underlying value.
-  - Autocomplete opens the instant you type `` ` `` or `=`, offering same-note cells, this note's frontmatter fields, table columns, and vault-learned formula patterns from other notes of the same type.
-  - Hover any formula for a step-by-step trace; a failed formula shows a real typed error (`#REF!`, `#DIV/0!`, `#NAME?`, `#VALUE!`) on hover and live as you type, not just a flat `= ?`.
-- **`!view` query language gains calculated-cell awareness.** See [FEATURES.md — Querying calculated cells](./FEATURES.md#querying-calculated-cells) and [Summarizing across notes with `aggregate`](./FEATURES.md#summarizing-across-notes-with-aggregate).
-  - `cell.<name-or-label>` selects, filters, and sorts by a note's calculated cells in any `!view` query.
-  - `aggregate sum()/average()/min()/max()/count` computes totals and counts over a matched set, standalone or per `group by` bucket.
-  - A `when` condition folds only the matching notes into one aggregate term, independent of every other term in the same clause.
-- **Line and pie chart layouts for `!view` results**, alongside the existing Table/Matrix/Bar/Scatter toggle. Bar and Pie can now plot an `aggregate` value instead of row count via a new Value picker. See [FEATURES.md — Chart views](./FEATURES.md#chart-views).
-- **The Live Note preview sidecar now shows just the computed result** (e.g. `9`), not the raw `` `=expr` `` syntax — hovering it there still shows the original formula.
-
-### Fixes
-
-- `!view` `group by` on a field holding a single wikilink (e.g. `unit: "[[roughnecks]]"`) now groups and labels by the target name, not the raw `[[...]]` text. Aliased links group under the target too.
-- Frontmatter values are stored as text in the index, so formulas and `cell.*` query fields silently failed on numbers and booleans written in frontmatter. Both now resolve correctly, matching how `!view` comparisons already treat them.
-- An already-closed empty wikilink placeholder (`ramo: [[ ]]`) is now recognized as a relation field by the schema-less suggestion fallback, instead of being ignored.
-- The "Link this node to another…" quickfix now writes into the field it was actually invoked from, instead of a hardcoded `related:` field.
-- `!view`'s `sort <field> asc` now parses correctly — writing `asc` explicitly used to silently drop the entire clause.
-- Accepting a frontmatter relation completion no longer immediately nudges you to add the same field you just filled in (the vault's field cache was stale until save).
-- Dragging a node in the x-graph no longer shakes the whole graph. Two separate causes, both fixed: the simulation reheated to a flat energy level regardless of how brief the drag was, and every force was computed for every node in the vault rather than just the dragged one's neighbors.
-- Dragging in the main Graph Workspace panel no longer leaves nodes permanently frozen after a few drags — a pin-release step the sidebar already had was missing there.
-- The x-graph's cluster layout now looks organic instead of crystalline — a continuous "orbit snap" force pulling every node back to a fixed point every tick is gone, in favor of repulsion and springs alone, closer to how Obsidian's own graph behaves.
-- Hovering a `[[note#heading]]` reference now matches accent-insensitively (`Monopólio`/`Monopolio`), and falls back to a body-text mention of the term before the generic note summary.
-- The x-graph now assigns a real, stable color to every type in the vault, not just 11 hardcoded names — previously any other type rendered gray.
-- A formula can now wrap a comparison or boolean sub-expression in parentheses, e.g. `` `=(total > 1000) and (count < 5)` `` — previously only plain arithmetic could be grouped.
-- The x-graph's "N notes · N links" counts now say so honestly when capped (e.g. "128 of 340 notes"), in both the sidebar and the main panel; the Local/Neighborhood scope badge also now shows when hidden neighbors exist.
-- Calendar now tracks a note with no `date:`/`created:` frontmatter field, falling back to its `note_created` mutation-log timestamp instead of leaving it invisible regardless of when it was actually written. An explicit frontmatter date still always wins.
-- Calendar's Month/Week/Day views now always default to the current month and day, instead of jumping to wherever the vault's earliest (or only) explicitly-dated note happened to be.
-- Calendar's Week view now shows each day's actual notes and tasks directly, not just an item count; Week and Day views gained real ‹ › navigation buttons (previously keyboard-only); the date picker is now a proper in-page month/day calendar grid instead of the native OS date-input dropdown.
-
+- The What's New webview's "previous release" view had no working exit except the Back link — clicking a sidebar tab (Overview/Highlights/Story/Insights/Reference) while viewing a past release's content either silently did nothing or stacked new content on top of the still-visible overlay. Sidebar tabs are now correctly disabled while that view is open.
+- **Vault Health no longer re-reads every note's file timestamp from disk on every refresh.** Its lifecycle scan (draft/growing/consolidated/hub/stale, run across the whole vault twice per panel load) was calling `fs.statSync` per note instead of reusing the timestamp the vault scan already captured moments earlier. The scan itself now records that timestamp as it goes, so the health panel reads it from memory instead of asking the disk again.
+- **`yamlink bulk-set` no longer writes the mutation log once per note.** A bulk update across many notes was making one separate synchronous disk write to `.yamlink/mutation-log.ndjson` per note; it's now collected into a single batched write after the whole operation completes.
+- **Security hardening pass.** An external security review (two passes) surfaced a set of real, confirmed issues across the API, publish/export pipeline, and a few other surfaces — all independently reproduced and fixed, not taken on the report's word alone:
+  - **The local API (`yamlink serve`) now requires authentication by default.** A random per-vault token is generated on first run and reused on restart; an explicit `YAMLINK_API_TOKEN` still always wins. Previously the API had no authentication at all, which combined with its intentionally open CORS policy meant any webpage open in the same browser could read or write the vault.
+  - **A crafted `type:` value could no longer be used to write files outside the intended folder during `yamlink publish`.** The value is now sanitized before it's ever used as a path segment.
+  - **`yamlink publish` now requires a note to opt in before it's included in the output — a real behavior change if you already use this command.** Previously, any note was published unless it was explicitly marked `status: draft` or `status: archived` — meaning a note with no `status:` field at all, or any other value, was published by default. That's the actual vulnerability this closes: publishing was never meant to be the default for a note nobody had deliberately marked public. Now a note is only published if it has `publish: true`, or the equivalent `status: published`; everything else — including notes with no `status:`/`publish:` field at all — is excluded. **If you've already been using `yamlink publish`, your next build may contain fewer notes than before.** Add `publish: true` (or `status: published`) to any note you want to keep publishing.
+  - **Webhook URLs (`POST /api/hooks` / `yamlink hooks add`) are now checked against internal/private addresses before being registered or delivered to**, closing a server-side request forgery path. Pointing a webhook at your own machine is still possible via an explicit `--allow-local` opt-in; every other private address (including the cloud metadata address) stays blocked regardless.
+  - **The API now rejects an oversized request body (413) instead of buffering it without limit.**
+  - **Exported standalone HTML and the print/PDF view now carry a Content Security Policy**, so a `<script>` tag embedded in a note's own content can no longer execute when that export is opened outside the editor.
+  - **PDF export can no longer be made to embed an image from outside the vault** via a crafted `../` path, an absolute path, or an embed reference.
+  - **CSV export now guards against spreadsheet formula injection** — a field value starting with `=`, `+`, `-`, or `@` is written safely rather than risking execution as a live formula when the CSV is later opened in Excel/LibreOffice/Sheets.
+  - **A new `yamlink mutations purge-field <field> [--note <id>] [--yes]` command permanently redacts a field's historical values** from both the mutation log and the Time Engine snapshot archive — useful if a sensitive value (e.g. a password accidentally stored in frontmatter) was ever recorded.
+  - **Vault scanning no longer follows a symlink to outside the vault**, and no longer recurses forever on a circular symlink.
+  - **`yamlink init` now creates a `.gitignore` excluding `.yamlink/`**, and the API token is never written without one — a vault that's later put under version control no longer risks committing its local auth token.
+  - **Opening a note with Conduit's "open in editor" action no longer passes the filename through a shell**, closing a command-injection path via a maliciously-named file. On Windows, where `EDITOR=code` alone no longer resolves through a shell, the action now searches `LOCALAPPDATA`/`Program Files`/`PATH` directly for `Code.exe` so the fix doesn't quietly break the common case it protects.
+  - **Live Note no longer loads a remote (`https:`) image by default** — a new, off-by-default `yamlink.allowRemoteImages` setting opts back in. Previously, an imported note containing someone else's hosted image would silently disclose that the note had been opened.
+  - **Saving a Smart Template, creating a note via the API, and `yamlink restore`'s file output are now hardened against symlink- and race-based writes outside their intended directory**, and note creation via the API no longer accepts a `__proto__`/`constructor`/`prototype` field name.
+  - Three vulnerable npm dependencies (`js-yaml`, `markdown-it`, `linkify-it`) updated; `npm audit --omit=dev` now reports zero vulnerabilities.
+  - **A follow-up review found a real gap in the webhook address check itself**: an IPv6 address written in its alternate, equally valid pure-hex form (rather than the more common dotted-decimal form) could resolve to a blocked address like `127.0.0.1` without being recognized as such. Address classification now uses a dedicated, well-tested library instead of hand-written matching, closing this and related edge cases. Separately, sending the literal text `"false"` for a webhook's local-access opt-in is no longer misread as enabling it.
+  - **The generated API token could previously be overwritten through a hard-linked file**, corrupting whatever else that link pointed at; token files are now written safely regardless.
+  - **Vault activity (not just the API token) now reliably gets a `.gitignore` entry**, including for everyday note editing that never touches `yamlink serve` at all.
+  - **Importing an Obsidian or Notion export can no longer follow a symlink to pull in a file from outside the export folder.**
+  - **The Note Preview panel, its print/PDF view, and `yamlink export`'s plain HTML output now respect the same remote-image opt-in as Live Note**, and local image references used in these preview/export surfaces can no longer resolve to a file outside the vault.
+  - **The LSP server (`yamlink serve --lsp`) now caps how much data it will buffer for a single incoming message**, protecting against unbounded memory growth from a malformed or runaway client.
+  - **A planted directory junction/symlink at `.yamlink` could previously redirect the API token and mutation log outside the vault** without any error; both now verify the directory actually resolves inside the vault before writing, and skip persistence rather than write to the wrong place if it doesn't.
+  - **The vault's `.gitignore` and webhook configuration file (`webhooks.json`) could previously be corrupted through a hard-linked file**, the same class of issue already fixed for the API token; both are now written safely regardless.
+  - **Importing an Obsidian or Notion export can no longer follow a hard link to pull in a file from outside the export folder**, closing a gap the earlier symlink-only fix didn't cover.
+  - **Importing a vault export that already contains a `.yamlink/` folder (e.g. exported from another Yamlink vault) no longer carries over its API token or webhook configuration** — those control files are now excluded from every import, the same as `.git`/`.obsidian`/editor-config directories always were. A pre-existing token file that doesn't match the format Yamlink itself generates is also now rejected and regenerated, rather than trusted as-is, for a vault opened directly rather than imported.

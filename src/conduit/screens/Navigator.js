@@ -1,7 +1,7 @@
 'use strict';
 
 const React = require('react');
-const { exec } = require('child_process');
+const { openInEditor } = require('../noteDetail');
 const SelectionList = require('../components/SelectionList');
 const { p, SYM } = require('../palette');
 
@@ -29,6 +29,12 @@ function normalizeNodes(nodes) {
 function openSelectedInExplorer(selected, onNavigate) {
     if (!selected || typeof onNavigate !== 'function') return false;
     onNavigate('explorer', selected.id);
+    return true;
+}
+
+function openSelectedInEditor(selected) {
+    if (!selected) return false;
+    openInEditor(selected.filePath || selected.id);
     return true;
 }
 
@@ -132,13 +138,8 @@ function Navigator({ ink, TextInput, host, port, getTypes, getNodes, onNavigate,
             return;
         }
         if (input === 'o' && selected) {
-            const target = selected.filePath || selected.id;
             setMessage(`Opened: ${selected.id}`);
-            try {
-                const editor = process.env.EDITOR || 'code';
-                const safeTarget = target.replace(/"/g, '\\"');
-                exec(`"${editor}" "${safeTarget}"`, { windowsHide: true }, () => {});
-            } catch (_) {}
+            openSelectedInEditor(selected);
             return;
         }
         if (input === 'g' && selected) {
@@ -257,5 +258,6 @@ function Navigator({ ink, TextInput, host, port, getTypes, getNodes, onNavigate,
 }
 
 Navigator.openSelectedInExplorer = openSelectedInExplorer;
+Navigator.openSelectedInEditor = openSelectedInEditor;
 
 module.exports = Navigator;

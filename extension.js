@@ -1036,7 +1036,8 @@ async function activate(context) {
             });
             if (!uri) return;
 
-            const model = buildNoteExportModel(docText, noteId || null, path.dirname(editor.document.uri.fsPath));
+            const vaultRoot = getPrimaryWorkspaceRoot(vscode.workspace.workspaceFolders);
+            const model = buildNoteExportModel(docText, noteId || null, path.dirname(editor.document.uri.fsPath), vaultRoot);
             exportNotePdf(uri.fsPath, model);
             vscode.window.showInformationMessage(`Yamlink: Exported "${baseName}" to PDF`);
         })

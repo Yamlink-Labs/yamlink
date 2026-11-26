@@ -9,6 +9,7 @@ const { buildIndex } = require('../src/core/index');
 const { createRouter } = require('../src/cli/commands/serve');
 const { appendMutationEvents, initMutationLog } = require('../src/runtime/mutationEventLog');
 const { createVault } = require('./lib/vaultSim');
+const { parseFrontmatterDocument } = require('../src/core/frontmatter');
 
 const FIXTURE = {
     'johnny-rico.md': [
@@ -1339,6 +1340,30 @@ test('POST /api/nodes — create note', async () => {
     assert.equal(created.status, 200);
 });
 
+test('POST /api/nodes preserves punctuation, multiline text, lists, and wikilinks in frontmatter', async () => {
+    const fields = {
+        name: 'Serialization Probe',
+        title: 'A: B',
+        summary: 'First line\n---\n# still part of the field\nstatus: not-an-extra-field',
+        tags: ['alpha', 'beta'],
+        unit: '[[roughnecks]]'
+    };
+    const response = await request('POST', '/api/nodes', { type: 'field-report', fields });
+    assert.equal(response.status, 201);
+    const created = await get('/api/nodes/serialization-probe');
+    assert.equal(created.status, 200);
+    for (const [key, value] of Object.entries(fields)) {
+        assert.deepEqual(created.body[key], key === 'tags' ? value.join(', ') : value);
+    }
+    const raw = fs.readFileSync(response.body.filePath, 'utf8');
+    const parsed = parseFrontmatterDocument(raw);
+    assert.deepEqual(parsed.data.tags, fields.tags);
+    assert.equal(parsed.data.summary, fields.summary);
+    assert.equal(parsed.body, '');
+    assert.match(raw, /^---\n/);
+    assert.match(raw, /unit: \[\[roughnecks\]\]/);
+});
+
 test('POST /api/nodes — conflict', async () => {
     const response = await request('POST', '/api/nodes', { type: 'contact', fields: { name: 'Johnny Rico' } });
     assert.equal(response.status, 409);
@@ -1825,7 +1850,11 @@ test('API hooks register, list, and fire matching mutations to a webhook URL', a
         const created = await request('POST', '/api/hooks', {
             url: hookUrl,
             event: 'field_changed',
-            noteType: 'contact'
+            noteType: 'contact',
+            // The receiver below is a real local test server, necessarily on
+            // loopback — the explicit opt-in a real user would also need to
+            // point a webhook at their own machine (see ssrfGuard.js).
+            allowLocal: true
         });
         assert.equal(created.status, 201);
         hookId = created.body.hook.id;
@@ -1857,7 +1886,8 @@ test('API hooks do not fire for non-matching events', async () => {
         const hookUrl = await receiver.url();
         const created = await request('POST', '/api/hooks', {
             url: hookUrl,
-            event: 'note_created'
+            event: 'note_created',
+            allowLocal: true
         });
         assert.equal(created.status, 201);
         hookId = created.body.hook.id;
@@ -1878,7 +1908,8 @@ test('API hooks disabled registrations suppress delivery', async () => {
         const hookUrl = await receiver.url();
         const created = await request('POST', '/api/hooks', {
             url: hookUrl,
-            event: 'field_changed'
+            event: 'field_changed',
+            allowLocal: true
         });
         assert.equal(created.status, 201);
         hookId = created.body.hook.id;
@@ -1904,6 +1935,24 @@ test('API hooks reject invalid URL and event values with INVALID_PARAM', async (
     const badEvent = await request('POST', '/api/hooks', { url: 'https://example.com/hook', event: 'made_up_event' });
     assert.equal(badEvent.status, 400);
     assert.equal(badEvent.body.code, 'INVALID_PARAM');
+});
+
+test('a real oversized POST body is refused with 413, and the server survives to serve the next request — real exploit reproduction, not just a unit test on the cap', async () => {
+    // Real, confirmed vulnerability (not theoretical): before this fix,
+    // readBody() concatenated every chunk with no size limit at all, so one
+    // request with an arbitrarily large body would be buffered in full
+    // before JSON.parse ever ran. 26 MiB is deliberately just over the 25
+    // MiB cap — proves the real HTTP server (not a mocked request object)
+    // actually enforces it end to end, and that the connection being torn
+    // down mid-request doesn't leave the server in a broken state for
+    // whatever comes after it.
+    const oversizedPayload = JSON.stringify({ fields: { id: 'oversize-test', notes: 'x'.repeat(26 * 1024 * 1024) } });
+    const oversized = await requestRaw('POST', '/api/nodes', oversizedPayload);
+    assert.equal(oversized.status, 413);
+    assert.equal(oversized.body.code, 'PAYLOAD_TOO_LARGE');
+
+    const next = await get('/api/types');
+    assert.equal(next.status, 200);
 });
 
 test('X-Yamlink-Generation header contract', async () => {

@@ -42,6 +42,14 @@ function createLiveNotePanelController() {
         }
     }
 
+    function allowRemoteImages() {
+        try {
+            return vscode.workspace.getConfiguration('yamlink').get('allowRemoteImages') === true;
+        } catch (_) {
+            return false;
+        }
+    }
+
     function getPreviewUrlForEditor(editor) {
         if (!editor) return null;
         const template = readPreviewUrlTemplate();
@@ -111,7 +119,7 @@ function createLiveNotePanelController() {
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1.0">
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'nonce-${nonce}'; style-src 'unsafe-inline'; img-src ${escapeAttr(panel ? panel.webview.cspSource : '')} https: data:;">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'nonce-${nonce}'; style-src 'unsafe-inline'; img-src ${escapeAttr(panel ? panel.webview.cspSource : '')} ${allowRemoteImages() ? 'https: ' : ''}data:;">
 <title>${escapeAttr(title)}</title>
 <style>${LIVE_TOOLBAR_STYLES}</style>
 </head>

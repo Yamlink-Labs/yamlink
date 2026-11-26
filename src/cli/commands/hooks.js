@@ -10,19 +10,19 @@ const {
     validateHookUrl
 } = require('../../runtime/webhooks');
 
-function run({ action, event, url, noteType, id, vaultPath, json, quiet }) {
+function run({ action, event, url, noteType, allowLocal, id, vaultPath, json, quiet }) {
     if (action === 'add') {
         const eventValidation = validateHookEvent(event);
         if (!eventValidation.ok) {
             emitCliError({ json, error: eventValidation.error, code: 'INVALID_PARAM', exitCode: 1 });
             return;
         }
-        const urlValidation = validateHookUrl(url);
+        const urlValidation = validateHookUrl(url, { allowLocal });
         if (!urlValidation.ok) {
             emitCliError({ json, error: urlValidation.error, code: 'INVALID_PARAM', exitCode: 1 });
             return;
         }
-        const result = addHook(vaultPath, { event, url, noteType });
+        const result = addHook(vaultPath, { event, url, noteType, allowLocal });
         if (!result.ok) {
             emitCliError({ json, error: result.error, code: 'INVALID_PARAM', exitCode: 1 });
             return;
@@ -88,7 +88,7 @@ function run({ action, event, url, noteType, id, vaultPath, json, quiet }) {
 
     emitCliError({
         json,
-        error: 'Usage: yamlink hooks add <event> <url> [--type <type>] | yamlink hooks list | yamlink hooks remove <id>',
+        error: 'Usage: yamlink hooks add <event> <url> [--type <type>] [--allow-local] | yamlink hooks list | yamlink hooks remove <id>',
         code: 'USAGE',
         exitCode: 1
     });

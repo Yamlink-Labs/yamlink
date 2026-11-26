@@ -2,6 +2,7 @@
 
 const fs = require('fs');
 const path = require('path');
+const { randomBytes } = require('crypto');
 
 const TEMPLATES_DIR = '_templates';
 const SYSTEM_TYPES = new Set(['schema', 'dashboard', 'template']);
@@ -223,15 +224,39 @@ function saveTemplateFile(workspaceRoot, type, content, options) {
         throw new Error('workspaceRoot and type are required');
     }
     if (!templateName) throw new Error('templateName cannot be empty');
+    if (/[\\/<>:"|?*\x00-\x1F]/.test(templateName) || /^\.+$/.test(templateName)) {
+        throw new Error('Template name must be a single valid filename');
+    }
     const templatesPath = path.join(workspaceRoot, TEMPLATES_DIR);
     if (!fs.existsSync(templatesPath)) fs.mkdirSync(templatesPath, { recursive: true });
+    const actualTemplatesPath = fs.realpathSync(templatesPath);
+    const expectedTemplatesPath = path.join(fs.realpathSync(workspaceRoot), TEMPLATES_DIR);
+    const normalizePath = (value) => process.platform === 'win32' ? value.toLowerCase() : value;
+    if (normalizePath(actualTemplatesPath) !== normalizePath(expectedTemplatesPath)) {
+        throw new Error('Template directory must be inside the workspace');
+    }
     const filePath = path.join(templatesPath, `${templateName}.md`);
-    if (fs.existsSync(filePath) && !force) {
+    let existing = null;
+    try { existing = fs.lstatSync(filePath); } catch (error) { if (error.code !== 'ENOENT') throw error; }
+    if (existing?.isSymbolicLink()) {
+        throw new Error('Refusing to overwrite a linked template file');
+    }
+    if (existing && !force) {
         const err = new Error(`Template for type "${normalizedType}" already exists at ${filePath}`);
         /** @type {Error & { code?: string }} */ (err).code = 'TEMPLATE_EXISTS';
         throw err;
     }
-    fs.writeFileSync(filePath, content, 'utf8');
+    if (force) {
+        const temporary = path.join(templatesPath, `.${templateName}.${randomBytes(8).toString('hex')}.tmp`);
+        try {
+            fs.writeFileSync(temporary, content, { encoding: 'utf8', flag: 'wx' });
+            fs.renameSync(temporary, filePath);
+        } finally {
+            if (fs.existsSync(temporary)) fs.unlinkSync(temporary);
+        }
+    } else {
+        fs.writeFileSync(filePath, content, { encoding: 'utf8', flag: 'wx' });
+    }
     return filePath;
 }
 

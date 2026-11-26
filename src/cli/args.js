@@ -6,7 +6,8 @@ const VALUE_FLAGS = new Set([
     '--vault', '--port', '--host', '--format', '--output', '--query', '--field', '--type',
     '--only-types', '--check', '--since', '--until', '--points', '--interval', '--at', '--limit', '--id', '--sort', '--has',
     '--missing', '--max-broken-links', '--schema-coverage', '--max-stale-days',
-    '--min-health-score', '--shell', '--reason', '--block', '--ids', '--value', '--add'
+    '--min-health-score', '--shell', '--reason', '--block', '--ids', '--value', '--add',
+    '--out', '--mode', '--site-url', '--webhook'
 ]);
 
 function resolveVaultPath(args) {

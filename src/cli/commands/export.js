@@ -5,10 +5,11 @@ const fs   = require('fs');
 const { getIndex, getFieldsCache, getAliasIndex } = require('../../core/indexService');
 const { parseFrontmatterDocument } = require('../../core/frontmatter');
 const { resolveViewBlocksToSnapshot } = require('../../core/buildPipeline');
-const { resolvePublishLinks } = require('../../core/publish');
+const { resolvePublishLinks, isPublishable } = require('../../core/publish');
 const { parseViewQuery, runQuery } = require('../../engine/query');
 const fmt = require('../format');
 const { emitCliError, emitText } = require('../io');
+const { escapeCsvValue } = require('../../export/csvEscape');
 
 let _md = null;
 
@@ -40,15 +41,9 @@ function flattenNote(id, fields) {
 function toCSV(rows) {
     if (!rows.length) return '';
     const keys = [...new Set(rows.flatMap(r => Object.keys(r)))];
-    const escape = v => {
-        const s = String(v ?? '');
-        return s.includes(',') || s.includes('"') || s.includes('\n')
-            ? '"' + s.replace(/"/g, '""') + '"'
-            : s;
-    };
     const lines = [keys.join(',')];
     for (const row of rows) {
-        lines.push(keys.map(k => escape(row[k] ?? '')).join(','));
+        lines.push(keys.map(k => escapeCsvValue(row[k] ?? '')).join(','));
     }
     return lines.join('\n');
 }
@@ -62,11 +57,27 @@ function escapeHtml(str) {
 }
 
 function buildStandaloneHtml({ title, bodyHtml }) {
+    // `getMd()` renders a note's raw body with `html: true` (markdown-it
+    // passes through literal HTML in the source verbatim), which is correct
+    // for a note the vault owner wrote themselves, but this standalone file
+    // is written to disk and meant to be opened/shared outside the editor
+    // entirely — any <script> tag in the note's body would otherwise execute
+    // with full privileges on a real `file://` page. This template has no
+    // legitimate inline script of its own, so `script-src 'none'` (not a
+    // nonce) is the correct, simplest policy — it blocks script execution
+    // outright rather than needing to carve out an exception for anything.
+    // img-src deliberately omits https: — there's no VS Code settings
+    // context in the CLI to read an allowRemoteImages opt-in from, and a
+    // remote image is itself a disclosure channel (fetching it reveals "this
+    // export was opened" to whoever controls the URL) — exactly the
+    // "offline export, not a network fetch" principle pdf.js's own image
+    // resolution already follows.
     return `<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'none'; style-src 'unsafe-inline'; img-src file: data:;">
 <title>${escapeHtml(title)}</title>
 <style>
 :root{color-scheme:light dark;--bg:#f8f6f1;--fg:#171717;--muted:#666;--line:#ddd6c8;--accent:#186b60}
@@ -109,17 +120,30 @@ function renderNoteHtml(id, { json }) {
     }
 
     let parsed;
+    let documentText;
     try {
-        parsed = parseFrontmatterDocument(fs.readFileSync(filePath, 'utf8'));
+        documentText = fs.readFileSync(filePath, 'utf8');
+        parsed = parseFrontmatterDocument(documentText);
     } catch (error) {
         emitCliError({ json, error: 'Export failed: ' + error.message, code: 'INTERNAL_ERROR', exitCode: 2 });
         return null;
     }
 
+    // The exported note itself is explicitly named by --id, so no status gate
+    // applies to it — same as `yamlink cat`. But any OTHER note it links to or
+    // queries must still respect publish status, or a single-note export could
+    // leak a private note's identity/data through a wikilink or !view block the
+    // same way a full `yamlink publish` could — confirmed to have zero
+    // filtering before this fix.
+    const publishableIds = new Set();
+    for (const [noteId, noteFields] of fieldsCache) {
+        if (isPublishable(noteFields, { mode: 'production' })) publishableIds.add(noteId);
+    }
+
     const fields = fieldsCache.get(id) || parsed.data || {};
     const title = fields.title || fields.name || id;
-    const snapshotBody = resolveViewBlocksToSnapshot(parsed.body || '', id);
-    const linkedBody = resolvePublishLinks(snapshotBody, idIndex, aliasIndex);
+    const snapshotBody = resolveViewBlocksToSnapshot(parsed.body || '', id, publishableIds);
+    const linkedBody = resolvePublishLinks(snapshotBody, idIndex, aliasIndex, publishableIds);
     const bodyHtml = getMd().render(linkedBody);
     return buildStandaloneHtml({ title, bodyHtml });
 }

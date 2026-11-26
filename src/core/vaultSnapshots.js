@@ -61,4 +61,48 @@ function loadVaultSnapshots(snapshotPath) {
     }
 }
 
-module.exports = { appendVaultSnapshot, loadVaultSnapshots };
+const REDACTED_VALUE = '[redacted]';
+
+/**
+ * Replaces a field's value, wherever it appears across every persisted
+ * snapshot, with a fixed redaction marker — in place, rewriting the whole
+ * file. A snapshot is a full `noteId -> fields` state at one point in time
+ * (see appendVaultSnapshot above), not a per-field delta, so a field that
+ * was ever set on a note at the moment of a snapshot boundary has its raw
+ * value sitting in this file too — purging a sensitive field from the
+ * mutation log alone (mutationEventLog.js's own `oldValue`/`newValue`) is
+ * not a complete purge without also redacting it here. Keeps every other
+ * field on every note untouched, and keeps the note's entry in the snapshot
+ * at all (vs. deleting it outright) — a snapshot exists to answer "did this
+ * note exist, with what other fields, at this timestamp," which stays true
+ * and useful even with one field's value redacted.
+ * @param {string|null} snapshotPath
+ * @param {string} field
+ * @param {string|null} [noteId] - when given, only this note's entries are redacted
+ * @returns {number} how many individual (snapshot, note) entries were redacted
+ */
+function redactFieldInSnapshots(snapshotPath, field, noteId) {
+    if (!snapshotPath || !field) return 0;
+    const snapshots = loadVaultSnapshots(snapshotPath);
+    if (!snapshots.length) return 0;
+
+    let redactedCount = 0;
+    for (const snapshot of snapshots) {
+        for (const [snapshotNoteId, fields] of Object.entries(snapshot.notes || {})) {
+            if (noteId && snapshotNoteId !== noteId) continue;
+            if (fields && typeof fields === 'object' && Object.prototype.hasOwnProperty.call(fields, field) && fields[field] !== REDACTED_VALUE) {
+                fields[field] = REDACTED_VALUE;
+                redactedCount++;
+            }
+        }
+    }
+
+    if (redactedCount > 0) {
+        try {
+            fs.writeFileSync(snapshotPath, snapshots.map((s) => JSON.stringify(s)).join('\n') + '\n', 'utf8');
+        } catch (_) { return 0; }
+    }
+    return redactedCount;
+}
+
+module.exports = { appendVaultSnapshot, loadVaultSnapshots, redactFieldInSnapshots, REDACTED_VALUE };

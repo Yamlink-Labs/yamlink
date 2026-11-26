@@ -211,7 +211,7 @@ body,#topbar,#nav,#btm,#main,.vi,.badge,.ri,.dot,.next-card,.overlay-panel{trans
       <line x1="15.5" y1="10.1" x2="8.5" y2="18.9"/><line x1="9.9" y1="22.8" x2="22.1" y2="25.2"/><line x1="24.4" y1="22.3" x2="19.6" y2="10.7"/>
     </svg>
     <span class="tw">yamlink</span><span class="ts">/</span><span class="tlab">Release Briefing</span>
-    <span class="tv">0.8.3</span>
+    <span class="tv">0.8.4</span>
   </div>
   <div class="theme-sw">
     <span class="tlb">Theme</span>
@@ -244,7 +244,8 @@ body,#topbar,#nav,#btm,#main,.vi,.badge,.ri,.dot,.next-card,.overlay-panel{trans
         <div class="vi"><span class="vi-ver">0.8.0</span><span class="vi-tag">Engine</span></div>
         <div class="vi"><span class="vi-ver">0.8.1</span><span class="vi-tag">Hotfix</span></div>
         <div class="vi"><span class="vi-ver">0.8.2</span><span class="vi-tag">Excel-ification</span></div>
-        <div class="vi on" data-current><span class="vi-ver">0.8.3</span><span class="vi-tag" style="color:var(--acc)">Hotfix</span></div>
+        <div class="vi"><span class="vi-ver">0.8.3</span><span class="vi-tag">Hotfix</span></div>
+        <div class="vi on" data-current><span class="vi-ver">0.8.4</span><span class="vi-tag" style="color:var(--acc)">Security &amp; Stability</span></div>
       </div>
     </div>
   </nav>
@@ -268,48 +269,110 @@ body,#topbar,#nav,#btm,#main,.vi,.badge,.ri,.dot,.next-card,.overlay-panel{trans
               </svg>
             </div>
             <div>
-              <div class="eye" style="margin-bottom:8px">0.8.3 · Hotfix</div>
-              <h1>Fixed: the update notes themselves.</h1>
+              <div class="eye" style="margin-bottom:8px">0.8.4 · Security &amp; Stability</div>
+              <h1>A vault you don't have to double-check.</h1>
             </div>
           </div>
-          <p class="prose">A quick one. The release notes you'd have seen after updating to 0.8.2 were stale — still describing 0.8.0, not the real calc-engine release that actually shipped. The real 0.8.2 content existed, it just never made it into the file this panel reads from. Fixed here; the real 0.8.2 story is one click away in the Releases list on the left. Nothing else changed in this version.</p>
+          <p class="prose">This release closes every real gap a two-pass external security review found across the API, the publish/export pipeline, imports, templates, and Conduit — each one independently reproduced and fixed, not taken on the report's word alone. It's the same Yamlink, held to a higher bar.</p>
+          <p class="prose">Alongside the hardening: two real performance fixes caught during a full engine-quality pass, and a correctness fix to this release-notes panel itself. <b style="color:var(--orange)">One real behavior change if you already use <ic>yamlink publish</ic></b> — see Highlights for what to check.</p>
         </section>
 
         <!-- 02 Highlights -->
         <section class="sec" id="s-highlights">
           <div class="eye">What shipped</div>
-          <h2>One fix, nothing else.</h2>
+          <h2>18 fixes. One real behavior change.</h2>
 
           <div class="mosaic">
-            <div class="tile tile-lg expandable">
-              <div class="tile-toggle" role="button" aria-label="Show details" tabindex="0">+</div>
-              <div class="tile-num">1</div>
-              <div class="tile-tag">the only thing in this release</div>
-              <div class="tile-name">Correct release notes</div>
-              <div class="tile-desc">This panel was still showing the 0.8.0 briefing to anyone who updated to 0.8.2 — the real 0.8.2 content existed, drafted and approved, it just never got copied into the file this webview actually reads. Fixed: this version ships the real file, and 0.8.2's full content is preserved and reachable from the Releases list.</div>
+            <div class="tile tile-lg">
+              <div class="tile-tag" style="color:var(--pink)">closes an open door</div>
+              <div class="tile-name">The local API now requires a token by default</div>
+              <div class="tile-desc">Previously <ic>yamlink serve</ic> had no authentication at all — combined with its intentionally open CORS policy, any webpage open in the same browser could read or write the vault. A random per-vault token now generates on first run; an explicit <ic>YAMLINK_API_TOKEN</ic> still always wins.</div>
+            </div>
+            <div class="tile tile-lg tile-warn">
+              <div class="tile-tag" style="color:var(--orange)">if you already use yamlink publish — read this</div>
+              <div class="tile-name">A note must now opt in before it's published</div>
+              <div class="tile-desc">Previously, any note was published unless explicitly marked <ic>status: draft</ic>/<ic>archived</ic> — a note with no <ic>status:</ic> field at all was published by default. That was the real vulnerability: publishing should never be the default for a note nobody deliberately marked public. Now a note needs <ic>publish: true</ic> (or <ic>status: published</ic>) to be included. <b>Your next build may contain fewer notes than before</b> — add <ic>publish: true</ic> to any note you want to keep publishing.</div>
+            </div>
+            <div class="tile tile-md">
+              <div class="tile-tag" style="color:var(--pink)">symlink &amp; hardlink hardening, across the board</div>
+              <div class="tile-name">Vault scanning, imports, and every write path now verify real containment</div>
+              <div class="tile-desc">Vault scanning, Obsidian/Notion import, the API token, <ic>webhooks.json</ic>, Smart Templates, and <ic>yamlink restore</ic> are all hardened the same way — one consistent rule, applied everywhere it needed to be.</div>
+            </div>
+            <div class="tile tile-sm">
+              <div class="tile-tag" style="color:var(--pink)">SSRF</div>
+              <div class="tile-name">Webhook URLs checked before delivery</div>
+              <div class="tile-desc">Internal/private addresses blocked by default. <ic>--allow-local</ic> opts your own machine back in.</div>
+            </div>
+            <div class="tile tile-sm">
+              <div class="tile-tag" style="color:var(--pink)">path traversal</div>
+              <div class="tile-name">A crafted <ic>type:</ic> can't escape the publish folder</div>
+              <div class="tile-desc">Sanitized before it's ever used as a path segment during <ic>yamlink publish</ic>.</div>
+            </div>
+            <div class="tile tile-sm">
+              <div class="tile-tag" style="color:var(--pink)">XSS</div>
+              <div class="tile-name">Exported HTML now carries a real CSP</div>
+              <div class="tile-desc">A script embedded in a note can no longer execute once that export opens outside the editor.</div>
+            </div>
+            <div class="tile tile-sm">
+              <div class="tile-tag" style="color:var(--pink)">containment</div>
+              <div class="tile-name">PDF export can't embed an outside image</div>
+              <div class="tile-desc">Closes a crafted <ic>../</ic> path, an absolute path, and an embed reference.</div>
+            </div>
+            <div class="tile tile-sm">
+              <div class="tile-tag" style="color:var(--pink)">injection</div>
+              <div class="tile-name">CSV export is formula-injection safe</div>
+              <div class="tile-desc">A value starting with <ic>=</ic> <ic>+</ic> <ic>-</ic> <ic>@</ic> is written safely, not executed.</div>
+            </div>
+            <div class="tile tile-sm">
+              <div class="tile-tag">new command</div>
+              <div class="tile-name"><ic>yamlink mutations purge-field</ic></div>
+              <div class="tile-desc">Permanently redacts a field's historical values — for when a sensitive value was recorded by accident.</div>
+            </div>
+            <div class="tile tile-sm">
+              <div class="tile-tag">privacy</div>
+              <div class="tile-name">No remote images load by default</div>
+              <div class="tile-desc">Live Note no longer silently fetches a remote <ic>https:</ic> image. Opt in with <ic class="am">yamlink.allowRemoteImages</ic>.</div>
+            </div>
+            <div class="tile tile-sm">
+              <div class="tile-tag" style="color:var(--teal)">performance</div>
+              <div class="tile-name">Vault Health stopped re-stat-ing every file</div>
+              <div class="tile-desc">Its lifecycle scan now reuses the timestamp the vault scan already captured.</div>
+            </div>
+            <div class="tile tile-sm">
+              <div class="tile-tag" style="color:var(--teal)">performance</div>
+              <div class="tile-name"><ic>yamlink bulk-set</ic> batches its history writes</div>
+              <div class="tile-desc">One mutation-log write per operation now, not one per note.</div>
+            </div>
+            <div class="tile tile-sm">
+              <div class="tile-tag">fixed</div>
+              <div class="tile-name">This panel's own navigation dead end</div>
+              <div class="tile-desc">Sidebar tabs are now correctly disabled while a previous release's card is open — Back is the one way out.</div>
             </div>
           </div>
 
-          <div class="hl-tally"><b>1</b> shipped · <b>0</b> new features · <b>0</b> behavior changes</div>
+          <div class="hl-tally"><b>18</b> fixes · <b>1</b> behavior change (read it above if you use <ic>yamlink publish</ic>) · <b>1</b> new CLI command</div>
         </section>
 
         <!-- 03 Story -->
         <section class="sec" id="s-story">
           <div class="eye">How this one happened</div>
-          <p class="prose">Short version: I drafted and signed off on the real 0.8.2 release notes separately from the file that actually ships inside the extension, and the hand-off between the two never happened. Caught it, fixed it, and I'd rather ship a one-line hotfix for this than let it sit wrong until the next real release.</p>
-          <div style="font-size:11px;color:var(--tx3);letter-spacing:.06em;margin-top:28px;">— J<br>October 2026</div>
+          <p class="prose">Most of Yamlink's energy up to this point has gone into features — new surfaces, new blocks, new ways to query and see a vault. This release is a deliberate change of pace, for a little while: before anything else ships, the priority is making sure what already exists holds up under real scrutiny.</p>
+          <p class="prose">The security findings came from a genuine two-pass external review, not a routine checklist — every item was independently reproduced before being called a real issue, and a follow-up pass caught a real gap in the first round's own webhook address check (an alternate, equally valid IPv6 form that slipped past the original matching logic). The two performance fixes came out of a separate pass auditing the intelligence, mutation, and time engines directly against the real code, not assumed from documentation.</p>
+          <div style="font-size:11px;color:var(--tx3);letter-spacing:.06em;margin-top:28px;">— J<br>November 2026</div>
         </section>
 
         <!-- 04 Insights -->
         <section class="sec" id="s-insights">
           <div class="eye">Insights</div>
-          <p class="prose">Nothing new to add this time — see 0.8.2's own Insights (in the Releases list) for the Zed/Cursor note, still current.</p>
+          <p class="prose">A more personal note than usual. I've started putting real time into a standalone desktop app for Yamlink — something I'm hoping to actually get in front of people sometime in 2027. It's early, and nothing about it is ready to talk about yet, but it's already reshaping how I think about everything else on the roadmap.</p>
+          <p class="prose">Practically, that means the next few releases are going to look a little different than what you're used to. Less "look what's new," more "look what's sturdier." Security, performance, and polish are the priority for a while — making sure what already exists is something worth building the next chapter on top of, rather than racing to ship more surface area.</p>
+          <p class="prose">That doesn't mean nothing's coming. There are a few bigger surprises quietly taking shape behind the scenes too — just not ready to be named yet. More when they're actually real.</p>
           <div style="font-size:11px;color:var(--tx3);letter-spacing:.06em;margin-top:28px;">— J</div>
         </section>
 
         <!-- Previous release view (outside sec[] navigation system) -->
         <div id="s-prev-release" style="display:none;opacity:0;transition:opacity 190ms ease,transform 190ms ease;transform:translateY(10px);">
-          <div class="pr-back" id="pr-back">← Back to 0.8.3</div>
+          <div class="pr-back" id="pr-back">← Back to 0.8.4</div>
           <div id="pr-content"></div>
         </div>
 
@@ -324,11 +387,11 @@ body,#topbar,#nav,#btm,#main,.vi,.badge,.ri,.dot,.next-card,.overlay-panel{trans
             <a class="ri" href="https://x.com/yamlinklabs" style="text-decoration:none"><span class="ri-n">@yamlinklabs on X</span><span class="ri-a">↗</span></a>
             <a class="ri" href="https://github.com/Yamlink-Labs/yamlink/issues" style="text-decoration:none"><span class="ri-n">Report a Bug</span><span class="ri-a">↗</span></a>
           </ul>
-          <div class="ref-meta">yamlink 0.8.3 · hotfix · october 2026</div>
+          <div class="ref-meta">yamlink 0.8.4 · security &amp; stability · november 2026</div>
           <div class="next-card">
             <div class="next-eyebrow">Coming next</div>
-            <div class="next-title">View Panel &amp; Calendar redesign</div>
-            <div class="next-desc">A real visual and interaction pass on the live table — a collapsed toolbar, a smaller control radius throughout, column pinning, row grouping, bulk edit, saved views, and conditional formatting — then the same treatment for Calendar and Note Report.</div>
+            <div class="next-title">More security, optimization, and polish — then a few surprises</div>
+            <div class="next-desc">The next release keeps the same focus as this one: making the engine itself smarter about what it trusts, not adding new surface area. A handful of bigger things are quietly taking shape behind that — not ready to name yet, but coming.</div>
             <div class="next-badge">In development</div>
           </div>
         </section>
@@ -356,7 +419,7 @@ body,#topbar,#nav,#btm,#main,.vi,.badge,.ri,.dot,.next-card,.overlay-panel{trans
   <div style="margin-left:auto;display:flex;align-items:center;gap:16px;">
     <a class="btm-link" href="https://www.yamlink.dev">yamlink.dev</a>
     <a class="btm-link" href="https://x.com/yamlinklabs">@yamlinklabs</a>
-    <span class="btm-link" style="opacity:.3">yamlink 0.8.3</span>
+    <span class="btm-link" style="opacity:.3">yamlink 0.8.4</span>
   </div>
 </footer>
 
@@ -369,6 +432,7 @@ const mainEl = document.getElementById('main');
 let idx = 0;
 
 function goTo(i) {
+  if (prEl.style.display === 'block') return;
   const next = Math.max(0, Math.min(nis.length - 1, i));
   if (next === idx) return;
   const prev = idx; idx = next;
@@ -403,6 +467,15 @@ document.getElementById('rel-toggle').addEventListener('click', () => {
 
 // Previous release data
 const releaseData = {
+  '0.8.3': {
+    tag: '0.8.3 · Hotfix',
+    headline: 'The release notes themselves were wrong.',
+    intro: 'The webview shown after updating still displayed the 0.8.0 briefing instead of the real 0.8.2 content. The real 0.8.2 content existed, it just never made it into the shipped file.',
+    items: [
+      'Fixed: this panel now ships the real, correct content for every version — the real 0.8.2 story is preserved and reachable from this Releases list.',
+      'No other changes. No breaking changes.',
+    ]
+  },
   '0.8.2': {
     tag: '0.8.2 · Excel-ification',
     headline: 'Your notes just learned to do math.',

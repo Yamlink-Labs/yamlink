@@ -4,6 +4,21 @@ const http = require('http');
 const React = require('react');
 const { URLSearchParams } = require('url');
 
+// Set once at Conduit startup (see conduitLauncher.js/index.js), not threaded
+// through every individual request function below — the API server Conduit
+// talks to may now require a token by default (see src/api/apiToken.js), and
+// adding a `token` parameter to every one of the ~20 functions in this file,
+// plus every call site across every screen, would be a much larger and
+// riskier change than the one thing that actually needs to happen: attach
+// the header at the three places an HTTP request actually goes out.
+let _apiToken = null;
+function setApiToken(token) {
+    _apiToken = token || null;
+}
+function authHeaders(extra) {
+    return _apiToken ? { ...extra, 'X-Yamlink-Token': _apiToken } : extra;
+}
+
 /**
  * @typedef {{ host: string, port: number, path: string }} ApiRequestOptions
  * @typedef {{ host?: string, port?: number, type?: string }} GetNodesOptions
@@ -25,7 +40,7 @@ function requestJson({ host, port, path }) {
             port,
             path,
             method: 'GET',
-            headers: { Accept: 'application/json' }
+            headers: authHeaders({ Accept: 'application/json' })
         }, (res) => {
             let body = '';
             res.setEncoding('utf8');
@@ -251,11 +266,11 @@ function requestJsonWithBody({ host, port, path, method, body }) {
         const encoded = JSON.stringify(body);
         const req = http.request({
             host, port, path, method,
-            headers: {
+            headers: authHeaders({
                 'Content-Type': 'application/json',
                 'Content-Length': Buffer.byteLength(encoded),
                 'X-Yamlink-Source': 'conduit'
-            }
+            })
         }, (res) => {
             let data = '';
             res.setEncoding('utf8');
@@ -315,7 +330,7 @@ function deleteNode({ host, port, id, force }) {
             host, port,
             path: `/api/nodes/${encodeURIComponent(id)}${suffix}`,
             method: 'DELETE',
-            headers: { 'X-Yamlink-Source': 'conduit' }
+            headers: authHeaders({ 'X-Yamlink-Source': 'conduit' })
         }, (res) => {
             let data = '';
             res.setEncoding('utf8');
@@ -406,7 +421,7 @@ function useEventStream({ host, port, onEvent, onConnect, onDisconnect }) {
                 port,
                 path: '/api/events',
                 method: 'GET',
-                headers: { Accept: 'text/event-stream' }
+                headers: authHeaders({ Accept: 'text/event-stream' })
             }, (response) => {
                 res = response;
                 // Reset backoff on successful connection
@@ -470,5 +485,6 @@ module.exports = {
     patchNodesBulk,
     postNode,
     deleteNode,
-    useEventStream
+    useEventStream,
+    setApiToken
 };

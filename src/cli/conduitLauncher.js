@@ -4,10 +4,23 @@ const fs = require('fs');
 const http = require('http');
 const path = require('path');
 const { resolveVaultPath } = require('./args');
+const { getOrCreateApiToken } = require('../api/apiToken');
 
-function probeServer(host, port) {
+// `token`, when given, is sent speculatively — it's this launch's own
+// vault's persisted token (see getOrCreateApiToken below), read before we
+// even know whether a server is already running. If one is, for the SAME
+// vault, it was started with that exact same persisted value, so this
+// authenticates correctly. If it's running for a DIFFERENT vault, the token
+// won't match and the request 401s — which already falls through to the
+// same "couldn't identify, start a separate server" branch below, since
+// this function never branches on status code at all, only on whether the
+// body happens to contain a vaultPath.
+function probeServer(host, port, token) {
     return new Promise((resolve) => {
-        const req = http.get(`http://${host}:${port}/api/health`, { timeout: 800 }, (res) => {
+        const req = http.get(`http://${host}:${port}/api/health`, {
+            timeout: 800,
+            headers: token ? { 'X-Yamlink-Token': token } : {}
+        }, (res) => {
             const chunks = [];
             res.on('data', (chunk) => chunks.push(chunk));
             res.on('end', () => {
@@ -39,7 +52,12 @@ async function launchConduit(args) {
         return;
     }
 
-    const running = await probeServer(host, requestedPort);
+    // Generated/read before we even know whether a server is running — see
+    // probeServer's own comment for why this works for both the "reuse an
+    // existing server for this vault" and "start a fresh one" cases.
+    const apiToken = getOrCreateApiToken(vaultPath);
+
+    const running = await probeServer(host, requestedPort, apiToken);
     const sameVault = running && running.vaultPath && path.resolve(running.vaultPath) === vaultPath;
 
     let port = requestedPort;
@@ -73,7 +91,7 @@ async function launchConduit(args) {
     }
 
     try {
-        await require('../conduit').run({ host, port });
+        await require('../conduit').run({ host, port, token: apiToken });
     } finally {
         if (ownedServer) {
             await ownedServer.close().catch(() => {});

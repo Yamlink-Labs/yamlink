@@ -377,7 +377,7 @@ async function handleSaveAsTemplate() {
     const templateContent = buildTemplateFromNote(text);
     const existingTemplates = getTemplatesForType(root, noteType);
     const existingNames = new Set(existingTemplates.map(t => t.name.toLowerCase()));
-    let saveOptions = { force: true };
+    let saveOptions = { force: false };
     if (existingTemplates.length > 0) {
         /** @type {Array<{ label: string, description?: string, templateName?: string, newTemplate?: boolean }>} */
         const saveChoices = [

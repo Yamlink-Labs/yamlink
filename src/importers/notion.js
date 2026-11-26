@@ -8,6 +8,8 @@ const { createImportStats, buildCanonicalWikilink } = require('./obsidian');
 const {
     walkExternalFiles,
     shouldSkipExternalEntry,
+    isSymlinkEntry,
+    isHardlinkEntry,
     buildFrontmatterMarkdown,
     ensureUniqueMarkdownPath,
     extractFirstMarkdownHeading,
@@ -388,9 +390,20 @@ function copyNotionExportRecursive(sourceRoot, destinationRoot, stats) {
             continue;
         }
         const sourcePath = path.join(sourceRoot, entry.name);
+        if (isSymlinkEntry(sourcePath)) {
+            stats.skipped.push(entry.name);
+            continue;
+        }
         const destinationPath = path.join(destinationRoot, entry.name);
         if (entry.isDirectory()) {
             copyNotionExportRecursive(sourcePath, destinationPath, stats);
+            continue;
+        }
+        // Hardlink check only applies to files — see obsidianFilesystem.js's
+        // identical comment for why directory nlink counts aren't a safe
+        // signal across platforms.
+        if (isHardlinkEntry(sourcePath)) {
+            stats.skipped.push(entry.name);
             continue;
         }
         if (fs.existsSync(destinationPath)) {

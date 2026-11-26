@@ -15,6 +15,7 @@ const { resolveImageEmbed } = require('./imageEmbed');
 const {
     isPublishable,
     getSlug,
+    getTypeSegment,
     getOrder,
     sortByOrder,
     resolvePublishLinks,
@@ -70,8 +71,13 @@ function splitBodyIntoSegments(body) {
     return segments;
 }
 
-/** @param {import('../engine/queryConditions').ParsedQuery} query @param {string|null} contextNodeId @returns {string} */
-function renderViewAsMarkdownTable(query, contextNodeId) {
+/** @param {import('../engine/queryConditions').ParsedQuery} query @param {string|null} contextNodeId @param {Set<string>} publishableIds @returns {string} */
+// `runQuery` runs against the full live vault index with no concept of
+// publish status. A `!view` block baked into a published note's snapshot
+// must never list a row from a note that isn't itself publishable —
+// otherwise a public note can expose private data it never directly links
+// to. `publishableIds` is always required here, not optional.
+function renderViewAsMarkdownTable(query, contextNodeId, publishableIds) {
     let result;
     try {
         result = runQuery(query, contextNodeId);
@@ -79,7 +85,7 @@ function renderViewAsMarkdownTable(query, contextNodeId) {
         return `> Query error: ${err.message}`;
     }
     if (!result.success) return `> ${result.error || 'Query failed'}`;
-    const rows = result.rows || [];
+    const rows = (result.rows || []).filter((row) => publishableIds.has(row.id));
     const columns = result.columns || [];
     if (!rows.length) return '> (no results)';
 
@@ -101,15 +107,16 @@ function renderViewAsMarkdownTable(query, contextNodeId) {
  * execute them live.
  * @param {string} body
  * @param {string} contextNodeId
+ * @param {Set<string>} publishableIds
  * @returns {string}
  */
-function resolveViewBlocksToSnapshot(body, contextNodeId) {
+function resolveViewBlocksToSnapshot(body, contextNodeId, publishableIds) {
     const segments = splitBodyIntoSegments(body);
     return segments.map((seg) => {
         if (seg.type === 'md') return seg.text;
         const parsed = parseAllViewQueries(seg.raw);
         const query = parsed ? parsed[0] : null;
-        return query ? renderViewAsMarkdownTable(query, contextNodeId) : seg.raw;
+        return query ? renderViewAsMarkdownTable(query, contextNodeId, publishableIds) : seg.raw;
     }).join('\n');
 }
 
@@ -121,16 +128,37 @@ function resolveViewBlocksToSnapshot(body, contextNodeId) {
  * @param {string} noteDir
  * @param {string} slug
  * @param {string} outDir
+ * @param {string} [vaultRoot] When given, a resolved candidate path outside
+ *   this directory is never copied. `![[../outside/secret.png]]` resolves
+ *   via plain `path.join` with no containment check of its own, so without
+ *   this guard an image reference can reach and copy an arbitrary file from
+ *   anywhere on disk into the public output — a real, confirmed path-
+ *   traversal leak, not a theoretical one.
  * @returns {{ body: string, assets: string[] }}
  */
-function resolveAndCopyAssets(body, noteDir, slug, outDir) {
+function resolveAndCopyAssets(body, noteDir, slug, outDir, vaultRoot) {
     const assets = [];
+    // fs.realpathSync, not path.resolve: path.resolve is purely lexical (it
+    // only normalizes `.`/`..` segments in the string) and never follows a
+    // symlink, so a symlink sitting inside the vault but physically pointing
+    // elsewhere on disk would pass a string-prefix check while still
+    // escaping containment for real. realpath resolves to the actual
+    // physical location, which is what a containment check must compare.
+    let resolvedVaultRoot = null;
+    if (vaultRoot) {
+        try { resolvedVaultRoot = fs.realpathSync(vaultRoot); } catch (_) { resolvedVaultRoot = path.resolve(vaultRoot); }
+    }
     /** @param {string|null} candidatePath */
     const copyOne = (candidatePath) => {
         if (!candidatePath) return null;
         let isFile = false;
         try { isFile = fs.statSync(candidatePath).isFile(); } catch (_) { isFile = false; }
         if (!isFile) return null;
+        if (resolvedVaultRoot) {
+            let resolvedCandidate;
+            try { resolvedCandidate = fs.realpathSync(candidatePath); } catch (_) { return null; }
+            if (resolvedCandidate !== resolvedVaultRoot && !resolvedCandidate.startsWith(resolvedVaultRoot + path.sep)) return null;
+        }
         const basename = path.basename(candidatePath);
         const destDir = path.join(outDir, 'assets', slug);
         fs.mkdirSync(destDir, { recursive: true });
@@ -160,12 +188,12 @@ function resolveAndCopyAssets(body, noteDir, slug, outDir) {
 }
 
 /** @param {Record<string, any>} fields @returns {Record<string, any>} */
-function resolveFieldValues(fields, idIndex, aliasIndex) {
+function resolveFieldValues(fields, idIndex, aliasIndex, publishableIds) {
     const out = {};
     for (const [key, value] of Object.entries(fields || {})) {
         if (RESERVED_FIELD_PREFIX_RE.test(key)) continue;
         if (typeof value === 'string' && value.includes('[[')) {
-            out[key] = resolvePublishFieldValue(value, idIndex, aliasIndex);
+            out[key] = resolvePublishFieldValue(value, idIndex, aliasIndex, publishableIds);
         } else {
             out[key] = value;
         }
@@ -239,6 +267,7 @@ function buildFeedXml(entries, siteUrl, { title = 'Yamlink Vault Feed' } = {}) {
  *   aliasIndex?: Map<string,string>,
  *   vaultGeneration: number,
  *   outDir: string,
+ *   vaultPath?: string,
  *   mode?: 'production'|'preview',
  *   siteUrl?: string,
  *   force?: boolean
@@ -251,6 +280,7 @@ function runBuild(options) {
         aliasIndex,
         vaultGeneration,
         outDir,
+        vaultPath = null,
         mode = 'production',
         siteUrl = null,
         force = false
@@ -278,6 +308,7 @@ function runBuild(options) {
     for (const [id, fields] of fieldsCache) {
         if (isPublishable(fields, { mode })) publishableIds.push(id);
     }
+    const publishableIdSet = new Set(publishableIds);
 
     const noteEntries = publishableIds.map((id) => ({ id, fields: fieldsCache.get(id) }));
     const ordered = sortByOrder(noteEntries);
@@ -299,10 +330,10 @@ function runBuild(options) {
         const noteDir = path.dirname(filePath);
         const rawBody = readNoteBodyVerbatim(filePath);
 
-        const snapshotBody = resolveViewBlocksToSnapshot(rawBody, id);
-        const { body: assetBody, assets } = resolveAndCopyAssets(snapshotBody, noteDir, slug, outDir);
-        const resolvedBody = resolvePublishLinks(assetBody, idIndex, aliasIndex);
-        const resolvedFields = resolveFieldValues(fields, idIndex, aliasIndex);
+        const snapshotBody = resolveViewBlocksToSnapshot(rawBody, id, publishableIdSet);
+        const { body: assetBody, assets } = resolveAndCopyAssets(snapshotBody, noteDir, slug, outDir, vaultPath);
+        const resolvedBody = resolvePublishLinks(assetBody, idIndex, aliasIndex, publishableIdSet);
+        const resolvedFields = resolveFieldValues(fields, idIndex, aliasIndex, publishableIdSet);
 
         const title = fields.title || fields.name || id;
         const description = fields.description || fields.summary || extractFirstParagraph(rawBody);
@@ -324,7 +355,7 @@ function runBuild(options) {
         const hash = sha1(serialized);
         newCacheNotes[id] = hash;
 
-        const typeDir = path.join(outDir, 'notes', fields.type || '_untyped');
+        const typeDir = path.join(outDir, 'notes', getTypeSegment(fields));
         const notePath = path.join(typeDir, slug + '.json');
 
         if (!force && cache.notes[id] === hash && fs.existsSync(notePath)) {
@@ -383,10 +414,15 @@ function runBuild(options) {
     for (const oldId of Object.keys(cache.notes)) {
         if (newCacheNotes[oldId]) continue;
         const oldFields = fieldsCache.get(oldId);
-        const oldType = oldFields && oldFields.type ? oldFields.type : '_untyped';
+        const oldType = getTypeSegment(oldFields);
         const oldSlug = getSlug(oldId);
         const oldPath = path.join(outDir, 'notes', oldType, oldSlug + '.json');
         try { fs.unlinkSync(oldPath); notesRemoved++; } catch (_) { /* already gone */ }
+        // A note's own images were copied into assets/<slug>/ while it was
+        // publishable. Removing the JSON page alone leaves them orphaned but
+        // still physically present on disk — real bug, found via direct
+        // testing, not assumed.
+        try { fs.rmSync(path.join(outDir, 'assets', oldSlug), { recursive: true, force: true }); } catch (_) { /* already gone */ }
     }
 
     const typeCounts = {};

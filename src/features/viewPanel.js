@@ -7,6 +7,7 @@ const { parseAllViewQueries, parseViewQuery, runQuery } = require('../engine/que
 const { writeFieldValue } = require('../core/writeField');
 const { extractCanonicalIdFromFrontmatter } = require('../core/id');
 const { buildViewExportModel, exportViewPdf } = require('../export/pdf');
+const { escapeCsvValue } = require('../export/csvEscape');
 const { createViewPanelController } = require('./view/viewPanelController');
 const { appendMutationEvents, withMutationContext } = require('../runtime/mutationEventLog');
 const { renderPanel, buildWarningBanner } = require('./view/viewPanelHtml');
@@ -181,12 +182,8 @@ async function exportQueryResult(format, queryList, queryIndex, visibleColumns, 
 
 /** @param {string[]} columns @param {Array<Record<string,any>>} rows @returns {string} */
 function toCsv(columns, rows) {
-    const esc = (v) => {
-        const s = String(v ?? '');
-        return /[",\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s;
-    };
-    const header = columns.map(esc).join(',');
-    const body = rows.map(r => columns.map(c => esc(r[c])).join(',')).join('\n');
+    const header = columns.map(escapeCsvValue).join(',');
+    const body = rows.map(r => columns.map(c => escapeCsvValue(r[c])).join(',')).join('\n');
     return header + '\n' + body;
 }
 

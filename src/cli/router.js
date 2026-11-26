@@ -142,6 +142,7 @@ if (command === 'hooks') {
         url: pos[3],
         id: pos[2],
         noteType: flagVal('--type'),
+        allowLocal: args.includes('--allow-local'),
         vaultPath,
         json,
         quiet
@@ -271,10 +272,13 @@ case 'health':
 
 case 'mutations':
     require('./commands/mutations').run({
+        action: pos[1],
+        field: pos[2],
         eventType: flagVal('--type'),
-        noteId: flagVal('--id'),
+        noteId: flagVal('--id') || flagVal('--note'),
         since: flagVal('--since'),
         limit: parseInt(flagVal('--limit') || '50', 10),
+        confirmed: args.includes('--yes'),
         json,
         quiet
     });
@@ -372,6 +376,7 @@ case 'publish': {
         mode: flagVal('--mode'),
         siteUrl: flagVal('--site-url'),
         webhook: flagVal('--webhook'),
+        vaultPath,
         force: args.includes('--force'),
         json, quiet
     });

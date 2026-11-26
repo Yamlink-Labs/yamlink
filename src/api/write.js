@@ -102,17 +102,30 @@ function writeNoteFile(vaultPath, noteType, extraFields) {
         return { ok: false, status: 409, code: 'CONFLICT', error: 'A note with this ID already exists', id: noteId };
     }
 
-    const lines = ['---', `id: ${noteId}`, `type: ${noteType}`];
+    const fields = Object.create(null);
+    fields.id = noteId;
+    fields.type = noteType;
     for (const [key, value] of Object.entries(extraFields)) {
         if (key === 'id' || key === 'type') continue;
-        lines.push(`${key}: ${value}`);
+        if (key === '__proto__' || key === 'constructor' || key === 'prototype') {
+            return { ok: false, status: 400, code: 'INVALID_PARAM', error: `Invalid field name: ${key}` };
+        }
+        fields[key] = value;
     }
-    lines.push('---', '');
 
     try {
-        fs.writeFileSync(filePath, lines.join('\n'), 'utf8');
+        const content = serializeFrontmatterDocument({
+            hasFrontmatter: true,
+            data: fields,
+            body: '',
+            originalOrder: Object.keys(fields)
+        });
+        fs.writeFileSync(filePath, content, { encoding: 'utf8', flag: 'wx' });
         return { ok: true, id: noteId, filePath };
     } catch (error) {
+        if (error.code === 'EEXIST') {
+            return { ok: false, status: 409, code: 'CONFLICT', error: 'A note with this ID already exists', id: noteId };
+        }
         return { ok: false, status: 500, code: 'INTERNAL_ERROR', error: 'Could not write file: ' + error.message };
     }
 }

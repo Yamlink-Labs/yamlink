@@ -31,7 +31,7 @@
  */
 
 const path = require('path');
-const { getIndex, getFieldsCache } = require('../../core/indexService');
+const { getIndex, getFieldsCache, getCachedMtime } = require('../../core/indexService');
 const { readHealthSnapshotTrend } = require('../../core/healthSnapshot');
 const { getGraphStats, getEdges, isOrphan } = require('../../core/graph');
 const { getRegistry, getRegistryStats } = require('../../registries/typeRegistry');
@@ -220,7 +220,8 @@ function collectHealthStats(options = {}) {
                 noteType: nodeType,
                 inboundCount: getInboundCount(id, fieldsCache),
                 avgInbound,
-                lastMutationMs: Number.isFinite(rawLastMs) ? rawLastMs : undefined
+                lastMutationMs: Number.isFinite(rawLastMs) ? rawLastMs : undefined,
+                mtimeMs: getCachedMtime(idIndex.get(id))
             });
             lifecycleCounts[lifecycle.state] = (lifecycleCounts[lifecycle.state] || 0) + 1;
             lifecycleNotes.push({
@@ -340,7 +341,8 @@ function buildVaultTrendsSnapshot() {
             noteType: nodeType,
             inboundCount: getInboundCount(id, fieldsCache),
             avgInbound,
-            lastMutationMs: Number.isFinite(rawLastMs) ? rawLastMs : undefined
+            lastMutationMs: Number.isFinite(rawLastMs) ? rawLastMs : undefined,
+            mtimeMs: getCachedMtime(idIndex.get(id))
         });
         lifecycleCounts[lifecycle.state] = (lifecycleCounts[lifecycle.state] || 0) + 1;
     }

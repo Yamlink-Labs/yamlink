@@ -5,6 +5,7 @@ const path = require('path');
 const { parseAllViewQueries, runQuery, buildQueryString } = require('../engine/query');
 const { parseFrontmatterDocument } = require('../core/frontmatter');
 const { resolveImageEmbed } = require('../core/imageEmbed');
+const { isWithinRoot } = require('../core/pathSafety');
 const { CALLOUT_TYPE_FAMILY } = require('./markdownItCallouts');
 
 const CALLOUT_LINE_RE = /^>\s*\[!([A-Z]+)\](?:\s+(.+))?$/i;
@@ -28,17 +29,21 @@ const PDF_SUPPORTED_IMAGE_EXTENSIONS = new Set(['.png', '.jpg', '.jpeg']);
  * unresolved — this is an offline, local export, not a network fetch.
  * @param {string} line
  * @param {string|null} noteDir
+ * @param {string|null} [vaultRoot] When given, a resolved candidate outside
+ *   this directory is never embedded — see isWithinRoot() in core/pathSafety.js.
  * @returns {{src: string, alt: string}|null}
  */
-function resolveImageLine(line, noteDir) {
+function resolveImageLine(line, noteDir, vaultRoot) {
     const match = String(line || '').match(IMAGE_LINE_RE);
     if (!match) return null;
+
+    const checkContainment = (candidate) => !vaultRoot || isWithinRoot(candidate, vaultRoot);
 
     if (match[1]) {
         // ![[embed.png]]
         if (!noteDir) return null;
         const resolved = resolveImageEmbed(match[1], noteDir);
-        if (!resolved) return null;
+        if (!resolved || !checkContainment(resolved)) return null;
         return { src: resolved, alt: String(match[1]).split('|')[0].trim() };
     }
 
@@ -52,6 +57,7 @@ function resolveImageLine(line, noteDir) {
     } catch {
         return null;
     }
+    if (!checkContainment(candidate)) return null;
     return { src: candidate, alt: String(match[2] || '').trim() };
 }
 
@@ -89,7 +95,7 @@ function buildViewExportModel(query, contextNodeId) {
     };
 }
 
-function buildNoteExportModel(documentText, contextNodeId, noteDir) {
+function buildNoteExportModel(documentText, contextNodeId, noteDir, vaultRoot) {
     const parsed = parseFrontmatterDocument(documentText);
     const queries = parseAllViewQueries(documentText) || [];
     const views = queries.map(query => buildViewExportModel(query, contextNodeId || null));
@@ -104,6 +110,7 @@ function buildNoteExportModel(documentText, contextNodeId, noteDir) {
         summaryRows,
         body: String(parsed.body || '').trim(),
         noteDir: noteDir || null,
+        vaultRoot: vaultRoot || null,
         views
     };
 }
@@ -134,7 +141,7 @@ function exportNotePdf(filePath, model) {
     if (model.body) {
         writeSectionTitle(doc, 'Note');
         const bodyWidth = doc.page.width - doc.page.margins.left - doc.page.margins.right;
-        for (const seg of parseBodySegments(model.body, model.noteDir)) {
+        for (const seg of parseBodySegments(model.body, model.noteDir, model.vaultRoot)) {
             if (seg.type === 'callout') {
                 writeCalloutBlock(doc, seg.calloutType, seg.title, seg.content);
             } else if (seg.type === 'image') {
@@ -220,9 +227,10 @@ function writeKeyValue(doc, key, value) {
  * Split body text into alternating text / callout / image segments.
  * @param {string} text
  * @param {string|null} [noteDir] - resolves embed and relative image references
+ * @param {string|null} [vaultRoot] - when given, an image resolving outside this directory is excluded (see isWithinVaultRoot)
  * @returns {Array<{type:'text',content:string}|{type:'callout',calloutType:string,title:string,content:string}|{type:'image',src:string,alt:string}>}
  */
-function parseBodySegments(text, noteDir) {
+function parseBodySegments(text, noteDir, vaultRoot) {
     const lines = String(text || '').split(/\r?\n/);
     /** @type {Array<{type:'text',content:string}|{type:'callout',calloutType:string,title:string,content:string}|{type:'image',src:string,alt:string}>} */
     const segments = [];
@@ -248,7 +256,7 @@ function parseBodySegments(text, noteDir) {
             continue;
         }
 
-        const image = resolveImageLine(lines[i], noteDir);
+        const image = resolveImageLine(lines[i], noteDir, vaultRoot);
         if (image) {
             segments.push(/** @type {{type:'image',src:string,alt:string}} */ ({ type: 'image', src: image.src, alt: image.alt }));
             i++;
@@ -257,7 +265,7 @@ function parseBodySegments(text, noteDir) {
 
         {
             const textLines = [];
-            while (i < lines.length && !CALLOUT_LINE_RE.test(lines[i]) && !resolveImageLine(lines[i], noteDir)) {
+            while (i < lines.length && !CALLOUT_LINE_RE.test(lines[i]) && !resolveImageLine(lines[i], noteDir, vaultRoot)) {
                 textLines.push(lines[i]);
                 i++;
             }

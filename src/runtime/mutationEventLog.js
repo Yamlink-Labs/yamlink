@@ -3,7 +3,9 @@
 const fs = require('fs');
 const path = require('path');
 const { reconstructVaultAtTime } = require('../core/timeEngine');
-const { appendVaultSnapshot, loadVaultSnapshots } = require('../core/vaultSnapshots');
+const { appendVaultSnapshot, loadVaultSnapshots, redactFieldInSnapshots, REDACTED_VALUE } = require('../core/vaultSnapshots');
+const { ensureVaultGitignore } = require('../api/apiToken');
+const { ensureContainedDir } = require('../core/pathSafety');
 
 /**
  * @typedef {{
@@ -64,9 +66,66 @@ function initMutationLog(logPath) {
     _events = [];
     if (!_logPath) return;
 
-    try {
-        fs.mkdirSync(path.dirname(_logPath), { recursive: true });
-    } catch (_) {}
+    // Real, confirmed vulnerability this closes (external security review,
+    // independently reproduced): a plain `fs.mkdirSync(..., { recursive:
+    // true })` is a silent no-op if `.yamlink` already exists — including as
+    // a symlink or (Windows) directory junction planted there before the
+    // vault was ever opened, redirecting the mutation log (and everything
+    // else under `.yamlink`) outside the vault entirely with no error at
+    // all. Only applied when the log path actually has the real
+    // `<vaultRoot>/.yamlink/mutation-log.ndjson` shape (the same guard used
+    // below for the .gitignore call) — a flattened test temp-dir shape has
+    // no real vault root to contain against, so it falls back to a plain
+    // mkdirSync exactly as before.
+    //
+    // Critically, a caught containment failure here must disable persistence
+    // entirely (_logPath = null), not just swallow the error and move on —
+    // a first version of this fix did exactly that, and a real exploit test
+    // proved the gap survived: every later appendMutationEvents() call
+    // writes straight to `_logPath` via fs.appendFileSync, which doesn't
+    // re-check containment and succeeds regardless, since the poisoned
+    // `.yamlink` junction's target directory already exists either way.
+    if (path.basename(path.dirname(_logPath)) === '.yamlink') {
+        try {
+            ensureContainedDir(path.dirname(_logPath), path.dirname(path.dirname(_logPath)));
+        } catch (_) {
+            _logPath = null;
+            _snapshotPath = null;
+            return;
+        }
+    } else {
+        try {
+            fs.mkdirSync(path.dirname(_logPath), { recursive: true });
+        } catch (_) {}
+    }
+
+    // Real, confirmed gap this closes (external security review): this is
+    // the actual, most commonly hit path that creates .yamlink/ at all — a
+    // CLI command or the VS Code extension writing a note, with no
+    // yamlink serve/Conduit involved — and it ran with no vault-local
+    // .gitignore guarantee whatsoever. apiToken.js's ensureVaultGitignore()
+    // was previously wired only into token creation, which most sessions
+    // never trigger; the mutation log (and the field values it records) is
+    // written far more often than the token file is. Called here too so a
+    // vault gets the same protection regardless of which feature happens to
+    // touch .yamlink/ first.
+    //
+    // Only when the log path actually follows the real `<vaultRoot>/
+    // .yamlink/mutation-log.ndjson` shape every production caller uses —
+    // deliberately NOT a blind `dirname(dirname(...))` guess. A first
+    // version of this fix did exactly that and, caught by running the
+    // existing test suite rather than assumed safe, was confirmed to write
+    // a stray `.gitignore` into the real shared OS temp directory whenever
+    // a test passed a flattened, non-nested temp path — a real,
+    // unacceptable side effect for something this permanent. Requiring the
+    // immediate parent directory to literally be named `.yamlink` makes the
+    // check self-verifying: it only ever fires for a path that is actually,
+    // structurally a vault's own `.yamlink` directory.
+    if (path.basename(path.dirname(_logPath)) === '.yamlink') {
+        try {
+            ensureVaultGitignore(path.dirname(path.dirname(_logPath)));
+        } catch (_) { /* best-effort — never block logging on a gitignore write failing */ }
+    }
 
     if (!fs.existsSync(_logPath)) return;
 
@@ -333,6 +392,73 @@ function createManualSnapshot(reason) {
     };
 }
 
+/**
+ * Counts how many stored events (mutation log) and snapshot entries (Time
+ * Engine archive) currently carry a real value for `field` — the "what
+ * would be affected" preview a destructive purge needs before it runs, not
+ * an estimate.
+ * @param {string} field
+ * @param {string|null} [noteId]
+ * @returns {{ eventCount: number, snapshotCount: number }}
+ */
+function previewFieldHistoryPurge(field, noteId) {
+    if (!field) return { eventCount: 0, snapshotCount: 0 };
+    let eventCount = 0;
+    for (const event of _events) {
+        if (event.field !== field) continue;
+        if (noteId && event.noteId !== noteId) continue;
+        if (event.oldValue !== REDACTED_VALUE || event.newValue !== REDACTED_VALUE) eventCount++;
+    }
+    let snapshotCount = 0;
+    if (_snapshotPath) {
+        const snapshots = loadVaultSnapshots(_snapshotPath);
+        for (const snapshot of snapshots) {
+            for (const [snNoteId, fields] of Object.entries(snapshot.notes || {})) {
+                if (noteId && snNoteId !== noteId) continue;
+                if (fields && typeof fields === 'object' && Object.prototype.hasOwnProperty.call(fields, field) && fields[field] !== REDACTED_VALUE) {
+                    snapshotCount++;
+                }
+            }
+        }
+    }
+    return { eventCount, snapshotCount };
+}
+
+/**
+ * Redacts a field's historical values — permanently and irreversibly — from
+ * both the mutation log and the Time Engine snapshot archive. The event
+ * itself (type, timestamp, noteId, field, source, cause, sessionId, meta)
+ * is kept; only `oldValue`/`newValue` (and the matching key inside any
+ * snapshot's per-note fields) are replaced with a fixed redaction marker.
+ * Deliberately not a delete of the whole event — history/restore and
+ * calibration both depend on knowing THAT a change happened to that field
+ * at that time, just not the private value itself, which is what actually
+ * needs to stop being retained once a sensitive field is spotted in
+ * history (e.g. before a vault is committed or synced).
+ * @param {{ field: string, noteId?: string|null }} options
+ * @returns {{ redactedEventCount: number, redactedSnapshotCount: number }}
+ */
+function purgeFieldHistory(options) {
+    const { field, noteId } = options || {};
+    if (!field) throw new Error('purgeFieldHistory requires a field name');
+
+    let redactedEventCount = 0;
+    for (const event of _events) {
+        if (event.field !== field) continue;
+        if (noteId && event.noteId !== noteId) continue;
+        const alreadyRedacted = event.oldValue === REDACTED_VALUE && event.newValue === REDACTED_VALUE;
+        if (alreadyRedacted) continue;
+        event.oldValue = REDACTED_VALUE;
+        event.newValue = REDACTED_VALUE;
+        redactedEventCount++;
+    }
+    if (redactedEventCount > 0) _rewriteLog();
+
+    const redactedSnapshotCount = _snapshotPath ? redactFieldInSnapshots(_snapshotPath, field, noteId) : 0;
+
+    return { redactedEventCount, redactedSnapshotCount };
+}
+
 function setDefaultMutationContextProvider(provider) {
     _defaultContextProvider = typeof provider === 'function' ? provider : null;
 }
@@ -350,5 +476,7 @@ module.exports = {
     setDefaultMutationContextProvider,
     setSnapshotFieldsCacheProvider,
     onMutationEventsAppended,
+    previewFieldHistoryPurge,
+    purgeFieldHistory,
     OUTCOME_EVENT_TYPES
 };

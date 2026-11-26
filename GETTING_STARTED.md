@@ -245,8 +245,8 @@ Right-click anywhere in a Markdown note (or open the Command Palette) to reach a
 | Command | What it does |
 |---|---|
 | `Yamlink: Copy Note ID` | copies `[[note-id]]` for the whole active note — the fastest way to link back to it from anywhere |
-| `Yamlink: Extract Selection to New Note` | select some text first — it becomes the seed/title for a brand-new note (goes through the normal Template → Schema → vault-inference flow), and the original selection is replaced with a plain `[[new-id]]` link |
-| `Yamlink: Split Note Body` | select some text first — it's moved verbatim into a new note's body (with `source: [[original-note]]` auto-set), and the original selection is replaced with an embed `![[new-id]]` so it still renders inline. Use this over "Extract Selection" when you want the moved content to keep showing in place, not just link to it |
+| `Yamlink: New Note from Selection` | select some text first — it becomes the seed/title for a brand-new note (goes through the normal Template → Schema → vault-inference flow), and the original selection is replaced with a plain `[[new-id]]` link |
+| `Yamlink: Split Note Body` | select some text first — it's moved verbatim into a new note's body (with `source: [[original-note]]` auto-set), and the original selection is replaced with an embed `![[new-id]]` so it still renders inline. Use this over "New Note from Selection" when you want the moved content to keep showing in place, not just link to it |
 
 Smart Paste also helps when content starts outside Yamlink. Paste a clear spreadsheet-style table, Markdown table, JSON object, or bulleted/numbered list into a Markdown note and Yamlink asks whether to keep plain text or convert it into structured Yamlink content: a `!view` scaffold, new notes with frontmatter, a frontmatter block, or real task lines.
 

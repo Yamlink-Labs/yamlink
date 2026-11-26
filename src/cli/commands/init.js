@@ -3,6 +3,7 @@
 const fs = require('fs');
 const path = require('path');
 const { emitCliError, emitCliSuccess, emitText } = require('../io');
+const { ensureVaultGitignore } = require('../../api/apiToken');
 
 function run({ targetPath, json, quiet, dryRun }) {
     const resolvedPath = path.resolve(targetPath || process.cwd());
@@ -23,13 +24,14 @@ function run({ targetPath, json, quiet, dryRun }) {
                 ['---', 'id: welcome', 'type: note', 'name: Welcome', '---', '', 'Welcome to Yamlink.'].join('\n'),
                 'utf8'
             );
+            ensureVaultGitignore(resolvedPath);
         } catch (error) {
             emitCliError({ json, error: 'Failed to initialize vault: ' + error.message, code: 'INTERNAL_ERROR', exitCode: 2 });
             return;
         }
     }
 
-    const created = ['.yamlink/', '_templates/', 'welcome.md'];
+    const created = ['.yamlink/', '_templates/', 'welcome.md', '.gitignore'];
     if (json) {
         emitCliSuccess({ path: resolvedPath, created, dryRun: !!dryRun });
         return;

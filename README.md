@@ -116,20 +116,11 @@ Yamlink's local engine powers more than the VS Code extension. Explore your vaul
 <details>
 <summary><strong>What's new this release</strong></summary>
 
-**0.8.2 — Markdown gets computational.**
+**0.8.4 — Security & Stability.** A deliberate change of pace: before anything else ships, this release is entirely about making sure what already exists holds up under real scrutiny. No new features.
 
-- **Inline formulas** — calculate directly inside notes using named cells, ranges, conditional logic, dates, statistics, and financial functions. See [CALCULATIONS.md](./CALCULATIONS.md).
-- **Connected calculations** — reference values across notes, read frontmatter fields, and calculate from live table columns.
-- **Query calculated data** — filter, sort, and aggregate computed values across your vault.
-- **New visualizations** — line and pie charts join the existing layouts, with support for plotting aggregated values.
-- **Live Note improvements** — preview calculated results directly, instead of raw formula syntax.
-
-**Fixed**
-
-- `group by` on a field holding a single wikilink now groups by the target note's name, not the raw link text.
-- Frontmatter numbers and booleans now resolve correctly in formulas and queries — they were previously read as plain text.
-- Dragging a node in the graph no longer shakes the whole graph or leaves it permanently frozen after a few drags.
-- The graph now assigns a real, stable color to every note type, not just the first 11.
+- **A security hardening pass**, across multiple rounds of adversarial review — authentication required by default on the local API, SSRF protection on webhooks, path-traversal and symlink/hardlink protections across publishing, importing, and exporting, a new `yamlink mutations purge-field` command for redacting sensitive historical values, and more. See `CHANGELOG.md` for the full, itemized list.
+- **If you already use `yamlink publish`: a note must now opt in before it's published.** Previously any note was published by default unless marked `status: draft`/`archived`. Now a note needs `publish: true` (or `status: published`) to be included — **your next build may contain fewer notes than before.** Add `publish: true` to any note you want to keep publishing.
+- **Two real performance fixes** — Vault Health no longer re-reads every note's file timestamp from disk on every refresh, and `yamlink bulk-set` now writes its mutation history once per operation instead of once per note.
 
 Full list: [CHANGELOG.md](./CHANGELOG.md).
 

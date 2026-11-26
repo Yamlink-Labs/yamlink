@@ -2,7 +2,8 @@
 
 const React = require('react');
 const fs = require('fs');
-const { exec } = require('child_process');
+const path = require('path');
+const { execFile } = require('child_process');
 const { p, SYM } = require('./palette');
 
 const SKIP_FIELDS = new Set(['id', 'type', '_filePath', '_outbound', '_inbound']);
@@ -19,12 +20,25 @@ function pad(text, width) {
     return value.length >= width ? value : value + ' '.repeat(width - value.length);
 }
 
+function resolveEditorCommand(command) {
+    if (process.platform !== 'win32' || command.toLowerCase() !== 'code') return command;
+    const candidates = [
+        process.env.LOCALAPPDATA && path.join(process.env.LOCALAPPDATA, 'Programs', 'Microsoft VS Code', 'Code.exe'),
+        process.env.ProgramFiles && path.join(process.env.ProgramFiles, 'Microsoft VS Code', 'Code.exe')
+    ];
+    for (const dir of (process.env.PATH || '').split(path.delimiter).filter(Boolean)) {
+        candidates.push(path.join(dir, 'code.exe'));
+        if (fs.existsSync(path.join(dir, 'code.cmd'))) candidates.push(path.resolve(dir, '..', 'Code.exe'));
+    }
+    return candidates.find((candidate) => candidate && fs.existsSync(candidate)) || command;
+}
+
 function openInEditor(targetPath) {
     if (!targetPath) return;
     try {
-        const editor = process.env.EDITOR || 'code';
-        const safeTarget = targetPath.replace(/"/g, '\\"');
-        exec(`"${editor}" "${safeTarget}"`, { windowsHide: true }, () => {});
+        // Quoted, space-containing EDITOR paths are not supported by this simple split.
+        const parts = (process.env.EDITOR || 'code').trim().split(/\s+/);
+        execFile(resolveEditorCommand(parts[0]), [...parts.slice(1), targetPath], { windowsHide: true }, () => {});
     } catch (_) {}
 }
 
@@ -240,6 +254,7 @@ module.exports = {
     truncate,
     pad,
     openInEditor,
+    resolveEditorCommand,
     readNoteBody,
     readFullNoteBody,
     applyInline,

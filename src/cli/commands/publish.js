@@ -1,12 +1,30 @@
 'use strict';
 
+const fs = require('fs');
+const path = require('path');
 const { getIndex, getFieldsCache, getAliasIndex, getVaultGeneration } = require('../../core/indexService');
 const { runBuild } = require('../../core/buildPipeline');
 const { emitCliError, emitCliSuccess, emitText } = require('../io');
 const fmt = require('../format');
 const { postJsonWebhook } = require('../../runtime/webhookHttp');
 
-async function run({ out, mode, siteUrl, webhook, force, json, quiet }) {
+// fs.realpathSync, not path.resolve: path.resolve is purely lexical and
+// never follows a symlink, so a symlinked --out that physically points
+// inside the vault (or vice versa) would pass a plain string-prefix check
+// while still being unsafe for real. --out typically doesn't exist yet on a
+// first publish, so this walks up to the nearest existing ancestor,
+// resolves that for real, and rejoins the remaining path segments.
+function realpathOrNearestAncestor(targetPath) {
+    try {
+        return fs.realpathSync(targetPath);
+    } catch (_) {
+        const parent = path.dirname(targetPath);
+        if (parent === targetPath) return targetPath;
+        return path.join(realpathOrNearestAncestor(parent), path.basename(targetPath));
+    }
+}
+
+async function run({ out, mode, siteUrl, webhook, vaultPath, force, json, quiet }) {
     if (!out) {
         emitCliError({
             json,
@@ -15,6 +33,26 @@ async function run({ out, mode, siteUrl, webhook, force, json, quiet }) {
             exitCode: 1
         });
         return;
+    }
+
+    // --out must never be the vault itself, or a folder inside it. The build
+    // output directory is walked wholesale for --deploy and the raw .md
+    // source files (private notes included, with none of the publishability
+    // filtering applied) would sit right there alongside the generated site
+    // and ship as-is — a real, confirmed way to leak an entire vault, not a
+    // hypothetical.
+    if (vaultPath) {
+        const resolvedOut = realpathOrNearestAncestor(path.resolve(out));
+        const resolvedVault = realpathOrNearestAncestor(path.resolve(vaultPath));
+        if (resolvedOut === resolvedVault || resolvedOut.startsWith(resolvedVault + path.sep)) {
+            emitCliError({
+                json,
+                error: `--out must not be the vault itself or a folder inside it (vault: ${resolvedVault}, --out: ${resolvedOut}) — the raw, unfiltered vault files would be published alongside the generated site. Choose a separate output directory.`,
+                code: 'UNSAFE_OUT_DIR',
+                exitCode: 1
+            });
+            return;
+        }
     }
 
     const resolvedMode = mode === 'preview' ? 'preview' : 'production';
@@ -27,6 +65,7 @@ async function run({ out, mode, siteUrl, webhook, force, json, quiet }) {
             aliasIndex: getAliasIndex(),
             vaultGeneration: getVaultGeneration(),
             outDir: out,
+            vaultPath,
             mode: resolvedMode,
             siteUrl: siteUrl || null,
             force: !!force

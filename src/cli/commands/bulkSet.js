@@ -80,6 +80,12 @@ async function run({ ids, field, value, add, clear, json, quiet, dryRun, vaultSe
         failed: []
     };
 
+    // Collected across the loop and flushed in one appendMutationEvents()
+    // call after it finishes, instead of once per note — a bulk-set across
+    // many notes previously meant that many separate synchronous mutation-log
+    // disk writes, one per note, for no benefit over a single batched write.
+    const pendingEvents = [];
+
     for (const id of idList) {
         const filePath = idIndex.get(id);
         if (!filePath) {
@@ -103,19 +109,23 @@ async function run({ ids, field, value, add, clear, json, quiet, dryRun, vaultSe
             const nextContent = buildNextContent(content, parsed, field, operation, newValue);
             await vaultService.mutate(async () => {
                 fs.writeFileSync(filePath, nextContent, 'utf8');
-                appendMutationEvents(withMutationContext([{
+                pendingEvents.push({
                     type: eventTypeFor(oldValue, newValue),
                     noteId: id,
                     field,
                     oldValue,
                     newValue,
                     timestamp: new Date().toISOString()
-                }], { source: 'cli', cause: 'cli_bulk_set' }));
+                });
             });
             result.succeeded.push(success);
         } catch (error) {
             result.failed.push({ id, error: error && error.message ? error.message : String(error) });
         }
+    }
+
+    if (pendingEvents.length) {
+        appendMutationEvents(withMutationContext(pendingEvents, { source: 'cli', cause: 'cli_bulk_set' }));
     }
 
     process.exitCode = result.failed.length ? 1 : 0;

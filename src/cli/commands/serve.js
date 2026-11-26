@@ -2,6 +2,7 @@
 
 const http = require('http');
 const fs = require('fs');
+const path = require('path');
 
 const fmt = require('../format');
 const { emitJson, emitCliError } = require('../io');
@@ -10,6 +11,7 @@ const { writeFieldSync } = require('../../api/write');
 const { errorJson } = require('../../api/http');
 const { VaultService } = require('../../core/vaultService');
 const { setDefaultMutationContextProvider } = require('../../runtime/mutationEventLog');
+const { getOrCreateApiToken } = require('../../api/apiToken');
 
 function buildServerSessionId() {
     const stamp = new Date().toISOString().replace(/[-:.TZ]/g, '').slice(0, 14);
@@ -55,6 +57,9 @@ async function run({ port, vaultPath, workspaceFolders, vaultService: existingVa
     await vaultService.initialize(vaultPath);
     const handleRequest = createRouter(vaultPath, workspaceFolders, undefined, vaultService);
     const host = '127.0.0.1';
+    const explicitToken = !!process.env.YAMLINK_API_TOKEN;
+    const apiToken = getOrCreateApiToken(vaultPath);
+    process.env.YAMLINK_API_TOKEN = apiToken;
 
     // Inject a server-scoped session ID so all API-originated mutations are grouped
     // by serve instance. The VS Code extension overrides this with its own provider
@@ -91,6 +96,9 @@ async function run({ port, vaultPath, workspaceFolders, vaultService: existingVa
                 port: actualPort,
                 vaultPath,
                 pid: process.pid,
+                authRequired: true,
+                tokenSource: explicitToken ? 'YAMLINK_API_TOKEN' : 'generated',
+                tokenFile: path.join(vaultPath, '.yamlink', 'api-token'),
                 endpoints: buildEndpointSummary()
             });
             return;
@@ -102,10 +110,11 @@ async function run({ port, vaultPath, workspaceFolders, vaultService: existingVa
         fmt.row('Vault', vaultPath);
         fmt.row('Address', `http://${host}:${actualPort}`);
         fmt.blank();
-        if (!process.env.YAMLINK_API_TOKEN) {
-            console.log(fmt.warn('No YAMLINK_API_TOKEN set — this server accepts any request with no authentication.'));
-            console.log(fmt.warn('Any webpage open in a browser on this machine could read or write your vault through it.'));
-            console.log(fmt.warn('Set YAMLINK_API_TOKEN before starting the server to require it (send it back as X-Yamlink-Token).'));
+        if (explicitToken) {
+            console.log(fmt.warn('Using YAMLINK_API_TOKEN from the environment — every request must send it back as X-Yamlink-Token.'));
+        } else {
+            console.log(fmt.warn(`Authentication token (also saved to .yamlink/api-token): ${apiToken}`));
+            console.log(fmt.warn('Send it back as the X-Yamlink-Token header on every request.'));
             fmt.blank();
         }
         console.log('Read endpoints:');
@@ -160,13 +169,15 @@ async function run({ port, vaultPath, workspaceFolders, vaultService: existingVa
  * Does not print anything and does not register SIGINT — caller owns teardown.
  *
  * @param {{ port: number, vaultPath: string, workspaceFolders: object[] }} opts
- * @returns {Promise<{ host: string, port: number, close(): Promise<void> }>}
+ * @returns {Promise<{ host: string, port: number, token: string, close(): Promise<void> }>}
  */
 async function startServer({ port, vaultPath, workspaceFolders }) {
     const vaultSvc = new VaultService({ workspaceFolders });
     await vaultSvc.initialize(vaultPath);
     const handleRequest = createRouter(vaultPath, workspaceFolders, undefined, vaultSvc);
     const host = '127.0.0.1';
+    const apiToken = getOrCreateApiToken(vaultPath);
+    process.env.YAMLINK_API_TOKEN = apiToken;
 
     const serverSessionId = buildServerSessionId();
     setDefaultMutationContextProvider(() => ({ sessionId: serverSessionId, source: 'api' }));
@@ -198,6 +209,7 @@ async function startServer({ port, vaultPath, workspaceFolders }) {
     return {
         host,
         port: actualPort,
+        token: apiToken,
         close() {
             if (watcher && typeof watcher.close === 'function') watcher.close();
             return new Promise((resolve) => server.close(() => resolve(undefined)));

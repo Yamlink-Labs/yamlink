@@ -37,10 +37,37 @@ node_modules/.package-lock.json
 # Local backups
 backup/
 tmp/
+tmp-site/
 tmp-graph.html
 coverage/
 dist/
 site-app-dist/
+
+# Held back for a future release wave (Publishing/Visuals/Presentations) —
+# fully built, untracked, deliberately excluded from the Security & Stability
+# (0.8.4) commit. See docs/pending-release/ for what else was held back from
+# already-tracked files. Remove these lines when that wave is actually ready
+# to ship.
+CHARTS_AND_DIAGRAMS.md
+PUBLISHING.md
+Y-SHOW.md
+sample/visual-charts-gallery.md
+sample/visual-diagrams-gallery.md
+sample/yshow-sample-deck.md
+src/core/publishDeploy.js
+src/core/publishTheme.js
+src/engine/chartResolver.js
+src/engine/diagramResolver.js
+src/engine/svgChartRenderer.js
+src/engine/svgDiagramRenderer.js
+src/engine/visualSources.js
+src/features/preview/visualZoomPanelController.js
+src/features/preview/yshowExtraHtml.js
+src/features/preview/yshowHtml.js
+src/features/preview/yshowModel.js
+src/features/preview/yshowPanelController.js
+test/visualZoomPanelController.test.js
+test/yshow.test.js
 
 # Vault runtime data (per-vault mutation log, etc.)
 .yamlink/

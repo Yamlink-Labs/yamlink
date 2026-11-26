@@ -83,3 +83,28 @@ test-html.js
 yamlink-website/**
 site-app-preview.log
 tsconfig.json
+
+# Held back for a future release wave (Publishing/Visuals/Presentations) —
+# fully built, deliberately excluded from the Security & Stability (0.8.4)
+# package. vsce packages whatever's on disk regardless of git state, so this
+# is needed even though these files are also gitignored. Remove when that
+# wave is actually ready to ship. (test/yshow.test.js and
+# test/visualZoomPanelController.test.js are already covered by test/** above.)
+CHARTS_AND_DIAGRAMS.md
+PUBLISHING.md
+Y-SHOW.md
+sample/visual-charts-gallery.md
+sample/visual-diagrams-gallery.md
+sample/yshow-sample-deck.md
+src/core/publishDeploy.js
+src/core/publishTheme.js
+src/engine/chartResolver.js
+src/engine/diagramResolver.js
+src/engine/svgChartRenderer.js
+src/engine/svgDiagramRenderer.js
+src/engine/visualSources.js
+src/features/preview/visualZoomPanelController.js
+src/features/preview/yshowExtraHtml.js
+src/features/preview/yshowHtml.js
+src/features/preview/yshowModel.js
+src/features/preview/yshowPanelController.js

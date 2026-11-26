@@ -342,7 +342,7 @@ yamlink publish --out ./site-content --mode preview
 yamlink publish --out ./site-content --site-url https://example.com --webhook https://example.com/deploy
 ```
 
-- **`status: draft/published/archived` is a real gate**, not a decorative label — a production build excludes drafts by default; `--mode preview` includes them. Nothing about `!view`, completions, hover, or diagnostics changes — a vault that never sets this field sees no difference anywhere.
+- **A note must opt in before it's published** — it needs `publish: true` or `status: published`; everything else, including a note with no `status:`/`publish:` field at all, is excluded. `--mode preview` additionally includes notes marked `status: draft`, for staging before you publish them. Nothing about `!view`, completions, hover, or diagnostics changes — this only affects what `yamlink publish` includes in its output.
 - **`[[wikilinks]]` resolve to relative site URLs**, in both frontmatter and body text; `!view` blocks resolve to a static Markdown table snapshot as of the build.
 - **`order:`** (a numeric frontmatter field) controls manual ordering in the output manifest — chapters, changelog entries, any fixed sequence.
 - **`previous_ids:`** on a note generates a redirect map, so a rename doesn't 404 an old published URL.

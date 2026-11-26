@@ -79,34 +79,55 @@ describe('buildPipeline', () => {
             return { idIndex, fieldsCache };
         }
 
-        test('production mode excludes draft notes from the manifest and output', () => {
+        test('production mode: strict opt-in, only status: published is included', () => {
             const { idIndex, fieldsCache } = buildFixture();
             const result = runBuild({ idIndex, fieldsCache, vaultGeneration: 1, outDir, mode: 'production' });
 
-            assert.equal(result.noteCount, 2);
+            assert.equal(result.noteCount, 1);
 
             const manifest = JSON.parse(fs.readFileSync(path.join(outDir, 'manifest.json'), 'utf8'));
             const ids = manifest.notes.map((n) => n.id);
             assert.ok(!ids.includes('draft-note'));
+            assert.ok(!ids.includes('no-status-note'));
             assert.ok(ids.includes('published-note'));
-            assert.ok(ids.includes('no-status-note'));
             assert.ok(!fs.existsSync(path.join(outDir, 'notes', 'article', 'draft-note.json')));
+            assert.ok(!fs.existsSync(path.join(outDir, 'notes', 'article', 'no-status-note.json')));
             assert.ok(fs.existsSync(path.join(outDir, 'notes', 'article', 'published-note.json')));
         });
 
-        test('preview mode includes draft notes', () => {
+        test('preview mode includes draft notes for staging, but still excludes a note with no status: at all', () => {
             const { idIndex, fieldsCache } = buildFixture();
             const result = runBuild({ idIndex, fieldsCache, vaultGeneration: 1, outDir, mode: 'preview' });
-            assert.equal(result.noteCount, 3);
+            assert.equal(result.noteCount, 2);
             assert.ok(fs.existsSync(path.join(outDir, 'notes', 'article', 'draft-note.json')));
+            assert.ok(!fs.existsSync(path.join(outDir, 'notes', 'article', 'no-status-note.json')));
         });
 
-        test('resolves body wikilinks to relative site URLs in the written payload', () => {
+        test('resolves body wikilinks to relative site URLs when the target is actually publishable', () => {
             const { idIndex, fieldsCache } = buildFixture();
+            // draft-note is legitimately publishable in preview mode (staging), so the
+            // link to it should resolve to a real URL here.
             runBuild({ idIndex, fieldsCache, vaultGeneration: 1, outDir, mode: 'preview' });
             const payload = JSON.parse(fs.readFileSync(path.join(outDir, 'notes', 'article', 'published-note.json'), 'utf8'));
             assert.ok(payload.body.includes('(/draft-note)'));
             assert.ok(!payload.body.includes('[[draft-note]]'));
+        });
+
+        test('a link to a note that exists but is not publishable never resolves to a working URL — private note identity does not leak', () => {
+            // Real bug, found and fixed via direct code review: resolveLinksInLine
+            // used to resolve against the FULL idIndex with no publishability
+            // check, so a published note linking to a draft/archived/unset-status
+            // note would still emit a real `[label](/slug)` link in the published
+            // HTML — exposing that private note's existence and label even though
+            // its own page was never published. In production mode, draft-note is
+            // not publishable, so the link from published-note must fall back to
+            // plain text, identical to a link that resolves to nothing at all.
+            const { idIndex, fieldsCache } = buildFixture();
+            runBuild({ idIndex, fieldsCache, vaultGeneration: 1, outDir, mode: 'production' });
+            const payload = JSON.parse(fs.readFileSync(path.join(outDir, 'notes', 'article', 'published-note.json'), 'utf8'));
+            assert.ok(!payload.body.includes('(/draft-note)'));
+            assert.ok(!payload.body.includes('[[draft-note]]'));
+            assert.ok(payload.body.includes('draft-note'));
         });
 
         test('manifest respects order: field ascending, notes without order trail', () => {
@@ -114,7 +135,7 @@ describe('buildPipeline', () => {
             runBuild({ idIndex, fieldsCache, vaultGeneration: 1, outDir, mode: 'preview' });
             const manifest = JSON.parse(fs.readFileSync(path.join(outDir, 'manifest.json'), 'utf8'));
             const ids = manifest.notes.map((n) => n.id);
-            assert.deepEqual(ids, ['draft-note', 'published-note', 'no-status-note']);
+            assert.deepEqual(ids, ['draft-note', 'published-note']);
         });
 
         test('pre-publish safety gate flags a link to an unpublished note and a broken link', () => {
@@ -123,6 +144,37 @@ describe('buildPipeline', () => {
             const reasons = result.warnings.filter((w) => w.noteId === 'published-note').map((w) => w.reason);
             assert.ok(reasons.includes('links-to-unpublished'));
             assert.ok(reasons.includes('broken-link'));
+        });
+
+        test('a crafted type: cannot traverse outside outDir — real exploit reproduction, not just a unit check on the sanitizer', () => {
+            // Real, confirmed vulnerability (not theoretical): fields.type was
+            // used raw as a path segment (`path.join(outDir, 'notes', fields.type)`),
+            // and `fs.mkdirSync(typeDir, { recursive: true })` happily creates
+            // every traversed segment. A note with `type: ../../../../evil-escape`
+            // could write its published JSON payload outside outDir entirely.
+            const escapePath = writeNote(vaultDir, 'escape-note.md',
+                '---\nid: escape-note\ntype: "../../../../evil-escape"\nstatus: published\ntitle: Escape Note\n---\nBody.\n');
+            const idIndex = new Map([['escape-note', escapePath]]);
+            const fieldsCache = new Map([
+                ['escape-note', { id: 'escape-note', type: '../../../../evil-escape', status: 'published', title: 'Escape Note' }]
+            ]);
+
+            runBuild({ idIndex, fieldsCache, vaultGeneration: 1, outDir, mode: 'production' });
+
+            // Nothing was written anywhere above outDir — walk up 4 real
+            // parent directories (matching the traversal depth attempted) and
+            // confirm no "evil-escape" directory exists at any of them.
+            let probe = outDir;
+            for (let i = 0; i < 5; i++) {
+                probe = path.dirname(probe);
+                assert.ok(!fs.existsSync(path.join(probe, 'evil-escape')), `evil-escape must not exist at ${probe}`);
+            }
+
+            // The traversal characters were stripped, not silently dropped —
+            // the note was still built, just safely contained inside outDir.
+            const typeDirs = fs.readdirSync(path.join(outDir, 'notes'));
+            assert.deepEqual(typeDirs, ['evil-escape']);
+            assert.ok(fs.existsSync(path.join(outDir, 'notes', 'evil-escape', 'escape-note.json')));
         });
 
         test('an unclosed [[ illustrating trigger syntax in prose does not swallow the rest of the note as a broken link', () => {
@@ -173,6 +225,32 @@ describe('buildPipeline', () => {
                 const payload = JSON.parse(fs.readFileSync(path.join(outDir, 'notes', 'article', 'hub-note.json'), 'utf8'));
                 assert.ok(!payload.body.includes('!view'));
                 assert.ok(payload.body.includes('|'));
+            } finally {
+                vault.destroy();
+            }
+        });
+
+        test('a !view snapshot never lists a row from a note that is not itself publishable', () => {
+            // Real bug, found and fixed via direct code review: runQuery() runs
+            // against the full live vault index with no concept of publish
+            // status, so a !view block baked into a published note's static
+            // snapshot used to list every matching row regardless of whether
+            // that row's own note was publishable — a published note could
+            // expose private note data it never directly links to, just by
+            // querying for it. unit-private has no status: field (so is not
+            // publishable under the strict opt-in rule), unit-alpha is
+            // published; the snapshot table must show unit-alpha only.
+            const vault = createVault({
+                'unit-alpha.md': '---\nid: unit-alpha\ntype: unit\nstatus: published\nname: Alpha\n---\nAn alpha unit.\n',
+                'unit-private.md': '---\nid: unit-private\ntype: unit\nname: Secret Unit\n---\nA private unit, never marked published.\n',
+                'hub-note.md': '---\nid: hub-note\ntype: article\nstatus: published\n---\nUnits:\n\n!view unit\nwhere type = unit\n\nDone.\n'
+            });
+            try {
+                runBuild({ idIndex: vault.idIndex, fieldsCache: vault.fieldsCache, vaultGeneration: 1, outDir, mode: 'production' });
+                const payload = JSON.parse(fs.readFileSync(path.join(outDir, 'notes', 'article', 'hub-note.json'), 'utf8'));
+                assert.ok(payload.body.includes('unit-alpha'));
+                assert.ok(!payload.body.includes('unit-private'));
+                assert.ok(!payload.body.includes('Secret Unit'));
             } finally {
                 vault.destroy();
             }
@@ -272,5 +350,52 @@ describe('buildPipeline', () => {
             assert.ok(payload.body.includes('(/assets/note-with-image/diagram.png)'));
             assert.ok(fs.existsSync(path.join(outDir, 'assets', 'note-with-image', 'diagram.png')));
         });
+
+        test('a note\'s assets are removed, not orphaned, once the note is no longer publishable', () => {
+            // Real bug, found via direct testing: removing a note's JSON/HTML
+            // page left its assets/<slug>/ folder behind untouched — nothing
+            // linked to it any more, but collectDeployFiles() walks the whole
+            // output directory wholesale, so a stale image from a note that's
+            // since been un-published would still ship on the next --deploy.
+            const imagePath = path.join(vaultDir, 'chart.png');
+            fs.writeFileSync(imagePath, Buffer.from([0x89, 0x50, 0x4e, 0x47]));
+            const notePath = writeNote(vaultDir, 'note-with-image.md',
+                '---\nid: note-with-image\ntype: article\nstatus: published\n---\n![a chart](chart.png)\n');
+            const idIndex = new Map([['note-with-image', notePath]]);
+            const fieldsCache = new Map([['note-with-image', { id: 'note-with-image', type: 'article', status: 'published' }]]);
+            runBuild({ idIndex, fieldsCache, vaultGeneration: 1, outDir, mode: 'production' });
+            assert.ok(fs.existsSync(path.join(outDir, 'assets', 'note-with-image', 'chart.png')));
+
+            fieldsCache.set('note-with-image', { id: 'note-with-image', type: 'article', status: 'draft' });
+            runBuild({ idIndex, fieldsCache, vaultGeneration: 1, outDir, mode: 'production' });
+            assert.ok(!fs.existsSync(path.join(outDir, 'assets', 'note-with-image')));
+        });
+
+        test('an embed path that traverses outside the vault is never copied into the public output, with vaultPath given', () => {
+            // Real bug, found and fixed via direct testing, not reasoning:
+            // resolveImageEmbed/resolveAndCopyAssets resolved a candidate path
+            // via plain path.join with no containment check — `![[../outside/
+            // secret.png]]` would resolve and copy an arbitrary file from
+            // anywhere on disk into the published site's assets folder, content
+            // exposed verbatim. Confirmed with a real file outside the vault.
+            const secretDir = fs.mkdtempSync(path.join(os.tmpdir(), 'yamlink-secret-test-'));
+            const secretPath = path.join(secretDir, 'secret.png');
+            fs.writeFileSync(secretPath, 'SENSITIVE BYTES THAT MUST NEVER BE PUBLISHED');
+            try {
+                const relPath = path.relative(vaultDir, secretPath).split(path.sep).join('/');
+                const notePath = writeNote(vaultDir, 'note-with-traversal.md',
+                    `---\nid: note-with-traversal\ntype: article\nstatus: published\n---\n![[${relPath}]]\n`);
+                const idIndex = new Map([['note-with-traversal', notePath]]);
+                const fieldsCache = new Map([['note-with-traversal', { id: 'note-with-traversal', type: 'article', status: 'published' }]]);
+
+                runBuild({ idIndex, fieldsCache, vaultGeneration: 1, outDir, vaultPath: vaultDir, mode: 'production' });
+                assert.ok(!fs.existsSync(path.join(outDir, 'assets', 'note-with-traversal')));
+                const payload = JSON.parse(fs.readFileSync(path.join(outDir, 'notes', 'article', 'note-with-traversal.json'), 'utf8'));
+                assert.deepEqual(payload.assets, []);
+            } finally {
+                fs.rmSync(secretDir, { recursive: true, force: true });
+            }
+        });
+
     });
 });

@@ -26,6 +26,14 @@ function createPreviewPanelController() {
         return String(str || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
     }
 
+    function allowRemoteImages() {
+        try {
+            return vscode.workspace.getConfiguration('yamlink').get('allowRemoteImages') === true;
+        } catch (_) {
+            return false;
+        }
+    }
+
     // Safely encode a string for embedding inside a JS <script> block.
     // JSON.stringify gives a valid JS string literal; we additionally escape
     // </ so the sequence </script> never appears unescaped inside the tag.
@@ -42,7 +50,7 @@ function createPreviewPanelController() {
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1.0">
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'nonce-${nonce}'; style-src 'unsafe-inline'; img-src ${escapeAttr(cspSource || '')} https: data:;">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'nonce-${nonce}'; style-src 'unsafe-inline'; img-src ${escapeAttr(cspSource || '')} ${allowRemoteImages() ? 'https: ' : ''}data:;">
 <title>${escapeAttr(displayTitle)}</title>
 <style>${TOOLBAR_STYLES}</style>
 </head>
@@ -86,11 +94,25 @@ function createPreviewPanelController() {
     }
 
     function buildPrintHtml(articleHtml, title) {
+        // Unlike buildBootHtml (the VS Code webview path), this HTML is
+        // written to a real temp file and opened in the user's actual
+        // default OS browser via vscode.env.openExternal — a real `file://`
+        // page outside VS Code's sandboxed webview, with no CSP of its own
+        // until now. articleHtml comes from previewRenderer.js's shared
+        // renderer, which deliberately renders raw HTML in note content
+        // (`html: true`) for the legitimate local-editing case — but that
+        // same raw HTML, unmitigated, would execute as real script in a real
+        // browser the moment a note containing a <script> tag reached this
+        // print path. A nonce-scoped CSP neutralizes any script executing
+        // from note content while still allowing this page's own two
+        // legitimate inline scripts (which carry the matching nonce).
+        const nonce = crypto.randomBytes(16).toString('hex');
         return `<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1.0">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'nonce-${nonce}'; style-src 'unsafe-inline'; img-src file: ${allowRemoteImages() ? 'https: ' : ''}data:;">
 <title>${escapeAttr(title)}</title>
 <style>
 *{box-sizing:border-box}
@@ -137,10 +159,11 @@ body{font:15px/1.75 'Inter',-apple-system,BlinkMacSystemFont,'Segoe UI',system-u
 <body>
 <div id="printbar">
   <span>${escapeAttr(title)}</span>
-  <button onclick="window.print()">&#9113; Print / Save as PDF</button>
+  <button id="printNowBtn">&#9113; Print / Save as PDF</button>
 </div>
 <article class="note-body">${articleHtml}</article>
-<script>
+<script nonce="${nonce}">
+document.getElementById('printNowBtn').addEventListener('click', function() { window.print(); });
 window.addEventListener('load', function() { setTimeout(function() { window.print(); }, 400); });
 </script>
 </body>

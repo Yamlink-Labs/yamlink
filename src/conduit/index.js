@@ -1,7 +1,7 @@
 'use strict';
 
 const App = require('./App');
-const { getNodes } = require('./useApi');
+const { getNodes, setApiToken } = require('./useApi');
 const { resolveVaultPath } = require('./storage');
 
 function renderConnectionError(host, port) {
@@ -10,9 +10,12 @@ function renderConnectionError(host, port) {
     console.error(`Cannot connect to yamlink serve on http://${host}:${port}. Is it running?`);
 }
 
-async function run({ host = '127.0.0.1', port = 3000 }) {
+async function run({ host = '127.0.0.1', port = 3000, token = null }) {
     const normalizedHost = String(host || '127.0.0.1').trim() || '127.0.0.1';
     const normalizedPort = Number.parseInt(String(port || '3000'), 10) || 3000;
+    // Must happen before the very first request below — the API server this
+    // points at may require a token by default now (src/api/apiToken.js).
+    setApiToken(token);
 
     try {
         var nodes = await getNodes({ host: normalizedHost, port: normalizedPort, type: 'any' });

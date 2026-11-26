@@ -2,6 +2,7 @@
 
 const fs = require('fs');
 const path = require('path');
+const { randomBytes } = require('crypto');
 const { getFieldsCache } = require('../../core/indexService');
 const { reconstructVaultAtTime } = require('../../core/timeEngine');
 const { getMutationEvents, getVaultSnapshots } = require('../../runtime/mutationEventLog');
@@ -77,6 +78,23 @@ function buildRestoreData(timestamp) {
     };
 }
 
+function isInsideDirectory(directory, target) {
+    const relative = path.relative(directory, target);
+    return relative === '' || (relative !== '..' && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative));
+}
+
+function resolvedDestination(outputPath) {
+    let existing = path.resolve(outputPath);
+    const missing = [];
+    while (!fs.existsSync(existing)) {
+        const parent = path.dirname(existing);
+        if (parent === existing) throw new Error('Could not resolve restore output directory');
+        missing.unshift(path.basename(existing));
+        existing = parent;
+    }
+    return path.join(fs.realpathSync(existing), ...missing);
+}
+
 function writeRestoreExport(data, outputPath, vaultPath) {
     const resolvedOutput = path.resolve(outputPath);
     const resolvedVault = path.resolve(vaultPath);
@@ -85,9 +103,9 @@ function writeRestoreExport(data, outputPath, vaultPath) {
     // vault) still lands inside the tree Yamlink's own indexer scans, so
     // restored/historical .md files would get picked up as live vault notes
     // on the next rebuild, exactly the pollution this check exists to stop.
-    const relativeToVault = path.relative(resolvedVault, resolvedOutput);
-    const isInsideVault = resolvedOutput === resolvedVault
-        || (!relativeToVault.startsWith('..') && !path.isAbsolute(relativeToVault));
+    const realVault = fs.realpathSync(resolvedVault);
+    const isInsideVault = isInsideDirectory(resolvedVault, resolvedOutput)
+        || isInsideDirectory(realVault, resolvedDestination(resolvedOutput));
     if (isInsideVault) {
         const error = new Error('Refusing to write restore output inside the live vault. Choose a directory outside the vault.');
         /** @type {Error & { code?: string }} */ (error).code = 'REFUSE_LIVE_VAULT';
@@ -95,11 +113,32 @@ function writeRestoreExport(data, outputPath, vaultPath) {
     }
 
     fs.mkdirSync(resolvedOutput, { recursive: true });
+    if (isInsideDirectory(realVault, fs.realpathSync(resolvedOutput))) {
+        const error = new Error('Refusing to write restore output inside the live vault. Choose a directory outside the vault.');
+        /** @type {Error & { code?: string }} */ (error).code = 'REFUSE_LIVE_VAULT';
+        throw error;
+    }
     let written = 0;
     for (const note of data.notes) {
         if (!note.fields) continue;
         const filename = `${note.id.replace(/[<>:"/\\|?*\x00-\x1F]/g, '-')}.md`;
-        fs.writeFileSync(path.join(resolvedOutput, filename), toMarkdown(note.id, note.fields, data.timestamp, note.complete, note.reason), 'utf8');
+        const filePath = path.join(resolvedOutput, filename);
+        try {
+            if (fs.lstatSync(filePath).isSymbolicLink()) {
+                const error = new Error('Refusing to overwrite a linked restore output file.');
+                /** @type {Error & { code?: string }} */ (error).code = 'REFUSE_UNSAFE_OUTPUT';
+                throw error;
+            }
+        } catch (error) {
+            if (error.code !== 'ENOENT') throw error;
+        }
+        const temporary = path.join(resolvedOutput, `.${filename}.${randomBytes(8).toString('hex')}.tmp`);
+        try {
+            fs.writeFileSync(temporary, toMarkdown(note.id, note.fields, data.timestamp, note.complete, note.reason), { encoding: 'utf8', flag: 'wx' });
+            fs.renameSync(temporary, filePath);
+        } finally {
+            if (fs.existsSync(temporary)) fs.unlinkSync(temporary);
+        }
         written++;
     }
     return { outputPath: resolvedOutput, written };
@@ -128,7 +167,7 @@ function run({ timestamp, output, vaultPath, json }) {
                 json,
                 error: error && error.message ? error.message : String(error),
                 code: error && error.code ? error.code : 'INTERNAL_ERROR',
-                exitCode: error && error.code === 'REFUSE_LIVE_VAULT' ? 1 : 2
+                exitCode: error && ['REFUSE_LIVE_VAULT', 'REFUSE_UNSAFE_OUTPUT'].includes(error.code) ? 1 : 2
             });
             return;
         }

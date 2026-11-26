@@ -66,7 +66,7 @@ yamlink trends                          # vault growth/stale forecasts
 ```bash
 yamlink create --type contact --field name="Alex Rivera"
 yamlink set some-note-id status=done
-yamlink bulk-set --query "where type = task and status = todo" status=done
+yamlink bulk-set --ids task-042,task-043 --field status --value done
 yamlink rename old-id new-id            # propagates every [[wikilink]] vault-wide
 ```
 
@@ -93,6 +93,12 @@ yamlink hooks list
 ```bash
 yamlink serve --port 3000               # local HTTP API — see API.md
 yamlink conduit                         # the terminal UI — see CONDUIT.md
+```
+
+**Publish a website**
+
+```bash
+yamlink publish --out ./site              # structured JSON for your own site generator
 ```
 
 **Back up and restore**
