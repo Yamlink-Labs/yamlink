@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.8.5 — hotfix
+
+`0.8.4`'s published VSIX was built by running `vsce package`/`vsce publish` against a local working directory that still had unreleased, future-wave code (Native Visuals charts/diagrams) restored to disk alongside the real 0.8.4 commit — intentional for continued local development, but never meant to be the source for the actual package. `.vscodeignore` correctly excluded those unreleased files from the VSIX, but several already-shipped files that ship unconditionally (`hover.js`, `previewRenderer.js`, and `extension.js` itself) still had top-level `require()` calls into those now-missing files. The result: the installed extension's very first `require()` chain threw `MODULE_NOT_FOUND` before `activate()` ever ran, so the extension failed to load at all, on every workspace, for every 0.8.4 installer.
+
+This release has no code changes beyond that — it's the real 0.8.4 commit, rebuilt from a clean, isolated checkout of its own tag instead of a working directory with other work sitting on top of it. Also fixes the What's New webview never appearing on a brand-new install (it unconditionally skipped first installs, a long-standing design choice since 0.5.0 that no longer fits a release with real user-facing security content worth knowing).
+
 ## 0.8.4 — Security & Stability
 
 **First wave of a staggered rollout.** Everything below is security hardening or a stability/performance fix to existing, already-shipped behavior.

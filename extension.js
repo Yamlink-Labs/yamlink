@@ -59,10 +59,6 @@ async function showWhatsNew(context) {
 
     context.globalState.update('yamlink.lastSeenVersion', current);
 
-    // First install already shows the sample-vault prompt — skip the release notes there.
-    const isFirstInstall = !context.globalState.get('yamlink.hasActivatedBefore', false);
-    if (isFirstInstall) return;
-
     const htmlPath = path.join(context.extensionPath, 'media', 'whats-new.html');
     if (!fs.existsSync(htmlPath)) return;
 
